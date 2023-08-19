@@ -1,6 +1,6 @@
 {
-  "name": "nrs-language-server",
-  "description": "nano rust language server",
+  "name": "odoo-lsp",
+  "description": "Odoo LSP",
   "license": "MIT",
   "version": "1.5.0",
   "categories": [],
@@ -9,28 +9,23 @@
     "tower-lsp"
   ],
   "repository": {
-    "url": "https://github.com/IWANABETHATGUY/tower-lsp-boilerplate"
+    "url": "https://github.com/Desdaemon/odoo-lsp"
   },
   "engines": {
     "vscode": "^1.66.0"
   },
   "enabledApiProposals": [],
   "activationEvents": [
-    "onLanguage:nrs"
+    "onLanguage:xml",
+    "onLanguage:python",
+    "onLanguage:javascript"
   ],
+  "publisher": "Desdaemon",
   "main": "./dist/extension.js",
   "contributes": {
-    "languages": [
-      {
-        "id": "nrs",
-        "extensions": [
-          ".nrs"
-        ]
-      }
-    ],
     "configuration": {
       "type": "object",
-      "title": "nrs-language-server",
+      "title": "odoo-lsp",
       "properties": {
         "nrs-language-server.trace.server": {
           "type": "string",

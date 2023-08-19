@@ -1,0 +1,5 @@
+<odoo>
+    <record id="asd" model="ir.ui.view">
+        <field name="inherit_id" ref="two" />
+    </record>
+</odoo>

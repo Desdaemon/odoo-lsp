@@ -1,0 +1,6 @@
+[language-server]
+odoo-lsp.command = "../target/debug/odoo-lsp"
+
+[[language]]
+name = "xml"
+language-servers = ["odoo-lsp"]
