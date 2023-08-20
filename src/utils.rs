@@ -29,6 +29,12 @@ pub fn char_offset_to_position(offset: usize, rope: &Rope) -> Option<Position> {
 	Some(Position::new(line as u32, (offset - line_offset) as u32))
 }
 
+pub fn lsp_range_to_char_range(range: Range, rope: &Rope) -> Option<std::ops::Range<CharOffset>> {
+	let start = position_to_char_offset(range.start, rope)?;
+	let end = position_to_char_offset(range.end, rope)?;
+	Some(start..end)
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct ByteOffset(pub usize);

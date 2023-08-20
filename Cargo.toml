@@ -5,6 +5,10 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [dependencies]
 chumsky = "0.9.0"
 env_logger = "0.10.0"
@@ -21,5 +25,4 @@ globwalk = "0.8.1"
 miette = { version = "5.10.0", features = ["fancy"] }
 futures = "0.3.28"
 xmlparser = "0.13.5"
-
 

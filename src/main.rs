@@ -1,12 +1,14 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::sync::atomic::Ordering::Relaxed;
+use std::path::Path;
 
 use dashmap::DashMap;
-use miette::IntoDiagnostic;
+use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use serde_json::Value;
 use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::notification::Progress;
+use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use xmlparser::{ElementEnd, Token, Tokenizer};
@@ -24,14 +26,15 @@ struct Backend {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-	async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+	async fn initialize(&self, init: InitializeParams) -> Result<InitializeResult> {
+		_ = dbg!(init);
 		Ok(InitializeResult {
 			server_info: None,
 			offset_encoding: None,
 			capabilities: ServerCapabilities {
 				definition_provider: Some(OneOf::Left(true)),
 				references_provider: Some(OneOf::Left(true)),
-				text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+				text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::INCREMENTAL)),
 				completion_provider: Some(CompletionOptions {
 					resolve_provider: None,
 					trigger_characters: Some(vec!["\"".to_string(), "'".to_string(), ".".to_string()]),
@@ -54,15 +57,54 @@ impl LanguageServer for Backend {
 		Ok(())
 	}
 	async fn initialized(&self, _: InitializedParams) {
-		self.module_index.in_progress.store(true, Relaxed);
+		let token = NumberOrString::String("_odoo_lsp_initialized".to_string());
+		self.client
+			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
+			.await
+			.expect("Could not create WDP");
+
+		_ = self
+			.client
+			.send_notification::<Progress>(ProgressParams {
+				token: token.clone(),
+				value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
+					title: "Indexing".to_string(),
+					..Default::default()
+				})),
+			})
+			.await;
+
+		let progress = Some((&self.client, token.clone()));
 		for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
 			let file_path = workspace.uri.to_file_path().unwrap();
-			self.module_index
-				.add_root(dbg!(&file_path.to_string_lossy()))
+			match self
+				.module_index
+				.add_root(&file_path.to_string_lossy(), progress.clone())
 				.await
-				.unwrap();
+			{
+				Ok(Some((modules, records, elapsed))) => {
+					eprintln!(
+						"Processed {} with {} modules and {} records in {:.2}s",
+						file_path.display(),
+						modules,
+						records,
+						elapsed.as_secs_f64()
+					);
+				}
+				Err(err) => {
+					eprintln!("(initialized) could not add root {}:\n{err}", file_path.display(),);
+				}
+				_ => {}
+			}
 		}
-		self.module_index.in_progress.store(false, Relaxed);
+
+		_ = self
+			.client
+			.send_notification::<Progress>(ProgressParams {
+				token,
+				value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
+			})
+			.await;
 	}
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
 		let language;
@@ -90,7 +132,9 @@ impl LanguageServer for Backend {
 				.unwrap_or(false)
 			{
 				let file_path = path_.parent().expect("has parent").to_string_lossy();
-				self.module_index.add_root(&file_path).await.unwrap();
+				if let Err(err) = self.module_index.add_root(&file_path, None).await {
+					eprintln!("failed to add root {}:\n{err}", file_path);
+				}
 				break;
 			}
 			path = path_.parent();
@@ -106,17 +150,63 @@ impl LanguageServer for Backend {
 		.await
 	}
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
+		if let [TextDocumentContentChangeEvent {
+			range: None,
+			range_length: None,
+			text,
+		}] = params.content_changes.as_mut_slice()
+		{
+			self.on_change(TextDocumentItem {
+				uri: params.text_document.uri,
+				text: std::mem::take(text),
+				version: params.text_document.version,
+				language: None,
+				rope: None,
+			})
+			.await;
+			return;
+		}
+		let mut rope = self
+			.document_map
+			.get_mut(params.text_document.uri.path())
+			.expect("Did not build a rope");
+		for change in params.content_changes {
+			if change.range.is_none() && change.range_length.is_none() {
+				*rope.value_mut() = ropey::Rope::from_str(&change.text);
+			} else {
+				let range = change.range.expect("LSP change event must have a range");
+				let Some(range) = lsp_range_to_char_range(range, rope.value()) else {continue};
+				let rope = rope.value_mut();
+				let start = range.start.0;
+				rope.remove(range.map_unit(|unit| unit.0));
+				rope.insert(start, &change.text);
+			}
+		}
 		self.on_change(TextDocumentItem {
 			uri: params.text_document.uri,
-			text: std::mem::take(&mut params.content_changes[0].text),
+			text: Cow::from(rope.value().slice(..)).to_string(),
 			version: params.text_document.version,
 			language: None,
-			rope: None,
+			rope: Some(rope.value().clone()),
 		})
-		.await
+		.await;
 	}
-	async fn goto_definition(&self, _: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
-		Ok(None)
+	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
+		let uri = &params.text_document_position_params.text_document.uri;
+		eprintln!("goto_definition {}", uri.path());
+		let Some((_, "xml")) = uri.path().rsplit_once('.') else {
+			eprintln!("Unsupported file {}", uri.path());
+			return Ok(None)
+		};
+		let Some(document) = self.document_map.get(uri.path()) else {
+			panic!("Bug: did not build a rope for {}", uri.path());
+		};
+		let location = self
+			.xml_goto_definition(params, document.value())
+			.await
+			.expect("Error retrieving references");
+
+		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}
 	async fn references(&self, _: ReferenceParams) -> Result<Option<Vec<Location>>> {
 		Ok(None)
@@ -125,7 +215,8 @@ impl LanguageServer for Backend {
 		let uri = &params.text_document_position.text_document.uri;
 		eprintln!("completion {}", uri.path());
 		let Some((_, "xml")) = uri.path().rsplit_once('.') else {
-			panic!("Unsupported file {}", uri.path());
+			eprintln!("Unsupported file {}", uri.path());
+			return Ok(None);
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
 			panic!("Bug: did not build a rope for {}", uri.path());
@@ -144,12 +235,14 @@ impl LanguageServer for Backend {
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
 		self.module_index.mark_n_sweep();
 		for added in params.event.added {
-			let file_path = dbg!(added).uri.to_file_path().expect("not a file path");
+			let file_path = added.uri.to_file_path().expect("not a file path");
 			let file_path = file_path.as_os_str().to_string_lossy();
-			self.module_index.add_root(&file_path).await.unwrap();
+			if let Err(err) = self.module_index.add_root(&file_path, None).await {
+				eprintln!("(didChangeWorkspace) failed to add root {}:\n{err}", file_path);
+			}
 		}
 		for removed in params.event.removed {
-			self.module_index.remove_root(dbg!(removed).uri.path());
+			self.module_index.remove_root(removed.uri.path());
 		}
 	}
 	async fn execute_command(&self, _: ExecuteCommandParams) -> Result<Option<Value>> {
@@ -179,14 +272,14 @@ fn read_to_end(lex: &mut Tokenizer, local_name: &str) -> miette::Result<Option<s
 			Some(Ok(Token::ElementEnd {
 				end: ElementEnd::Empty,
 				span,
-			})) if stack == 0 => return Ok(Some(dbg!(span).range().map_unit(CharOffset))),
+			})) if stack == 0 => return Ok(Some(span.range().map_unit(CharOffset))),
 			Some(Ok(Token::ElementEnd {
 				end: ElementEnd::Close(_, local),
 				span,
 			})) if local.as_str() == local_name => {
 				stack -= 1;
 				if stack <= 0 {
-					return Ok(Some(dbg!(span).range().map_unit(CharOffset)));
+					return Ok(Some(span.range().map_unit(CharOffset)));
 				}
 			}
 			Some(Err(err)) => return Err(err).into_diagnostic(),
@@ -224,11 +317,6 @@ impl Backend {
 							continue;
 						};
 						let record_range = start_offset..end_offset;
-						#[cfg(debug_assertions)]
-						{
-							let slice = rope.byte_slice(record_range.clone());
-							dbg!(Cow::from(slice));
-						}
 						record_ranges.push(record_range.map_unit(ByteOffset));
 					}
 					None => break,
@@ -253,22 +341,18 @@ impl Backend {
 			.publish_diagnostics(params.uri.clone(), diagnostics, Some(params.version))
 			.await;
 	}
-	async fn xml_completions(
+	fn record_slice<'rope>(
 		&self,
-		params: CompletionParams,
-		rope: &Rope,
-	) -> miette::Result<Option<CompletionResponse>> {
-		let position = params.text_document_position.position;
-		let uri = &params.text_document_position.text_document.uri;
-		let Some(ranges) = self.record_ranges.get(uri.path()) else {
-			panic!("Could not get record ranges")
-		};
-		let Some(cursor) = position_to_offset(position, rope) else {
-			panic!("cursor")
-		};
-		let Ok(mut cursor_by_char) = rope.try_byte_to_char(cursor.0) else {
-			panic!("cursor_by_char")
-		};
+		rope: &'rope Rope,
+		uri: &Url,
+		position: Position,
+	) -> miette::Result<Option<(Cow<'rope, str>, usize, usize)>> {
+		let ranges = self
+			.record_ranges
+			.get(uri.path())
+			.ok_or_else(|| diagnostic!("Did not build record ranges"))?;
+		let cursor = position_to_offset(position, rope).ok_or_else(|| diagnostic!("cursor"))?;
+		let mut cursor_by_char = rope.try_byte_to_char(cursor.0).into_diagnostic()?;
 		let Ok(record) = ranges.value().binary_search_by(|range| {
 			if cursor < range.start {
 				Ordering::Greater
@@ -285,14 +369,25 @@ impl Backend {
 			return Ok(None);
 		};
 		let record_range = &ranges.value()[record];
-		let Ok(relative_offset) = rope.try_byte_to_char(record_range.start.0) else {
-			panic!("relative_offset")
-		};
+		let relative_offset = rope.try_byte_to_char(record_range.start.0).into_diagnostic()?;
 		cursor_by_char -= relative_offset;
 
-		// let Some(slice) = rope.get_byte_slice(record_range.clone().map_unit(|unit| unit.0)) else {panic!("slice")};
 		let slice = rope.byte_slice(record_range.clone().map_unit(|unit| unit.0));
 		let slice = Cow::from(slice);
+
+		Ok(Some((slice, cursor_by_char, relative_offset)))
+	}
+
+	async fn xml_completions(
+		&self,
+		params: CompletionParams,
+		rope: &Rope,
+	) -> miette::Result<Option<CompletionResponse>> {
+		let position = params.text_document_position.position;
+		let uri = &params.text_document_position.text_document.uri;
+		let Some((slice, cursor_by_char, relative_offset)) = self.record_slice(rope, uri, position)? else {
+			return Ok(None)
+		};
 		let reader = Tokenizer::from(&slice[..]);
 
 		let current_module = self
@@ -303,32 +398,45 @@ impl Backend {
 			.expect("must be in a module");
 
 		let mut items = vec![];
+		let mut model_filter = None;
 		for token in reader {
 			match token {
+				Ok(Token::Attribute { local, value, .. }) if local.as_str() == "model" => {
+					model_filter = Some(value.as_str().to_string());
+				}
 				Ok(Token::Attribute { local, value, .. })
 					if local.as_str() == "ref"
 						&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
 				{
 					let needle = &value.as_str()[..cursor_by_char - value.range().start];
 					let replace_range = value.range().map_unit(|unit| unit + relative_offset);
-					let Some(replace_start) = char_offset_to_position(replace_range.start, rope) else {
-						panic!("replace_start")
-					};
-					let Some(replace_end) = char_offset_to_position(replace_range.end, rope) else {
-						panic!("replace_end")
-					};
+					let replace_start = char_offset_to_position(replace_range.start, rope)
+						.ok_or_else(|| diagnostic!("replace_start"))?;
+					let replace_end =
+						char_offset_to_position(replace_range.end, rope).ok_or_else(|| diagnostic!("replace_end"))?;
 					let range = Range::new(replace_start, replace_end);
 					let matches = self
 						.module_index
 						.records
 						.iter()
-						.filter(|entry| entry.id.starts_with(needle))
-						.take(10)
+						.filter(|entry| {
+							let id_filter = if let Some((module, xml_id)) = needle.split_once('.') {
+								entry.module == module && entry.id.contains(xml_id)
+							} else {
+								entry.id.contains(needle)
+							};
+							if let (Some(filter), Some(model)) = (&model_filter, &entry.model) {
+								id_filter && filter == model
+							} else {
+								id_filter && model_filter.is_none()
+							}
+						})
+						.take(20)
 						.map(|entry| {
 							let label = if entry.module == current_module.as_str() {
 								entry.id.to_string()
 							} else {
-								format!("{}.{}", entry.module, entry.id)
+								entry.qualified_id()
 							};
 							CompletionItem {
 								text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
@@ -351,9 +459,78 @@ impl Backend {
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
-			is_incomplete: items.len() >= 10,
+			is_incomplete: items.len() >= 20,
 			items,
 		})))
+	}
+
+	async fn xml_goto_definition(&self, params: GotoDefinitionParams, rope: &Rope) -> miette::Result<Option<Location>> {
+		let position = params.text_document_position_params.position;
+		let uri = &params.text_document_position_params.text_document.uri;
+		let Some((slice, cursor_by_char, _)) = self.record_slice(rope, uri, position)? else {
+			return Ok(None)
+		};
+		let reader = Tokenizer::from(&slice[..]);
+
+		enum RefMode {
+			InheritId,
+		}
+
+		let mut mode = None::<RefMode>;
+		let mut ref_value = "";
+		let mut in_field = false;
+		for token in reader {
+			match token {
+				Ok(Token::ElementStart { local, .. }) => in_field = local.as_bytes() == b"field",
+				Ok(Token::Attribute { local, value, .. }) if in_field => {
+					if local.as_bytes() == b"ref" && value.range().contains(&cursor_by_char) {
+						ref_value = value.as_str();
+					} else if local.as_bytes() == b"name" && value.as_bytes() == b"inherit_id" {
+						mode = Some(RefMode::InheritId);
+					}
+				}
+				Ok(Token::ElementEnd {
+					end: ElementEnd::Open | ElementEnd::Empty,
+					..
+				}) if in_field => {
+					match mode {
+						Some(RefMode::InheritId) => {
+							let mut value = Cow::from(ref_value);
+							if !value.contains('.') {
+								'unqualified: {
+									let mut path = Some(Path::new(uri.path()));
+									while let Some(path_) = &path {
+										if let Some(module) = (self.module_index.modules)
+											.get(path_.file_name().unwrap().to_string_lossy().as_ref())
+										{
+											value = format!("{}.{value}", module.key()).into();
+											break 'unqualified;
+										}
+										path = path_.parent();
+									}
+									eprintln!("Could not find a reference in {}", uri.path());
+									return Ok(None);
+								}
+							}
+							return Ok(self
+								.module_index
+								.records
+								.get(value.as_ref())
+								.map(|entry| entry.location.clone()));
+						}
+						_ => {}
+					}
+					in_field = false;
+				}
+				Err(err) => {
+					eprintln!("bug:\n{err}\nin file:\n{}", slice);
+					break;
+				}
+				_ => {}
+			}
+		}
+
+		Ok(None)
 	}
 }
 

@@ -18,13 +18,16 @@ pub struct Record {
 }
 
 impl Record {
+	pub fn qualified_id(&self) -> String {
+		format!("{}.{}", self.module, self.id)
+	}
 	pub fn from_reader<S>(
 		offset: CharOffset,
 		module: S,
 		uri: &str,
 		reader: &mut Tokenizer,
 		rope: &Rope,
-	) -> miette::Result<Self>
+	) -> miette::Result<Option<Self>>
 	where
 		S: Into<FastStr>,
 	{
@@ -47,7 +50,13 @@ impl Record {
 				}
 				Some(Ok(Token::Attribute { local, value, .. })) => match local.as_str() {
 					"id" => id = Some(value.as_str().to_string().into()),
-					"model" => model = Some(value.as_str().to_string().into()),
+					"model" => {
+						// TODO: Limit which records need to be indexed
+						if value.as_str() != "ir.ui.view" {
+							return Ok(None);
+						}
+						model = Some(value.as_str().to_string().into())
+					}
 					_ => {}
 				},
 				Some(Ok(Token::ElementStart { local, .. })) if local.as_str() == "field" => {
@@ -93,7 +102,7 @@ impl Record {
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for record"))?;
 		let end = char_offset_to_position(end, rope).ok_or_else(|| diagnostic!("Failed to parse end location"))?;
 
-		Ok(Self {
+		Ok(Some(Self {
 			deleted: false,
 			id: id.ok_or_else(|| diagnostic!("record without `id`"))?,
 			module: module.into(),
@@ -103,6 +112,6 @@ impl Record {
 				uri: format!("file://{uri}").parse().into_diagnostic()?,
 				range: Range { start, end },
 			},
-		})
+		}))
 	}
 }
