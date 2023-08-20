@@ -1,5 +1,7 @@
 # odoo-lsp
 
+[![nightly](https://github.com/Desdaemon/odoo-lsp/actions/workflows/rust.yml/badge.svg)](https://github.com/Desdaemon/odoo-lsp/actions/workflows/rust.yml)
+
 ## Install
 
 ```shell
@@ -7,6 +9,8 @@ cargo install --git https://github.com/Desdaemon/odoo-lsp
 ```
 
 ## Usage
+
+For more information please check the wiki.
 
 ### VSCode (todo)
 ### Helix
