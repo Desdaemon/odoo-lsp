@@ -35,7 +35,7 @@ impl LanguageServer for Backend {
 				text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
 				completion_provider: Some(CompletionOptions {
 					resolve_provider: None,
-					trigger_characters: Some(vec!["\"".to_string(), "'".to_string()]),
+					trigger_characters: Some(vec!["\"".to_string(), "'".to_string(), ".".to_string()]),
 					work_done_progress_options: Default::default(),
 					all_commit_characters: None,
 					completion_item: None,
@@ -361,10 +361,8 @@ impl Backend {
 		rope: &Rope,
 	) -> miette::Result<Option<CompletionResponse>> {
 		let position = params.text_document_position.position;
-		let Some(ranges) = self
-			.record_ranges
-			.get(params.text_document_position.text_document.uri.path())
-		else {
+		let uri = &params.text_document_position.text_document.uri;
+		let Some(ranges) = self.record_ranges.get(uri.path()) else {
 			panic!("Could not get record ranges")
 		};
 		let Some(cursor) = position_to_offset(position, rope) else {
@@ -399,6 +397,13 @@ impl Backend {
 		let slice = Cow::from(slice);
 		let reader = Tokenizer::from(&slice[..]);
 
+		let current_module = self
+			.module_index
+			.modules
+			.iter()
+			.find(|module| uri.path().contains(module.key()))
+			.expect("must be in a module");
+
 		let mut items = vec![];
 		for token in reader {
 			match token {
@@ -407,12 +412,12 @@ impl Backend {
 						&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
 				{
 					let needle = &value.as_str()[..cursor_by_char - value.range().start];
-					let replace_range = value.range();
-					let Some(replace_start) = char_offset_to_position(replace_range.start + relative_offset, rope)
+					let replace_range = value.range().map_unit(|unit| unit + relative_offset);
+					let Some(replace_start) = char_offset_to_position(replace_range.start, rope)
 					else {
 						panic!("replace_start")
 					};
-					let Some(replace_end) = char_offset_to_position(replace_range.end + relative_offset, rope) else {
+					let Some(replace_end) = char_offset_to_position(replace_range.end, rope) else {
 						panic!("replace_end")
 					};
 					let range = Range::new(replace_start, replace_end);
@@ -422,13 +427,21 @@ impl Backend {
 						.iter()
 						.filter(|entry| entry.id.starts_with(needle))
 						.take(10)
-						.map(|entry| CompletionItem {
-							label: dbg!(&entry.id).to_string(),
-							text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-								range,
-								new_text: entry.id.to_string(),
-							})),
-							..Default::default()
+						.map(|entry| {
+							let label = if entry.module == current_module.as_str() {
+								entry.id.to_string()
+							} else {
+								format!("{}.{}", entry.module, entry.id)
+							};
+							CompletionItem {
+								text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+									new_text: label.clone(),
+									insert: range,
+									replace: range,
+								})),
+								label,
+								..Default::default()
+							}
 						});
 					items.extend(matches);
 				}
@@ -451,6 +464,7 @@ impl Backend {
 pub struct ModuleIndex {
 	in_progress: AtomicBool,
 	roots: DashSet<String>,
+	modules: DashSet<String>,
 	records: DashMap<String, Record>,
 }
 
@@ -588,6 +602,10 @@ impl ModuleIndex {
 				.ok_or_else(|| miette::diagnostic!("Unexpected empty path"))?;
 			let module_name = module_dir.file_name().unwrap().to_string_lossy().to_string();
 			let module_name = FastStr::from(module_name);
+			if !self.modules.insert(module_name.to_string()) {
+				eprintln!("Duplicate module {}", module_name);
+				continue;
+			}
 			let xmls = globwalk::glob_builder(dbg!(format!("{}/**/*.xml", module_dir.display())))
 				.file_type(FileType::FILE | FileType::SYMLINK)
 				.follow_links(true)
@@ -661,9 +679,6 @@ async fn main() {
 		module_index: Default::default(),
 		document_map: DashMap::new(),
 		record_ranges: DashMap::new(),
-		// ast_map: Default::default(),
-		// ast_map: DashMap::new(),
-		// semantic_token_map: DashMap::new(),
 	})
 	.finish();
 
