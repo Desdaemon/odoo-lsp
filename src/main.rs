@@ -311,8 +311,7 @@ impl Backend {
 				{
 					let needle = &value.as_str()[..cursor_by_char - value.range().start];
 					let replace_range = value.range().map_unit(|unit| unit + relative_offset);
-					let Some(replace_start) = char_offset_to_position(replace_range.start, rope)
-					else {
+					let Some(replace_start) = char_offset_to_position(replace_range.start, rope) else {
 						panic!("replace_start")
 					};
 					let Some(replace_end) = char_offset_to_position(replace_range.end, rope) else {
