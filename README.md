@@ -1,10 +1,23 @@
 # odoo-lsp
 
+## Install
+
+```shell
+cargo install --git https://github.com/Desdaemon/odoo-lsp
+```
+
+## Usage
+
+### VSCode (todo)
+### Helix
+
+See [.helix/languages.toml](./examples/.helix/languages.toml)
+
 ## Development
 
 1. `pnpm i`
 2. `cargo build`
-3. press <kbd>F5</kbd> or change to the Debug panel and click <kbd>Launch Client</kbd>
+3. In VSCode, press <kbd>F5</kbd> or change to the Debug panel and click `Launch Client`
    > **Note**
    >
    > If encountered errors like `Cannot find module '/xxx/xxx/dist/extension.js'`
