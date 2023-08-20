@@ -87,7 +87,7 @@ jobs:
         uses: actions/download-artifact@v3
       - name: Generate checksums
         run: |
-          for file in odoo-lsp/odoo-lsp-*; do
+          for file in odoo-lsp-*/odoo-lsp-*; do
             openssl dgst -sha256 -r "$file" | awk '{print $1}' > "${file}.sha256";
           done
       - name: Get current date
@@ -98,7 +98,7 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
-          files: odoo-lsp/odoo-lsp-*
+          files: odoo-lsp-*/odoo-lsp-*
           name: ${{ env.TAG }}
           tag_name: ${{ env.TAG }}
           generate_release_notes: true
