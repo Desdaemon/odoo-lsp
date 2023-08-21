@@ -6,6 +6,15 @@ use xmlparser::{ElementEnd, Token, Tokenizer};
 
 use crate::utils::{char_offset_to_position, CharOffset};
 
+macro_rules! unwrap_or_none {
+	($opt:expr) => {
+		match $opt {
+			Some(it) => it,
+			None => return Ok(None),
+		}
+	};
+}
+
 #[derive(Debug)]
 pub struct Record {
 	pub deleted: bool,
@@ -21,22 +30,20 @@ impl Record {
 	pub fn qualified_id(&self) -> String {
 		format!("{}.{}", self.module, self.id)
 	}
-	pub fn from_reader<S>(
+	pub fn from_reader(
 		offset: CharOffset,
-		module: S,
+		module: FastStr,
 		uri: &str,
 		reader: &mut Tokenizer,
 		rope: &Rope,
-	) -> miette::Result<Option<Self>>
-	where
-		S: Into<FastStr>,
-	{
+	) -> miette::Result<Option<Self>> {
 		let mut id = None;
 		let mut model = None;
-		let start =
-			char_offset_to_position(offset.0, rope).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
 		let mut inherit_id = None;
 		let mut end = None;
+		let uri = format!("file://{uri}").parse().into_diagnostic()?;
+		let start =
+			char_offset_to_position(offset.0, rope).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
 
 		loop {
 			match reader.next() {
@@ -99,19 +106,91 @@ impl Record {
 				_ => {}
 			}
 		}
+		let id = unwrap_or_none!(id);
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for record"))?;
 		let end = char_offset_to_position(end, rope).ok_or_else(|| diagnostic!("Failed to parse end location"))?;
+		let range = Range { start, end };
 
 		Ok(Some(Self {
 			deleted: false,
-			id: id.ok_or_else(|| diagnostic!("record without `id`"))?,
-			module: module.into(),
+			id,
+			module,
 			model,
 			inherit_id,
-			location: Location {
-				uri: format!("file://{uri}").parse().into_diagnostic()?,
-				range: Range { start, end },
-			},
+			location: Location { uri, range },
+		}))
+	}
+	pub fn template(
+		offset: CharOffset,
+		module: FastStr,
+		uri: &str,
+		reader: &mut Tokenizer,
+		rope: &Rope,
+	) -> miette::Result<Option<Self>> {
+		let uri: Url = format!("file://{uri}").parse().into_diagnostic()?;
+		let start =
+			char_offset_to_position(offset.0, rope).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
+		let mut id = None;
+		let mut inherit_id = None;
+		let mut end = None;
+		let mut stack = 0;
+
+		loop {
+			match reader.next() {
+				Some(Ok(Token::Attribute { local, value, .. })) => match local.as_bytes() {
+					b"id" => id = Some(value.as_str().to_string().into()),
+					b"inherit_id" => match value.as_str().split_once('.') {
+						Some((module, xml_id)) => {
+							inherit_id = Some((Some(module.to_string().into()), xml_id.to_string().into()));
+						}
+						None => {
+							inherit_id = Some((None, value.to_string().into()));
+						}
+					},
+					_ => {}
+				},
+				Some(Ok(Token::ElementEnd {
+					end: ElementEnd::Empty,
+					span,
+					..
+				})) => {
+					stack -= 1;
+					if stack <= 0 {
+						end = Some(span.end());
+						break;
+					}
+				}
+				Some(Ok(Token::ElementEnd {
+					end: ElementEnd::Close(_, local),
+					span,
+					..
+				})) if local.as_bytes() == b"template" => {
+					stack -= 1;
+					if stack <= 0 {
+						end = Some(span.end());
+						break;
+					}
+				}
+				Some(Ok(Token::ElementStart { local, .. })) if local.as_bytes() == b"template" => stack += 1,
+				None => break,
+				Some(Err(err)) => {
+					eprintln!("error parsing template {}:\n{err}", uri.path());
+					break;
+				}
+				_ => {}
+			}
+		}
+		let end = end.ok_or_else(|| diagnostic!("Unbound template element"))?;
+		let end = char_offset_to_position(end, rope).ok_or_else(|| diagnostic!("Failed to parse end location"))?;
+		let range = Range { start, end };
+
+		Ok(Some(Self {
+			id: unwrap_or_none!(id),
+			deleted: false,
+			model: Some("ir.ui.view".into()),
+			module,
+			inherit_id,
+			location: Location { uri, range },
 		}))
 	}
 }

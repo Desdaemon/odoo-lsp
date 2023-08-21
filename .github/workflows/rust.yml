@@ -3,7 +3,7 @@ name: nightly
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 5 * * *'
+    - cron: "0 5 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,8 +24,8 @@ jobs:
         id: check_changes
         run: |
           git fetch --depth=1 origin +refs/heads/*:refs/remotes/origin/*
-          if [ "$(git log --since=yesterday --pretty=oneline)" = "" ]; then
-            echo "::set-output name=skip::true"
+          if [ "$(git log $(git describe --tags --abbrev=0)..HEAD --oneline)" = "" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -103,6 +103,3 @@ jobs:
           tag_name: ${{ env.TAG }}
           generate_release_notes: true
           prerelease: true
-
-
-

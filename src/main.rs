@@ -11,7 +11,7 @@ use tower_lsp::lsp_types::notification::Progress;
 use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use xmlparser::{ElementEnd, Token, Tokenizer};
+use xmlparser::{ElementEnd, StrSpan, Token, Tokenizer};
 
 use odoo_lsp::index::ModuleIndex;
 use odoo_lsp::utils::*;
@@ -175,7 +175,9 @@ impl LanguageServer for Backend {
 				*rope.value_mut() = ropey::Rope::from_str(&change.text);
 			} else {
 				let range = change.range.expect("LSP change event must have a range");
-				let Some(range) = lsp_range_to_char_range(range, rope.value()) else {continue};
+				let Some(range) = lsp_range_to_char_range(range, rope.value()) else {
+					continue;
+				};
 				let rope = rope.value_mut();
 				let start = range.start.0;
 				rope.remove(range.map_unit(|unit| unit.0));
@@ -196,7 +198,7 @@ impl LanguageServer for Backend {
 		eprintln!("goto_definition {}", uri.path());
 		let Some((_, "xml")) = uri.path().rsplit_once('.') else {
 			eprintln!("Unsupported file {}", uri.path());
-			return Ok(None)
+			return Ok(None);
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
 			panic!("Bug: did not build a rope for {}", uri.path());
@@ -302,18 +304,20 @@ impl Backend {
 			// for token in reader {
 			loop {
 				match reader.next() {
-					Some(Ok(Token::ElementStart { local, span, .. })) if local.as_str() == "record" => {
+					Some(Ok(Token::ElementStart { local, span, .. }))
+						if matches!(local.as_bytes(), b"record" | b"template") =>
+					{
 						let Ok(Some(end_offset)) = read_to_end(&mut reader, local.as_str()) else {
-							eprintln!("end_offset not found");
+							eprintln!("(on_change) end_offset not found");
 							continue;
 						};
 						let CharOffset(end_offset) = end_offset.end;
 						let Ok(end_offset) = rope.try_char_to_byte(end_offset) else {
-							eprintln!("could not convert end_offset");
+							eprintln!("(on_change) could not convert end_offset");
 							continue;
 						};
 						let Ok(start_offset) = rope.try_char_to_byte(span.start()) else {
-							eprintln!("could not convert start_offset");
+							eprintln!("(on_change) could not convert start_offset");
 							continue;
 						};
 						let record_range = start_offset..end_offset;
@@ -386,7 +390,7 @@ impl Backend {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
 		let Some((slice, cursor_by_char, relative_offset)) = self.record_slice(rope, uri, position)? else {
-			return Ok(None)
+			return Ok(None);
 		};
 		let reader = Tokenizer::from(&slice[..]);
 
@@ -397,58 +401,88 @@ impl Backend {
 			.find(|module| uri.path().contains(module.key()))
 			.expect("must be in a module");
 
+		enum Tag {
+			Record,
+			Template,
+			Field,
+		}
+
+		enum RecordField {
+			InheritId,
+		}
+
 		let mut items = vec![];
 		let mut model_filter = None;
+		let mut tag = None::<Tag>;
+		let mut record_field = None::<RecordField>;
+		let mut cursor_value = None::<StrSpan>;
+
 		for token in reader {
 			match token {
-				Ok(Token::Attribute { local, value, .. }) if local.as_str() == "model" => {
+				Ok(Token::ElementStart { local, .. }) => match local.as_bytes() {
+					b"record" => tag = Some(Tag::Record),
+					b"template" => tag = Some(Tag::Template),
+					b"field" => tag = Some(Tag::Field),
+					_ => {}
+				},
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Record)) && local.as_bytes() == b"model" =>
+				{
 					model_filter = Some(value.as_str().to_string());
 				}
 				Ok(Token::Attribute { local, value, .. })
-					if local.as_str() == "ref"
+					if matches!(tag, Some(Tag::Field)) && local.as_bytes() == b"name" =>
+				{
+					match value.as_bytes() {
+						b"inherit_id" => record_field = Some(RecordField::InheritId),
+						_ => {}
+					}
+				}
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Field))
+						&& local.as_bytes() == b"ref"
 						&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
 				{
-					let needle = &value.as_str()[..cursor_by_char - value.range().start];
-					let replace_range = value.range().map_unit(|unit| unit + relative_offset);
-					let replace_start = char_offset_to_position(replace_range.start, rope)
-						.ok_or_else(|| diagnostic!("replace_start"))?;
-					let replace_end =
-						char_offset_to_position(replace_range.end, rope).ok_or_else(|| diagnostic!("replace_end"))?;
-					let range = Range::new(replace_start, replace_end);
-					let matches = self
-						.module_index
-						.records
-						.iter()
-						.filter(|entry| {
-							let id_filter = if let Some((module, xml_id)) = needle.split_once('.') {
-								entry.module == module && entry.id.contains(xml_id)
-							} else {
-								entry.id.contains(needle)
-							};
-							if let (Some(filter), Some(model)) = (&model_filter, &entry.model) {
-								id_filter && filter == model
-							} else {
-								id_filter && model_filter.is_none()
-							}
-						})
-						.take(20)
-						.map(|entry| {
-							let label = if entry.module == current_module.as_str() {
-								entry.id.to_string()
-							} else {
-								entry.qualified_id()
-							};
-							CompletionItem {
-								text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-									new_text: label.clone(),
-									insert: range,
-									replace: range,
-								})),
-								label,
-								..Default::default()
-							}
-						});
-					items.extend(matches);
+					cursor_value = Some(value);
+				}
+				Ok(Token::ElementEnd {
+					end: ElementEnd::Empty, ..
+				}) if matches!(tag, Some(Tag::Field)) => {
+					let (Some(value), Some(record_field)) = (cursor_value, record_field.take()) else {
+						continue;
+					};
+					match record_field {
+						RecordField::InheritId => self.complete_inherit_id(
+							value,
+							cursor_by_char,
+							relative_offset,
+							rope,
+							model_filter.as_deref(),
+							&current_module,
+							&mut items,
+						)?,
+					}
+					break;
+				}
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Template))
+						&& local.as_bytes() == b"inherit_id"
+						&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
+				{
+					cursor_value = Some(value);
+				}
+				Ok(Token::ElementEnd { .. }) if matches!(tag, Some(Tag::Template)) => {
+					let Some(value) = cursor_value else { continue };
+					self.complete_inherit_id(
+						value,
+						cursor_by_char,
+						relative_offset,
+						rope,
+						model_filter.as_deref(),
+						&current_module,
+						&mut items,
+					)?;
+					break;
 				}
 				Err(err) => {
 					eprintln!("bug:\n{err}\nin file:\n{}", slice);
@@ -464,11 +498,64 @@ impl Backend {
 		})))
 	}
 
+	fn complete_inherit_id(
+		&self,
+		value: StrSpan,
+		cursor_by_char: usize,
+		relative_offset: usize,
+		rope: &Rope,
+		model_filter: Option<&str>,
+		current_module: &str,
+		items: &mut Vec<CompletionItem>,
+	) -> miette::Result<()> {
+		let needle = &value.as_str()[..cursor_by_char - value.range().start];
+		let replace_range = value.range().map_unit(|unit| unit + relative_offset);
+		let replace_start =
+			char_offset_to_position(replace_range.start, rope).ok_or_else(|| diagnostic!("replace_start"))?;
+		let replace_end = char_offset_to_position(replace_range.end, rope).ok_or_else(|| diagnostic!("replace_end"))?;
+		let range = Range::new(replace_start, replace_end);
+		let matches = self
+			.module_index
+			.records
+			.iter()
+			.filter(|entry| {
+				let id_filter = if let Some((module, xml_id)) = needle.split_once('.') {
+					entry.module == module && entry.id.contains(xml_id)
+				} else {
+					entry.id.contains(needle)
+				};
+				if let (Some(filter), Some(model)) = (model_filter, &entry.model) {
+					id_filter && filter == model
+				} else {
+					id_filter && model_filter.is_none()
+				}
+			})
+			.take(20)
+			.map(|entry| {
+				let label = if entry.module == current_module {
+					entry.id.to_string()
+				} else {
+					entry.qualified_id()
+				};
+				CompletionItem {
+					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+						new_text: label.clone(),
+						insert: range,
+						replace: range,
+					})),
+					label,
+					..Default::default()
+				}
+			});
+		items.extend(matches);
+		Ok(())
+	}
+
 	async fn xml_goto_definition(&self, params: GotoDefinitionParams, rope: &Rope) -> miette::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let Some((slice, cursor_by_char, _)) = self.record_slice(rope, uri, position)? else {
-			return Ok(None)
+			return Ok(None);
 		};
 		let reader = Tokenizer::from(&slice[..]);
 

@@ -13,6 +13,7 @@ cargo install --git https://github.com/Desdaemon/odoo-lsp
 For more information please check the wiki.
 
 ### VSCode (todo)
+
 ### Helix
 
 See [.helix/languages.toml](./examples/.helix/languages.toml)

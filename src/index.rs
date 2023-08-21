@@ -88,19 +88,28 @@ impl ModuleIndex {
 						.into_diagnostic()
 						.with_context(|| "non-utf8 file")?;
 					let mut reader = Tokenizer::from(file);
-					let mut out = vec![];
+					let mut records = vec![];
 					loop {
 						match reader.next() {
-							Some(Ok(Token::ElementStart { local, span, .. })) if local.as_str() == "record" => {
-								let record = Record::from_reader(
-									CharOffset(span.start()),
-									module_name.clone(),
-									&path_uri,
-									&mut reader,
-									&Rope::from_str(file),
-								)?;
-								if let Some(record) = record {
-									out.push(record);
+							Some(Ok(Token::ElementStart { local, span, .. })) => {
+								if local.as_str() == "record" {
+									let record = Record::from_reader(
+										CharOffset(span.start()),
+										module_name.clone(),
+										&path_uri,
+										&mut reader,
+										&Rope::from_str(file),
+									)?;
+									records.extend(record);
+								} else if local.as_str() == "template" {
+									let template = Record::template(
+										CharOffset(span.start()),
+										module_name.clone(),
+										&path_uri,
+										&mut reader,
+										&Rope::from_str(file),
+									)?;
+									records.extend(template);
 								}
 							}
 							None => break,
@@ -112,11 +121,12 @@ impl ModuleIndex {
 						}
 					}
 
-					miette::Result::Ok(out)
+					miette::Result::Ok(records)
 				}));
 			}
 		}
 		let mut record_count = 0;
+		// let mut template_count = 0;
 		for result in futures::future::join_all(handles).await {
 			let records = result.into_diagnostic()?;
 			let records = match records {
@@ -138,6 +148,8 @@ impl ModuleIndex {
 				}
 				self.records.insert(key, record);
 			}
+			// template_count += templates.len();
+			// for template in templates {}
 		}
 
 		Ok(Some((module_count, record_count, t0.elapsed())))

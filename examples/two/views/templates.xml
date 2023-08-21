@@ -1,0 +1,4 @@
+<odoo>
+  <template id="one" inherit_id='one.view_one'>
+  </template>
+</odoo>
