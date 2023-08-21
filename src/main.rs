@@ -6,7 +6,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use faststr::FastStr;
 use futures::future::CatchUnwind;
 use futures::{Future, FutureExt};
@@ -31,12 +31,22 @@ struct Backend {
 	document_map: DashMap<String, Rope>,
 	record_ranges: DashMap<String, Box<[std::ops::Range<CharOffset>]>>,
 	module_index: ModuleIndex,
+	roots: DashSet<String>,
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
 	async fn initialize(&self, init: InitializeParams) -> Result<InitializeResult> {
-		_ = dbg!(init);
+		// TODO: Honor client capabilities
+
+		// TODO: Is it correct to have both root_path and root_uri?
+		#[allow(deprecated)]
+		if let Some(root) = init.root_path {
+			self.roots.insert(root);
+		} else if let Some(Ok(root)) = init.root_uri.map(|uri| uri.to_file_path()) {
+			self.roots.insert(root.to_string_lossy().to_string());
+		}
+
 		Ok(InitializeResult {
 			server_info: None,
 			offset_encoding: None,
@@ -84,8 +94,29 @@ impl LanguageServer for Backend {
 			.await;
 
 		let progress = Some((&self.client, token.clone()));
+
+		for root in self.roots.iter() {
+			match self.module_index.add_root(&root, progress.clone()).await {
+				Ok(Some((modules, records, elapsed))) => {
+					eprintln!(
+						"Processed {} with {} modules and {} records in {:.2}s",
+						root.as_str(),
+						modules,
+						records,
+						elapsed.as_secs_f64()
+					);
+				}
+				Err(err) => {
+					eprintln!("(initialized) could not add root {}:\n{err}", root.as_str());
+				}
+				_ => {}
+			}
+		}
+
 		for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
-			let file_path = workspace.uri.to_file_path().unwrap();
+			let Ok(file_path) = workspace.uri.to_file_path() else {
+				continue;
+			};
 			match self
 				.module_index
 				.add_root(&file_path.to_string_lossy(), progress.clone())
@@ -101,7 +132,7 @@ impl LanguageServer for Backend {
 					);
 				}
 				Err(err) => {
-					eprintln!("(initialized) could not add root {}:\n{err}", file_path.display(),);
+					eprintln!("(initialized) could not add workspace {}:\n{err}", file_path.display(),);
 				}
 				_ => {}
 			}
@@ -133,20 +164,32 @@ impl LanguageServer for Backend {
 		self.document_map
 			.insert(params.text_document.uri.path().to_string(), rope.clone());
 
-		let path = params.text_document.uri.to_file_path().unwrap();
-		let mut path = Some(path.as_path());
-		while let Some(path_) = path {
-			if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
-				.await
-				.unwrap_or(false)
-			{
-				let file_path = path_.parent().expect("has parent").to_string_lossy();
-				if let Err(err) = self.module_index.add_root(&file_path, None).await {
-					eprintln!("failed to add root {}:\n{err}", file_path);
+		if self
+			.module_index
+			.module_of_path(Path::new(params.text_document.uri.path()))
+			.is_none()
+		{
+			// outside of root?
+			eprintln!("oob: {}", params.text_document.uri.path());
+			'oob: {
+				let Ok(path) = params.text_document.uri.to_file_path() else {
+					break 'oob;
+				};
+				let mut path = Some(path.as_path());
+				while let Some(path_) = path {
+					if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
+						.await
+						.unwrap_or(false)
+					{
+						let file_path = path_.parent().expect("has parent").to_string_lossy();
+						if let Err(err) = self.module_index.add_root(&file_path, None).await {
+							eprintln!("failed to add root {}:\n{err}", file_path);
+						}
+						break;
+					}
+					path = path_.parent();
 				}
-				break;
 			}
-			path = path_.parent();
 		}
 
 		self.on_change(TextDocumentItem {
@@ -247,7 +290,11 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
-	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {}
+	async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
+		if !params.settings.is_null() {
+			dbg!(params.settings);
+		}
+	}
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
 		self.module_index.mark_n_sweep();
 		for added in params.event.added {
@@ -693,6 +740,7 @@ async fn main() {
 		module_index: Default::default(),
 		document_map: DashMap::new(),
 		record_ranges: DashMap::new(),
+		roots: DashSet::new(),
 	})
 	.finish();
 

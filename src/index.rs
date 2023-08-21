@@ -167,7 +167,7 @@ impl ModuleIndex {
 		let mut path = Some(path);
 
 		while let Some(path_) = &path {
-			if let Some(module) = self.modules.get(path_.file_name().unwrap().to_string_lossy().as_ref()) {
+			if let Some(module) = self.modules.get(path_.file_name()?.to_string_lossy().as_ref()) {
 				return Some(module);
 			}
 			path = path_.parent();
