@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
 use dashmap::{DashMap, DashSet};
@@ -11,12 +12,13 @@ use faststr::FastStr;
 use futures::future::CatchUnwind;
 use futures::{Future, FutureExt};
 use miette::{diagnostic, IntoDiagnostic};
+use odoo_lsp::config::Config;
 use odoo_lsp::record::Record;
 use ropey::Rope;
 use serde_json::Value;
 use tower::Service;
 use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::notification::Progress;
+use tower_lsp::lsp_types::notification::{DidChangeConfiguration, Notification, Progress};
 use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -32,19 +34,34 @@ struct Backend {
 	record_ranges: DashMap<String, Box<[std::ops::Range<CharOffset>]>>,
 	module_index: ModuleIndex,
 	roots: DashSet<String>,
+	capabilities: Capabilities,
+}
+
+#[derive(Debug, Default)]
+struct Capabilities {
+	dynamic_config: OnceLock<()>,
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
 	async fn initialize(&self, init: InitializeParams) -> Result<InitializeResult> {
-		// TODO: Honor client capabilities
-
 		// TODO: Is it correct to have both root_path and root_uri?
 		#[allow(deprecated)]
 		if let Some(root) = init.root_path {
 			self.roots.insert(root);
 		} else if let Some(Ok(root)) = init.root_uri.map(|uri| uri.to_file_path()) {
 			self.roots.insert(root.to_string_lossy().to_string());
+		}
+
+		if let Some(WorkspaceClientCapabilities {
+			did_change_configuration:
+				Some(DynamicRegistrationClientCapabilities {
+					dynamic_registration: Some(true),
+				}),
+			..
+		}) = init.capabilities.workspace
+		{
+			_ = self.capabilities.dynamic_config.set(());
 		}
 
 		Ok(InitializeResult {
@@ -75,6 +92,7 @@ impl LanguageServer for Backend {
 	async fn shutdown(&self) -> Result<()> {
 		Ok(())
 	}
+	async fn did_close(&self, _: DidCloseTextDocumentParams) {}
 	async fn initialized(&self, _: InitializedParams) {
 		let token = NumberOrString::String("_odoo_lsp_initialized".to_string());
 		self.client
@@ -145,6 +163,17 @@ impl LanguageServer for Backend {
 				value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
 			})
 			.await;
+
+		if self.capabilities.dynamic_config.get().is_some() {
+			_ = self
+				.client
+				.register_capability(vec![Registration {
+					id: "_dynamic_config".to_string(),
+					method: DidChangeConfiguration::METHOD.to_string(),
+					register_options: None,
+				}])
+				.await;
+		}
 	}
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
 		let language;
@@ -290,9 +319,22 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
-	async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
-		if !params.settings.is_null() {
-			dbg!(params.settings);
+	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
+		let items = self
+			.roots
+			.iter()
+			.map(|entry| {
+				let scope_uri = Some(format!("file://{}", entry.key()).parse().unwrap());
+				ConfigurationItem {
+					section: Some("odoo-lsp".into()),
+					scope_uri,
+				}
+			})
+			.collect();
+		let configs = self.client.configuration(items).await.unwrap_or_default();
+		for (root, config) in self.roots.iter().zip(configs) {
+			let config = serde_json::from_value::<Config>(config);
+			eprintln!("config: {} => {:?}", root.key(), config);
 		}
 	}
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
@@ -301,7 +343,10 @@ impl LanguageServer for Backend {
 			let file_path = added.uri.to_file_path().expect("not a file path");
 			let file_path = file_path.as_os_str().to_string_lossy();
 			if let Err(err) = self.module_index.add_root(&file_path, None).await {
-				eprintln!("(didChangeWorkspace) failed to add root {}:\n{err}", file_path);
+				eprintln!(
+					"(did_change_workspace_folders) failed to add root {}:\n{err}",
+					file_path
+				);
 			}
 		}
 		for removed in params.event.removed {
@@ -741,6 +786,7 @@ async fn main() {
 		document_map: DashMap::new(),
 		record_ranges: DashMap::new(),
 		roots: DashSet::new(),
+		capabilities: Default::default(),
 	})
 	.finish();
 

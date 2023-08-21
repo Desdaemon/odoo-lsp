@@ -1,6 +1,6 @@
 {
-	"name": "nrs-language-client",
-	"description": "VSCode part of a language server",
+	"name": "vscode-odoo-lsp",
+	"description": "VSCode frontend for odoo-lsp",
 	"license": "MIT",
 	"version": "0.0.1",
 	"engines": {

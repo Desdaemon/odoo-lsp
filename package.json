@@ -27,7 +27,7 @@
 			"type": "object",
 			"title": "odoo-lsp",
 			"properties": {
-				"nrs-language-server.trace.server": {
+				"odoo-lsp.trace.server": {
 					"type": "string",
 					"scope": "window",
 					"enum": [
@@ -42,6 +42,13 @@
 					],
 					"default": "off",
 					"description": "Traces the communication between VS Code and the language server."
+				},
+				"odoo-lsp.module.roots": {
+					"type": "array",
+					"scope": "resource",
+					"items": { "type": "string" },
+					"description": "List of module roots similar to `--addons-path`, either absolute or relative to the workspace root. Overrides any configuration files if exists. Accepts globs.",
+					"default": []
 				}
 			}
 		}
