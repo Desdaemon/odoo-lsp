@@ -83,12 +83,13 @@ impl ModuleIndex {
 					let file = tokio::fs::read(&path)
 						.await
 						.into_diagnostic()
-						.with_context(|| format!("Could not read {}", path.display()))?;
+						.with_context(|| format!("Could not read {path_uri}"))?;
 					let file = std::str::from_utf8(&file)
 						.into_diagnostic()
-						.with_context(|| "non-utf8 file")?;
+						.with_context(|| format!("non-utf8 file: {path_uri}"))?;
 					let mut reader = Tokenizer::from(file);
 					let mut records = vec![];
+					let rope = Rope::from_str(&file);
 					loop {
 						match reader.next() {
 							Some(Ok(Token::ElementStart { local, span, .. })) => {
@@ -98,7 +99,7 @@ impl ModuleIndex {
 										module_name.clone(),
 										&path_uri,
 										&mut reader,
-										&Rope::from_str(file),
+										&rope,
 									)?;
 									records.extend(record);
 								} else if local.as_str() == "template" {
@@ -107,7 +108,7 @@ impl ModuleIndex {
 										module_name.clone(),
 										&path_uri,
 										&mut reader,
-										&Rope::from_str(file),
+										&rope,
 									)?;
 									records.extend(template);
 								}
@@ -161,5 +162,17 @@ impl ModuleIndex {
 				entry.deleted = true;
 			}
 		}
+	}
+	pub fn module_of_path(&self, path: &Path) -> Option<dashmap::setref::one::Ref<String>> {
+		let mut path = Some(path);
+
+		while let Some(path_) = &path {
+			if let Some(module) = self.modules.get(path_.file_name().unwrap().to_string_lossy().as_ref()) {
+				return Some(module);
+			}
+			path = path_.parent();
+		}
+
+		None
 	}
 }

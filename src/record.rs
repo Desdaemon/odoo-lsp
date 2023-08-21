@@ -128,24 +128,24 @@ impl Record {
 		rope: &Rope,
 	) -> miette::Result<Option<Self>> {
 		let uri: Url = format!("file://{uri}").parse().into_diagnostic()?;
-		let start =
-			char_offset_to_position(offset.0, rope).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
+		let start = char_offset_to_position(offset.0, rope)
+			.ok_or_else(|| diagnostic!("(template) Failed to parse start location"))?;
 		let mut id = None;
 		let mut inherit_id = None;
 		let mut end = None;
+		// <template /> is a valid HTML tag, so we need to account for nesting.
 		let mut stack = 0;
+		let mut in_template = true;
 
 		loop {
 			match reader.next() {
-				Some(Ok(Token::Attribute { local, value, .. })) => match local.as_bytes() {
+				Some(Ok(Token::Attribute { local, value, .. })) if in_template => match local.as_bytes() {
 					b"id" => id = Some(value.as_str().to_string().into()),
 					b"inherit_id" => match value.as_str().split_once('.') {
 						Some((module, xml_id)) => {
-							inherit_id = Some((Some(module.to_string().into()), xml_id.to_string().into()));
+							inherit_id = Some((Some(module.to_string().into()), xml_id.to_string().into()))
 						}
-						None => {
-							inherit_id = Some((None, value.to_string().into()));
-						}
+						None => inherit_id = Some((None, value.to_string().into())),
 					},
 					_ => {}
 				},
@@ -153,7 +153,7 @@ impl Record {
 					end: ElementEnd::Empty,
 					span,
 					..
-				})) => {
+				})) if in_template => {
 					stack -= 1;
 					if stack <= 0 {
 						end = Some(span.end());
@@ -164,14 +164,19 @@ impl Record {
 					end: ElementEnd::Close(_, local),
 					span,
 					..
-				})) if local.as_bytes() == b"template" => {
+				})) if local.as_str() == "template" => {
 					stack -= 1;
 					if stack <= 0 {
 						end = Some(span.end());
 						break;
 					}
 				}
-				Some(Ok(Token::ElementStart { local, .. })) if local.as_bytes() == b"template" => stack += 1,
+				Some(Ok(Token::ElementStart { local, .. })) => {
+					in_template = local.as_str() == "template";
+					if in_template {
+						stack += 1
+					}
+				}
 				None => break,
 				Some(Err(err)) => {
 					eprintln!("error parsing template {}:\n{err}", uri.path());
@@ -180,8 +185,9 @@ impl Record {
 				_ => {}
 			}
 		}
-		let end = end.ok_or_else(|| diagnostic!("Unbound template element"))?;
-		let end = char_offset_to_position(end, rope).ok_or_else(|| diagnostic!("Failed to parse end location"))?;
+		let end = end.ok_or_else(|| diagnostic!("Unbound range for template"))?;
+		let end =
+			char_offset_to_position(end, rope).ok_or_else(|| diagnostic!("(template) Failed to parse end location"))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {

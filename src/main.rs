@@ -7,12 +7,14 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use dashmap::DashMap;
+use faststr::FastStr;
 use futures::future::CatchUnwind;
 use futures::{Future, FutureExt};
 use miette::{diagnostic, IntoDiagnostic};
+use odoo_lsp::record::Record;
 use ropey::Rope;
 use serde_json::Value;
-use tower::{Service, ServiceBuilder};
+use tower::Service;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Progress;
 use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
@@ -27,7 +29,7 @@ use odoo_lsp::utils::*;
 struct Backend {
 	client: Client,
 	document_map: DashMap<String, Rope>,
-	record_ranges: DashMap<String, Box<[std::ops::Range<ByteOffset>]>>,
+	record_ranges: DashMap<String, Box<[std::ops::Range<CharOffset>]>>,
 	module_index: ModuleIndex,
 }
 
@@ -124,7 +126,7 @@ impl LanguageServer for Backend {
 		} else if language_id == "xml" || matches!(split_uri, Some((_, "xml"))) {
 			language = Language::Xml
 		} else {
-			eprintln!("Could not determine language, or language not supported: language_id={language_id} split_uri={split_uri:?}");
+			eprintln!("Could not determine language, or language not supported:\nlanguage_id={language_id} split_uri={split_uri:?}");
 			return;
 		}
 		let rope = ropey::Rope::from_str(&params.text_document.text);
@@ -200,6 +202,11 @@ impl LanguageServer for Backend {
 		})
 		.await;
 	}
+	async fn did_save(&self, params: DidSaveTextDocumentParams) {
+		if let Some(text) = params.text {
+			eprintln!("did_save ignored:\n{text}");
+		}
+	}
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		eprintln!("goto_definition {}", uri.path());
@@ -273,34 +280,33 @@ enum Language {
 	Javascript,
 }
 
-fn read_to_end(lex: &mut Tokenizer, local_name: &str) -> miette::Result<Option<std::ops::Range<CharOffset>>> {
-	let mut stack = 0;
-	loop {
-		match lex.next() {
-			Some(Ok(Token::ElementStart { local, .. })) if local.as_str() == local_name => stack += 1,
-			Some(Ok(Token::ElementEnd {
-				end: ElementEnd::Empty,
-				span,
-			})) if stack == 0 => return Ok(Some(span.range().map_unit(CharOffset))),
-			Some(Ok(Token::ElementEnd {
-				end: ElementEnd::Close(_, local),
-				span,
-			})) if local.as_str() == local_name => {
-				stack -= 1;
-				if stack <= 0 {
-					return Ok(Some(span.range().map_unit(CharOffset)));
-				}
-			}
-			Some(Err(err)) => return Err(err).into_diagnostic(),
-			None => return Ok(None),
-			_ => {}
-		}
-	}
-}
+// fn read_to_end(reader: &mut Tokenizer, local_name: &str) -> miette::Result<Option<std::ops::Range<CharOffset>>> {
+// 	let mut stack = 0;
+// 	loop {
+// 		match reader.next() {
+// 			Some(Ok(Token::ElementStart { local, .. })) if local.as_str() == local_name => stack += 1,
+// 			Some(Ok(Token::ElementEnd {
+// 				end: ElementEnd::Empty,
+// 				span,
+// 			})) if stack == 0 => return Ok(Some(span.range().map_unit(CharOffset))),
+// 			Some(Ok(Token::ElementEnd {
+// 				end: ElementEnd::Close(_, local),
+// 				span,
+// 			})) if local.as_str() == local_name => {
+// 				stack -= 1;
+// 				if stack <= 0 {
+// 					return Ok(Some(span.range().map_unit(CharOffset)));
+// 				}
+// 			}
+// 			Some(Err(err)) => return Err(err).into_diagnostic(),
+// 			None => return Ok(None),
+// 			_ => {}
+// 		}
+// 	}
+// }
 
 impl Backend {
 	async fn on_change(&self, params: TextDocumentItem) {
-		eprintln!("on_change {}", params.uri.path());
 		let split_uri = params.uri.path().rsplit_once('.');
 		let mut diagnostics = vec![];
 		let rope = params.rope.unwrap_or_else(|| ropey::Rope::from_str(&params.text));
@@ -308,27 +314,49 @@ impl Backend {
 			// let mut reader = Reader::from_str(&params.text);
 			let mut reader = Tokenizer::from(params.text.as_str());
 			let mut record_ranges = vec![];
-			// for token in reader {
+			let Some(current_module) = self.module_index.module_of_path(Path::new(params.uri.path())) else {
+				return;
+			};
+			let current_module = FastStr::from(current_module.to_string());
 			loop {
 				match reader.next() {
-					Some(Ok(Token::ElementStart { local, span, .. }))
-						if matches!(local.as_bytes(), b"record" | b"template") =>
-					{
-						let Ok(Some(end_offset)) = read_to_end(&mut reader, local.as_str()) else {
-							eprintln!("(on_change) end_offset not found");
-							continue;
-						};
-						let CharOffset(end_offset) = end_offset.end;
-						let Ok(end_offset) = rope.try_char_to_byte(end_offset) else {
-							eprintln!("(on_change) could not convert end_offset");
-							continue;
-						};
-						let Ok(start_offset) = rope.try_char_to_byte(span.start()) else {
-							eprintln!("(on_change) could not convert start_offset");
-							continue;
-						};
-						let record_range = start_offset..end_offset;
-						record_ranges.push(record_range.map_unit(ByteOffset));
+					Some(Ok(Token::ElementStart { local, span, .. })) => {
+						let offset = CharOffset(span.start());
+						match local.as_str() {
+							"record" => {
+								let Ok(Some(record)) = Record::from_reader(
+									offset,
+									current_module.clone(),
+									params.uri.path(),
+									&mut reader,
+									&rope,
+								) else {
+									continue;
+								};
+								let Some(range) = lsp_range_to_char_range(record.location.range, &rope) else {
+									continue;
+								};
+								record_ranges.push(range);
+								self.module_index.records.insert(record.qualified_id(), record);
+							}
+							"template" => {
+								let Ok(Some(template)) = Record::template(
+									offset,
+									current_module.clone(),
+									params.uri.path(),
+									&mut reader,
+									&rope,
+								) else {
+									continue;
+								};
+								let Some(range) = lsp_range_to_char_range(template.location.range, &rope) else {
+									continue;
+								};
+								record_ranges.push(range);
+								self.module_index.records.insert(template.qualified_id(), template);
+							}
+							_ => {}
+						}
 					}
 					None => break,
 					Some(Err(err)) => {
@@ -362,7 +390,7 @@ impl Backend {
 			.record_ranges
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build record ranges"))?;
-		let cursor = position_to_offset(position, rope).ok_or_else(|| diagnostic!("cursor"))?;
+		let cursor = position_to_char_offset(position, rope).ok_or_else(|| diagnostic!("cursor"))?;
 		let mut cursor_by_char = rope.try_byte_to_char(cursor.0).into_diagnostic()?;
 		let Ok(record) = ranges.value().binary_search_by(|range| {
 			if cursor < range.start {
@@ -402,11 +430,15 @@ impl Backend {
 		};
 		let reader = Tokenizer::from(&slice[..]);
 
+		// let current_module = self
+		// 	.module_index
+		// 	.modules
+		// 	.iter()
+		// 	.find(|module| uri.path().contains(module.key()))
+		// 	.expect("must be in a module");
 		let current_module = self
 			.module_index
-			.modules
-			.iter()
-			.find(|module| uri.path().contains(module.key()))
+			.module_of_path(Path::new(uri.path()))
 			.expect("must be in a module");
 
 		enum Tag {
@@ -629,18 +661,12 @@ impl Backend {
 		let mut value = Cow::from(cursor_value.as_str());
 		if !value.contains('.') {
 			'unqualified: {
-				let mut path = Some(Path::new(uri.path()));
-				while let Some(path_) = &path {
-					if let Some(module) =
-						(self.module_index.modules).get(path_.file_name().unwrap().to_string_lossy().as_ref())
-					{
-						value = format!("{}.{value}", module.key()).into();
-						break 'unqualified;
-					}
-					path = path_.parent();
+				if let Some(module) = self.module_index.module_of_path(Path::new(uri.path())) {
+					value = format!("{}.{value}", module.key()).into();
+					break 'unqualified;
 				}
 				eprintln!(
-					"Could not find a reference for {} in {}",
+					"Could not find a reference for {} in {}: could not infer module",
 					cursor_value.as_str(),
 					uri.path()
 				);
@@ -734,7 +760,7 @@ where
 {
 	type Output = core::result::Result<Option<tower_lsp::jsonrpc::Response>, E>;
 
-	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+	fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
 		todo!()
 		// match self.project().kind.project() {
 		// 	KindProj::Panicked { panic_err } => Poll::Ready(Ok(Some({
