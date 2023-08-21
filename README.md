@@ -8,9 +8,11 @@
 cargo install --git https://github.com/Desdaemon/odoo-lsp
 ```
 
+Nightly binaries are also available for x64 platforms, please check [Releases](https://github.com/Desdaemon/odoo-lsp/releases) for the latest downloads.
+
 ## Usage
 
-For more information please check the wiki.
+For more information please check the [wiki](https://github.com/Desdaemon/odoo-lsp/wiki) (in construction).
 
 ### VSCode (todo)
 
