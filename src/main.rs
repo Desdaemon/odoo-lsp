@@ -204,7 +204,7 @@ impl LanguageServer for Backend {
 			panic!("Bug: did not build a rope for {}", uri.path());
 		};
 		let location = self
-			.xml_goto_definition(params, document.value())
+			.xml_jump_def(params, document.value())
 			.await
 			.expect("Error retrieving references");
 
@@ -382,6 +382,7 @@ impl Backend {
 		Ok(Some((slice, cursor_by_char, relative_offset)))
 	}
 
+	const LIMIT: usize = 20;
 	async fn xml_completions(
 		&self,
 		params: CompletionParams,
@@ -493,7 +494,7 @@ impl Backend {
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
-			is_incomplete: items.len() >= 20,
+			is_incomplete: items.len() >= Self::LIMIT,
 			items,
 		})))
 	}
@@ -530,7 +531,7 @@ impl Backend {
 					id_filter && model_filter.is_none()
 				}
 			})
-			.take(20)
+			.take(Self::LIMIT)
 			.map(|entry| {
 				let label = if entry.module == current_module {
 					entry.id.to_string()
@@ -551,7 +552,7 @@ impl Backend {
 		Ok(())
 	}
 
-	async fn xml_goto_definition(&self, params: GotoDefinitionParams, rope: &Rope) -> miette::Result<Option<Location>> {
+	async fn xml_jump_def(&self, params: GotoDefinitionParams, rope: &Rope) -> miette::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let Some((slice, cursor_by_char, _)) = self.record_slice(rope, uri, position)? else {
@@ -559,55 +560,52 @@ impl Backend {
 		};
 		let reader = Tokenizer::from(&slice[..]);
 
-		enum RefMode {
+		enum RecordField {
 			InheritId,
 		}
 
-		let mut mode = None::<RefMode>;
-		let mut ref_value = "";
-		let mut in_field = false;
+		enum Tag {
+			Field,
+			Template,
+		}
+
+		let mut record_field = None::<RecordField>;
+		let mut cursor_value = None::<StrSpan>;
+		let mut tag = None::<Tag>;
+
 		for token in reader {
 			match token {
-				Ok(Token::ElementStart { local, .. }) => in_field = local.as_bytes() == b"field",
-				Ok(Token::Attribute { local, value, .. }) if in_field => {
+				Ok(Token::ElementStart { local, .. }) => match local.as_bytes() {
+					b"field" => tag = Some(Tag::Field),
+					b"template" => tag = Some(Tag::Template),
+					_ => {}
+				},
+				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
 					if local.as_bytes() == b"ref" && value.range().contains(&cursor_by_char) {
-						ref_value = value.as_str();
+						cursor_value = Some(value);
 					} else if local.as_bytes() == b"name" && value.as_bytes() == b"inherit_id" {
-						mode = Some(RefMode::InheritId);
+						record_field = Some(RecordField::InheritId);
 					}
 				}
-				Ok(Token::ElementEnd {
-					end: ElementEnd::Open | ElementEnd::Empty,
-					..
-				}) if in_field => {
-					match mode {
-						Some(RefMode::InheritId) => {
-							let mut value = Cow::from(ref_value);
-							if !value.contains('.') {
-								'unqualified: {
-									let mut path = Some(Path::new(uri.path()));
-									while let Some(path_) = &path {
-										if let Some(module) = (self.module_index.modules)
-											.get(path_.file_name().unwrap().to_string_lossy().as_ref())
-										{
-											value = format!("{}.{value}", module.key()).into();
-											break 'unqualified;
-										}
-										path = path_.parent();
-									}
-									eprintln!("Could not find a reference in {}", uri.path());
-									return Ok(None);
-								}
-							}
-							return Ok(self
-								.module_index
-								.records
-								.get(value.as_ref())
-								.map(|entry| entry.location.clone()));
+				Ok(Token::ElementEnd { .. }) if matches!(tag, Some(Tag::Field)) => {
+					let Some(cursor_value) = cursor_value else { continue };
+					match record_field {
+						Some(RecordField::InheritId) => {
+							return self.jump_def_inherit_id(cursor_value, uri);
 						}
-						_ => {}
+						None => {}
 					}
-					in_field = false;
+				}
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Template))
+						&& local.as_bytes() == b"inherit_id"
+						&& value.range().contains(&cursor_by_char) =>
+				{
+					cursor_value = Some(value);
+				}
+				Ok(Token::ElementEnd { .. }) if matches!(tag, Some(Tag::Template)) => {
+					let Some(cursor_value) = cursor_value else { continue };
+					return self.jump_def_inherit_id(cursor_value, uri);
 				}
 				Err(err) => {
 					eprintln!("bug:\n{err}\nin file:\n{}", slice);
@@ -618,6 +616,35 @@ impl Backend {
 		}
 
 		Ok(None)
+	}
+
+	fn jump_def_inherit_id(&self, cursor_value: StrSpan, uri: &Url) -> miette::Result<Option<Location>> {
+		let mut value = Cow::from(cursor_value.as_str());
+		if !value.contains('.') {
+			'unqualified: {
+				let mut path = Some(Path::new(uri.path()));
+				while let Some(path_) = &path {
+					if let Some(module) =
+						(self.module_index.modules).get(path_.file_name().unwrap().to_string_lossy().as_ref())
+					{
+						value = format!("{}.{value}", module.key()).into();
+						break 'unqualified;
+					}
+					path = path_.parent();
+				}
+				eprintln!(
+					"Could not find a reference for {} in {}",
+					cursor_value.as_str(),
+					uri.path()
+				);
+				return Ok(None);
+			}
+		}
+		return Ok(self
+			.module_index
+			.records
+			.get(value.as_ref())
+			.map(|entry| entry.location.clone()));
 	}
 }
 
