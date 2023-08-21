@@ -25,4 +25,6 @@ globwalk = "0.8.1"
 miette = { version = "5.10.0", features = ["fancy"] }
 futures = "0.3.28"
 xmlparser = "0.13.5"
+tower = "0.4.13"
+pin-project-lite = "0.2.12"
 
