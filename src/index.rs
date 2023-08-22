@@ -99,7 +99,7 @@ impl ModuleIndex {
 										module_name.clone(),
 										&path_uri,
 										&mut reader,
-										&rope,
+										rope.clone(),
 									)?;
 									records.extend(record);
 								} else if local.as_str() == "template" {
@@ -108,7 +108,7 @@ impl ModuleIndex {
 										module_name.clone(),
 										&path_uri,
 										&mut reader,
-										&rope,
+										rope.clone(),
 									)?;
 									records.extend(template);
 								}

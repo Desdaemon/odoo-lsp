@@ -7,13 +7,13 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::OnceLock;
-use std::task::{Context, Poll};
+use std::task::Poll;
 
 use dashmap::{DashMap, DashSet};
 use faststr::FastStr;
 use futures::future::CatchUnwind;
 use futures::{Future, FutureExt};
-use miette::{diagnostic, IntoDiagnostic};
+use miette::{diagnostic, Context, IntoDiagnostic};
 use odoo_lsp::config::{Config, ModuleConfig};
 use odoo_lsp::record::Record;
 use ropey::Rope;
@@ -24,16 +24,18 @@ use tower_lsp::lsp_types::notification::{DidChangeConfiguration, Notification, P
 use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+use tree_sitter::{Node, Parser, Query, Tree};
 use xmlparser::{ElementEnd, StrSpan, Token, Tokenizer};
 
 use odoo_lsp::index::ModuleIndex;
-use odoo_lsp::utils::*;
+use odoo_lsp::{format_loc, utils::*};
 
 #[derive(Debug)]
 struct Backend {
 	client: Client,
 	document_map: DashMap<String, Rope>,
 	record_ranges: DashMap<String, Box<[std::ops::Range<CharOffset>]>>,
+	ast_map: DashMap<String, Tree>,
 	module_index: ModuleIndex,
 	roots: DashSet<String>,
 	capabilities: Capabilities,
@@ -225,6 +227,7 @@ impl LanguageServer for Backend {
 			eprintln!("Could not determine language, or language not supported:\nlanguage_id={language_id} split_uri={split_uri:?}");
 			return;
 		}
+
 		let rope = ropey::Rope::from_str(&params.text_document.text);
 		self.document_map
 			.insert(params.text_document.uri.path().to_string(), rope.clone());
@@ -247,9 +250,10 @@ impl LanguageServer for Backend {
 						.unwrap_or(false)
 					{
 						let file_path = path_.parent().expect("has parent").to_string_lossy();
-						if let Err(err) = self.module_index.add_root(&file_path, None).await {
-							eprintln!("failed to add root {}:\n{err}", file_path);
-						}
+						self.module_index
+							.add_root(&file_path, None)
+							.await
+							.report(|| format_loc!("failed to add root {}", file_path));
 						break;
 					}
 					path = path_.parent();
@@ -257,14 +261,18 @@ impl LanguageServer for Backend {
 			}
 		}
 
-		self.on_change(TextDocumentItem {
-			uri: params.text_document.uri,
-			text: params.text_document.text,
-			version: params.text_document.version,
-			language: Some(language),
-			rope: Some(rope),
-		})
-		.await
+		if let Err(err) = self
+			.on_change(TextDocumentItem {
+				uri: params.text_document.uri,
+				text: Text::Full(params.text_document.text),
+				version: params.text_document.version,
+				language: Some(language),
+				rope: Some(rope),
+			})
+			.await
+		{
+			eprintln!("did_open failed:\n{err}");
+		}
 	}
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
 		if let [TextDocumentContentChangeEvent {
@@ -273,26 +281,31 @@ impl LanguageServer for Backend {
 			text,
 		}] = params.content_changes.as_mut_slice()
 		{
-			self.on_change(TextDocumentItem {
-				uri: params.text_document.uri,
-				text: std::mem::take(text),
-				version: params.text_document.version,
-				language: None,
-				rope: None,
-			})
-			.await;
+			if let Err(err) = self
+				.on_change(TextDocumentItem {
+					uri: params.text_document.uri,
+					text: Text::Full(std::mem::take(text)),
+					version: params.text_document.version,
+					language: None,
+					rope: None,
+				})
+				.await
+			{
+				eprintln!("did_change failed:\n{err}");
+			}
 			return;
 		}
 		let mut rope = self
 			.document_map
 			.get_mut(params.text_document.uri.path())
 			.expect("Did not build a rope");
-		for change in params.content_changes {
+		// TODO: Refactor into method
+		for change in &params.content_changes {
 			if change.range.is_none() && change.range_length.is_none() {
 				*rope.value_mut() = ropey::Rope::from_str(&change.text);
 			} else {
 				let range = change.range.expect("LSP change event must have a range");
-				let Some(range) = lsp_range_to_char_range(range, rope.value()) else {
+				let Some(range) = lsp_range_to_char_range(range, rope.value().clone()) else {
 					continue;
 				};
 				let rope = rope.value_mut();
@@ -303,12 +316,14 @@ impl LanguageServer for Backend {
 		}
 		self.on_change(TextDocumentItem {
 			uri: params.text_document.uri,
-			text: Cow::from(rope.value().slice(..)).to_string(),
+			// text: Cow::from(rope.value().slice(..)).to_string(),
+			text: Text::Delta(params.content_changes),
 			version: params.text_document.version,
 			language: None,
 			rope: Some(rope.value().clone()),
 		})
-		.await;
+		.await
+		.report(|| format_loc!("did_change failed"));
 	}
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		if let Some(text) = params.text {
@@ -326,7 +341,7 @@ impl LanguageServer for Backend {
 			panic!("Bug: did not build a rope for {}", uri.path());
 		};
 		let location = self
-			.xml_jump_def(params, document.value())
+			.xml_jump_def(params, document.value().clone())
 			.await
 			.expect("Error retrieving references");
 
@@ -338,21 +353,44 @@ impl LanguageServer for Backend {
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
 		let uri = &params.text_document_position.text_document.uri;
 		eprintln!("completion {}", uri.path());
-		let Some((_, "xml")) = uri.path().rsplit_once('.') else {
-			eprintln!("Unsupported file {}", uri.path());
-			return Ok(None);
+
+		let Some((_, ext)) = uri.path().rsplit_once('.') else {
+			return Ok(None); // hit a directory, super unlikely
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
-			panic!("Bug: did not build a rope for {}", uri.path());
+			eprintln!("Bug: did not build a rope for {}", uri.path());
+			return Ok(None)
 		};
-		match self.xml_completions(params, document.value()).await {
-			Ok(ret) => Ok(ret),
-			Err(report) => {
-				self.client
-					.show_message(MessageType::ERROR, format!("error during completion:\n{report}"))
-					.await;
-				Ok(None)
+		if ext == "xml" {
+			match self.xml_completions(params, document.value().clone()).await {
+				Ok(ret) => Ok(ret),
+				Err(report) => {
+					self.client
+						.show_message(MessageType::ERROR, format!("error during xml completion:\n{report}"))
+						.await;
+					Ok(None)
+				}
 			}
+		} else if ext == "py" {
+			let Some(ast) = self.ast_map.get(uri.path()) else {
+				eprintln!("Bug: did not build AST for {}", uri.path());
+				return Ok(None)
+			};
+			match self
+				.python_completions(params, ast.value().clone(), document.value().clone())
+				.await
+			{
+				Ok(ret) => Ok(ret),
+				Err(err) => {
+					self.client
+						.show_message(MessageType::ERROR, format!("error during python completion:\n{err}"))
+						.await;
+					Ok(None)
+				}
+			}
+		} else {
+			eprintln!("Unsupported file {}", uri.path());
+			Ok(None)
 		}
 	}
 	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
@@ -397,10 +435,15 @@ impl LanguageServer for Backend {
 
 struct TextDocumentItem {
 	uri: Url,
-	text: String,
+	text: Text,
 	version: i32,
 	language: Option<Language>,
 	rope: Option<Rope>,
+}
+
+enum Text {
+	Full(String),
+	Delta(Vec<TextDocumentContentChangeEvent>),
 }
 
 enum Language {
@@ -409,105 +452,146 @@ enum Language {
 	Javascript,
 }
 
-// fn read_to_end(reader: &mut Tokenizer, local_name: &str) -> miette::Result<Option<std::ops::Range<CharOffset>>> {
-// 	let mut stack = 0;
-// 	loop {
-// 		match reader.next() {
-// 			Some(Ok(Token::ElementStart { local, .. })) if local.as_str() == local_name => stack += 1,
-// 			Some(Ok(Token::ElementEnd {
-// 				end: ElementEnd::Empty,
-// 				span,
-// 			})) if stack == 0 => return Ok(Some(span.range().map_unit(CharOffset))),
-// 			Some(Ok(Token::ElementEnd {
-// 				end: ElementEnd::Close(_, local),
-// 				span,
-// 			})) if local.as_str() == local_name => {
-// 				stack -= 1;
-// 				if stack <= 0 {
-// 					return Ok(Some(span.range().map_unit(CharOffset)));
-// 				}
-// 			}
-// 			Some(Err(err)) => return Err(err).into_diagnostic(),
-// 			None => return Ok(None),
-// 			_ => {}
-// 		}
-// 	}
-// }
-
 impl Backend {
-	async fn on_change(&self, params: TextDocumentItem) {
+	async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
 		let split_uri = params.uri.path().rsplit_once('.');
 		let mut diagnostics = vec![];
-		let rope = params.rope.unwrap_or_else(|| ropey::Rope::from_str(&params.text));
+		let rope = match (params.rope, &params.text) {
+			(Some(rope), _) => rope,
+			(None, Text::Full(full)) => ropey::Rope::from_str(full),
+			(None, Text::Delta(_)) => todo!("No rope and got delta"),
+		};
 		if matches!(split_uri, Some((_, "xml"))) || matches!(params.language, Some(Language::Xml)) {
-			// let mut reader = Reader::from_str(&params.text);
-			let mut reader = Tokenizer::from(params.text.as_str());
-			let mut record_ranges = vec![];
-			let Some(current_module) = self.module_index.module_of_path(Path::new(params.uri.path())) else {
-				return;
-			};
-			let current_module = FastStr::from(current_module.to_string());
-			loop {
-				match reader.next() {
-					Some(Ok(Token::ElementStart { local, span, .. })) => {
-						let offset = CharOffset(span.start());
-						match local.as_str() {
-							"record" => {
-								let Ok(Some(record)) = Record::from_reader(
-									offset,
-									current_module.clone(),
-									params.uri.path(),
-									&mut reader,
-									&rope,
-								) else {
-									continue;
-								};
-								let Some(range) = lsp_range_to_char_range(record.location.range, &rope) else {
-									continue;
-								};
-								record_ranges.push(range);
-								self.module_index.records.insert(record.qualified_id(), record);
-							}
-							"template" => {
-								let Ok(Some(template)) = Record::template(
-									offset,
-									current_module.clone(),
-									params.uri.path(),
-									&mut reader,
-									&rope,
-								) else {
-									continue;
-								};
-								let Some(range) = lsp_range_to_char_range(template.location.range, &rope) else {
-									continue;
-								};
-								record_ranges.push(range);
-								self.module_index.records.insert(template.qualified_id(), template);
-							}
-							_ => {}
-						}
-					}
-					None => break,
-					Some(Err(err)) => {
-						let pos = err.pos();
-						let pos = Position::new(pos.row - 1, pos.col - 1);
-						diagnostics.push(Diagnostic {
-							severity: Some(DiagnosticSeverity::WARNING),
-							range: Range::new(pos, pos),
-							message: format!("could not parse XML:\n{err}"),
-							..Default::default()
-						});
-						break;
-					}
-					_ => {}
-				}
-			}
-			self.record_ranges
-				.insert(params.uri.path().to_string(), record_ranges.into_boxed_slice());
+			self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
+				.await;
+		} else if matches!(split_uri, Some((_, "py"))) || matches!(params.language, Some(Language::Python)) {
+			self.on_change_python(&params.text, &params.uri, rope).await?;
 		}
 		self.client
 			.publish_diagnostics(params.uri.clone(), diagnostics, Some(params.version))
 			.await;
+
+		Ok(())
+	}
+	async fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
+		let text = match text {
+			Text::Full(full) => Cow::Borrowed(full.as_str()),
+			// Assume rope is up to date
+			Text::Delta(_) => Cow::from(rope.slice(..)),
+		};
+		let mut reader = Tokenizer::from(text.as_ref());
+		let mut record_ranges = vec![];
+		let Some(current_module) = self.module_index.module_of_path(Path::new(uri.path())) else {
+			return;
+		};
+		let current_module = FastStr::from(current_module.to_string());
+		loop {
+			match reader.next() {
+				Some(Ok(Token::ElementStart { local, span, .. })) => {
+					let offset = CharOffset(span.start());
+					match local.as_str() {
+						"record" => {
+							let Ok(Some(record)) =
+								Record::from_reader(offset, current_module.clone(), uri.path(), &mut reader, rope.clone())
+							else {
+								continue;
+							};
+							let Some(range) = lsp_range_to_char_range(record.location.range, rope.clone()) else {
+								continue;
+							};
+							record_ranges.push(range);
+							self.module_index.records.insert(record.qualified_id(), record);
+						}
+						"template" => {
+							let Ok(Some(template)) =
+								Record::template(offset, current_module.clone(), uri.path(), &mut reader, rope.clone())
+							else {
+								continue;
+							};
+							let Some(range) = lsp_range_to_char_range(template.location.range, rope.clone()) else {
+								continue;
+							};
+							record_ranges.push(range);
+							self.module_index.records.insert(template.qualified_id(), template);
+						}
+						_ => {}
+					}
+				}
+				None => break,
+				Some(Err(err)) => {
+					let pos = err.pos();
+					let pos = Position::new(pos.row - 1, pos.col - 1);
+					diagnostics.push(Diagnostic {
+						severity: Some(DiagnosticSeverity::WARNING),
+						range: Range::new(pos, pos),
+						message: format!("could not parse XML:\n{err}"),
+						..Default::default()
+					});
+					break;
+				}
+				_ => {}
+			}
+		}
+		self.record_ranges
+			.insert(uri.path().to_string(), record_ranges.into_boxed_slice());
+	}
+	async fn on_change_python(&self, text: &Text, uri: &Url, rope: Rope) -> miette::Result<()> {
+		let mut parser = Parser::new();
+		parser
+			.set_language(tree_sitter_python::language())
+			.into_diagnostic()
+			.with_context(|| "failed to init python parser")?;
+		self.update_ast(text, uri, rope, parser)?;
+		Ok(())
+	}
+	fn update_ast(&self, text: &Text, uri: &Url, rope: Rope, mut parser: Parser) -> miette::Result<()> {
+		let ast = self.ast_map.get_mut(uri.path());
+		let ast = match (text, ast) {
+			(Text::Full(full), _) => parser.parse(full, None),
+			(Text::Delta(delta), Some(mut ast)) => {
+				// assume rope is up to date
+				for change in delta {
+					let range = change.range.ok_or_else(|| diagnostic!("delta without range"))?;
+					let start =
+						position_to_offset(range.start, rope.clone()).ok_or_else(|| diagnostic!("delta start"))?;
+					let end = position_to_offset(range.end, rope.clone()).ok_or_else(|| diagnostic!("delta end"))?;
+					let len_new = change.text.len();
+					let len_new_bytes = change.text.as_bytes().len();
+					let start_position = tree_sitter::Point {
+						row: range.start.line as usize,
+						column: range.start.character as usize,
+					};
+					let old_end_position = tree_sitter::Point {
+						row: range.end.line as usize,
+						column: range.end.character as usize,
+					};
+					// calculate new_end_position using rope
+					let start_char = rope.try_byte_to_char(start.0).into_diagnostic()?;
+					let new_end_offset = start_char + len_new;
+					let new_end_position = char_offset_to_position(new_end_offset, rope.clone())
+						.ok_or_else(|| diagnostic!("new_end_position"))?;
+					let new_end_position = tree_sitter::Point {
+						row: new_end_position.line as usize,
+						column: new_end_position.character as usize,
+					};
+					// let it rip 🚀
+					ast.edit(&tree_sitter::InputEdit {
+						start_byte: start.0,
+						old_end_byte: end.0,
+						new_end_byte: start.0 + len_new_bytes,
+						start_position,
+						old_end_position,
+						new_end_position,
+					});
+				}
+				let slice = Cow::from(rope.slice(..));
+				parser.parse(slice.as_bytes(), Some(&ast))
+			}
+			(Text::Delta(_), None) => return Err(diagnostic!("(update_ast) got delta but no ast").into()),
+		};
+		let Some(ast) = ast else {return Ok(())};
+		self.ast_map.insert(uri.path().to_string(), ast);
+		Ok(())
 	}
 	fn record_slice<'rope>(
 		&self,
@@ -519,7 +603,7 @@ impl Backend {
 			.record_ranges
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build record ranges"))?;
-		let cursor = position_to_char_offset(position, rope).ok_or_else(|| diagnostic!("cursor"))?;
+		let cursor = position_to_char_offset(position, rope.clone()).ok_or_else(|| diagnostic!("cursor"))?;
 		let mut cursor_by_char = rope.try_byte_to_char(cursor.0).into_diagnostic()?;
 		let Ok(record) = ranges.value().binary_search_by(|range| {
 			if cursor < range.start {
@@ -550,11 +634,11 @@ impl Backend {
 	async fn xml_completions(
 		&self,
 		params: CompletionParams,
-		rope: &Rope,
+		rope: Rope,
 	) -> miette::Result<Option<CompletionResponse>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
-		let Some((slice, cursor_by_char, relative_offset)) = self.record_slice(rope, uri, position)? else {
+		let Some((slice, cursor_by_char, relative_offset)) = self.record_slice(&rope, uri, position)? else {
 			return Ok(None);
 		};
 		let reader = Tokenizer::from(&slice[..]);
@@ -625,7 +709,7 @@ impl Backend {
 							value,
 							cursor_by_char,
 							relative_offset,
-							rope,
+							rope.clone(),
 							model_filter.as_deref(),
 							&current_module,
 							&mut items,
@@ -646,7 +730,7 @@ impl Backend {
 						value,
 						cursor_by_char,
 						relative_offset,
-						rope,
+						rope.clone(),
 						model_filter.as_deref(),
 						&current_module,
 						&mut items,
@@ -666,13 +750,46 @@ impl Backend {
 			items,
 		})))
 	}
+	async fn python_completions(
+		&self,
+		params: CompletionParams,
+		ast: Tree,
+		rope: Rope,
+	) -> miette::Result<Option<CompletionResponse>> {
+		let Some(offset) = position_to_offset(params.text_document_position.position, rope.clone()) else {
+			return Ok(None)
+		};
+		static ENV_REF: OnceLock<Query> = OnceLock::new();
+		let query = ENV_REF.get_or_init(|| {
+			tree_sitter::Query::new(
+				tree_sitter_python::language(),
+				// matches *.env.ref("_xml_id")
+				r#"
+				((call
+					(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
+					(argument_list . (string) @xml_id))
+				 (#eq? @_env "env")
+				 (#eq? @_ref "ref"))"#,
+			)
+			.unwrap()
+		});
+		let mut cursor = tree_sitter::QueryCursor::new();
+		cursor.set_match_limit(1024);
+		let bytes = rope.bytes().collect::<Vec<_>>();
+		for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
+			for xml_id in match_.nodes_for_capture_index(2) {
+				if xml_id.byte_range().contains(&offset.0) {}
+			}
+		}
 
+		Ok(None)
+	}
 	fn complete_inherit_id(
 		&self,
 		value: StrSpan,
 		cursor_by_char: usize,
 		relative_offset: usize,
-		rope: &Rope,
+		rope: Rope,
 		model_filter: Option<&str>,
 		current_module: &str,
 		items: &mut Vec<CompletionItem>,
@@ -680,8 +797,9 @@ impl Backend {
 		let needle = &value.as_str()[..cursor_by_char - value.range().start];
 		let replace_range = value.range().map_unit(|unit| unit + relative_offset);
 		let replace_start =
-			char_offset_to_position(replace_range.start, rope).ok_or_else(|| diagnostic!("replace_start"))?;
-		let replace_end = char_offset_to_position(replace_range.end, rope).ok_or_else(|| diagnostic!("replace_end"))?;
+			char_offset_to_position(replace_range.start, rope.clone()).ok_or_else(|| diagnostic!("replace_start"))?;
+		let replace_end =
+			char_offset_to_position(replace_range.end, rope.clone()).ok_or_else(|| diagnostic!("replace_end"))?;
 		let range = Range::new(replace_start, replace_end);
 		let matches = self
 			.module_index
@@ -720,10 +838,10 @@ impl Backend {
 		Ok(())
 	}
 
-	async fn xml_jump_def(&self, params: GotoDefinitionParams, rope: &Rope) -> miette::Result<Option<Location>> {
+	async fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
-		let Some((slice, cursor_by_char, _)) = self.record_slice(rope, uri, position)? else {
+		let Some((slice, cursor_by_char, _)) = self.record_slice(&rope, uri, position)? else {
 			return Ok(None);
 		};
 		let reader = Tokenizer::from(&slice[..]);
@@ -840,6 +958,7 @@ async fn main() {
 		roots: DashSet::new(),
 		capabilities: Default::default(),
 		root_setup: Default::default(),
+		ast_map: DashMap::new(),
 	})
 	.finish();
 
@@ -864,7 +983,7 @@ where
 	type Future = CatchPanicFuture<S::Future>;
 
 	#[inline]
-	fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
+	fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
 		self.0.poll_ready(cx)
 	}
 
@@ -907,7 +1026,7 @@ where
 {
 	type Output = core::result::Result<Option<tower_lsp::jsonrpc::Response>, E>;
 
-	fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+	fn poll(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> Poll<Self::Output> {
 		todo!()
 		// match self.project().kind.project() {
 		// 	KindProj::Panicked { panic_err } => Poll::Ready(Ok(Some({
