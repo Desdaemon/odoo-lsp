@@ -278,7 +278,7 @@ impl LanguageServer for Backend {
 				*rope.value_mut() = ropey::Rope::from_str(&change.text);
 			} else {
 				let range = change.range.expect("LSP change event must have a range");
-				let Some(mut range) = lsp_range_to_char_range(range, rope.value().clone()) else {
+				let Some(range) = lsp_range_to_char_range(range, rope.value().clone()) else {
 					continue;
 				};
 				// if change.text.is_empty() {
@@ -748,25 +748,12 @@ impl Backend {
 			eprintln!(format_loc!("python_completions: no current_module"));
 			return Ok(None);
 		};
-		static ENV_REF: OnceLock<Query> = OnceLock::new();
-		let query = ENV_REF.get_or_init(|| {
-			tree_sitter::Query::new(
-				tree_sitter_python::language(),
-				// matches *.env.ref("_xml_id")
-				r#"
-				((call
-					(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
-					(argument_list . (string) @xml_id))
-				 (#eq? @_env "env")
-				 (#eq? @_ref "ref"))"#,
-			)
-			.unwrap()
-		});
 		let mut cursor = tree_sitter::QueryCursor::new();
 		cursor.set_match_limit(256);
 		let bytes = rope.bytes().collect::<Vec<_>>();
 		// TODO: Very inexact, is there a better way?
 		let range = offset.saturating_sub(50)..bytes.len().min(offset + 200);
+		let query = env_ref_query();
 		cursor.set_byte_range(range.clone());
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			for xml_id in match_.nodes_for_capture_index(2) {
@@ -965,6 +952,24 @@ impl Backend {
 		dbg!(&self.roots);
 		self.root_setup.store(true, Relaxed);
 	}
+}
+
+fn env_ref_query() -> &'static Query {
+	static ENV_REF: OnceLock<Query> = OnceLock::new();
+	ENV_REF.get_or_init(|| {
+		tree_sitter::Query::new(
+			tree_sitter_python::language(),
+			// matches *.env.ref("_xml_id")
+			r#"
+			((call
+				[(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
+				 (attribute (identifier) @_env (identifier) @_ref)]
+				(argument_list . (string) @xml_id))
+			 (#eq? @_env "env")
+			 (#eq? @_ref "ref")) "#,
+		)
+		.unwrap()
+	})
 }
 
 #[tokio::main]
