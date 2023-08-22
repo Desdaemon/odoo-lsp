@@ -12,8 +12,6 @@ use tower_lsp::lsp_types::*;
 // }
 
 pub fn position_to_offset(position: Position, rope: Rope) -> Option<ByteOffset> {
-	// let line_char_start = rope.try_line_to_char(position.line as usize).ok()?;
-	// let line_char_end = line_char_start + position.character as usize;
 	let CharOffset(offset) = position_to_char_offset(position, rope.clone())?;
 	let byte_offset = rope.try_char_to_byte(offset).ok()?;
 	Some(ByteOffset(byte_offset))
@@ -76,6 +74,7 @@ pub trait Report {
 }
 
 impl<T> Report for miette::Result<T> {
+	/// Consumes self and reports the results of a computation.
 	fn report<S: Display>(self, context: impl FnOnce() -> S) {
 		if let Err(err) = self {
 			eprintln!("{}:\n{err}", context());
@@ -84,9 +83,13 @@ impl<T> Report for miette::Result<T> {
 }
 
 /// [format] preceded with file location information.
+/// If no arguments are passed, a string literal is returned.
 #[macro_export]
 macro_rules! format_loc {
+	($tpl:literal) => {
+		concat!("[", file!(), ":", line!(), ":", column!(), "] ", $tpl)
+	};
 	($tpl:literal $($tt:tt)*) => {
-		format!(concat!("[{}:{}:{}] ", $tpl), file!(), line!(), column!() $($tt)*)
+		format!($crate::format_loc!($tpl) $($tt)*)
 	};
 }

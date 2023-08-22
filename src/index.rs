@@ -89,7 +89,7 @@ impl ModuleIndex {
 						.with_context(|| format!("non-utf8 file: {path_uri}"))?;
 					let mut reader = Tokenizer::from(file);
 					let mut records = vec![];
-					let rope = Rope::from_str(&file);
+					let rope = Rope::from_str(file);
 					loop {
 						match reader.next() {
 							Some(Ok(Token::ElementStart { local, span, .. })) => {

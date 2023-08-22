@@ -13,6 +13,7 @@ use dashmap::{DashMap, DashSet};
 use faststr::FastStr;
 use futures::future::CatchUnwind;
 use futures::{Future, FutureExt};
+use globwalk::FileType;
 use miette::{diagnostic, Context, IntoDiagnostic};
 use odoo_lsp::config::{Config, ModuleConfig};
 use odoo_lsp::record::Record;
@@ -24,7 +25,7 @@ use tower_lsp::lsp_types::notification::{DidChangeConfiguration, Notification, P
 use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tree_sitter::{Node, Parser, Query, Tree};
+use tree_sitter::{Parser, Query, Tree};
 use xmlparser::{ElementEnd, StrSpan, Token, Tokenizer};
 
 use odoo_lsp::index::ModuleIndex;
@@ -57,7 +58,7 @@ impl LanguageServer for Backend {
 		'root: {
 			match params.initialization_options.map(serde_json::from_value::<Config>) {
 				Some(Ok(config)) => {
-					self.on_change_config(config);
+					self.on_change_config(config).await;
 					break 'root;
 				}
 				Some(Err(err)) => {
@@ -65,7 +66,7 @@ impl LanguageServer for Backend {
 				}
 				None => {}
 			}
-			if let Some(root) = dbg!(&root) {
+			if let Some(root) = &root {
 				let config_file = 'find_root: {
 					for choice in [".odoo_lsp", ".odoo_lsp.json"] {
 						let path = root.join(choice);
@@ -79,8 +80,8 @@ impl LanguageServer for Backend {
 					self.roots.insert(root.to_string_lossy().to_string());
 					break 'root;
 				};
-				match serde_json::from_slice::<Config>(&config) {
-					Ok(config) => self.on_change_config(config),
+				match serde_json::from_slice::<Config>(config) {
+					Ok(config) => self.on_change_config(config).await,
 					Err(err) => eprintln!("could not parse {:?}:\n{err}", path),
 				}
 			}
@@ -127,12 +128,12 @@ impl LanguageServer for Backend {
 	}
 	async fn did_close(&self, _: DidCloseTextDocumentParams) {}
 	async fn initialized(&self, _: InitializedParams) {
+		eprintln!("initialized");
 		let token = NumberOrString::String("_odoo_lsp_initialized".to_string());
 		self.client
 			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
 			.await
 			.expect("Could not create WDP");
-
 		_ = self
 			.client
 			.send_notification::<Progress>(ProgressParams {
@@ -143,8 +144,16 @@ impl LanguageServer for Backend {
 				})),
 			})
 			.await;
-
 		let progress = Some((&self.client, token.clone()));
+
+		if !self.root_setup.load(Relaxed) {
+			for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
+				let Ok(file_path) = workspace.uri.to_file_path() else {
+					continue;
+				};
+				self.roots.insert(file_path.to_string_lossy().to_string());
+			}
+		}
 
 		for root in self.roots.iter() {
 			match self.module_index.add_root(dbg!(&root.as_str()), progress.clone()).await {
@@ -161,36 +170,6 @@ impl LanguageServer for Backend {
 					eprintln!("(initialized) could not add root {}:\n{err}", root.as_str());
 				}
 				_ => {}
-			}
-		}
-
-		if !self.root_setup.load(Relaxed) {
-			for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
-				let Ok(file_path) = workspace.uri.to_file_path() else {
-					continue;
-				};
-				if self.roots.contains(workspace.uri.path()) {
-					continue;
-				}
-				match self
-					.module_index
-					.add_root(&file_path.to_string_lossy(), progress.clone())
-					.await
-				{
-					Ok(Some((modules, records, elapsed))) => {
-						eprintln!(
-							"Processed {} with {} modules and {} records in {:.2}s",
-							file_path.display(),
-							modules,
-							records,
-							elapsed.as_secs_f64()
-						);
-					}
-					Err(err) => {
-						eprintln!("(initialized) could not add workspace {}:\n{err}", file_path.display(),);
-					}
-					_ => {}
-				}
 			}
 		}
 
@@ -228,7 +207,7 @@ impl LanguageServer for Backend {
 			return;
 		}
 
-		let rope = ropey::Rope::from_str(&params.text_document.text);
+		let rope = Rope::from_str(&params.text_document.text);
 		self.document_map
 			.insert(params.text_document.uri.path().to_string(), rope.clone());
 
@@ -261,18 +240,15 @@ impl LanguageServer for Backend {
 			}
 		}
 
-		if let Err(err) = self
-			.on_change(TextDocumentItem {
-				uri: params.text_document.uri,
-				text: Text::Full(params.text_document.text),
-				version: params.text_document.version,
-				language: Some(language),
-				rope: Some(rope),
-			})
-			.await
-		{
-			eprintln!("did_open failed:\n{err}");
-		}
+		self.on_change(TextDocumentItem {
+			uri: params.text_document.uri,
+			text: Text::Full(params.text_document.text),
+			version: params.text_document.version,
+			language: Some(language),
+			rope: Some(rope),
+		})
+		.await
+		.report(|| format_loc!("did_open failed"))
 	}
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
 		if let [TextDocumentContentChangeEvent {
@@ -281,18 +257,15 @@ impl LanguageServer for Backend {
 			text,
 		}] = params.content_changes.as_mut_slice()
 		{
-			if let Err(err) = self
-				.on_change(TextDocumentItem {
-					uri: params.text_document.uri,
-					text: Text::Full(std::mem::take(text)),
-					version: params.text_document.version,
-					language: None,
-					rope: None,
-				})
-				.await
-			{
-				eprintln!("did_change failed:\n{err}");
-			}
+			self.on_change(TextDocumentItem {
+				uri: params.text_document.uri,
+				text: Text::Full(std::mem::take(text)),
+				version: params.text_document.version,
+				language: None,
+				rope: None,
+			})
+			.await
+			.report(|| format_loc!("did_change failed"));
 			return;
 		}
 		let mut rope = self
@@ -305,9 +278,13 @@ impl LanguageServer for Backend {
 				*rope.value_mut() = ropey::Rope::from_str(&change.text);
 			} else {
 				let range = change.range.expect("LSP change event must have a range");
-				let Some(range) = lsp_range_to_char_range(range, rope.value().clone()) else {
+				let Some(mut range) = lsp_range_to_char_range(range, rope.value().clone()) else {
 					continue;
 				};
+				// if change.text.is_empty() {
+				// 	// Prevents an off-by-one error when deleting text
+				// 	range = range.start..CharOffset(range.end.0.saturating_sub(1));
+				// }
 				let rope = rope.value_mut();
 				let start = range.start.0;
 				rope.remove(range.map_unit(|unit| unit.0));
@@ -316,7 +293,6 @@ impl LanguageServer for Backend {
 		}
 		self.on_change(TextDocumentItem {
 			uri: params.text_document.uri,
-			// text: Cow::from(rope.value().slice(..)).to_string(),
 			text: Text::Delta(params.content_changes),
 			version: params.text_document.version,
 			language: None,
@@ -359,7 +335,7 @@ impl LanguageServer for Backend {
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
 			eprintln!("Bug: did not build a rope for {}", uri.path());
-			return Ok(None)
+			return Ok(None);
 		};
 		if ext == "xml" {
 			match self.xml_completions(params, document.value().clone()).await {
@@ -374,7 +350,7 @@ impl LanguageServer for Backend {
 		} else if ext == "py" {
 			let Some(ast) = self.ast_map.get(uri.path()) else {
 				eprintln!("Bug: did not build AST for {}", uri.path());
-				return Ok(None)
+				return Ok(None);
 			};
 			match self
 				.python_completions(params, ast.value().clone(), document.value().clone())
@@ -417,12 +393,10 @@ impl LanguageServer for Backend {
 		for added in params.event.added {
 			let file_path = added.uri.to_file_path().expect("not a file path");
 			let file_path = file_path.as_os_str().to_string_lossy();
-			if let Err(err) = self.module_index.add_root(&file_path, None).await {
-				eprintln!(
-					"(did_change_workspace_folders) failed to add root {}:\n{err}",
-					file_path
-				);
-			}
+			self.module_index
+				.add_root(&file_path, None)
+				.await
+				.report(|| format_loc!("(did_change_workspace_folders) failed to add root {}", file_path));
 		}
 		for removed in params.event.removed {
 			self.module_index.remove_root(removed.uri.path());
@@ -491,9 +465,13 @@ impl Backend {
 					let offset = CharOffset(span.start());
 					match local.as_str() {
 						"record" => {
-							let Ok(Some(record)) =
-								Record::from_reader(offset, current_module.clone(), uri.path(), &mut reader, rope.clone())
-							else {
+							let Ok(Some(record)) = Record::from_reader(
+								offset,
+								current_module.clone(),
+								uri.path(),
+								&mut reader,
+								rope.clone(),
+							) else {
 								continue;
 							};
 							let Some(range) = lsp_range_to_char_range(record.location.range, rope.clone()) else {
@@ -554,7 +532,8 @@ impl Backend {
 					let range = change.range.ok_or_else(|| diagnostic!("delta without range"))?;
 					let start =
 						position_to_offset(range.start, rope.clone()).ok_or_else(|| diagnostic!("delta start"))?;
-					let end = position_to_offset(range.end, rope.clone()).ok_or_else(|| diagnostic!("delta end"))?;
+					let end = position_to_offset(range.end, rope.clone())
+						.ok_or_else(|| diagnostic!("delta end ({change:?})"))?;
 					let len_new = change.text.len();
 					let len_new_bytes = change.text.as_bytes().len();
 					let start_position = tree_sitter::Point {
@@ -589,7 +568,7 @@ impl Backend {
 			}
 			(Text::Delta(_), None) => return Err(diagnostic!("(update_ast) got delta but no ast").into()),
 		};
-		let Some(ast) = ast else {return Ok(())};
+		let Some(ast) = ast else { return Ok(()) };
 		self.ast_map.insert(uri.path().to_string(), ast);
 		Ok(())
 	}
@@ -622,7 +601,7 @@ impl Backend {
 		};
 		let record_range = &ranges.value()[record];
 		let relative_offset = rope.try_byte_to_char(record_range.start.0).into_diagnostic()?;
-		cursor_by_char -= relative_offset;
+		cursor_by_char = cursor_by_char.saturating_sub(relative_offset);
 
 		let slice = rope.byte_slice(record_range.clone().map_unit(|unit| unit.0));
 		let slice = Cow::from(slice);
@@ -704,11 +683,12 @@ impl Backend {
 					let (Some(value), Some(record_field)) = (cursor_value, record_field.take()) else {
 						continue;
 					};
+					let needle = &value.as_str()[..cursor_by_char - value.range().start];
+					let replace_range = value.range().map_unit(|unit| CharOffset(unit + relative_offset));
 					match record_field {
 						RecordField::InheritId => self.complete_inherit_id(
-							value,
-							cursor_by_char,
-							relative_offset,
+							needle,
+							replace_range,
 							rope.clone(),
 							model_filter.as_deref(),
 							&current_module,
@@ -726,10 +706,11 @@ impl Backend {
 				}
 				Ok(Token::ElementEnd { .. }) if matches!(tag, Some(Tag::Template)) => {
 					let Some(value) = cursor_value else { continue };
+					let needle = &value.as_str()[..cursor_by_char - value.range().start];
+					let replace_range = value.range().map_unit(|unit| CharOffset(unit + relative_offset));
 					self.complete_inherit_id(
-						value,
-						cursor_by_char,
-						relative_offset,
+						needle,
+						replace_range,
 						rope.clone(),
 						model_filter.as_deref(),
 						&current_module,
@@ -756,8 +737,16 @@ impl Backend {
 		ast: Tree,
 		rope: Rope,
 	) -> miette::Result<Option<CompletionResponse>> {
-		let Some(offset) = position_to_offset(params.text_document_position.position, rope.clone()) else {
-			return Ok(None)
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope.clone()) else {
+			eprintln!(format_loc!("python_completions: invalid offset"));
+			return Ok(None);
+		};
+		let Some(current_module) = self
+			.module_index
+			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
+		else {
+			eprintln!(format_loc!("python_completions: no current_module"));
+			return Ok(None);
 		};
 		static ENV_REF: OnceLock<Query> = OnceLock::new();
 		let query = ENV_REF.get_or_init(|| {
@@ -774,32 +763,54 @@ impl Backend {
 			.unwrap()
 		});
 		let mut cursor = tree_sitter::QueryCursor::new();
-		cursor.set_match_limit(1024);
+		cursor.set_match_limit(256);
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
+		// TODO: Very inexact, is there a better way?
+		let range = offset.saturating_sub(50)..bytes.len().min(offset + 200);
+		cursor.set_byte_range(range.clone());
+		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			for xml_id in match_.nodes_for_capture_index(2) {
-				if xml_id.byte_range().contains(&offset.0) {}
+				if xml_id.byte_range().contains(&offset) {
+					let Some(slice) = rope.get_byte_slice(xml_id.byte_range()) else {
+						dbg!((xml_id.byte_range(), &range));
+						break 'match_;
+					};
+					let relative_offset = xml_id.byte_range().start;
+					// remove the quotes
+					let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+					let range = xml_id.range().start_byte + 1..xml_id.range().end_byte - 1;
+					let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
+					let mut items = vec![];
+					self.complete_inherit_id(
+						dbg!(&needle),
+						dbg!(range),
+						rope.clone(),
+						None,
+						&current_module,
+						&mut items,
+					)?;
+					return Ok(Some(CompletionResponse::List(CompletionList {
+						is_incomplete: items.len() >= Self::LIMIT,
+						items,
+					})));
+				}
 			}
 		}
-
 		Ok(None)
 	}
 	fn complete_inherit_id(
 		&self,
-		value: StrSpan,
-		cursor_by_char: usize,
-		relative_offset: usize,
+		needle: &str,
+		range: std::ops::Range<CharOffset>,
 		rope: Rope,
 		model_filter: Option<&str>,
 		current_module: &str,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
-		let needle = &value.as_str()[..cursor_by_char - value.range().start];
-		let replace_range = value.range().map_unit(|unit| unit + relative_offset);
 		let replace_start =
-			char_offset_to_position(replace_range.start, rope.clone()).ok_or_else(|| diagnostic!("replace_start"))?;
+			char_offset_to_position(range.start.0, rope.clone()).ok_or_else(|| diagnostic!("replace_start"))?;
 		let replace_end =
-			char_offset_to_position(replace_range.end, rope.clone()).ok_or_else(|| diagnostic!("replace_end"))?;
+			char_offset_to_position(range.end.0, rope.clone()).ok_or_else(|| diagnostic!("replace_end"))?;
 		let range = Range::new(replace_start, replace_end);
 		let matches = self
 			.module_index
@@ -927,18 +938,31 @@ impl Backend {
 			.map(|entry| entry.location.clone()));
 	}
 
-	fn on_change_config(&self, config: Config) {
+	async fn on_change_config(&self, config: Config) {
 		let Some(ModuleConfig { roots: Some(roots), .. }) = config.module else {
 			return;
 		};
 		for root in roots {
-			let Ok(glob) = globwalk::glob(&root) else { continue };
-			for root in glob {
-				let Ok(root) = root else { continue };
-				let Ok(root) = root.path().canonicalize() else { continue };
-				self.roots.insert(root.to_string_lossy().to_string());
+			let Ok(root) = dbg!(Path::new(&root).canonicalize()) else {
+				continue;
+			};
+			let root_display = root.to_string_lossy();
+			if root_display.contains('*') {
+				let Ok(glob) = globwalk::glob_builder(root.to_string_lossy())
+					.file_type(FileType::DIR | FileType::SYMLINK)
+					.build()
+				else {
+					continue;
+				};
+				for dir_entry in glob {
+					let Ok(root) = dbg!(dir_entry) else { continue };
+					self.roots.insert(root.path().to_string_lossy().to_string());
+				}
+			} else if tokio::fs::try_exists(&root).await.unwrap_or(false) {
+				self.roots.insert(root_display.to_string());
 			}
 		}
+		dbg!(&self.roots);
 		self.root_setup.store(true, Relaxed);
 	}
 }
