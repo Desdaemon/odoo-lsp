@@ -957,18 +957,7 @@ impl Backend {
 fn env_ref_query() -> &'static Query {
 	static ENV_REF: OnceLock<Query> = OnceLock::new();
 	ENV_REF.get_or_init(|| {
-		tree_sitter::Query::new(
-			tree_sitter_python::language(),
-			// matches *.env.ref("_xml_id")
-			r#"
-			((call
-				[(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
-				 (attribute (identifier) @_env (identifier) @_ref)]
-				(argument_list . (string) @xml_id))
-			 (#eq? @_env "env")
-			 (#eq? @_ref "ref")) "#,
-		)
-		.unwrap()
+		tree_sitter::Query::new(tree_sitter_python::language(), include_str!("queries/env_ref.scm")).unwrap()
 	})
 }
 
