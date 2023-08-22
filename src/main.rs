@@ -651,28 +651,28 @@ impl Backend {
 
 		for token in reader {
 			match token {
-				Ok(Token::ElementStart { local, .. }) => match local.as_bytes() {
-					b"record" => tag = Some(Tag::Record),
-					b"template" => tag = Some(Tag::Template),
-					b"field" => tag = Some(Tag::Field),
+				Ok(Token::ElementStart { local, .. }) => match local.as_str() {
+					"record" => tag = Some(Tag::Record),
+					"template" => tag = Some(Tag::Template),
+					"field" => tag = Some(Tag::Field),
 					_ => {}
 				},
 				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Record)) && local.as_bytes() == b"model" =>
+					if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>
 				{
 					model_filter = Some(value.as_str().to_string());
 				}
 				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Field)) && local.as_bytes() == b"name" =>
+					if matches!(tag, Some(Tag::Field)) && local.as_str() == "name" =>
 				{
-					match value.as_bytes() {
-						b"inherit_id" => record_field = Some(RecordField::InheritId),
+					match value.as_str() {
+						"inherit_id" => record_field = Some(RecordField::InheritId),
 						_ => {}
 					}
 				}
 				Ok(Token::Attribute { local, value, .. })
 					if matches!(tag, Some(Tag::Field))
-						&& local.as_bytes() == b"ref"
+						&& local.as_str() == "ref"
 						&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
 				{
 					cursor_value = Some(value);
@@ -699,7 +699,7 @@ impl Backend {
 				}
 				Ok(Token::Attribute { local, value, .. })
 					if matches!(tag, Some(Tag::Template))
-						&& local.as_bytes() == b"inherit_id"
+						&& local.as_str() == "inherit_id"
 						&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
 				{
 					cursor_value = Some(value);
@@ -859,15 +859,15 @@ impl Backend {
 
 		for token in reader {
 			match token {
-				Ok(Token::ElementStart { local, .. }) => match local.as_bytes() {
-					b"field" => tag = Some(Tag::Field),
-					b"template" => tag = Some(Tag::Template),
+				Ok(Token::ElementStart { local, .. }) => match local.as_str() {
+					"field" => tag = Some(Tag::Field),
+					"template" => tag = Some(Tag::Template),
 					_ => {}
 				},
 				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
-					if local.as_bytes() == b"ref" && value.range().contains(&cursor_by_char) {
+					if local.as_str() == "ref" && value.range().contains(&cursor_by_char) {
 						cursor_value = Some(value);
-					} else if local.as_bytes() == b"name" && value.as_bytes() == b"inherit_id" {
+					} else if local.as_str() == "name" && value.as_str() == "inherit_id" {
 						record_field = Some(RecordField::InheritId);
 					}
 				}
@@ -882,7 +882,7 @@ impl Backend {
 				}
 				Ok(Token::Attribute { local, value, .. })
 					if matches!(tag, Some(Tag::Template))
-						&& local.as_bytes() == b"inherit_id"
+						&& local.as_str() == "inherit_id"
 						&& value.range().contains(&cursor_by_char) =>
 				{
 					cursor_value = Some(value);
