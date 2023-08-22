@@ -165,14 +165,12 @@ impl ModuleIndex {
 	}
 	pub fn module_of_path(&self, path: &Path) -> Option<dashmap::setref::one::Ref<String>> {
 		let mut path = Some(path);
-
 		while let Some(path_) = &path {
 			if let Some(module) = self.modules.get(path_.file_name()?.to_string_lossy().as_ref()) {
 				return Some(module);
 			}
 			path = path_.parent();
 		}
-
 		None
 	}
 }

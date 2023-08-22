@@ -2,8 +2,10 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::panic::AssertUnwindSafe;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
@@ -12,7 +14,7 @@ use faststr::FastStr;
 use futures::future::CatchUnwind;
 use futures::{Future, FutureExt};
 use miette::{diagnostic, IntoDiagnostic};
-use odoo_lsp::config::Config;
+use odoo_lsp::config::{Config, ModuleConfig};
 use odoo_lsp::record::Record;
 use ropey::Rope;
 use serde_json::Value;
@@ -35,6 +37,7 @@ struct Backend {
 	module_index: ModuleIndex,
 	roots: DashSet<String>,
 	capabilities: Capabilities,
+	root_setup: AtomicBool,
 }
 
 #[derive(Debug, Default)]
@@ -44,13 +47,41 @@ struct Capabilities {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-	async fn initialize(&self, init: InitializeParams) -> Result<InitializeResult> {
-		// TODO: Is it correct to have both root_path and root_uri?
-		#[allow(deprecated)]
-		if let Some(root) = init.root_path {
-			self.roots.insert(root);
-		} else if let Some(Ok(root)) = init.root_uri.map(|uri| uri.to_file_path()) {
-			self.roots.insert(root.to_string_lossy().to_string());
+	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+		let root = params.root_uri.and_then(|uri| uri.to_file_path().ok()).or_else(
+			#[allow(deprecated)]
+			|| params.root_path.map(PathBuf::from),
+		);
+		'root: {
+			match params.initialization_options.map(serde_json::from_value::<Config>) {
+				Some(Ok(config)) => {
+					self.on_change_config(config);
+					break 'root;
+				}
+				Some(Err(err)) => {
+					eprintln!("could not parse provided config:\n{err}");
+				}
+				None => {}
+			}
+			if let Some(root) = dbg!(&root) {
+				let config_file = 'find_root: {
+					for choice in [".odoo_lsp", ".odoo_lsp.json"] {
+						let path = root.join(choice);
+						if let Ok(file) = tokio::fs::read(&path).await {
+							break 'find_root Some((path, file));
+						}
+					}
+					None
+				};
+				let Some((path, config)) = &config_file else {
+					self.roots.insert(root.to_string_lossy().to_string());
+					break 'root;
+				};
+				match serde_json::from_slice::<Config>(&config) {
+					Ok(config) => self.on_change_config(config),
+					Err(err) => eprintln!("could not parse {:?}:\n{err}", path),
+				}
+			}
 		}
 
 		if let Some(WorkspaceClientCapabilities {
@@ -59,7 +90,7 @@ impl LanguageServer for Backend {
 					dynamic_registration: Some(true),
 				}),
 			..
-		}) = init.capabilities.workspace
+		}) = params.capabilities.workspace
 		{
 			_ = self.capabilities.dynamic_config.set(());
 		}
@@ -114,7 +145,7 @@ impl LanguageServer for Backend {
 		let progress = Some((&self.client, token.clone()));
 
 		for root in self.roots.iter() {
-			match self.module_index.add_root(&root, progress.clone()).await {
+			match self.module_index.add_root(dbg!(&root.as_str()), progress.clone()).await {
 				Ok(Some((modules, records, elapsed))) => {
 					eprintln!(
 						"Processed {} with {} modules and {} records in {:.2}s",
@@ -131,28 +162,33 @@ impl LanguageServer for Backend {
 			}
 		}
 
-		for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
-			let Ok(file_path) = workspace.uri.to_file_path() else {
-				continue;
-			};
-			match self
-				.module_index
-				.add_root(&file_path.to_string_lossy(), progress.clone())
-				.await
-			{
-				Ok(Some((modules, records, elapsed))) => {
-					eprintln!(
-						"Processed {} with {} modules and {} records in {:.2}s",
-						file_path.display(),
-						modules,
-						records,
-						elapsed.as_secs_f64()
-					);
+		if !self.root_setup.load(Relaxed) {
+			for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
+				let Ok(file_path) = workspace.uri.to_file_path() else {
+					continue;
+				};
+				if self.roots.contains(workspace.uri.path()) {
+					continue;
 				}
-				Err(err) => {
-					eprintln!("(initialized) could not add workspace {}:\n{err}", file_path.display(),);
+				match self
+					.module_index
+					.add_root(&file_path.to_string_lossy(), progress.clone())
+					.await
+				{
+					Ok(Some((modules, records, elapsed))) => {
+						eprintln!(
+							"Processed {} with {} modules and {} records in {:.2}s",
+							file_path.display(),
+							modules,
+							records,
+							elapsed.as_secs_f64()
+						);
+					}
+					Err(err) => {
+						eprintln!("(initialized) could not add workspace {}:\n{err}", file_path.display(),);
+					}
+					_ => {}
 				}
-				_ => {}
 			}
 		}
 
@@ -334,6 +370,7 @@ impl LanguageServer for Backend {
 		let configs = self.client.configuration(items).await.unwrap_or_default();
 		for (root, config) in self.roots.iter().zip(configs) {
 			let config = serde_json::from_value::<Config>(config);
+			// TODO: Do something with the config
 			eprintln!("config: {} => {:?}", root.key(), config);
 		}
 	}
@@ -771,6 +808,21 @@ impl Backend {
 			.get(value.as_ref())
 			.map(|entry| entry.location.clone()));
 	}
+
+	fn on_change_config(&self, config: Config) {
+		let Some(ModuleConfig { roots: Some(roots), .. }) = config.module else {
+			return;
+		};
+		for root in roots {
+			let Ok(glob) = globwalk::glob(&root) else { continue };
+			for root in glob {
+				let Ok(root) = root else { continue };
+				let Ok(root) = root.path().canonicalize() else { continue };
+				self.roots.insert(root.to_string_lossy().to_string());
+			}
+		}
+		self.root_setup.store(true, Relaxed);
+	}
 }
 
 #[tokio::main]
@@ -787,6 +839,7 @@ async fn main() {
 		record_ranges: DashMap::new(),
 		roots: DashSet::new(),
 		capabilities: Default::default(),
+		root_setup: Default::default(),
 	})
 	.finish();
 
