@@ -1,5 +1,5 @@
 <odoo>
     <record id="asd" model="ir.ui.view">
-        <field name="inherit_id" ref="one.two" />
+        <field name="inherit_id" ref="one.view_two" />
     </record>
 </odoo>
