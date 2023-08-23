@@ -7,9 +7,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+
 defaults:
   run:
     shell: bash
+
+concurrency:
+  group: ci-nightly
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -72,11 +77,36 @@ jobs:
         with:
           path: ./odoo-lsp-${{ env.SHA }}-${{ matrix.os }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
           name: odoo-lsp-${{ env.SHA }}-${{ matrix.os }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
+          
+
+  build-extension:
+    needs: check
+    runs-on: ubuntu-latest
+    if: needs.check.outputs.skip != 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install
+      - run: pnpm package
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          path: ./odoo-lsp-*.vsix
+          name: odoo-lsp-${{ env.SHA }}.vsix
 
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, build-extension]
     permissions:
       contents: write
     steps:
