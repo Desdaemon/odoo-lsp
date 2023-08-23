@@ -6,3 +6,9 @@ tsconfig.json
 webpack.config.js
 client/**
 target
+static
+examples
+.*
+.github
+Cargo.*
+pnpm-lock.yaml
