@@ -59,7 +59,6 @@ jobs:
 
       - name: Get short SHA
         id: sha
-        # run: echo "::set-output name=sha::$(echo '{{ github.sha }}' | cut -c1-8)"
         run: echo "SHA=$(echo '${{ github.sha }}' | cut -c1-8)" >> "$GITHUB_ENV"
 
       - name: Zip files
@@ -97,6 +96,9 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install
       - run: pnpm package
+      - name: Get short SHA
+        id: sha
+        run: echo "SHA=$(echo '${{ github.sha }}' | cut -c1-8)" >> "$GITHUB_ENV"
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
