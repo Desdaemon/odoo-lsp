@@ -59,9 +59,9 @@ impl Record {
 					"id" => id = Some(value.as_str().to_string().into()),
 					"model" => {
 						// TODO: Limit which records need to be indexed
-						if value.as_str() != "ir.ui.view" {
-							return Ok(None);
-						}
+						// if value.as_str() != "ir.ui.view" {
+						// 	return Ok(None);
+						// }
 						model = Some(value.as_str().to_string().into())
 					}
 					_ => {}

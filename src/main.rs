@@ -4,11 +4,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::OnceLock;
 
+use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
 use globwalk::FileType;
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use serde_json::Value;
+use tower::ServiceBuilder;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::{DidChangeConfiguration, Notification, Progress};
 use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
@@ -457,7 +459,7 @@ impl Backend {
 		let rope = match (params.rope, &params.text) {
 			(Some(rope), _) => rope,
 			(None, Text::Full(full)) => ropey::Rope::from_str(full),
-			(None, Text::Delta(_)) => todo!("No rope and got delta"),
+			(None, Text::Delta(_)) => return Err(diagnostic!("No rope and got delta").into()),
 		};
 		if matches!(split_uri, Some((_, "xml"))) || matches!(params.language, Some(Language::Xml)) {
 			self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
@@ -641,12 +643,6 @@ async fn main() {
 	})
 	.finish();
 
-	// let layer = tower::layer::layer_fn(|service| {
-	// 	struct CatchPanic<S>(S);
-	// 	CatchPanic(service)
-	// });
-
-	// let service = ServiceBuilder::new().layer_fn(CatchPanic).service(service);
-
+	let service = ServiceBuilder::new().layer_fn(CatchPanic).service(service);
 	Server::new(stdin, stdout, socket).serve(service).await;
 }

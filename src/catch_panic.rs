@@ -3,13 +3,14 @@
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 
 use futures::FutureExt;
 use futures::{future::CatchUnwind, Future};
 use tower::Service;
+use tower_lsp::jsonrpc::{Error, Id, Response};
 
-struct CatchPanic<S>(S);
+pub struct CatchPanic<S>(pub S);
 impl<S> Service<tower_lsp::jsonrpc::Request> for CatchPanic<S>
 where
 	S: Service<tower_lsp::jsonrpc::Request, Response = Option<tower_lsp::jsonrpc::Response>>,
@@ -24,50 +25,78 @@ where
 	}
 
 	fn call(&mut self, req: tower_lsp::jsonrpc::Request) -> Self::Future {
+		let id = req.id().cloned();
 		match std::panic::catch_unwind(AssertUnwindSafe(|| self.0.call(req))) {
 			Ok(fut) => CatchPanicFuture {
+				id,
 				kind: Kind::Future {
 					future: AssertUnwindSafe(fut).catch_unwind(),
 				},
 			},
 			Err(panic_err) => CatchPanicFuture {
+				id,
 				kind: Kind::Panicked { panic_err },
 			},
 		}
 	}
 }
 
+// Read more about pinning, projection and why it is needed here:
+// https://doc.rust-lang.org/std/pin/index.html#projections-and-structural-pinning
 pin_project_lite::pin_project! {
-	struct CatchPanicFuture<S> {
+	pub struct CatchPanicFuture<S> {
 		#[pin]
-		kind: Kind<S>
+		kind: Kind<S>,
+		id: Option<Id>,
 	}
 }
 pin_project_lite::pin_project! {
 	#[project = KindProj]
 	enum Kind<S> {
 		Panicked {
-			panic_err: Box<dyn Any + Send + 'static>
+			panic_err: Box<dyn Any + Send + 'static>,
 		},
 		Future {
 			#[pin]
-			future: CatchUnwind<AssertUnwindSafe<S>>
+			future: CatchUnwind<AssertUnwindSafe<S>>,
 		}
 	}
 }
 
-impl<S, R, E> Future for CatchPanicFuture<S>
+fn handle_panic_err(err: Box<dyn Any>) {
+	if let Some(msg) = err.downcast_ref::<String>() {
+		eprintln!("{msg}");
+	} else if let Some(msg) = err.downcast_ref::<&str>() {
+		eprintln!("{msg}");
+	} else {
+		eprintln!("panic: {err:?} type_id={:?}", err.type_id());
+	}
+}
+
+impl<S, E> Future for CatchPanicFuture<S>
 where
-	S: Future<Output = core::result::Result<R, E>>,
+	// TODO: Hardcoded for LspService, is there a more general bound?
+	S: Future<Output = core::result::Result<Option<Response>, E>>,
 {
-	type Output = core::result::Result<Option<tower_lsp::jsonrpc::Response>, E>;
+	type Output = core::result::Result<Option<Response>, E>;
 
-	fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-		todo!()
-		// match self.project().kind.project() {
-		// 	KindProj::Panicked { panic_err } => Poll::Ready(Ok(Some({
-
-		// 	}))),
-		// }
+	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+		let self_ = self.project();
+		match self_.kind.project() {
+			KindProj::Panicked { panic_err } => {
+				let err = core::mem::replace(panic_err, Box::new(&()));
+				handle_panic_err(err);
+				let resp = (self_.id.clone()).map(|id| Response::from_error(id, Error::internal_error()));
+				Poll::Ready(Ok(resp))
+			}
+			KindProj::Future { future } => match ready!(future.poll(cx)) {
+				Ok(inner) => Poll::Ready(inner),
+				Err(panic_err) => {
+					handle_panic_err(panic_err);
+					let resp = (self_.id.clone()).map(|id| Response::from_error(id, Error::internal_error()));
+					Poll::Ready(Ok(resp))
+				}
+			},
+		}
 	}
 }
