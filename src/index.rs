@@ -1,24 +1,41 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use dashmap::{DashMap, DashSet};
 use faststr::FastStr;
 use globwalk::FileType;
-use miette::{Context, IntoDiagnostic};
+use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::notification::Progress;
 use tower_lsp::lsp_types::{
 	ProgressParams, ProgressParamsValue, ProgressToken, WorkDoneProgress, WorkDoneProgressReport,
 };
+use tree_sitter::{Query, QueryCursor};
 use xmlparser::{Token, Tokenizer};
 
-use crate::{record::Record, utils::CharOffset};
+use crate::format_loc;
+use crate::model::Model;
+use crate::record::Record;
+use crate::utils::CharOffset;
 
 #[derive(Debug, Default)]
 pub struct ModuleIndex {
 	pub roots: DashSet<String>,
 	pub modules: DashSet<String>,
 	pub records: DashMap<String, Record>,
+}
+
+enum Output {
+	Records(Vec<Record>),
+	Models(Vec<Model>),
+}
+
+pub struct AddRootResults {
+	pub module_count: usize,
+	pub record_count: usize,
+	pub model_count: usize,
+	pub elapsed: Duration,
 }
 
 impl ModuleIndex {
@@ -29,8 +46,8 @@ impl ModuleIndex {
 		&self,
 		root: &str,
 		progress: Option<(&tower_lsp::Client, ProgressToken)>,
-	) -> miette::Result<Option<(usize, usize, Duration)>> {
-		if !self.roots.insert(dbg!(root).to_string()) {
+	) -> miette::Result<Option<AddRootResults>> {
+		if !self.roots.insert(root.to_string()) {
 			return Ok(None);
 		}
 
@@ -41,8 +58,8 @@ impl ModuleIndex {
 			.into_diagnostic()
 			.with_context(|| format!("Could not glob into {root}"))?;
 
-		let mut handles: Vec<tokio::task::JoinHandle<miette::Result<_>>> = vec![];
 		let mut module_count = 0;
+		let mut outputs = tokio::task::JoinSet::new();
 		for module in modules {
 			module_count += 1;
 			let module = module.into_diagnostic()?;
@@ -53,6 +70,7 @@ impl ModuleIndex {
 				.ok_or_else(|| miette::diagnostic!("Unexpected empty path"))?;
 			let module_name = module_dir.file_name().unwrap().to_string_lossy().to_string();
 			if let Some((client, token)) = &progress {
+				let module_name = module_name.clone();
 				_ = client
 					.send_notification::<Progress>(ProgressParams {
 						token: token.clone(),
@@ -73,87 +91,79 @@ impl ModuleIndex {
 				.follow_links(true)
 				.build()
 				.into_diagnostic()
-				.with_context(|| format!("Could not glob into {:?}", module.path()))?;
+				.with_context(|| format_loc!("Could not glob into {:?}", module.path()))?;
 			for xml in xmls {
-				let xml = xml.into_diagnostic()?;
-				let path = xml.path().to_path_buf();
-				let path_uri = path.to_string_lossy().to_string();
-				let module_name = module_name.clone();
-				handles.push(tokio::spawn(async move {
-					let file = tokio::fs::read(&path)
-						.await
-						.into_diagnostic()
-						.with_context(|| format!("Could not read {path_uri}"))?;
-					let file = std::str::from_utf8(&file)
-						.into_diagnostic()
-						.with_context(|| format!("non-utf8 file: {path_uri}"))?;
-					let mut reader = Tokenizer::from(file);
-					let mut records = vec![];
-					let rope = Rope::from_str(file);
-					loop {
-						match reader.next() {
-							Some(Ok(Token::ElementStart { local, span, .. })) => {
-								if local.as_str() == "record" {
-									let record = Record::from_reader(
-										CharOffset(span.start()),
-										module_name.clone(),
-										&path_uri,
-										&mut reader,
-										rope.clone(),
-									)?;
-									records.extend(record);
-								} else if local.as_str() == "template" {
-									let template = Record::template(
-										CharOffset(span.start()),
-										module_name.clone(),
-										&path_uri,
-										&mut reader,
-										rope.clone(),
-									)?;
-									records.extend(template);
-								}
-							}
-							None => break,
-							Some(Err(err)) => {
-								eprintln!("error parsing {}:\n{err}", path.display());
-								break;
-							}
-							_ => {}
-						}
+				let xml = match xml {
+					Ok(entry) => entry,
+					Err(err) => {
+						eprintln!("{err}");
+						continue;
 					}
-
-					miette::Result::Ok(records)
-				}));
+				};
+				let module_name = module_name.clone();
+				outputs.spawn(add_root_xml(xml.path().to_path_buf(), module_name));
+			}
+			let pys = globwalk::glob_builder(format!("{}/**/*.py", module_dir.display()))
+				.file_type(FileType::FILE | FileType::SYMLINK)
+				.follow_links(true)
+				.build()
+				.into_diagnostic()
+				.with_context(|| format_loc!("Could not glob into {:?}", module.path()))?;
+			for py in pys {
+				let py = match py {
+					Ok(entry) => entry,
+					Err(err) => {
+						eprintln!("{err}");
+						continue;
+					}
+				};
+				let module_name = module_name.clone();
+				let path = py.path().to_path_buf();
+				outputs.spawn(add_root_py(path, module_name));
 			}
 		}
+
 		let mut record_count = 0;
-		// let mut template_count = 0;
-		for result in futures::future::join_all(handles).await {
-			let records = result.into_diagnostic()?;
-			let records = match records {
+		let mut model_count = 0;
+		while let Some(outputs) = outputs.join_next().await {
+			let Ok(outputs) = outputs else {
+				eprintln!("join error");
+				continue;
+			};
+			let outputs = match outputs {
 				Ok(records) => records,
 				Err(err) => {
 					eprintln!("{err}");
 					continue;
 				}
 			};
-			record_count += records.len();
-			for record in records {
-				let key = record.qualified_id();
-				if let Some((_, discarded)) = self.records.remove(&key) {
-					eprintln!(
-						"{key}:\n{} -> {}",
-						discarded.location.uri.path(),
-						record.location.uri.path()
-					)
+			match outputs {
+				Output::Records(records) => {
+					record_count += records.len();
+					for record in records {
+						let key = record.qualified_id();
+						if let Some((_, discarded)) = self.records.remove(&key) {
+							eprintln!(
+								"{key}:\n{} -> {}",
+								discarded.location.uri.path(),
+								record.location.uri.path()
+							)
+						}
+						self.records.insert(key, record);
+					}
 				}
-				self.records.insert(key, record);
+				Output::Models(models) => {
+					model_count += models.len();
+					for _ in models {}
+				}
 			}
-			// template_count += templates.len();
-			// for template in templates {}
 		}
-
-		Ok(Some((module_count, record_count, t0.elapsed())))
+		Ok(Some(AddRootResults {
+			module_count,
+			record_count,
+			model_count,
+			elapsed: t0.elapsed(),
+		}))
 	}
 	pub fn remove_root(&self, root: &str) {
 		self.roots.remove(root);
@@ -173,4 +183,81 @@ impl ModuleIndex {
 		}
 		None
 	}
+}
+
+async fn add_root_xml(path: PathBuf, module_name: FastStr) -> miette::Result<Output> {
+	let path_uri = path.to_string_lossy();
+	let file = tokio::fs::read(&path)
+		.await
+		.into_diagnostic()
+		.with_context(|| format_loc!("Could not read {path_uri}"))?;
+	let file = String::from_utf8_lossy(&file);
+	let mut reader = Tokenizer::from(file.as_ref());
+	let mut records = vec![];
+	let rope = Rope::from_str(&file);
+	loop {
+		match reader.next() {
+			Some(Ok(Token::ElementStart { local, span, .. })) => {
+				if local.as_str() == "record" {
+					let record = Record::from_reader(
+						CharOffset(span.start()),
+						module_name.clone(),
+						&path_uri,
+						&mut reader,
+						rope.clone(),
+					)?;
+					records.extend(record);
+				} else if local.as_str() == "template" {
+					let template = Record::template(
+						CharOffset(span.start()),
+						module_name.clone(),
+						&path_uri,
+						&mut reader,
+						rope.clone(),
+					)?;
+					records.extend(template);
+				}
+			}
+			None => break,
+			Some(Err(err)) => {
+				eprintln!("error parsing {}:\n{err}", path.display());
+				break;
+			}
+			_ => {}
+		}
+	}
+
+	Ok(Output::Records(records))
+}
+
+fn model_query() -> &'static Query {
+	static MODEL: OnceLock<Query> = OnceLock::new();
+	MODEL.get_or_init(|| {
+		tree_sitter::Query::new(tree_sitter_python::language(), include_str!("queries/model.scm"))
+			.expect("failed to parse query")
+	})
+}
+
+async fn add_root_py(path: PathBuf, _: FastStr) -> miette::Result<Output> {
+	let file = tokio::fs::read(&path)
+		.await
+		.into_diagnostic()
+		.with_context(|| format_loc!("Could not read {}", path.display()))?;
+	let models = vec![];
+
+	let mut parser = tree_sitter::Parser::new();
+	parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
+
+	let ast = parser.parse(&file, None).ok_or_else(|| diagnostic!("AST not parsed"))?;
+	let query = model_query();
+	let mut cursor = QueryCursor::new();
+	for match_ in cursor.matches(query, ast.root_node(), file.as_slice()) {
+		dbg!(match_.captures);
+		// let [_, _, _, name, _, inherit] = match_.captures else {
+		// 	unreachable!("Expected 6 captures, got {}", match_.captures.len());
+		// };
+		// dbg!((name, inherit));
+	}
+
+	Ok(Output::Models(models))
 }

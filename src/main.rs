@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::OnceLock;
 
 use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
@@ -40,7 +39,7 @@ pub struct Backend {
 
 #[derive(Debug, Default)]
 struct Capabilities {
-	dynamic_config: OnceLock<()>,
+	dynamic_config: AtomicBool,
 }
 
 #[tower_lsp::async_trait]
@@ -90,7 +89,7 @@ impl LanguageServer for Backend {
 			..
 		}) = params.capabilities.workspace
 		{
-			_ = self.capabilities.dynamic_config.set(());
+			self.capabilities.dynamic_config.store(true, Relaxed);
 		}
 
 		Ok(InitializeResult {
@@ -166,14 +165,14 @@ impl LanguageServer for Backend {
 		}
 
 		for root in self.roots.iter() {
-			match self.module_index.add_root(dbg!(&root.as_str()), progress.clone()).await {
-				Ok(Some((modules, records, elapsed))) => {
+			match self.module_index.add_root(&root.as_str(), progress.clone()).await {
+				Ok(Some(results)) => {
 					eprintln!(
 						"Processed {} with {} modules and {} records in {:.2}s",
 						root.as_str(),
-						modules,
-						records,
-						elapsed.as_secs_f64()
+						results.module_count,
+						results.record_count,
+						results.elapsed.as_secs_f64()
 					);
 				}
 				Err(err) => {
@@ -191,7 +190,7 @@ impl LanguageServer for Backend {
 			})
 			.await;
 
-		if self.capabilities.dynamic_config.get().is_some() {
+		if self.capabilities.dynamic_config.load(Relaxed) {
 			_ = self
 				.client
 				.register_capability(vec![Registration {
@@ -459,7 +458,7 @@ impl Backend {
 		let rope = match (params.rope, &params.text) {
 			(Some(rope), _) => rope,
 			(None, Text::Full(full)) => ropey::Rope::from_str(full),
-			(None, Text::Delta(_)) => return Err(diagnostic!("No rope and got delta").into()),
+			(None, Text::Delta(_)) => Err(diagnostic!("No rope and got delta"))?,
 		};
 		if matches!(split_uri, Some((_, "xml"))) || matches!(params.language, Some(Language::Xml)) {
 			self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
@@ -517,9 +516,9 @@ impl Backend {
 				let slice = Cow::from(rope.slice(..));
 				parser.parse(slice.as_bytes(), Some(&ast))
 			}
-			(Text::Delta(_), None) => return Err(diagnostic!("(update_ast) got delta but no ast").into()),
+			(Text::Delta(_), None) => Err(diagnostic!("(update_ast) got delta but no ast"))?,
 		};
-		let Some(ast) = ast else { return Ok(()) };
+		let ast = ast.ok_or_else(|| diagnostic!("No AST was parsed"))?;
 		self.ast_map.insert(uri.path().to_string(), ast);
 		Ok(())
 	}
@@ -589,18 +588,14 @@ impl Backend {
 				return Ok(None);
 			}
 		}
-		return Ok(self
-			.module_index
-			.records
-			.get(value.as_ref())
-			.map(|entry| entry.location.clone()));
+		return Ok((self.module_index.records.get(value.as_ref())).map(|entry| entry.location.clone()));
 	}
 	async fn on_change_config(&self, config: Config) {
 		let Some(ModuleConfig { roots: Some(roots), .. }) = config.module else {
 			return;
 		};
 		for root in roots {
-			let Ok(root) = dbg!(Path::new(&root).canonicalize()) else {
+			let Ok(root) = Path::new(&root).canonicalize() else {
 				continue;
 			};
 			let root_display = root.to_string_lossy();
@@ -612,14 +607,13 @@ impl Backend {
 					continue;
 				};
 				for dir_entry in glob {
-					let Ok(root) = dbg!(dir_entry) else { continue };
+					let Ok(root) = dir_entry else { continue };
 					self.roots.insert(root.path().to_string_lossy().to_string());
 				}
 			} else if tokio::fs::try_exists(&root).await.unwrap_or(false) {
 				self.roots.insert(root_display.to_string());
 			}
 		}
-		dbg!(&self.roots);
 		self.root_setup.store(true, Relaxed);
 	}
 }

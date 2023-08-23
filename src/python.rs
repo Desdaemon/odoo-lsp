@@ -65,14 +65,7 @@ impl Backend {
 					let range = xml_id.range().start_byte + 1..xml_id.range().end_byte - 1;
 					let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
 					let mut items = vec![];
-					self.complete_inherit_id(
-						dbg!(&needle),
-						dbg!(range),
-						rope.clone(),
-						None,
-						&current_module,
-						&mut items,
-					)?;
+					self.complete_inherit_id(&needle, range, rope.clone(), None, &current_module, &mut items)?;
 					return Ok(Some(CompletionResponse::List(CompletionList {
 						is_incomplete: items.len() >= Self::LIMIT,
 						items,
