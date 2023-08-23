@@ -82,4 +82,32 @@ impl Backend {
 		}
 		Ok(None)
 	}
+	pub async fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
+		let Some(ast) = self.ast_map.get(params.text_document_position_params.text_document.uri.path()) else {
+			return Ok(None)
+		};
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, rope.clone()) else {
+			return Ok(None)
+		};
+		let query = env_ref_query();
+		let bytes = rope.bytes().collect::<Vec<_>>();
+		let range = offset.saturating_sub(50)..bytes.len().min(offset + 200);
+		let mut cursor = tree_sitter::QueryCursor::new();
+		cursor.set_match_limit(256);
+		cursor.set_byte_range(range.clone());
+		'match_: for match_ in cursor.matches(query, ast.root_node(), bytes.as_slice()) {
+			for xml_id in match_.nodes_for_capture_index(2) {
+				if xml_id.byte_range().contains(&offset) {
+					let range = xml_id.range().start_byte + 1..xml_id.range().end_byte - 1;
+					let Some(slice) = rope.get_byte_slice(range.clone()) else {
+						dbg!((xml_id.byte_range(), &range));
+						break 'match_;
+					};
+					let slice = Cow::from(slice);
+					return self.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
+				}
+			}
+		}
+		Ok(None)
+	}
 }

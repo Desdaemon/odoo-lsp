@@ -270,7 +270,7 @@ impl Backend {
 					let Some(cursor_value) = cursor_value else { continue };
 					match record_field {
 						Some(RecordField::InheritId) => {
-							return self.jump_def_inherit_id(cursor_value, uri);
+							return self.jump_def_inherit_id(&cursor_value, uri);
 						}
 						None => {}
 					}
@@ -284,7 +284,7 @@ impl Backend {
 				}
 				Ok(Token::ElementEnd { .. }) if matches!(tag, Some(Tag::Template)) => {
 					let Some(cursor_value) = cursor_value else { continue };
-					return self.jump_def_inherit_id(cursor_value, uri);
+					return self.jump_def_inherit_id(&cursor_value, uri);
 				}
 				Err(err) => {
 					eprintln!("bug:\n{err}\nin file:\n{}", slice);

@@ -15,7 +15,6 @@ use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tree_sitter::{Parser, Tree};
-use xmlparser::StrSpan;
 
 use odoo_lsp::config::{Config, ModuleConfig};
 use odoo_lsp::index::ModuleIndex;
@@ -120,7 +119,22 @@ impl LanguageServer for Backend {
 	async fn shutdown(&self) -> Result<()> {
 		Ok(())
 	}
-	async fn did_close(&self, _: DidCloseTextDocumentParams) {}
+	async fn did_close(&self, params: DidCloseTextDocumentParams) {
+		let path = params.text_document.uri.path();
+		let Self {
+			document_map,
+			record_ranges,
+			ast_map,
+			client: _,
+			module_index: _,
+			roots: _,
+			capabilities: _,
+			root_setup: _,
+		} = self;
+		document_map.remove(path);
+		record_ranges.remove(path);
+		ast_map.remove(path);
+	}
 	async fn initialized(&self, _: InitializedParams) {
 		eprintln!("initialized");
 		let token = NumberOrString::String("_odoo_lsp_initialized".to_string());
@@ -303,17 +317,32 @@ impl LanguageServer for Backend {
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		eprintln!("goto_definition {}", uri.path());
-		let Some((_, "xml")) = uri.path().rsplit_once('.') else {
+		let Some((_, ext)) = uri.path().rsplit_once('.') else {
 			eprintln!("Unsupported file {}", uri.path());
 			return Ok(None);
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
 			panic!("Bug: did not build a rope for {}", uri.path());
 		};
-		let location = self
-			.xml_jump_def(params, document.value().clone())
-			.await
-			.expect("Error retrieving references");
+		let location;
+		if ext == "xml" {
+			location = self
+				.xml_jump_def(params, document.value().clone())
+				.await
+				.map_err(|err| eprintln!("Error retrieving references:\n{err}"))
+				.ok()
+				.flatten();
+		} else if ext == "py" {
+			location = self
+				.python_jump_def(params, document.value().clone())
+				.await
+				.map_err(|err| eprintln!("Error retrieving references:\n{err}"))
+				.ok()
+				.flatten();
+		} else {
+			eprintln!("Unsupported file {}", uri.path());
+			return Ok(None);
+		}
 
 		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}
@@ -542,8 +571,8 @@ impl Backend {
 		items.extend(matches);
 		Ok(())
 	}
-	fn jump_def_inherit_id(&self, cursor_value: StrSpan, uri: &Url) -> miette::Result<Option<Location>> {
-		let mut value = Cow::from(cursor_value.as_str());
+	fn jump_def_inherit_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
+		let mut value = Cow::from(cursor_value);
 		if !value.contains('.') {
 			'unqualified: {
 				if let Some(module) = self.module_index.module_of_path(Path::new(uri.path())) {
@@ -552,7 +581,7 @@ impl Backend {
 				}
 				eprintln!(
 					"Could not find a reference for {} in {}: could not infer module",
-					cursor_value.as_str(),
+					cursor_value,
 					uri.path()
 				);
 				return Ok(None);
