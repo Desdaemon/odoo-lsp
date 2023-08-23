@@ -1,6 +1,6 @@
 # odoo-lsp
 
-[![nightly](https://github.com/Desdaemon/odoo-lsp/actions/workflows/rust.yml/badge.svg)](https://github.com/Desdaemon/odoo-lsp/actions/workflows/rust.yml)
+[![nightly](https://github.com/Desdaemon/odoo-lsp/actions/workflows/nightly.yml/badge.svg)](https://github.com/Desdaemon/odoo-lsp/actions/workflows/nightly.yml)
 
 ## Features
 
