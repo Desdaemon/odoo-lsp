@@ -1,4 +1,4 @@
-self.env.ref('asd')
+self.env.ref('one.view_one')
 
 class Foo(Model):
     pass
@@ -6,9 +6,9 @@ class Foo(Model):
 class Bar(Model):
     _name = 'bar'
 
-class Baz(Model):
+class Baz(models.Model):
     _inherit = 'bar'
 
-class Quux(Model):
+class Quux(models.Model):
     _name = 'quux'
     _inherit = 'bar'

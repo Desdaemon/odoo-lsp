@@ -9,26 +9,27 @@ use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::notification::Progress;
 use tower_lsp::lsp_types::{
-	ProgressParams, ProgressParamsValue, ProgressToken, WorkDoneProgress, WorkDoneProgressReport,
+	ProgressParams, ProgressParamsValue, ProgressToken, Url, WorkDoneProgress, WorkDoneProgressReport,
 };
 use tree_sitter::{Query, QueryCursor};
 use xmlparser::{Token, Tokenizer};
 
 use crate::format_loc;
-use crate::model::Model;
+use crate::model::{Model, ModelIndex};
 use crate::record::Record;
-use crate::utils::CharOffset;
+use crate::utils::{offset_range_to_lsp_range, ByteOffset, CharOffset, RangeExt};
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ModuleIndex {
 	pub roots: DashSet<String>,
 	pub modules: DashSet<String>,
 	pub records: DashMap<String, Record>,
+	pub models: ModelIndex,
 }
 
 enum Output {
 	Records(Vec<Record>),
-	Models(Vec<Model>),
+	Models(FastStr, Vec<Model>),
 }
 
 pub struct AddRootResults {
@@ -152,9 +153,10 @@ impl ModuleIndex {
 						self.records.insert(key, record);
 					}
 				}
-				Output::Models(models) => {
+				Output::Models(path, models) => {
 					model_count += models.len();
-					for _ in models {}
+					let uri = Url::parse(&format!("file://{path}")).into_diagnostic()?;
+					self.models.extend_models(&uri, models);
 				}
 			}
 		}
@@ -243,7 +245,6 @@ async fn add_root_py(path: PathBuf, _: FastStr) -> miette::Result<Output> {
 		.await
 		.into_diagnostic()
 		.with_context(|| format_loc!("Could not read {}", path.display()))?;
-	let models = vec![];
 
 	let mut parser = tree_sitter::Parser::new();
 	parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
@@ -251,13 +252,54 @@ async fn add_root_py(path: PathBuf, _: FastStr) -> miette::Result<Output> {
 	let ast = parser.parse(&file, None).ok_or_else(|| diagnostic!("AST not parsed"))?;
 	let query = model_query();
 	let mut cursor = QueryCursor::new();
+
+	let mut out = vec![];
+	let rope = Rope::from_str(&String::from_utf8_lossy(&file));
 	for match_ in cursor.matches(query, ast.root_node(), file.as_slice()) {
-		dbg!(match_.captures);
-		// let [_, _, _, name, _, inherit] = match_.captures else {
-		// 	unreachable!("Expected 6 captures, got {}", match_.captures.len());
-		// };
-		// dbg!((name, inherit));
+		let captures = match_
+			.captures
+			.iter()
+			.map(|capture| (&file[capture.node.byte_range()], capture.node.byte_range()))
+			.collect::<Vec<_>>();
+		let mut captures = captures.as_slice();
+		let ([(b"models", _), _, tail @ ..] | [(b"Model" | b"TransientModel", _), tail @ ..]) = captures else {unreachable!()};
+		captures = tail;
+		let mut model = None;
+		while !captures.is_empty() {
+			match captures {
+				[(b"_name", _), (name, location), tail @ ..] => {
+					captures = tail;
+					let name = &name[1..name.len() - 1];
+					if name.is_empty() {
+						break;
+					}
+					model = Some(Model {
+						model: String::from_utf8_lossy(name).to_string(),
+						range: offset_range_to_lsp_range(location.clone().map_unit(ByteOffset), rope.clone())
+							.ok_or_else(|| diagnostic!("name range"))?,
+						inherit: false,
+					});
+				}
+				[(b"_inherit", _), (inherit, location), tail @ ..] => {
+					captures = tail;
+					let inherit = &inherit[1..inherit.len() - 1];
+					if inherit.is_empty() {
+						continue;
+					}
+					if model.is_none() {
+						model = Some(Model {
+							model: String::from_utf8_lossy(inherit).to_string(),
+							range: offset_range_to_lsp_range(location.clone().map_unit(ByteOffset), rope.clone())
+								.ok_or_else(|| diagnostic!("inherit range"))?,
+							inherit: true,
+						});
+					}
+				}
+				unk => Err(diagnostic!("Bug: Leftover captures: {unk:?}"))?,
+			}
+		}
+		out.extend(model);
 	}
 
-	Ok(Output::Models(models))
+	Ok(Output::Models(path.to_string_lossy().to_string().into(), out))
 }

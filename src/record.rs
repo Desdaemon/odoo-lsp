@@ -4,7 +4,7 @@ use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::utils::{char_offset_to_position, CharOffset};
+use crate::utils::{char_to_position, CharOffset};
 
 macro_rules! unwrap_or_none {
 	($opt:expr) => {
@@ -42,8 +42,8 @@ impl Record {
 		let mut inherit_id = None;
 		let mut end = None;
 		let uri = format!("file://{uri}").parse().into_diagnostic()?;
-		let start = char_offset_to_position(offset.0, rope.clone())
-			.ok_or_else(|| diagnostic!("Failed to parse start location"))?;
+		let start =
+			char_to_position(offset.0, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
 
 		loop {
 			match reader.next() {
@@ -108,8 +108,7 @@ impl Record {
 		}
 		let id = unwrap_or_none!(id);
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for record"))?;
-		let end =
-			char_offset_to_position(end, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse end location"))?;
+		let end = char_to_position(end, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse end location"))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {
@@ -129,7 +128,7 @@ impl Record {
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
 		let uri: Url = format!("file://{uri}").parse().into_diagnostic()?;
-		let start = char_offset_to_position(offset.0, rope.clone())
+		let start = char_to_position(offset.0, rope.clone())
 			.ok_or_else(|| diagnostic!("(template) Failed to parse start location"))?;
 		let mut id = None;
 		let mut inherit_id = None;
@@ -187,8 +186,7 @@ impl Record {
 			}
 		}
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for template"))?;
-		let end =
-			char_offset_to_position(end, rope).ok_or_else(|| diagnostic!("(template) Failed to parse end location"))?;
+		let end = char_to_position(end, rope).ok_or_else(|| diagnostic!("(template) Failed to parse end location"))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {

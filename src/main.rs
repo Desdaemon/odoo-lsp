@@ -25,7 +25,6 @@ mod catch_panic;
 mod python;
 mod xml;
 
-#[derive(Debug)]
 pub struct Backend {
 	client: Client,
 	document_map: DashMap<String, Rope>,
@@ -497,7 +496,7 @@ impl Backend {
 					// calculate new_end_position using rope
 					let start_char = rope.try_byte_to_char(start.0).into_diagnostic()?;
 					let new_end_offset = start_char + len_new;
-					let new_end_position = char_offset_to_position(new_end_offset, rope.clone())
+					let new_end_position = char_to_position(new_end_offset, rope.clone())
 						.ok_or_else(|| diagnostic!("new_end_position"))?;
 					let new_end_position = tree_sitter::Point {
 						row: new_end_position.line as usize,
@@ -532,9 +531,8 @@ impl Backend {
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
 		let replace_start =
-			char_offset_to_position(range.start.0, rope.clone()).ok_or_else(|| diagnostic!("replace_start"))?;
-		let replace_end =
-			char_offset_to_position(range.end.0, rope.clone()).ok_or_else(|| diagnostic!("replace_end"))?;
+			char_to_position(range.start.0, rope.clone()).ok_or_else(|| diagnostic!("replace_start"))?;
+		let replace_end = char_to_position(range.end.0, rope.clone()).ok_or_else(|| diagnostic!("replace_end"))?;
 		let range = Range::new(replace_start, replace_end);
 		let matches = self
 			.module_index

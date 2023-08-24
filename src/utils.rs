@@ -3,35 +3,34 @@ use std::fmt::Display;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 
-// fn offset_to_position(offset: usize, rope: &Rope) -> Option<Position> {
-//     let line = rope.try_char_to_line(offset).ok()?;
-//     let first_char_of_line = rope.try_line_to_char(line).ok()?;
-
-//     let column = offset - first_char_of_line;
-//     Some(Position::new(line as u32, column as u32))
-// }
+pub fn offset_to_position(offset: usize, rope: Rope) -> Option<Position> {
+	let line = rope.try_char_to_line(offset).ok()?;
+	let first_char_of_line = rope.try_line_to_char(line).ok()?;
+	let column = offset - first_char_of_line;
+	Some(Position::new(line as u32, column as u32))
+}
 
 pub fn position_to_offset(position: Position, rope: Rope) -> Option<ByteOffset> {
-	let CharOffset(offset) = position_to_char_offset(position, rope.clone())?;
+	let CharOffset(offset) = position_to_char(position, rope.clone())?;
 	let byte_offset = rope.try_char_to_byte(offset).ok()?;
 	Some(ByteOffset(byte_offset))
 }
 
-pub fn position_to_char_offset(position: Position, rope: Rope) -> Option<CharOffset> {
+pub fn position_to_char(position: Position, rope: Rope) -> Option<CharOffset> {
 	let line_offset_in_char = rope.try_line_to_char(position.line as usize).ok()?;
 	let line_end = line_offset_in_char + position.character as usize;
 	Some(CharOffset(line_end))
 }
 
-pub fn char_offset_to_position(offset: usize, rope: Rope) -> Option<Position> {
+pub fn char_to_position(offset: usize, rope: Rope) -> Option<Position> {
 	let line = rope.try_char_to_line(offset).ok()?;
 	let line_offset = rope.try_line_to_char(line).ok()?;
 	Some(Position::new(line as u32, (offset - line_offset) as u32))
 }
 
 pub fn lsp_range_to_char_range(range: Range, rope: Rope) -> Option<std::ops::Range<CharOffset>> {
-	let start = position_to_char_offset(range.start, rope.clone())?;
-	let end = position_to_char_offset(range.end, rope.clone())?;
+	let start = position_to_char(range.start, rope.clone())?;
+	let end = position_to_char(range.end, rope.clone())?;
 	Some(start..end)
 }
 
@@ -40,6 +39,12 @@ pub fn position_to_point(position: Position) -> tree_sitter::Point {
 		row: position.line as usize,
 		column: position.character as usize,
 	}
+}
+
+pub fn offset_range_to_lsp_range(range: std::ops::Range<ByteOffset>, rope: Rope) -> Option<Range> {
+	let start = offset_to_position(range.start.0, rope.clone())?;
+	let end = offset_to_position(range.end.0, rope)?;
+	Some(Range { start, end })
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
