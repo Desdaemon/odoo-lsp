@@ -70,15 +70,13 @@ impl ModelIndex {
 					uri: uri.clone(),
 					range: item.range,
 				}));
+			} else if let Some(base) = &entry.0 {
+				eprintln!("{} already defined at {base}", entry.key());
 			} else {
-				if let Some(base) = &entry.0 {
-					eprintln!("{} already defined at {base}", entry.key());
-				} else {
-					entry.0 = Some(ModelLocation(Location {
-						uri: uri.clone(),
-						range: item.range,
-					}))
-				}
+				entry.0 = Some(ModelLocation(Location {
+					uri: uri.clone(),
+					range: item.range,
+				}))
 			}
 		}
 	}

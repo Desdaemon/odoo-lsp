@@ -56,6 +56,7 @@ language-servers = ["odoo-lsp"]
 
 [[language]]
 name = "python"
+# Order is important here
 language-servers = [
    "odoo-lsp",
    # add the default language servers here

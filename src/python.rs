@@ -43,6 +43,7 @@ impl Backend {
 		self.update_ast(text, uri, rope, parser)?;
 		Ok(())
 	}
+	const BYTE_WINDOW: usize = 200;
 	pub fn python_completions(
 		&self,
 		params: CompletionParams,
@@ -64,14 +65,15 @@ impl Backend {
 		cursor.set_match_limit(256);
 		let bytes = rope.bytes().collect::<Vec<_>>();
 		// TODO: Very inexact, is there a better way?
-		let range = offset.saturating_sub(50)..bytes.len().min(offset + 200);
+		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let query = py_completions();
 		cursor.set_byte_range(range.clone());
 		let mut items = vec![];
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
-			match match_.captures {
-				[_, _, xml_id] => {
-					let range = xml_id.node.byte_range();
+			for capture in match_.captures {
+				if capture.index == 2 {
+					// @xml_id
+					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
 							dbg!(&range);
@@ -87,9 +89,9 @@ impl Backend {
 							items,
 						})));
 					}
-				}
-				[_, model] => {
-					let range = model.node.byte_range();
+				} else if capture.index == 3 {
+					// @model
+					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
 							dbg!(&range);
@@ -105,32 +107,31 @@ impl Backend {
 						})));
 					}
 				}
-				unk => Err(diagnostic!("Unknown pattern {unk:?}"))?,
 			}
 		}
 		Ok(None)
 	}
 	pub fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
-		let Some(ast) = self
+		let uri = &params.text_document_position_params.text_document.uri;
+		let ast = self
 			.ast_map
-			.get(params.text_document_position_params.text_document.uri.path())
-		else {
-			return Ok(None);
-		};
+			.get(uri.path())
+			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, rope.clone())
 		else {
-			return Ok(None);
+			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
 		let query = py_completions();
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		let range = offset.saturating_sub(50)..bytes.len().min(offset + 200);
+		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let mut cursor = tree_sitter::QueryCursor::new();
 		cursor.set_match_limit(256);
-		cursor.set_byte_range(range.clone());
+		cursor.set_byte_range(range);
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
-			match match_.captures {
-				[_, _, xml_id] => {
-					let range = xml_id.node.byte_range();
+			for capture in match_.captures {
+				if capture.index == 2 {
+					// @xml_id
+					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
@@ -141,9 +142,9 @@ impl Backend {
 						return self
 							.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
 					}
-				}
-				[_, model] => {
-					let range = model.node.byte_range();
+				} else if capture.index == 3 {
+					// @model
+					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
@@ -154,7 +155,6 @@ impl Backend {
 						return self.jump_def_model(&slice);
 					}
 				}
-				unk => Err(diagnostic!("Unknown pattern {unk:?}"))?,
 			}
 		}
 		Ok(None)
@@ -170,25 +170,22 @@ impl Backend {
 		};
 		let query = py_references();
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		let range = offset.saturating_sub(50)..bytes.len().min(offset + 200);
+		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let mut cursor = tree_sitter::QueryCursor::new();
 		cursor.set_match_limit(256);
-		cursor.set_byte_range(range.clone());
+		cursor.set_byte_range(range);
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
-			match match_.captures {
-				[_, model] => {
-					let range = model.node.byte_range();
-					if range.contains(&offset) {
-						let range = range.contract(1);
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
-							break 'match_;
-						};
-						let slice = Cow::from(slice);
-						return self.model_references(&slice);
-					}
+			for model in match_.nodes_for_capture_index(1) {
+				let range = dbg!(&model).byte_range();
+				if range.contains(&offset) {
+					let range = range.contract(1);
+					let Some(slice) = rope.get_byte_slice(range.clone()) else {
+						dbg!(&range);
+						break 'match_;
+					};
+					let slice = Cow::from(slice);
+					return self.model_references(&slice);
 				}
-				unk => Err(diagnostic!("Unknown pattern {unk:?}"))?,
 			}
 		}
 		Ok(None)

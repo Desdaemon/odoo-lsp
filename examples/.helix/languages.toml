@@ -1,5 +1,6 @@
 [language-server]
-odoo-lsp.command = "../target/debug/odoo-lsp"
+odoo-lsp.command = "cargo"
+odoo-lsp.args = ["run"]
 
 [[language]]
 name = "xml"
