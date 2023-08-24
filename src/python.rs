@@ -165,8 +165,7 @@ impl Backend {
 		rope: Rope,
 		ast: Tree,
 	) -> miette::Result<Option<Vec<Location>>> {
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope.clone())
-		else {
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope.clone()) else {
 			return Ok(None);
 		};
 		let query = py_references();

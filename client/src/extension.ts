@@ -4,35 +4,35 @@
  * ------------------------------------------------------------------------------------------ */
 
 import {
-	languages,
+	// languages,
 	workspace,
+	window,
+	commands,
 	EventEmitter,
 	ExtensionContext,
-	window,
-	InlayHintsProvider,
-	TextDocument,
-	CancellationToken,
+	// InlayHintsProvider,
+	// TextDocument,
+	// CancellationToken,
 	Range,
-	InlayHint,
+	// InlayHint,
 	TextDocumentChangeEvent,
-	ProviderResult,
-	commands,
-	WorkspaceEdit,
-	TextEdit,
+	// ProviderResult,
+	// WorkspaceEdit,
+	// TextEdit,
 	Selection,
 	Uri,
 } from "vscode";
 
 import {
-	CloseAction,
-	CloseHandlerResult,
+	// CloseAction,
+	// CloseHandlerResult,
 	Disposable,
-	ErrorAction,
-	ErrorHandlerResult,
+	// ErrorAction,
+	// ErrorHandlerResult,
 	Executable,
 	LanguageClient,
 	LanguageClientOptions,
-	MessageStrategy,
+	// MessageStrategy,
 	ServerOptions,
 } from "vscode-languageclient/node";
 
@@ -89,7 +89,6 @@ export async function activate(context: ExtensionContext) {
 		traceOutputChannel,
 	};
 
-	// Create the language client and start the client.
 	client = new LanguageClient("odoo-lsp", "Odoo LSP", serverOptions, clientOptions);
 	// activateInlayHints(context);
 	await client.start();

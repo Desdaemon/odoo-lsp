@@ -83,8 +83,8 @@ impl Record {
 							continue;
 						}
 						let Some(maybe_inherit_id) = maybe_inherit_id else {
-						    continue;
-					    };
+							continue;
+						};
 						if let Some((module, xml_id)) = maybe_inherit_id.split_once('.') {
 							inherit_id = Some((Some(module.to_string().into()), xml_id.to_string().into()));
 						} else {

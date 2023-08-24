@@ -12,3 +12,4 @@ examples
 .github
 Cargo.*
 pnpm-lock.yaml
+*.vsix
