@@ -36,46 +36,56 @@ jobs:
 
   build:
     needs: check
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runs-on }}
 
     if: needs.check.outputs.skip != 'true'
 
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - runs-on: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runs-on: ubuntu-latest
+            target: i686-unknown-linux-gnu
+          - runs-on: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - runs-on: macos-latest
+            target: x86_64-apple-darwin
+          - runs-on: macos-latest
+            target: aarch64-apple-darwin
+          - runs-on: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runs-on: windows-latest
+            target: i686-pc-windows-msvc
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
 
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: nightly
+          toolchain: stable
+          target: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release
-
-      - name: Get short SHA
-        id: sha
-        run: echo "SHA=$(echo '${{ github.sha }}' | cut -c1-8)" >> "$GITHUB_ENV"
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Zip files
         run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            mv ./target/release/odoo-lsp.exe .
-            7z a -tzip odoo-lsp-${{ env.SHA }}-${{ matrix.os }}.zip ./odoo-lsp.exe
+          if [ "${{ matrix.runs-on }}" = "windows-latest" ]; then
+            mv ./target/${{ matrix.target }}/release/odoo-lsp.exe .
+            7z a -tzip odoo-lsp-${{ matrix.target }}.zip ./odoo-lsp.exe
           else
-            mv ./target/release/odoo-lsp .
-            tar -czvf odoo-lsp-${{ env.SHA }}-${{ matrix.os }}.tar.gz ./odoo-lsp
+            mv ./target/${{ matrix.target }}/release/odoo-lsp .
+            tar -czvf odoo-lsp-${{ matrix.target }}.tar.gz ./odoo-lsp
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
-          path: ./odoo-lsp-${{ env.SHA }}-${{ matrix.os }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
-          name: odoo-lsp-${{ env.SHA }}-${{ matrix.os }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
+          path: ./odoo-lsp-${{ matrix.target }}.${{ matrix.runs-on == 'windows-latest' && 'zip' || 'tar.gz' }}
+          name: odoo-lsp-${{ matrix.target }}.${{ matrix.runs-on == 'windows-latest' && 'zip' || 'tar.gz' }}
 
   build-extension:
     needs: check
@@ -95,14 +105,11 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install
       - run: pnpm package
-      - name: Get short SHA
-        id: sha
-        run: echo "SHA=$(echo '${{ github.sha }}' | cut -c1-8)" >> "$GITHUB_ENV"
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
           path: ./odoo-lsp-*.vsix
-          name: odoo-lsp-${{ env.SHA }}.vsix
+          name: odoo-lsp.vsix
 
   release:
     name: Create Release
@@ -123,7 +130,6 @@ jobs:
             openssl dgst -sha256 -r "$file" | awk '{print $1}' > "${file}.sha256";
           done
       - name: Get current date
-        id: date
         run: echo "TAG=nightly-$(date +'%Y%m%d')" >> "$GITHUB_ENV"
       - name: Create tag
         run: git tag -f ${{ env.TAG }} && git push --tags
