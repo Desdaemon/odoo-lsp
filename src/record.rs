@@ -37,69 +37,85 @@ impl Record {
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
+		eprintln!("Record::from_reader {uri}");
 		let mut id = None;
 		let mut model = None;
 		let mut inherit_id = None;
 		let mut end = None;
+		// nested records are a thing apparently
+		let mut stack = 1;
+		let mut in_record = true;
 		let uri = format!("file://{uri}").parse().into_diagnostic()?;
 		let start =
 			char_to_position(offset.0, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
 
 		loop {
 			match reader.next() {
-				Some(Ok(Token::ElementEnd {
-					end: ElementEnd::Close(_, close),
-					span,
-					..
-				})) if close.as_str() == "record" => {
-					end = Some(span.end());
-					break;
-				}
-				Some(Ok(Token::Attribute { local, value, .. })) => match local.as_str() {
+				// TODO: No nested records yet
+				Some(Ok(Token::Attribute { local, value, .. })) if stack == 1 => match local.as_str() {
 					"id" => id = Some(value.as_str().to_string().into()),
-					"model" => {
-						// TODO: Limit which records need to be indexed
-						// if value.as_str() != "ir.ui.view" {
-						// 	return Ok(None);
-						// }
-						model = Some(value.as_str().to_string().into())
-					}
+					"model" => model = Some(value.as_str().to_string().into()),
 					_ => {}
 				},
-				Some(Ok(Token::ElementStart { local, .. })) if local.as_str() == "field" => {
-					let mut is_inherit_id = false;
-					let mut maybe_inherit_id = None;
-					loop {
-						match reader.next() {
-							Some(Ok(Token::Attribute { local, value, .. }))
-								if local.as_str() == "name" && value.as_str() == "inherit_id" =>
-							{
-								is_inherit_id = true
+				Some(Ok(Token::ElementStart { local, .. })) => {
+					in_record = dbg!(local.as_str()) == "record";
+					if in_record {
+						stack += 1;
+						eprintln!("> record({stack})");
+					}
+					if local.as_str() == "field" {
+						let mut is_inherit_id = false;
+						let mut maybe_inherit_id = None;
+						loop {
+							match reader.next() {
+								Some(Ok(Token::Attribute { local, value, .. }))
+									if local.as_str() == "name" && value.as_str() == "inherit_id" =>
+								{
+									is_inherit_id = true
+								}
+								Some(Ok(Token::Attribute { local, value, .. })) if local.as_str() == "ref" => {
+									maybe_inherit_id = Some(value.as_str().to_string());
+								}
+								Some(Ok(Token::ElementEnd { .. })) => break,
+								None | Some(Err(_)) => break,
+								_ => {}
 							}
-							Some(Ok(Token::Attribute { local, value, .. })) if local.as_str() == "ref" => {
-								maybe_inherit_id = Some(value.as_str().to_string());
-							}
-							Some(Ok(Token::ElementEnd {
-								end: ElementEnd::Empty, ..
-							})) => break,
-							Some(Ok(Token::ElementEnd {
-								end: ElementEnd::Close(_, local),
-								..
-							})) if local.as_str() == "field" => break,
-							None | Some(Err(_)) => break,
-							_ => {}
+						}
+						if !is_inherit_id || stack > 1 {
+							continue;
+						}
+						let Some(maybe_inherit_id) = maybe_inherit_id else {
+						    continue;
+					    };
+						if let Some((module, xml_id)) = maybe_inherit_id.split_once('.') {
+							inherit_id = Some((Some(module.to_string().into()), xml_id.to_string().into()));
+						} else {
+							inherit_id = Some((None, maybe_inherit_id.into()));
 						}
 					}
-					if !is_inherit_id {
-						continue;
+				}
+				Some(Ok(Token::ElementEnd {
+					end: ElementEnd::Close(_, local),
+					span,
+					..
+				})) if local.as_str() == "record" => {
+					stack -= 1;
+					eprintln!("< record({stack})");
+					if stack <= 0 {
+						end = Some(span.end());
+						break;
 					}
-					let Some(maybe_inherit_id) = maybe_inherit_id else {
-						continue;
-					};
-					if let Some((module, xml_id)) = maybe_inherit_id.split_once('.') {
-						inherit_id = Some((Some(module.to_string().into()), xml_id.to_string().into()));
-					} else {
-						inherit_id = Some((None, maybe_inherit_id.into()));
+				}
+				Some(Ok(Token::ElementEnd {
+					end: ElementEnd::Empty,
+					span,
+					..
+				})) if in_record => {
+					eprintln!("< record({stack})");
+					stack -= 1;
+					if stack <= 0 {
+						end = Some(span.end());
+						break;
 					}
 				}
 				None | Some(Err(_)) => break,
@@ -134,7 +150,7 @@ impl Record {
 		let mut inherit_id = None;
 		let mut end = None;
 		// <template /> is a valid HTML tag, so we need to account for nesting.
-		let mut stack = 0;
+		let mut stack = 1;
 		let mut in_template = true;
 
 		loop {
@@ -197,5 +213,30 @@ impl Record {
 			inherit_id,
 			location: Location { uri, range },
 		}))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use crate::utils::{lsp_range_to_char_range, RangeExt};
+
+	use super::*;
+
+	#[test]
+	fn test_nested_records() {
+		let fragment =
+			"<record id='foo'><field name='wah' /><field foo='bar'><record>Another</record></field></record>";
+		let document = format!("{fragment} <span>random stuff</span>");
+		let mut reader = Tokenizer::from(&document[..]);
+		_ = reader.next();
+		let rope = Rope::from_str(&document);
+		let Record {
+			location: Location { range, .. },
+			..
+		} = Record::from_reader(CharOffset(0), "foo".into(), "/foo", &mut reader, rope.clone())
+			.unwrap()
+			.unwrap();
+		let range = lsp_range_to_char_range(range, rope).unwrap();
+		assert_eq!(&document[range.map_unit(|unit| unit.0)], fragment);
 	}
 }
