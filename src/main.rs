@@ -530,10 +530,7 @@ impl Backend {
 		current_module: &str,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
-		let replace_start =
-			char_to_position(range.start.0, rope.clone()).ok_or_else(|| diagnostic!("replace_start"))?;
-		let replace_end = char_to_position(range.end.0, rope.clone()).ok_or_else(|| diagnostic!("replace_end"))?;
-		let range = Range::new(replace_start, replace_end);
+		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_inherit_id) range"))?;
 		let matches = self
 			.module_index
 			.records
@@ -564,6 +561,37 @@ impl Backend {
 						replace: range,
 					})),
 					label,
+					kind: Some(CompletionItemKind::REFERENCE),
+					..Default::default()
+				}
+			});
+		items.extend(matches);
+		Ok(())
+	}
+	fn complete_model(
+		&self,
+		needle: &str,
+		range: std::ops::Range<CharOffset>,
+		rope: Rope,
+		items: &mut Vec<CompletionItem>,
+	) -> miette::Result<()> {
+		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_model) range"))?;
+		let matches = self
+			.module_index
+			.models
+			.iter()
+			.filter(|entry| entry.key().contains(needle))
+			.take(Self::LIMIT)
+			.map(|entry| {
+				let label = entry.key().to_string();
+				CompletionItem {
+					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+						new_text: label.clone(),
+						insert: range,
+						replace: range,
+					})),
+					label,
+					kind: Some(CompletionItemKind::CLASS),
 					..Default::default()
 				}
 			});

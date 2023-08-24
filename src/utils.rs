@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::ops::{Add, Sub};
 
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
@@ -34,6 +35,12 @@ pub fn lsp_range_to_char_range(range: Range, rope: Rope) -> Option<std::ops::Ran
 	Some(start..end)
 }
 
+pub fn char_range_to_lsp_range(range: std::ops::Range<CharOffset>, rope: Rope) -> Option<Range> {
+	let start = char_to_position(range.start.0, rope.clone())?;
+	let end = char_to_position(range.end.0, rope)?;
+	Some(Range { start, end })
+}
+
 pub fn position_to_point(position: Position) -> tree_sitter::Point {
 	tree_sitter::Point {
 		row: position.line as usize,
@@ -60,6 +67,11 @@ pub trait RangeExt {
 	fn map_unit<F, V>(self, op: F) -> std::ops::Range<V>
 	where
 		F: FnMut(Self::Unit) -> V;
+
+	fn contract(self, value: Self::Unit) -> std::ops::Range<Self::Unit>
+	where
+		Self: Sized,
+		Self::Unit: Add<Self::Unit, Output = Self::Unit> + Sub<Self::Unit, Output = Self::Unit> + Copy;
 }
 
 impl<T> RangeExt for std::ops::Range<T> {
@@ -71,6 +83,14 @@ impl<T> RangeExt for std::ops::Range<T> {
 		F: FnMut(Self::Unit) -> V,
 	{
 		op(self.start)..op(self.end)
+	}
+
+	fn contract(self, value: Self::Unit) -> std::ops::Range<Self::Unit>
+	where
+		Self: Sized,
+		Self::Unit: Add<Self::Unit, Output = Self::Unit> + Sub<Self::Unit, Output = Self::Unit> + Copy,
+	{
+		self.start + value..self.end - value
 	}
 }
 

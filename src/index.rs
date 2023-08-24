@@ -255,41 +255,49 @@ async fn add_root_py(path: PathBuf, _: FastStr) -> miette::Result<Output> {
 
 	let mut out = vec![];
 	let rope = Rope::from_str(&String::from_utf8_lossy(&file));
+	let eq_slice = |range: std::ops::Range<usize>, slice: &[u8]| &file[range] == slice;
 	for match_ in cursor.matches(query, ast.root_node(), file.as_slice()) {
-		let captures = match_
-			.captures
-			.iter()
-			.map(|capture| (&file[capture.node.byte_range()], capture.node.byte_range()))
-			.collect::<Vec<_>>();
-		let mut captures = captures.as_slice();
-		let ([(b"models", _), _, tail @ ..] | [(b"Model" | b"TransientModel", _), tail @ ..]) = captures else {unreachable!()};
+		let mut captures = match_.captures;
+		let tail = match captures {
+			[models, _, tail @ ..] if eq_slice(models.node.byte_range(), b"models") => tail,
+			[_model, tail @ ..] => {
+				debug_assert!(matches!(&file[_model.node.byte_range()], b"Model" | b"TransientModel"));
+				tail
+			}
+			unk => Err(diagnostic!(
+				"Bug: Unknown pattern {:?}",
+				unk.iter()
+					.map(|capture| String::from_utf8_lossy(&file[capture.node.byte_range()]))
+					.collect::<Vec<_>>()
+			))?,
+		};
 		captures = tail;
 		let mut model = None;
 		while !captures.is_empty() {
 			match captures {
-				[(b"_name", _), (name, location), tail @ ..] => {
+				[_name, name, tail @ ..] if eq_slice(_name.node.byte_range(), b"_name") => {
 					captures = tail;
-					let name = &name[1..name.len() - 1];
+					let name = name.node.byte_range().contract(1);
 					if name.is_empty() {
 						break;
 					}
 					model = Some(Model {
-						model: String::from_utf8_lossy(name).to_string(),
-						range: offset_range_to_lsp_range(location.clone().map_unit(ByteOffset), rope.clone())
+						model: String::from_utf8_lossy(&file[name.clone()]).to_string(),
+						range: offset_range_to_lsp_range(name.map_unit(ByteOffset), rope.clone())
 							.ok_or_else(|| diagnostic!("name range"))?,
 						inherit: false,
 					});
 				}
-				[(b"_inherit", _), (inherit, location), tail @ ..] => {
+				[_inherit, inherit, tail @ ..] if eq_slice(_inherit.node.byte_range(), b"_inherit") => {
 					captures = tail;
-					let inherit = &inherit[1..inherit.len() - 1];
+					let inherit = inherit.node.byte_range().contract(1);
 					if inherit.is_empty() {
 						continue;
 					}
 					if model.is_none() {
 						model = Some(Model {
-							model: String::from_utf8_lossy(inherit).to_string(),
-							range: offset_range_to_lsp_range(location.clone().map_unit(ByteOffset), rope.clone())
+							model: String::from_utf8_lossy(&file[inherit.clone()]).to_string(),
+							range: offset_range_to_lsp_range(inherit.map_unit(ByteOffset), rope.clone())
 								.ok_or_else(|| diagnostic!("inherit range"))?,
 							inherit: true,
 						});

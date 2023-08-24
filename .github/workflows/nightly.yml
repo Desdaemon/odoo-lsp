@@ -76,7 +76,6 @@ jobs:
         with:
           path: ./odoo-lsp-${{ env.SHA }}-${{ matrix.os }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
           name: odoo-lsp-${{ env.SHA }}-${{ matrix.os }}.${{ matrix.os == 'windows-latest' && 'zip' || 'tar.gz' }}
-          
 
   build-extension:
     needs: check
