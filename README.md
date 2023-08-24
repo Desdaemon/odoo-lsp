@@ -4,11 +4,13 @@
 
 ## Features
 
-### Completion/goto-references for XML IDs
+### Completion and definitions for XML IDs
 
 Works for `record`s, `template`s and `env.ref()`!
 
 [![template inherit_id demo](https://raw.githubusercontent.com/Desdaemon/odoo-lsp/main/static/inherit_id.2.gif)](https://asciinema.org/a/603783)
+
+### Completion, definition and references of models
 
 For more features check out the [wiki].
 
@@ -20,9 +22,9 @@ cargo install --git https://github.com/Desdaemon/odoo-lsp
 
 Nightly binaries are also available for x64 platforms, please check [Releases] for the latest downloads.
 
-## Usage
+## Setup
 
-For more information please check the [wiki] (in construction).
+For usage instructions please check the [wiki] (in construction).
 
 ### VSCode
 
