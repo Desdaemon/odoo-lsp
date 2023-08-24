@@ -2,6 +2,10 @@ name: nightly
 
 on:
   workflow_dispatch:
+    inputs:
+      release_name:
+        type: string
+        description: Defaults to `nightly-YYYYMMDD`
   schedule:
     - cron: "0 5 * * *"
 
@@ -41,6 +45,7 @@ jobs:
     if: needs.check.outputs.skip != 'true'
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runs-on: ubuntu-latest
@@ -67,6 +72,18 @@ jobs:
         with:
           toolchain: stable
           target: ${{ matrix.target }}
+
+      - name: Additional setup for musl
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Additional setup for Linux x86
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -130,7 +147,7 @@ jobs:
             openssl dgst -sha256 -r "$file" | awk '{print $1}' > "${file}.sha256";
           done
       - name: Get current date
-        run: echo "TAG=nightly-$(date +'%Y%m%d')" >> "$GITHUB_ENV"
+        run: echo "TAG=${{ inputs.release_name || 'nightly-$(date +"%Y%m%d")' }}" >> "$GITHUB_ENV"
       - name: Create tag
         run: git tag -f ${{ env.TAG }} && git push --tags
       - name: Release
