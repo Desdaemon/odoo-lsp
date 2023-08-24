@@ -37,7 +37,6 @@ impl Record {
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
-		eprintln!("Record::from_reader {uri}");
 		let mut id = None;
 		let mut model = None;
 		let mut inherit_id = None;
@@ -58,10 +57,9 @@ impl Record {
 					_ => {}
 				},
 				Some(Ok(Token::ElementStart { local, .. })) => {
-					in_record = dbg!(local.as_str()) == "record";
+					in_record = local.as_str() == "record";
 					if in_record {
 						stack += 1;
-						eprintln!("> record({stack})");
 					}
 					if local.as_str() == "field" {
 						let mut is_inherit_id = false;
@@ -100,7 +98,6 @@ impl Record {
 					..
 				})) if local.as_str() == "record" => {
 					stack -= 1;
-					eprintln!("< record({stack})");
 					if stack <= 0 {
 						end = Some(span.end());
 						break;
@@ -111,7 +108,6 @@ impl Record {
 					span,
 					..
 				})) if in_record => {
-					eprintln!("< record({stack})");
 					stack -= 1;
 					if stack <= 0 {
 						end = Some(span.end());

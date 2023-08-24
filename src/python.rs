@@ -98,7 +98,7 @@ impl Backend {
 						let relative_offset = range.start;
 						let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 						let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-						self.complete_model(dbg!(&needle), range, rope.clone(), &mut items)?;
+						self.complete_model(&needle, range, rope.clone(), &mut items)?;
 						return Ok(Some(CompletionResponse::List(CompletionList {
 							is_incomplete: items.len() >= Self::LIMIT,
 							items,
