@@ -19,6 +19,7 @@ use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{Config, ModuleConfig};
 use odoo_lsp::index::ModuleIndex;
+use odoo_lsp::model::ModelLocation;
 use odoo_lsp::{format_loc, utils::*};
 
 mod catch_panic;
@@ -335,7 +336,6 @@ impl LanguageServer for Backend {
 		} else if ext == "py" {
 			location = self
 				.python_jump_def(params, document.value().clone())
-				.await
 				.map_err(|err| eprintln!("Error retrieving references:\n{err}"))
 				.ok()
 				.flatten();
@@ -346,8 +346,37 @@ impl LanguageServer for Backend {
 
 		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}
-	async fn references(&self, _: ReferenceParams) -> Result<Option<Vec<Location>>> {
-		Ok(None)
+	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+		let uri = &params.text_document_position.text_document.uri;
+		eprintln!("references {}", uri.path());
+
+		let Some((_, ext)) = uri.path().rsplit_once('.') else {
+			return Ok(None); // hit a directory, super unlikely
+		};
+		let Some(document) = self.document_map.get(uri.path()) else {
+			eprintln!("Bug: did not build a rope for {}", uri.path());
+			return Ok(None);
+		};
+		if ext == "py" {
+			let Some(ast) = self.ast_map.get(uri.path()) else {
+				eprintln!("Bug: did not build AST for {}", uri.path());
+				return Ok(None);
+			};
+			match self.python_references(params, document.value().clone(), ast.value().clone()) {
+				Ok(ret) => Ok(ret),
+				Err(report) => {
+					self.client
+						.show_message(
+							MessageType::ERROR,
+							format!("error during gathering python references:\n{report}"),
+						)
+						.await;
+					Ok(None)
+				}
+			}
+		} else {
+			Ok(None)
+		}
 	}
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
 		let uri = &params.text_document_position.text_document.uri;
@@ -375,10 +404,7 @@ impl LanguageServer for Backend {
 				eprintln!("Bug: did not build AST for {}", uri.path());
 				return Ok(None);
 			};
-			match self
-				.python_completions(params, ast.value().clone(), document.value().clone())
-				.await
-			{
+			match self.python_completions(params, ast.value().clone(), document.value().clone()) {
 				Ok(ret) => Ok(ret),
 				Err(err) => {
 					self.client
@@ -615,6 +641,30 @@ impl Backend {
 			}
 		}
 		return Ok((self.module_index.records.get(value.as_ref())).map(|entry| entry.location.clone()));
+	}
+	fn jump_def_model(&self, cursor_value: &str) -> miette::Result<Option<Location>> {
+		match self
+			.module_index
+			.models
+			.get(cursor_value)
+			.and_then(|entry| entry.0.as_ref().cloned())
+		{
+			Some(ModelLocation(base)) => Ok(Some(base)),
+			None => Ok(None),
+		}
+	}
+	fn model_references(&self, cursor_value: &str) -> miette::Result<Option<Vec<Location>>> {
+		let mut locations = match self.module_index.models.get(cursor_value) {
+			Some(entry) => entry.1.iter().map(|loc| loc.0.clone()).collect::<Vec<_>>(),
+			None => vec![],
+		};
+		let record_locations = self
+			.module_index
+			.records
+			.iter()
+			.filter_map(|record| (record.model.as_deref() == Some(cursor_value)).then(|| record.location.clone()));
+		locations.extend(record_locations);
+		Ok(Some(locations))
 	}
 	async fn on_change_config(&self, config: Config) {
 		let Some(ModuleConfig { roots: Some(roots), .. }) = config.module else {
