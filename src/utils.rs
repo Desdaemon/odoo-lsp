@@ -3,6 +3,7 @@ use std::ops::{Add, Sub};
 
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
+use xmlparser::{StrSpan, Token};
 
 pub fn offset_to_position(offset: usize, rope: Rope) -> Option<Position> {
 	let line = rope.try_char_to_line(offset).ok()?;
@@ -52,6 +53,23 @@ pub fn offset_range_to_lsp_range(range: std::ops::Range<ByteOffset>, rope: Rope)
 	let start = offset_to_position(range.start.0, rope.clone())?;
 	let end = offset_to_position(range.end.0, rope)?;
 	Some(Range { start, end })
+}
+
+pub fn token_span<'r, 't>(token: &'r Token<'t>) -> &'r StrSpan<'t> {
+	match token {
+		Token::Declaration { span, .. }
+		| Token::ProcessingInstruction { span, .. }
+		| Token::Comment { span, .. }
+		| Token::DtdStart { span, .. }
+		| Token::EmptyDtd { span, .. }
+		| Token::EntityDeclaration { span, .. }
+		| Token::DtdEnd { span, .. }
+		| Token::ElementStart { span, .. }
+		| Token::Attribute { span, .. }
+		| Token::ElementEnd { span, .. }
+		| Token::Text { text: span, .. }
+		| Token::Cdata { span, .. } => span,
+	}
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]

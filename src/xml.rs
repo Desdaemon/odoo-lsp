@@ -8,7 +8,7 @@ use faststr::FastStr;
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
-use xmlparser::{ElementEnd, StrSpan, Token, Tokenizer};
+use xmlparser::{StrSpan, Token, Tokenizer};
 
 use odoo_lsp::record::Record;
 use odoo_lsp::utils::*;
@@ -85,7 +85,7 @@ impl Backend {
 		rope: &'rope Rope,
 		uri: &Url,
 		position: Position,
-	) -> miette::Result<Option<(Cow<'rope, str>, usize, usize)>> {
+	) -> miette::Result<(Cow<'rope, str>, usize, usize)> {
 		let ranges = self
 			.record_ranges
 			.get(uri.path())
@@ -101,11 +101,9 @@ impl Backend {
 				Ordering::Equal
 			}
 		}) else {
-			eprintln!(
-				"Could not find record for cursor={cursor:?} ranges={:?}",
-				ranges.value()
-			);
-			return Ok(None);
+			eprintln!("(record_slice) fall back to full slice");
+			let slice = Cow::from(rope.slice(..));
+			return Ok((slice, cursor_by_char, 0));
 		};
 		let record_range = &ranges.value()[record];
 		let relative_offset = rope.try_byte_to_char(record_range.start.0).into_diagnostic()?;
@@ -114,7 +112,7 @@ impl Backend {
 		let slice = rope.byte_slice(record_range.clone().map_unit(|unit| unit.0));
 		let slice = Cow::from(slice);
 
-		Ok(Some((slice, cursor_by_char, relative_offset)))
+		Ok((slice, cursor_by_char, relative_offset))
 	}
 	pub async fn xml_completions(
 		&self,
@@ -123,9 +121,7 @@ impl Backend {
 	) -> miette::Result<Option<CompletionResponse>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
-		let Some((slice, cursor_by_char, relative_offset)) = self.record_slice(&rope, uri, position)? else {
-			return Ok(None);
-		};
+		let (slice, cursor_by_char, relative_offset) = self.record_slice(&rope, uri, position)?;
 		let reader = Tokenizer::from(&slice[..]);
 
 		let current_module = self
@@ -177,53 +173,37 @@ impl Backend {
 				{
 					cursor_value = Some(value);
 				}
-				Ok(Token::ElementEnd {
-					end: ElementEnd::Empty, ..
-				}) if matches!(tag, Some(Tag::Field)) => {
-					let (Some(value), Some(record_field)) = (cursor_value, record_field.take()) else {
-						continue;
-					};
-					let needle = &value.as_str()[..cursor_by_char - value.range().start];
-					let replace_range = value.range().map_unit(|unit| CharOffset(unit + relative_offset));
-					match record_field {
-						RecordField::InheritId => self.complete_inherit_id(
-							needle,
-							replace_range,
-							rope.clone(),
-							model_filter.as_deref(),
-							&current_module,
-							&mut items,
-						)?,
-					}
-					break;
-				}
 				Ok(Token::Attribute { local, value, .. })
 					if matches!(tag, Some(Tag::Template))
 						&& local.as_str() == "inherit_id"
 						&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
 				{
 					cursor_value = Some(value);
+					record_field = Some(RecordField::InheritId);
 				}
-				Ok(Token::ElementEnd { .. }) if matches!(tag, Some(Tag::Template)) => {
-					let Some(value) = cursor_value else { continue };
-					let needle = &value.as_str()[..cursor_by_char - value.range().start];
-					let replace_range = value.range().map_unit(|unit| CharOffset(unit + relative_offset));
-					self.complete_inherit_id(
-						needle,
-						replace_range,
-						rope.clone(),
-						model_filter.as_deref(),
-						&current_module,
-						&mut items,
-					)?;
-					break;
+				Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
+				Err(_) => break,
+				Ok(token) => {
+					if token_span(&token).start() > cursor_by_char {
+						break;
+					}
 				}
-				Err(err) => {
-					eprintln!("bug:\n{err}\nin file:\n{}", slice);
-					break;
-				}
-				_ => {}
 			}
+		}
+		let (Some(value), Some(record_field)) = (cursor_value, record_field.take()) else {
+			return Ok(None);
+		};
+		let needle = &value.as_str()[..cursor_by_char - value.range().start];
+		let replace_range = value.range().map_unit(|unit| CharOffset(unit + relative_offset));
+		match record_field {
+			RecordField::InheritId => self.complete_inherit_id(
+				needle,
+				replace_range,
+				rope.clone(),
+				model_filter.as_deref(),
+				&current_module,
+				&mut items,
+			)?,
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
@@ -234,9 +214,7 @@ impl Backend {
 	pub async fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
-		let Some((slice, cursor_by_char, _)) = self.record_slice(&rope, uri, position)? else {
-			return Ok(None);
-		};
+		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let reader = Tokenizer::from(&slice[..]);
 
 		enum RecordField {
@@ -266,34 +244,28 @@ impl Backend {
 						record_field = Some(RecordField::InheritId);
 					}
 				}
-				Ok(Token::ElementEnd { .. }) if matches!(tag, Some(Tag::Field)) => {
-					let Some(cursor_value) = cursor_value else { continue };
-					match record_field {
-						Some(RecordField::InheritId) => {
-							return self.jump_def_inherit_id(&cursor_value, uri);
-						}
-						None => {}
-					}
-				}
 				Ok(Token::Attribute { local, value, .. })
 					if matches!(tag, Some(Tag::Template))
 						&& local.as_str() == "inherit_id"
 						&& value.range().contains(&cursor_by_char) =>
 				{
 					cursor_value = Some(value);
+					record_field = Some(RecordField::InheritId);
 				}
-				Ok(Token::ElementEnd { .. }) if matches!(tag, Some(Tag::Template)) => {
-					let Some(cursor_value) = cursor_value else { continue };
-					return self.jump_def_inherit_id(&cursor_value, uri);
+				Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
+				Err(_) => break,
+				Ok(token) => {
+					if token_span(&token).start() > cursor_by_char {
+						break;
+					}
 				}
-				Err(err) => {
-					eprintln!("bug:\n{err}\nin file:\n{}", slice);
-					break;
-				}
-				_ => {}
 			}
 		}
 
-		Ok(None)
+		let Some(cursor_value) = cursor_value else { return Ok(None) };
+		match record_field {
+			Some(RecordField::InheritId) => self.jump_def_inherit_id(&cursor_value, uri),
+			None => Ok(None),
+		}
 	}
 }

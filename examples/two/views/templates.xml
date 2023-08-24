@@ -1,4 +1,3 @@
 <odoo>
-  <template id="one" inherit_id='generic_tax_report'>
-  </template>
+  <template id="asd" inherit_id='one.one'
 </odoo>

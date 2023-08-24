@@ -4,7 +4,7 @@ use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::utils::{char_to_position, CharOffset};
+use crate::utils::{char_to_position, position_to_char, CharOffset};
 
 macro_rules! unwrap_or_none {
 	($opt:expr) => {
@@ -114,7 +114,16 @@ impl Record {
 						break;
 					}
 				}
-				None | Some(Err(_)) => break,
+				// None | Some(Err(_)) => break,
+				None => break,
+				Some(Err(err)) => {
+					let pos = Position {
+						line: err.pos().row,
+						character: err.pos().col,
+					};
+					end = position_to_char(pos, rope.clone()).map(|offset| offset.0);
+					break;
+				}
 				_ => {}
 			}
 		}
@@ -191,7 +200,11 @@ impl Record {
 				}
 				None => break,
 				Some(Err(err)) => {
-					eprintln!("error parsing template {}:\n{err}", uri.path());
+					let pos = Position {
+						line: err.pos().row,
+						character: err.pos().col,
+					};
+					end = position_to_char(pos, rope.clone()).map(|offset| offset.0);
 					break;
 				}
 				_ => {}
