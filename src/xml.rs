@@ -262,7 +262,9 @@ impl Backend {
 			}
 		}
 
-		let Some(cursor_value) = cursor_value else { return Ok(None) };
+		let Some(cursor_value) = cursor_value else {
+			return Ok(None);
+		};
 		match record_field {
 			Some(RecordField::InheritId) => self.jump_def_inherit_id(&cursor_value, uri),
 			None => Ok(None),

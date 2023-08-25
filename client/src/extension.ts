@@ -4,43 +4,167 @@
  * ------------------------------------------------------------------------------------------ */
 
 import { dirname } from "node:path";
-import {
-	// languages,
-	workspace,
-	window,
-	// commands,
-	// EventEmitter,
-	ExtensionContext,
-	// InlayHintsProvider,
-	// TextDocument,
-	// CancellationToken,
-	// Range,
-	// InlayHint,
-	// TextDocumentChangeEvent,
-	// ProviderResult,
-	// WorkspaceEdit,
-	// TextEdit,
-	// Selection,
-	// Uri,
-} from "vscode";
+import { mkdir, rm } from "node:fs/promises";
+import { ObjectEncodingOptions, existsSync } from "node:fs";
+import { exec, spawn, ExecOptions } from "node:child_process";
+import { workspace, window, ExtensionContext, ExtensionMode } from "vscode";
 
-import {
-	// CloseAction,
-	// CloseHandlerResult,
-	// Disposable,
-	// ErrorAction,
-	// ErrorHandlerResult,
-	Executable,
-	LanguageClient,
-	LanguageClientOptions,
-	// MessageStrategy,
-	ServerOptions,
-} from "vscode-languageclient/node";
+import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node";
 
 let client: LanguageClient;
-// type a = Parameters<>;
 
-export async function activate(_context: ExtensionContext) {
+function guessRustTarget() {
+	const platform = process.platform;
+	const arch = process.arch;
+	if (platform === "win32") {
+		if (arch === "x64") {
+			return "x86_64-pc-windows-msvc";
+		} else {
+			return "i686-pc-windows-msvc";
+		}
+	} else if (platform === "darwin") {
+		if (arch == "x64") {
+			return "x86_64-apple-darwin";
+		} else if (arch == "arm64") {
+			return "aarch64-apple-darwin";
+		}
+	} else if (platform === "linux") {
+		if (arch === "x64") {
+			return "x86_64-unknown-linux-gnu";
+		} else {
+			return "i686-unknown-linux-gnu";
+		}
+	}
+}
+
+function execAsync(command: string, options?: ObjectEncodingOptions & ExecOptions) {
+	return new Promise<{ stdout: string | Buffer; stderr: string | Buffer }>((resolve, reject) => {
+		exec(command, options, (err, stdout, stderr) => {
+			if (err) reject(err);
+			else resolve({ stdout, stderr });
+		});
+	});
+}
+
+const REPO = "https://github.com/Desdaemon/odoo-lsp";
+
+async function downloadLspBinary(context: ExtensionContext) {
+	const isWindows = process.platform === "win32";
+	const archiveExtension = isWindows ? ".zip" : ".tar.gz";
+	const runtimeDir = context.globalStorageUri.fsPath;
+	await mkdir(runtimeDir, { recursive: true });
+
+	// We follow nightly releases, so only download if today's build is not already downloaded.
+	// The format is nightly-YYYYMMDD
+	const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+	const release = `nightly-${today}`;
+	const latest = `${runtimeDir}/${release}${archiveExtension}`;
+	const exeExtension = isWindows ? ".exe" : "";
+	const odooLspBin = `${runtimeDir}/odoo-lsp${exeExtension}`;
+
+	const target = guessRustTarget();
+	if (!target) {
+		const enum Actions {
+			Ok = "OK",
+			Repo = "Go to odoo-lsp",
+			InstallSource = "Install from source",
+		}
+		const actions = [Actions.Ok, Actions.Repo];
+		// TODO: setup for cargo-binstall
+		if (await which("cargo")) {
+			actions.push(Actions.InstallSource);
+		}
+		const resp = await window.showInformationMessage(
+			`odoo-lsp: No prebuilt binaries available for your platform (platform=${process.platform}, arch=${process.arch}).
+			Please file an issue at ${REPO}, or install odoo-lsp from source.`,
+			...actions,
+		);
+		switch (resp) {
+			case Actions.Repo:
+				await openLink(REPO);
+				break;
+			case Actions.InstallSource:
+				const channel = window.createOutputChannel("cargo install odoo-lsp");
+				channel.show();
+				context.subscriptions.push(channel);
+				const cargo = spawn("cargo install --git https://github.com/Desdaemon/odoo-lsp", {
+					shell: true,
+				});
+				cargo.stdout.on("data", (data) => {
+					channel.append(data.toString());
+				});
+				cargo.stderr.on("data", (data) => {
+					channel.append(data.toString());
+				});
+				await new Promise((resolve, reject) =>
+					cargo.on("exit", (err) => {
+						if (err) reject(err);
+						else resolve(void 0);
+					}),
+				);
+				channel.hide();
+				break;
+		}
+		return;
+	}
+	const link = `https://github.com/Desdaemon/odoo-lsp/releases/download/${release}/odoo-lsp-${target}${archiveExtension}`;
+	const shaLink = `${link}.sha256`;
+	const shaOutput = `${latest}.sha256`;
+
+	if (!existsSync(latest)) {
+		try {
+			if (isWindows) {
+				const powershell = { shell: "powershell.exe" };
+				await execAsync(`Invoke-WebRequest -Uri ${link} -OutFile ${latest}`, powershell);
+				await execAsync(`Invoke-WebRequest -Uri ${shaLink} -OutFile ${shaOutput}`, powershell);
+				const { stdout } = await execAsync(
+					`(Get-FileHash ${latest} -Algorithm SHA256).Hash -eq (Get-Content ${shaOutput})`,
+					powershell,
+				);
+				if (stdout.toString().trim() !== "True") throw new Error("Checksum verification failed");
+				await execAsync(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
+			} else {
+				const sh = { shell: "sh" };
+				await execAsync(`wget -O ${latest} ${link}`, sh);
+				await execAsync(`wget -O ${shaOutput} ${shaLink}`, sh);
+				await execAsync(
+					`if [ "$(shasum -a 256 ${latest} | cut -d ' ' -f 1)" != "$(cat ${shaOutput})" ]; then exit 1; fi`,
+					sh,
+				);
+				await execAsync(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
+			}
+		} catch (err) {
+			await window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
+			await rm(latest);
+		}
+	}
+
+	if (existsSync(odooLspBin)) return odooLspBin;
+}
+
+function which(bin: string) {
+	const checker = process.platform === "win32" ? "where.exe" : "which";
+	return new Promise<boolean>((resolve) => {
+		exec(`${checker} ${bin}`, (err) => resolve(err === null));
+	});
+}
+
+async function openLink(url: string) {
+	let opener: string;
+	if (process.platform === "win32") {
+		opener = "start";
+	} else if (process.platform === "darwin") {
+		opener = "open";
+	} else if (await which("wslview")) {
+		// from wslu
+		opener = "wslview";
+	} else {
+		opener = "xdg-open";
+	}
+	return await execAsync(`${opener} ${url}`);
+}
+
+export async function activate(context: ExtensionContext) {
 	// let disposable = commands.registerCommand("helloworld.helloWorld", async (uri) => {
 	// 	// The code you place here will be executed every time your command is executed
 	// 	// Display a message box to the user
@@ -58,41 +182,45 @@ export async function activate(_context: ExtensionContext) {
 	// context.subscriptions.push(disposable);
 
 	const traceOutputChannel = window.createOutputChannel("Odoo LSP");
-	const command = process.env.SERVER_PATH || "odoo-lsp";
-	const run: Executable = {
-		command,
-		options: {
-			cwd: workspace.workspaceFolders.length ? dirname(workspace.workspaceFolders[0].uri.fsPath) : void 0,
-			env: {
-				...process.env,
-				// eslint-disable-next-line @typescript-eslint/naming-convention
-				RUST_LOG: "debug",
+	let command = process.env.SERVER_PATH || "odoo-lsp";
+	if (!(await which(command)) && context.extensionMode === ExtensionMode.Production) {
+		command = (await downloadLspBinary(context)) || command;
+	}
+	traceOutputChannel.appendLine(`odoo-lsp executable: ${command}`);
+	if (!(await which(command))) {
+		await window.showErrorMessage(`no odoo-lsp executable present: ${command}`);
+		return;
+	}
+	const cwd = workspace.workspaceFolders?.length ? dirname(workspace.workspaceFolders![0]!.uri.fsPath) : void 0;
+	const serverOptions: ServerOptions = {
+		run: {
+			command,
+			options: {
+				cwd,
+				env: { ...process.env, RUST_LOG: process.env.RUST_LOG || "info" },
+			},
+		},
+		debug: {
+			command,
+			options: {
+				cwd,
+				env: { ...process.env, RUST_LOG: process.env.RUST_LOG || "debug" },
 			},
 		},
 	};
-	const serverOptions: ServerOptions = {
-		run,
-		debug: run,
-	};
-	// If the extension is launched in debug mode then the debug server options are used
-	// Otherwise the run options are used
-	// Options to control the language client
 	let clientOptions: LanguageClientOptions = {
-		// Register the server for plain text documents
 		documentSelector: [
 			{ language: "xml", scheme: "file" },
 			{ language: "python", scheme: "file" },
 			{ language: "javascript", scheme: "file" },
 		],
 		synchronize: {
-			// Notify the server about file changes to '.clientrc files contained in the workspace
 			fileEvents: workspace.createFileSystemWatcher("**/.odoo_lsp*"),
 		},
 		traceOutputChannel,
 	};
 
 	client = new LanguageClient("odoo-lsp", "Odoo LSP", serverOptions, clientOptions);
-	// activateInlayHints(context);
 	await client.start();
 	traceOutputChannel.appendLine("Odoo LSP started");
 }
@@ -103,81 +231,3 @@ export function deactivate(): Thenable<void> | undefined {
 	}
 	return client.stop();
 }
-
-// export function activateInlayHints(ctx: ExtensionContext) {
-// 	const maybeUpdater = {
-// 		hintsProvider: null as Disposable | null,
-// 		updateHintsEventEmitter: new EventEmitter<void>(),
-
-// 		async onConfigChange() {
-// 			this.dispose();
-
-// 			const event = this.updateHintsEventEmitter.event;
-// 			// this.hintsProvider = languages.registerInlayHintsProvider(
-// 			//   { scheme: "file", language: "nrs" },
-// 			//   // new (class implements InlayHintsProvider {
-// 			//   //   onDidChangeInlayHints = event;
-// 			//   //   resolveInlayHint(hint: InlayHint, token: CancellationToken): ProviderResult<InlayHint> {
-// 			//   //     const ret = {
-// 			//   //       label: hint.label,
-// 			//   //       ...hint,
-// 			//   //     };
-// 			//   //     return ret;
-// 			//   //   }
-// 			//   //   async provideInlayHints(
-// 			//   //     document: TextDocument,
-// 			//   //     range: Range,
-// 			//   //     token: CancellationToken
-// 			//   //   ): Promise<InlayHint[]> {
-// 			//   //     const hints = (await client
-// 			//   //       .sendRequest("custom/inlay_hint", { path: document.uri.toString() })
-// 			//   //       .catch(err => null)) as [number, number, string][];
-// 			//   //     if (hints == null) {
-// 			//   //       return [];
-// 			//   //     } else {
-// 			//   //       return hints.map(item => {
-// 			//   //         const [start, end, label] = item;
-// 			//   //         let startPosition = document.positionAt(start);
-// 			//   //         let endPosition = document.positionAt(end);
-// 			//   //         return {
-// 			//   //           position: endPosition,
-// 			//   //           paddingLeft: true,
-// 			//   //           label: [
-// 			//   //             {
-// 			//   //               value: `${label}`,
-// 			//   //               // location: {
-// 			//   //               //   uri: document.uri,
-// 			//   //               //   range: new Range(1, 0, 1, 0)
-// 			//   //               // }
-// 			//   //               command: {
-// 			//   //                 title: "hello world",
-// 			//   //                 command: "helloworld.helloWorld",
-// 			//   //                 arguments: [document.uri],
-// 			//   //               },
-// 			//   //             },
-// 			//   //           ],
-// 			//   //         };
-// 			//   //       });
-// 			//   //     }
-// 			//   //   }
-// 			//   // })()
-// 			// );
-// 		},
-
-// 		onDidChangeTextDocument({ contentChanges, document }: TextDocumentChangeEvent) {
-// 			// debugger
-// 			// this.updateHintsEventEmitter.fire();
-// 		},
-
-// 		dispose() {
-// 			this.hintsProvider?.dispose();
-// 			this.hintsProvider = null;
-// 			this.updateHintsEventEmitter.dispose();
-// 		},
-// 	};
-
-// 	workspace.onDidChangeConfiguration(maybeUpdater.onConfigChange, maybeUpdater, ctx.subscriptions);
-// 	workspace.onDidChangeTextDocument(maybeUpdater.onDidChangeTextDocument, maybeUpdater, ctx.subscriptions);
-
-// 	maybeUpdater.onConfigChange().catch(console.error);
-// }
