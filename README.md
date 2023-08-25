@@ -8,9 +8,11 @@
 
 Works for `record`s, `template`s and `env.ref()`!
 
-[![template inherit_id demo](https://raw.githubusercontent.com/Desdaemon/odoo-lsp/main/static/inherit_id.2.gif)](https://asciinema.org/a/603783)
+[![template inherit_id demo](https://raw.githubusercontent.com/Desdaemon/odoo-lsp/main/static/inherit_id.gif)](https://asciinema.org/a/603783)
 
 ### Completion, definition and references of models
+
+[![model demo](https://raw.githubusercontent.com/Desdaemon/odoo-lsp/main/static/model.gif)](https://asciinema.org/a/604545)
 
 For more features check out the [wiki].
 
