@@ -14,6 +14,10 @@ Works for `record`s, `template`s and `env.ref()`!
 
 [![model demo](https://raw.githubusercontent.com/Desdaemon/odoo-lsp/main/static/model.gif)](https://asciinema.org/a/604545)
 
+### Browse models and XML records as workspace symbols
+
+[![symbols demo](https://raw.githubusercontent.com/Desdaemon/odoo-lsp/main/static/symbols.gif)](https://asciinema.org/a/604560)
+
 For more features check out the [wiki].
 
 ## Install

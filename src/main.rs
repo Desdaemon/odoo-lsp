@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
@@ -17,7 +17,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tree_sitter::{Parser, Tree};
 
-use odoo_lsp::config::{Config, ModuleConfig};
+use odoo_lsp::config::{Config, ModuleConfig, SymbolsConfig};
 use odoo_lsp::index::ModuleIndex;
 use odoo_lsp::model::ModelLocation;
 use odoo_lsp::{format_loc, utils::*};
@@ -35,6 +35,7 @@ pub struct Backend {
 	roots: DashSet<String>,
 	capabilities: Capabilities,
 	root_setup: AtomicBool,
+	symbols_limit: AtomicUsize,
 }
 
 #[derive(Debug, Default)]
@@ -98,6 +99,7 @@ impl LanguageServer for Backend {
 			capabilities: ServerCapabilities {
 				definition_provider: Some(OneOf::Left(true)),
 				references_provider: Some(OneOf::Left(true)),
+				workspace_symbol_provider: Some(OneOf::Left(true)),
 				text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::INCREMENTAL)),
 				completion_provider: Some(CompletionOptions {
 					resolve_provider: None,
@@ -131,6 +133,7 @@ impl LanguageServer for Backend {
 			roots: _,
 			capabilities: _,
 			root_setup: _,
+			symbols_limit: _,
 		} = self;
 		document_map.remove(path);
 		record_ranges.remove(path);
@@ -454,6 +457,34 @@ impl LanguageServer for Backend {
 	async fn execute_command(&self, _: ExecuteCommandParams) -> Result<Option<Value>> {
 		Ok(None)
 	}
+	#[allow(deprecated)]
+	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
+		let query = &params.query;
+		let records = self.module_index.records.iter().filter_map(|entry| {
+			entry.id.contains(query).then(|| SymbolInformation {
+				name: entry.id.to_string(),
+				kind: SymbolKind::VARIABLE,
+				tags: None,
+				deprecated: None,
+				location: entry.location.clone(),
+				container_name: None,
+			})
+		});
+		let models = self.module_index.models.iter().filter_map(|entry| {
+			entry.0.as_ref().and_then(|loc| {
+				entry.key().contains(query).then(|| SymbolInformation {
+					name: entry.key().clone(),
+					kind: SymbolKind::CONSTANT,
+					tags: None,
+					deprecated: None,
+					location: loc.0.clone(),
+					container_name: None,
+				})
+			})
+		});
+		let limit = self.symbols_limit.load(Relaxed);
+		Ok(Some(models.chain(records).take(limit).collect()))
+	}
 }
 
 struct TextDocumentItem {
@@ -667,6 +698,9 @@ impl Backend {
 		Ok(Some(locations))
 	}
 	async fn on_change_config(&self, config: Config) {
+		if let Some(SymbolsConfig { limit: Some(limit) }) = config.symbols {
+			self.symbols_limit.store(limit as usize, Relaxed);
+		}
 		let Some(ModuleConfig { roots: Some(roots), .. }) = config.module else {
 			return;
 		};
@@ -710,6 +744,7 @@ async fn main() {
 		capabilities: Default::default(),
 		root_setup: Default::default(),
 		ast_map: DashMap::new(),
+		symbols_limit: AtomicUsize::new(80),
 	})
 	.finish();
 

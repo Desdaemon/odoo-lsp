@@ -3,30 +3,31 @@
  * Licensed under the MIT License. See License.txt in the project root for license information.
  * ------------------------------------------------------------------------------------------ */
 
+import { dirname } from "node:path";
 import {
 	// languages,
 	workspace,
 	window,
-	commands,
-	EventEmitter,
+	// commands,
+	// EventEmitter,
 	ExtensionContext,
 	// InlayHintsProvider,
 	// TextDocument,
 	// CancellationToken,
-	Range,
+	// Range,
 	// InlayHint,
-	TextDocumentChangeEvent,
+	// TextDocumentChangeEvent,
 	// ProviderResult,
 	// WorkspaceEdit,
 	// TextEdit,
-	Selection,
-	Uri,
+	// Selection,
+	// Uri,
 } from "vscode";
 
 import {
 	// CloseAction,
 	// CloseHandlerResult,
-	Disposable,
+	// Disposable,
 	// ErrorAction,
 	// ErrorHandlerResult,
 	Executable,
@@ -39,28 +40,29 @@ import {
 let client: LanguageClient;
 // type a = Parameters<>;
 
-export async function activate(context: ExtensionContext) {
-	let disposable = commands.registerCommand("helloworld.helloWorld", async (uri) => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		const url = Uri.parse("/home/victor/Documents/test-dir/nrs/another.nrs");
-		let document = await workspace.openTextDocument(uri);
-		await window.showTextDocument(document);
+export async function activate(_context: ExtensionContext) {
+	// let disposable = commands.registerCommand("helloworld.helloWorld", async (uri) => {
+	// 	// The code you place here will be executed every time your command is executed
+	// 	// Display a message box to the user
+	// 	const url = Uri.parse("/home/victor/Documents/test-dir/nrs/another.nrs");
+	// 	let document = await workspace.openTextDocument(uri);
+	// 	await window.showTextDocument(document);
 
-		// console.log(uri)
-		window.activeTextEditor.document;
-		let editor = window.activeTextEditor;
-		let range = new Range(1, 1, 1, 1);
-		editor.selection = new Selection(range.start, range.end);
-	});
+	// 	// console.log(uri)
+	// 	window.activeTextEditor.document;
+	// 	let editor = window.activeTextEditor;
+	// 	let range = new Range(1, 1, 1, 1);
+	// 	editor.selection = new Selection(range.start, range.end);
+	// });
 
-	context.subscriptions.push(disposable);
+	// context.subscriptions.push(disposable);
 
 	const traceOutputChannel = window.createOutputChannel("Odoo LSP");
 	const command = process.env.SERVER_PATH || "odoo-lsp";
 	const run: Executable = {
 		command,
 		options: {
+			cwd: workspace.workspaceFolders.length ? dirname(workspace.workspaceFolders[0].uri.fsPath) : void 0,
 			env: {
 				...process.env,
 				// eslint-disable-next-line @typescript-eslint/naming-convention
@@ -84,7 +86,7 @@ export async function activate(context: ExtensionContext) {
 		],
 		synchronize: {
 			// Notify the server about file changes to '.clientrc files contained in the workspace
-			fileEvents: workspace.createFileSystemWatcher("**/.clientrc"),
+			fileEvents: workspace.createFileSystemWatcher("**/.odoo_lsp*"),
 		},
 		traceOutputChannel,
 	};
@@ -102,80 +104,80 @@ export function deactivate(): Thenable<void> | undefined {
 	return client.stop();
 }
 
-export function activateInlayHints(ctx: ExtensionContext) {
-	const maybeUpdater = {
-		hintsProvider: null as Disposable | null,
-		updateHintsEventEmitter: new EventEmitter<void>(),
+// export function activateInlayHints(ctx: ExtensionContext) {
+// 	const maybeUpdater = {
+// 		hintsProvider: null as Disposable | null,
+// 		updateHintsEventEmitter: new EventEmitter<void>(),
 
-		async onConfigChange() {
-			this.dispose();
+// 		async onConfigChange() {
+// 			this.dispose();
 
-			const event = this.updateHintsEventEmitter.event;
-			// this.hintsProvider = languages.registerInlayHintsProvider(
-			//   { scheme: "file", language: "nrs" },
-			//   // new (class implements InlayHintsProvider {
-			//   //   onDidChangeInlayHints = event;
-			//   //   resolveInlayHint(hint: InlayHint, token: CancellationToken): ProviderResult<InlayHint> {
-			//   //     const ret = {
-			//   //       label: hint.label,
-			//   //       ...hint,
-			//   //     };
-			//   //     return ret;
-			//   //   }
-			//   //   async provideInlayHints(
-			//   //     document: TextDocument,
-			//   //     range: Range,
-			//   //     token: CancellationToken
-			//   //   ): Promise<InlayHint[]> {
-			//   //     const hints = (await client
-			//   //       .sendRequest("custom/inlay_hint", { path: document.uri.toString() })
-			//   //       .catch(err => null)) as [number, number, string][];
-			//   //     if (hints == null) {
-			//   //       return [];
-			//   //     } else {
-			//   //       return hints.map(item => {
-			//   //         const [start, end, label] = item;
-			//   //         let startPosition = document.positionAt(start);
-			//   //         let endPosition = document.positionAt(end);
-			//   //         return {
-			//   //           position: endPosition,
-			//   //           paddingLeft: true,
-			//   //           label: [
-			//   //             {
-			//   //               value: `${label}`,
-			//   //               // location: {
-			//   //               //   uri: document.uri,
-			//   //               //   range: new Range(1, 0, 1, 0)
-			//   //               // }
-			//   //               command: {
-			//   //                 title: "hello world",
-			//   //                 command: "helloworld.helloWorld",
-			//   //                 arguments: [document.uri],
-			//   //               },
-			//   //             },
-			//   //           ],
-			//   //         };
-			//   //       });
-			//   //     }
-			//   //   }
-			//   // })()
-			// );
-		},
+// 			const event = this.updateHintsEventEmitter.event;
+// 			// this.hintsProvider = languages.registerInlayHintsProvider(
+// 			//   { scheme: "file", language: "nrs" },
+// 			//   // new (class implements InlayHintsProvider {
+// 			//   //   onDidChangeInlayHints = event;
+// 			//   //   resolveInlayHint(hint: InlayHint, token: CancellationToken): ProviderResult<InlayHint> {
+// 			//   //     const ret = {
+// 			//   //       label: hint.label,
+// 			//   //       ...hint,
+// 			//   //     };
+// 			//   //     return ret;
+// 			//   //   }
+// 			//   //   async provideInlayHints(
+// 			//   //     document: TextDocument,
+// 			//   //     range: Range,
+// 			//   //     token: CancellationToken
+// 			//   //   ): Promise<InlayHint[]> {
+// 			//   //     const hints = (await client
+// 			//   //       .sendRequest("custom/inlay_hint", { path: document.uri.toString() })
+// 			//   //       .catch(err => null)) as [number, number, string][];
+// 			//   //     if (hints == null) {
+// 			//   //       return [];
+// 			//   //     } else {
+// 			//   //       return hints.map(item => {
+// 			//   //         const [start, end, label] = item;
+// 			//   //         let startPosition = document.positionAt(start);
+// 			//   //         let endPosition = document.positionAt(end);
+// 			//   //         return {
+// 			//   //           position: endPosition,
+// 			//   //           paddingLeft: true,
+// 			//   //           label: [
+// 			//   //             {
+// 			//   //               value: `${label}`,
+// 			//   //               // location: {
+// 			//   //               //   uri: document.uri,
+// 			//   //               //   range: new Range(1, 0, 1, 0)
+// 			//   //               // }
+// 			//   //               command: {
+// 			//   //                 title: "hello world",
+// 			//   //                 command: "helloworld.helloWorld",
+// 			//   //                 arguments: [document.uri],
+// 			//   //               },
+// 			//   //             },
+// 			//   //           ],
+// 			//   //         };
+// 			//   //       });
+// 			//   //     }
+// 			//   //   }
+// 			//   // })()
+// 			// );
+// 		},
 
-		onDidChangeTextDocument({ contentChanges, document }: TextDocumentChangeEvent) {
-			// debugger
-			// this.updateHintsEventEmitter.fire();
-		},
+// 		onDidChangeTextDocument({ contentChanges, document }: TextDocumentChangeEvent) {
+// 			// debugger
+// 			// this.updateHintsEventEmitter.fire();
+// 		},
 
-		dispose() {
-			this.hintsProvider?.dispose();
-			this.hintsProvider = null;
-			this.updateHintsEventEmitter.dispose();
-		},
-	};
+// 		dispose() {
+// 			this.hintsProvider?.dispose();
+// 			this.hintsProvider = null;
+// 			this.updateHintsEventEmitter.dispose();
+// 		},
+// 	};
 
-	workspace.onDidChangeConfiguration(maybeUpdater.onConfigChange, maybeUpdater, ctx.subscriptions);
-	workspace.onDidChangeTextDocument(maybeUpdater.onDidChangeTextDocument, maybeUpdater, ctx.subscriptions);
+// 	workspace.onDidChangeConfiguration(maybeUpdater.onConfigChange, maybeUpdater, ctx.subscriptions);
+// 	workspace.onDidChangeTextDocument(maybeUpdater.onDidChangeTextDocument, maybeUpdater, ctx.subscriptions);
 
-	maybeUpdater.onConfigChange().catch(console.error);
-}
+// 	maybeUpdater.onConfigChange().catch(console.error);
+// }

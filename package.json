@@ -43,6 +43,11 @@
 					"default": "off",
 					"description": "Traces the communication between VS Code and the language server."
 				},
+				"odoo-lsp.symbols.limit": {
+					"type": "number",
+					"default": 80,
+					"description": "Maximum amount of workspace symbols to view at once."
+				},
 				"odoo-lsp.module.roots": {
 					"type": "array",
 					"scope": "resource",
