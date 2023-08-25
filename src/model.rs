@@ -4,6 +4,7 @@ use std::{
 };
 
 use dashmap::DashMap;
+use log::warn;
 use tower_lsp::lsp_types::{Location, Range, Url};
 
 #[derive(Clone, Debug)]
@@ -71,7 +72,7 @@ impl ModelIndex {
 					range: item.range,
 				}));
 			} else if let Some(base) = &entry.0 {
-				eprintln!("{} already defined at {base}", entry.key());
+				warn!("{} already defined at {base}", entry.key());
 			} else {
 				entry.0 = Some(ModelLocation(Location {
 					uri: uri.clone(),

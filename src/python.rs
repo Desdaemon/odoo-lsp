@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::path::Path;
 use std::sync::OnceLock;
 
+use log::{debug, error};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
@@ -57,14 +58,14 @@ impl Backend {
 		rope: Rope,
 	) -> miette::Result<Option<CompletionResponse>> {
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope.clone()) else {
-			eprintln!(format_loc!("python_completions: invalid offset"));
+			error!(format_loc!("python_completions: invalid offset"));
 			return Ok(None);
 		};
 		let Some(current_module) = self
 			.module_index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
 		else {
-			eprintln!(format_loc!("python_completions: no current_module"));
+			debug!(format_loc!("python_completions: no current_module"));
 			return Ok(None);
 		};
 		let mut cursor = tree_sitter::QueryCursor::new();
@@ -182,7 +183,7 @@ impl Backend {
 		cursor.set_byte_range(range);
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			for model in match_.nodes_for_capture_index(1) {
-				let range = dbg!(&model).byte_range();
+				let range = model.byte_range();
 				if range.contains(&offset) {
 					let range = range.contract(1);
 					let Some(slice) = rope.get_byte_slice(range.clone()) else {

@@ -112,6 +112,7 @@ async function downloadLspBinary(context: ExtensionContext) {
 	const shaOutput = `${latest}.sha256`;
 
 	if (!existsSync(latest)) {
+		window.setStatusBarMessage(`Downloading odoo-lsp@${release}...`, 5);
 		try {
 			if (isWindows) {
 				const powershell = { shell: "powershell.exe" };
@@ -134,7 +135,7 @@ async function downloadLspBinary(context: ExtensionContext) {
 				await execAsync(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
 			}
 		} catch (err) {
-			await window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
+			window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
 			await rm(latest);
 		}
 	}
@@ -165,22 +166,6 @@ async function openLink(url: string) {
 }
 
 export async function activate(context: ExtensionContext) {
-	// let disposable = commands.registerCommand("helloworld.helloWorld", async (uri) => {
-	// 	// The code you place here will be executed every time your command is executed
-	// 	// Display a message box to the user
-	// 	const url = Uri.parse("/home/victor/Documents/test-dir/nrs/another.nrs");
-	// 	let document = await workspace.openTextDocument(uri);
-	// 	await window.showTextDocument(document);
-
-	// 	// console.log(uri)
-	// 	window.activeTextEditor.document;
-	// 	let editor = window.activeTextEditor;
-	// 	let range = new Range(1, 1, 1, 1);
-	// 	editor.selection = new Selection(range.start, range.end);
-	// });
-
-	// context.subscriptions.push(disposable);
-
 	const traceOutputChannel = window.createOutputChannel("Odoo LSP");
 	let command = process.env.SERVER_PATH || "odoo-lsp";
 	if (!(await which(command)) && context.extensionMode === ExtensionMode.Production) {
@@ -188,7 +173,7 @@ export async function activate(context: ExtensionContext) {
 	}
 	traceOutputChannel.appendLine(`odoo-lsp executable: ${command}`);
 	if (!(await which(command))) {
-		await window.showErrorMessage(`no odoo-lsp executable present: ${command}`);
+		window.showErrorMessage(`no odoo-lsp executable present: ${command}`);
 		return;
 	}
 	const cwd = workspace.workspaceFolders?.length ? dirname(workspace.workspaceFolders![0]!.uri.fsPath) : void 0;

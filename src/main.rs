@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
 use globwalk::FileType;
+use log::{debug, error, info};
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use serde_json::Value;
@@ -57,7 +58,7 @@ impl LanguageServer for Backend {
 					break 'root;
 				}
 				Some(Err(err)) => {
-					eprintln!("could not parse provided config:\n{err}");
+					error!("could not parse provided config:\n{err}");
 				}
 				None => {}
 			}
@@ -77,7 +78,7 @@ impl LanguageServer for Backend {
 				};
 				match serde_json::from_slice::<Config>(config) {
 					Ok(config) => self.on_change_config(config).await,
-					Err(err) => eprintln!("could not parse {:?}:\n{err}", path),
+					Err(err) => error!("could not parse {:?}:\n{err}", path),
 				}
 			}
 		}
@@ -140,7 +141,7 @@ impl LanguageServer for Backend {
 		ast_map.remove(path);
 	}
 	async fn initialized(&self, _: InitializedParams) {
-		eprintln!("initialized");
+		debug!("initialized");
 		let token = NumberOrString::String("_odoo_lsp_initialized".to_string());
 		self.client
 			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
@@ -170,16 +171,17 @@ impl LanguageServer for Backend {
 		for root in self.roots.iter() {
 			match self.module_index.add_root(&root.as_str(), progress.clone()).await {
 				Ok(Some(results)) => {
-					eprintln!(
-						"Processed {} with {} modules and {} records in {:.2}s",
+					info!(
+						"{} | {} modules | {} records | {} models | {:.2}s",
 						root.as_str(),
 						results.module_count,
 						results.record_count,
+						results.model_count,
 						results.elapsed.as_secs_f64()
 					);
 				}
 				Err(err) => {
-					eprintln!("(initialized) could not add root {}:\n{err}", root.as_str());
+					error!("(initialized) could not add root {}:\n{err}", root.as_str());
 				}
 				_ => {}
 			}
@@ -215,7 +217,7 @@ impl LanguageServer for Backend {
 		} else if language_id == "xml" || matches!(split_uri, Some((_, "xml"))) {
 			language = Language::Xml
 		} else {
-			eprintln!("Could not determine language, or language not supported:\nlanguage_id={language_id} split_uri={split_uri:?}");
+			debug!("Could not determine language, or language not supported:\nlanguage_id={language_id} split_uri={split_uri:?}");
 			return;
 		}
 
@@ -229,7 +231,7 @@ impl LanguageServer for Backend {
 			.is_none()
 		{
 			// outside of root?
-			eprintln!("oob: {}", params.text_document.uri.path());
+			debug!("oob: {}", params.text_document.uri.path());
 			'oob: {
 				let Ok(path) = params.text_document.uri.to_file_path() else {
 					break 'oob;
@@ -316,14 +318,14 @@ impl LanguageServer for Backend {
 	}
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		if let Some(text) = params.text {
-			eprintln!("did_save ignored:\n{text}");
+			debug!("did_save ignored:\n{text}");
 		}
 	}
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
 		let uri = &params.text_document_position_params.text_document.uri;
-		eprintln!("goto_definition {}", uri.path());
+		debug!("goto_definition {}", uri.path());
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
-			eprintln!("Unsupported file {}", uri.path());
+			debug!("Unsupported file {}", uri.path());
 			return Ok(None);
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
@@ -334,17 +336,17 @@ impl LanguageServer for Backend {
 			location = self
 				.xml_jump_def(params, document.value().clone())
 				.await
-				.map_err(|err| eprintln!("Error retrieving references:\n{err}"))
+				.map_err(|err| error!("Error retrieving references:\n{err}"))
 				.ok()
 				.flatten();
 		} else if ext == "py" {
 			location = self
 				.python_jump_def(params, document.value().clone())
-				.map_err(|err| eprintln!("Error retrieving references:\n{err}"))
+				.map_err(|err| error!("Error retrieving references:\n{err}"))
 				.ok()
 				.flatten();
 		} else {
-			eprintln!("Unsupported file {}", uri.path());
+			debug!("Unsupported file {}", uri.path());
 			return Ok(None);
 		}
 
@@ -352,18 +354,18 @@ impl LanguageServer for Backend {
 	}
 	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
 		let uri = &params.text_document_position.text_document.uri;
-		eprintln!("references {}", uri.path());
+		debug!("references {}", uri.path());
 
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
-			eprintln!("Bug: did not build a rope for {}", uri.path());
+			debug!("Bug: did not build a rope for {}", uri.path());
 			return Ok(None);
 		};
 		if ext == "py" {
 			let Some(ast) = self.ast_map.get(uri.path()) else {
-				eprintln!("Bug: did not build AST for {}", uri.path());
+				debug!("Bug: did not build AST for {}", uri.path());
 				return Ok(None);
 			};
 			match self.python_references(params, document.value().clone(), ast.value().clone()) {
@@ -384,13 +386,13 @@ impl LanguageServer for Backend {
 	}
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
 		let uri = &params.text_document_position.text_document.uri;
-		eprintln!("completion {}", uri.path());
+		debug!("completion {}", uri.path());
 
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
-			eprintln!("Bug: did not build a rope for {}", uri.path());
+			debug!("Bug: did not build a rope for {}", uri.path());
 			return Ok(None);
 		};
 		if ext == "xml" {
@@ -405,7 +407,7 @@ impl LanguageServer for Backend {
 			}
 		} else if ext == "py" {
 			let Some(ast) = self.ast_map.get(uri.path()) else {
-				eprintln!("Bug: did not build AST for {}", uri.path());
+				debug!("Bug: did not build AST for {}", uri.path());
 				return Ok(None);
 			};
 			match self.python_completions(params, ast.value().clone(), document.value().clone()) {
@@ -418,7 +420,7 @@ impl LanguageServer for Backend {
 				}
 			}
 		} else {
-			eprintln!("Unsupported file {}", uri.path());
+			debug!("Unsupported file {}", uri.path());
 			Ok(None)
 		}
 	}
@@ -438,7 +440,7 @@ impl LanguageServer for Backend {
 		for (root, config) in self.roots.iter().zip(configs) {
 			let config = serde_json::from_value::<Config>(config);
 			// TODO: Do something with the config
-			eprintln!("config: {} => {:?}", root.key(), config);
+			debug!("config: {} => {:?}", root.key(), config);
 		}
 	}
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
@@ -677,7 +679,7 @@ impl Backend {
 					value = format!("{}.{value}", module.key()).into();
 					break 'unqualified;
 				}
-				eprintln!(
+				debug!(
 					"Could not find a reference for {} in {}: could not infer module",
 					cursor_value,
 					uri.path()

@@ -1,6 +1,7 @@
 use std::fmt::Display;
 use std::ops::{Add, Sub};
 
+use log::warn;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token};
@@ -120,7 +121,7 @@ impl<T> Report for miette::Result<T> {
 	/// Consumes self and reports the results of a computation.
 	fn report<S: Display>(self, context: impl FnOnce() -> S) {
 		if let Err(err) = self {
-			eprintln!("{}:\n{err}", context());
+			warn!("{}:\n{err}", context());
 		}
 	}
 }

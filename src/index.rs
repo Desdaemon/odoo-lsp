@@ -5,6 +5,7 @@ use std::time::Duration;
 use dashmap::{DashMap, DashSet};
 use faststr::FastStr;
 use globwalk::FileType;
+use log::{debug, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::notification::Progress;
@@ -71,12 +72,12 @@ impl ModuleIndex {
 				.ok_or_else(|| miette::diagnostic!("Unexpected empty path"))?;
 			let module_name = module_dir.file_name().unwrap().to_string_lossy().to_string();
 			if let Some((client, token)) = &progress {
-				let module_name = module_name.clone();
+				// let module_name = module_name.clone();
 				_ = client
 					.send_notification::<Progress>(ProgressParams {
 						token: token.clone(),
 						value: ProgressParamsValue::WorkDone(WorkDoneProgress::Report(WorkDoneProgressReport {
-							message: Some(format!("Indexing {module_name}")),
+							message: Some(module_name.clone()),
 							..Default::default()
 						})),
 					})
@@ -84,7 +85,7 @@ impl ModuleIndex {
 			}
 			let module_name = FastStr::from(module_name);
 			if !self.modules.insert(module_name.to_string()) {
-				eprintln!("Duplicate module {}", module_name);
+				debug!("duplicate module {module_name}");
 				continue;
 			}
 			let xmls = globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
@@ -97,7 +98,7 @@ impl ModuleIndex {
 				let xml = match xml {
 					Ok(entry) => entry,
 					Err(err) => {
-						eprintln!("{err}");
+						debug!("{err}");
 						continue;
 					}
 				};
@@ -114,7 +115,7 @@ impl ModuleIndex {
 				let py = match py {
 					Ok(entry) => entry,
 					Err(err) => {
-						eprintln!("{err}");
+						debug!("{err}");
 						continue;
 					}
 				};
@@ -128,13 +129,13 @@ impl ModuleIndex {
 		let mut model_count = 0;
 		while let Some(outputs) = outputs.join_next().await {
 			let Ok(outputs) = outputs else {
-				eprintln!("join error");
+				debug!("join error");
 				continue;
 			};
 			let outputs = match outputs {
 				Ok(records) => records,
 				Err(err) => {
-					eprintln!("{err}");
+					warn!("{err}");
 					continue;
 				}
 			};
@@ -144,7 +145,7 @@ impl ModuleIndex {
 					for record in records {
 						let key = record.qualified_id();
 						if let Some((_, discarded)) = self.records.remove(&key) {
-							eprintln!(
+							debug!(
 								"{key}:\n{} -> {}",
 								discarded.location.uri.path(),
 								record.location.uri.path()
@@ -222,7 +223,7 @@ async fn add_root_xml(path: PathBuf, module_name: FastStr) -> miette::Result<Out
 			}
 			None => break,
 			Some(Err(err)) => {
-				eprintln!("error parsing {}:\n{err}", path.display());
+				debug!("error parsing {}:\n{err}", path.display());
 				break;
 			}
 			_ => {}

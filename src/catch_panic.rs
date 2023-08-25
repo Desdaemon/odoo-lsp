@@ -7,6 +7,7 @@ use std::task::{ready, Context, Poll};
 
 use futures::FutureExt;
 use futures::{future::CatchUnwind, Future};
+use log::{error, warn};
 use tower::Service;
 use tower_lsp::jsonrpc::{Error, Id, Response};
 
@@ -65,11 +66,11 @@ pin_project_lite::pin_project! {
 
 fn handle_panic_err(err: Box<dyn Any>) {
 	if let Some(msg) = err.downcast_ref::<String>() {
-		eprintln!("{msg}");
+		error!("{msg}");
 	} else if let Some(msg) = err.downcast_ref::<&str>() {
-		eprintln!("{msg}");
+		error!("{msg}");
 	} else {
-		eprintln!("panic: {err:?} type_id={:?}", err.type_id());
+		warn!("panic: {err:?} type_id={:?}", err.type_id());
 	}
 }
 

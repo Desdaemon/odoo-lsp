@@ -5,6 +5,7 @@ use std::cmp::Ordering;
 use std::path::Path;
 
 use faststr::FastStr;
+use log::debug;
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
@@ -101,7 +102,7 @@ impl Backend {
 				Ordering::Equal
 			}
 		}) else {
-			eprintln!("(record_slice) fall back to full slice");
+			debug!("(record_slice) fall back to full slice");
 			let slice = Cow::from(rope.slice(..));
 			return Ok((slice, cursor_by_char, 0));
 		};
