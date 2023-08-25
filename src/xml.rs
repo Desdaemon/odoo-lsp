@@ -73,7 +73,7 @@ impl Backend {
 						message: format!("could not parse XML:\n{err}"),
 						..Default::default()
 					});
-					break;
+					// break;
 				}
 				_ => {}
 			}
@@ -138,6 +138,7 @@ impl Backend {
 
 		enum RecordField {
 			InheritId,
+			Model,
 		}
 
 		let mut items = vec![];
@@ -157,7 +158,12 @@ impl Backend {
 				Ok(Token::Attribute { local, value, .. })
 					if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>
 				{
-					model_filter = Some(value.as_str().to_string());
+					if value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char {
+						cursor_value = Some(value);
+						record_field = Some(RecordField::Model);
+					} else {
+						model_filter = Some(value.as_str().to_string());
+					}
 				}
 				Ok(Token::Attribute { local, value, .. })
 					if matches!(tag, Some(Tag::Field)) && local.as_str() == "name" =>
@@ -205,6 +211,7 @@ impl Backend {
 				&current_module,
 				&mut items,
 			)?,
+			RecordField::Model => self.complete_model(needle, replace_range, rope.clone(), &mut items)?,
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
@@ -220,11 +227,13 @@ impl Backend {
 
 		enum RecordField {
 			InheritId,
+			Model,
 		}
 
 		enum Tag {
 			Field,
 			Template,
+			Record,
 		}
 
 		let mut record_field = None::<RecordField>;
@@ -236,6 +245,7 @@ impl Backend {
 				Ok(Token::ElementStart { local, .. }) => match local.as_str() {
 					"field" => tag = Some(Tag::Field),
 					"template" => tag = Some(Tag::Template),
+					"record" => tag = Some(Tag::Record),
 					_ => {}
 				},
 				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
@@ -253,6 +263,14 @@ impl Backend {
 					cursor_value = Some(value);
 					record_field = Some(RecordField::InheritId);
 				}
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Record))
+						&& local.as_str() == "model"
+						&& value.range().contains(&cursor_by_char) =>
+				{
+					cursor_value = Some(value);
+					record_field = Some(RecordField::Model);
+				}
 				Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
 				Err(_) => break,
 				Ok(token) => {
@@ -268,6 +286,7 @@ impl Backend {
 		};
 		match record_field {
 			Some(RecordField::InheritId) => self.jump_def_inherit_id(&cursor_value, uri),
+			Some(RecordField::Model) => self.jump_def_model(&cursor_value),
 			None => Ok(None),
 		}
 	}
