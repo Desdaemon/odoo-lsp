@@ -258,6 +258,7 @@ impl LanguageServer for Backend {
 			version: params.text_document.version,
 			language: Some(language),
 			rope: Some(rope),
+			old_rope: None,
 		})
 		.await
 		.report(|| format_loc!("did_open failed"))
@@ -275,6 +276,7 @@ impl LanguageServer for Backend {
 				version: params.text_document.version,
 				language: None,
 				rope: None,
+				old_rope: None,
 			})
 			.await
 			.report(|| format_loc!("did_change failed"));
@@ -284,6 +286,8 @@ impl LanguageServer for Backend {
 			.document_map
 			.get_mut(params.text_document.uri.path())
 			.expect("Did not build a rope");
+		let old_rope = rope.clone();
+		// Update the rope
 		// TODO: Refactor into method
 		for change in &params.content_changes {
 			if change.range.is_none() && change.range_length.is_none() {
@@ -293,10 +297,6 @@ impl LanguageServer for Backend {
 				let Some(range) = lsp_range_to_char_range(range, rope.value().clone()) else {
 					continue;
 				};
-				// if change.text.is_empty() {
-				// 	// Prevents an off-by-one error when deleting text
-				// 	range = range.start..CharOffset(range.end.0.saturating_sub(1));
-				// }
 				let rope = rope.value_mut();
 				let start = range.start.0;
 				rope.remove(range.map_unit(|unit| unit.0));
@@ -309,6 +309,7 @@ impl LanguageServer for Backend {
 			version: params.text_document.version,
 			language: None,
 			rope: Some(rope.value().clone()),
+			old_rope: Some(old_rope),
 		})
 		.await
 		.report(|| format_loc!("did_change failed"));
@@ -493,6 +494,7 @@ struct TextDocumentItem {
 	version: i32,
 	language: Option<Language>,
 	rope: Option<Rope>,
+	old_rope: Option<Rope>,
 }
 
 pub enum Text {
@@ -520,7 +522,8 @@ impl Backend {
 			self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
 				.await;
 		} else if matches!(split_uri, Some((_, "py"))) || matches!(params.language, Some(Language::Python)) {
-			self.on_change_python(&params.text, &params.uri, rope).await?;
+			self.on_change_python(&params.text, &params.uri, rope, params.old_rope)
+				.await?;
 		}
 		self.client
 			.publish_diagnostics(params.uri.clone(), diagnostics, Some(params.version))
@@ -528,18 +531,29 @@ impl Backend {
 
 		Ok(())
 	}
-	fn update_ast(&self, text: &Text, uri: &Url, rope: Rope, mut parser: Parser) -> miette::Result<()> {
+	fn update_ast(
+		&self,
+		text: &Text,
+		uri: &Url,
+		rope: Rope,
+		old_rope: Option<Rope>,
+		mut parser: Parser,
+	) -> miette::Result<()> {
 		let ast = self.ast_map.get_mut(uri.path());
 		let ast = match (text, ast) {
 			(Text::Full(full), _) => parser.parse(full, None),
 			(Text::Delta(delta), Some(mut ast)) => {
-				// assume rope is up to date
 				for change in delta {
 					let range = change.range.ok_or_else(|| diagnostic!("delta without range"))?;
 					let start =
 						position_to_offset(range.start, rope.clone()).ok_or_else(|| diagnostic!("delta start"))?;
-					let end = position_to_offset(range.end, rope.clone())
-						.ok_or_else(|| diagnostic!("delta end ({change:?})"))?;
+					// The old rope is used to calculate the *old* range-end, because
+					// the diff may have caused it to fall out of the new rope's bounds.
+					let old_rope = old_rope
+						.as_ref()
+						.cloned()
+						.ok_or_else(|| diagnostic!("python diff requires pre-diff rope"))?;
+					let end = position_to_offset(range.end, old_rope).ok_or_else(|| diagnostic!("delta end"))?;
 					let len_new = change.text.len();
 					let len_new_bytes = change.text.as_bytes().len();
 					let start_position = tree_sitter::Point {

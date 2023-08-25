@@ -34,13 +34,19 @@ fn py_references() -> &'static Query {
 }
 
 impl Backend {
-	pub async fn on_change_python(&self, text: &Text, uri: &Url, rope: Rope) -> miette::Result<()> {
+	pub async fn on_change_python(
+		&self,
+		text: &Text,
+		uri: &Url,
+		rope: Rope,
+		old_rope: Option<Rope>,
+	) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
 			.set_language(tree_sitter_python::language())
 			.into_diagnostic()
 			.with_context(|| "failed to init python parser")?;
-		self.update_ast(text, uri, rope, parser)?;
+		self.update_ast(text, uri, rope, old_rope, parser)?;
 		Ok(())
 	}
 	const BYTE_WINDOW: usize = 200;
