@@ -57,7 +57,11 @@ async function downloadLspBinary(context: ExtensionContext) {
 	// We follow nightly releases, so only download if today's build is not already downloaded.
 	// The format is nightly-YYYYMMDD
 	const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-	const release = `nightly-${today}`;
+	const release = context.extension.packageJSON["_release"] || `nightly-${today}`;
+	if (typeof release !== "string" || !release) {
+		window.showErrorMessage(`Bug: invalid release "${release}"`);
+		return;
+	}
 	const latest = `${runtimeDir}/${release}${archiveExtension}`;
 	const exeExtension = isWindows ? ".exe" : "";
 	const odooLspBin = `${runtimeDir}/odoo-lsp${exeExtension}`;

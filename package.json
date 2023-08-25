@@ -3,13 +3,16 @@
 	"description": "Odoo LSP",
 	"license": "MIT",
 	"version": "0.1.0",
-	"categories": [],
+	"categories": [
+		"Programming Languages"
+	],
 	"keywords": [
 		"language-server",
 		"tower-lsp"
 	],
 	"repository": {
-		"url": "https://github.com/Desdaemon/odoo-lsp"
+		"type": "git",
+		"url": "https://github.com/Desdaemon/odoo-lsp.git"
 	},
 	"engines": {
 		"vscode": "^1.66.0"

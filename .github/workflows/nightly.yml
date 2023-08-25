@@ -121,6 +121,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install
+      - name: Inject custom release name
+        if: "${{ inputs.release_name != '' }}"
+        run: |
+          cat package.json | jq '. +{"_release":"${{ inputs.release_name }}"}' > package.json
       - run: pnpm package
       - name: Upload artifacts
         uses: actions/upload-artifact@v3

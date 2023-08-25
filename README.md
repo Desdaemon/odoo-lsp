@@ -6,7 +6,7 @@
 
 ### Completion and definitions for XML IDs
 
-Works for `record`s, `template`s and `env.ref()`!
+Works for `record`s, `template`s and `env.ref()`.
 
 [![template inherit_id demo](https://raw.githubusercontent.com/Desdaemon/odoo-lsp/main/static/inherit_id.gif)](https://asciinema.org/a/603783)
 
@@ -26,22 +26,16 @@ For more features check out the [wiki].
 cargo install --git https://github.com/Desdaemon/odoo-lsp
 ```
 
-Nightly binaries are also available for x64 platforms, please check [Releases] for the latest downloads.
+Nightly binaries are also available for some platforms, please check [Releases] for the latest downloads.
 
 ## Setup
 
-For usage instructions please check the [wiki] (in construction).
+For usage instructions please check the [wiki] (work in progress).
 
 ### VSCode
 
-> **Note**
-> odoo-lsp is under heavy development and requires some additional setup.
-> If you'd like to help, please file an issue or create a PR to help expedite the installation process!
-
-1. Ensure that you have `odoo-lsp` on your path (or define the SERVER_PATH environment variable pointing to one)
-2. Download the VSCode extension package from [Releases] (a file ending in .vsix)
-3. Open the **Command Palette** <kbd>Ctrl+Shift+P</kbd>, select **Extensions: Install from VSIX** and pick the file
-   you downloaded in step 2
+odoo-lsp is available from the Visual Studio Marketplace and the Open VSX Registry.
+Alternatively, you can grab the latest nightly builds from [Releases].
 
 ### Helix
 
@@ -66,6 +60,7 @@ name = "python"
 language-servers = [
    "odoo-lsp",
    # add the default language servers here
+   "pylsp",
    # and any you need
 ]
 ```
