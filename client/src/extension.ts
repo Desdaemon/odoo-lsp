@@ -3,7 +3,6 @@
  * Licensed under the MIT License. See License.txt in the project root for license information.
  * ------------------------------------------------------------------------------------------ */
 
-import { dirname } from "node:path";
 import { mkdir, rm } from "node:fs/promises";
 import { ObjectEncodingOptions, existsSync } from "node:fs";
 import { exec, spawn, ExecOptions } from "node:child_process";
@@ -57,7 +56,7 @@ async function downloadLspBinary(context: ExtensionContext) {
 	// We follow nightly releases, so only download if today's build is not already downloaded.
 	// The format is nightly-YYYYMMDD
 	const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-	const release = context.extension.packageJSON["_release"] || `nightly-${today}`;
+	const release = context.extension.packageJSON._release || `nightly-${today}`;
 	if (typeof release !== "string" || !release) {
 		window.showErrorMessage(`Bug: invalid release "${release}"`);
 		return;
@@ -180,19 +179,16 @@ export async function activate(context: ExtensionContext) {
 		window.showErrorMessage(`no odoo-lsp executable present: ${command}`);
 		return;
 	}
-	const cwd = workspace.workspaceFolders?.length ? dirname(workspace.workspaceFolders![0]!.uri.fsPath) : void 0;
 	const serverOptions: ServerOptions = {
 		run: {
 			command,
 			options: {
-				cwd,
 				env: { ...process.env, RUST_LOG: process.env.RUST_LOG || "info" },
 			},
 		},
 		debug: {
 			command,
 			options: {
-				cwd,
 				env: { ...process.env, RUST_LOG: process.env.RUST_LOG || "debug" },
 			},
 		},

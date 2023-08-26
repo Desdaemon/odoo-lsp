@@ -151,7 +151,10 @@ impl Backend {
 			match token {
 				Ok(Token::ElementStart { local, .. }) => match local.as_str() {
 					"record" => tag = Some(Tag::Record),
-					"template" => tag = Some(Tag::Template),
+					"template" => {
+						tag = Some(Tag::Template);
+						model_filter = Some("ir.ui.view".to_string());
+					}
 					"field" => tag = Some(Tag::Field),
 					_ => {}
 				},
