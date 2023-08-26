@@ -131,7 +131,7 @@ impl Backend {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
 		let (slice, cursor_by_char, relative_offset) = self.record_slice(&rope, uri, position)?;
-		let reader = Tokenizer::from(&slice[..]);
+		let mut reader = Tokenizer::from(&slice[..]);
 
 		let current_module = self
 			.module_index
@@ -139,64 +139,7 @@ impl Backend {
 			.expect("must be in a module");
 
 		let mut items = vec![];
-		let mut model_filter = None;
-		let mut tag = None::<Tag>;
-		let mut record_field = None::<RecordField>;
-		let mut cursor_value = None::<StrSpan>;
-
-		for token in reader {
-			match token {
-				Ok(Token::ElementStart { local, .. }) => match local.as_str() {
-					"record" => tag = Some(Tag::Record),
-					"template" => {
-						tag = Some(Tag::Template);
-						model_filter = Some("ir.ui.view".to_string());
-					}
-					"field" => tag = Some(Tag::Field),
-					_ => {}
-				},
-				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>
-				{
-					if value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char {
-						cursor_value = Some(value);
-						record_field = Some(RecordField::Model);
-					} else {
-						model_filter = Some(value.as_str().to_string());
-					}
-				}
-				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Field)) && local.as_str() == "name" =>
-				{
-					match value.as_str() {
-						"inherit_id" => record_field = Some(RecordField::InheritId),
-						_ => {}
-					}
-				}
-				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Field))
-						&& local.as_str() == "ref"
-						&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
-				{
-					cursor_value = Some(value);
-				}
-				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Template))
-						&& local.as_str() == "inherit_id"
-						&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
-				{
-					cursor_value = Some(value);
-					record_field = Some(RecordField::InheritId);
-				}
-				Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
-				Err(_) => break,
-				Ok(token) => {
-					if token_span(&token).start() > cursor_by_char {
-						break;
-					}
-				}
-			}
-		}
+		let (_, cursor_value, mut record_field, model_filter) = gather_refs(cursor_by_char, &mut reader)?;
 		let (Some(value), Some(record_field)) = (cursor_value, record_field.take()) else {
 			return Ok(None);
 		};
@@ -224,52 +167,8 @@ impl Backend {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
-		let reader = Tokenizer::from(&slice[..]);
-
-		let mut record_field = None::<RecordField>;
-		let mut cursor_value = None::<StrSpan>;
-		let mut tag = None::<Tag>;
-
-		for token in reader {
-			match token {
-				Ok(Token::ElementStart { local, .. }) => match local.as_str() {
-					"field" => tag = Some(Tag::Field),
-					"template" => tag = Some(Tag::Template),
-					"record" => tag = Some(Tag::Record),
-					_ => {}
-				},
-				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
-					if local.as_str() == "ref" && value.range().contains(&cursor_by_char) {
-						cursor_value = Some(value);
-					} else if local.as_str() == "name" && value.as_str() == "inherit_id" {
-						record_field = Some(RecordField::InheritId);
-					}
-				}
-				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Template))
-						&& local.as_str() == "inherit_id"
-						&& value.range().contains(&cursor_by_char) =>
-				{
-					cursor_value = Some(value);
-					record_field = Some(RecordField::InheritId);
-				}
-				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Record))
-						&& local.as_str() == "model"
-						&& value.range().contains(&cursor_by_char) =>
-				{
-					cursor_value = Some(value);
-					record_field = Some(RecordField::Model);
-				}
-				Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
-				Err(_) => break,
-				Ok(token) => {
-					if token_span(&token).start() > cursor_by_char {
-						break;
-					}
-				}
-			}
-		}
+		let mut reader = Tokenizer::from(&slice[..]);
+		let (_, cursor_value, record_field, _) = gather_refs(cursor_by_char, &mut reader)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -284,60 +183,8 @@ impl Backend {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
-		let reader = Tokenizer::from(&slice[..]);
-
-		let mut record_field = None::<RecordField>;
-		let mut cursor_value = None::<StrSpan>;
-		let mut tag = None::<Tag>;
-
-		for token in reader {
-			match token {
-				Ok(Token::ElementStart { local, .. }) => match local.as_str() {
-					"field" => tag = Some(Tag::Field),
-					"template" => tag = Some(Tag::Template),
-					"record" => tag = Some(Tag::Record),
-					_ => {}
-				},
-				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
-					if local.as_str() == "ref" && value.range().contains(&cursor_by_char) {
-						cursor_value = Some(value);
-					} else if local.as_str() == "name" && value.as_str() == "inherit_id" {
-						record_field = Some(RecordField::InheritId);
-					}
-				}
-				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Template))
-						&& local.as_str() == "inherit_id"
-						&& value.range().contains(&cursor_by_char) =>
-				{
-					cursor_value = Some(value);
-					record_field = Some(RecordField::InheritId);
-				}
-				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Record))
-						&& local.as_str() == "model"
-						&& value.range().contains(&cursor_by_char) =>
-				{
-					cursor_value = Some(value);
-					record_field = Some(RecordField::Model);
-				}
-				Ok(Token::Attribute { local, value, .. })
-					if matches!(tag, Some(Tag::Record | Tag::Template))
-						&& local.as_str() == "id"
-						&& value.range().contains(&cursor_by_char) =>
-				{
-					cursor_value = Some(value);
-					record_field = Some(RecordField::Id);
-				}
-				Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
-				Err(_) => break,
-				Ok(token) => {
-					if token_span(&token).start() > cursor_by_char {
-						break;
-					}
-				}
-			}
-		}
+		let mut reader = Tokenizer::from(&slice[..]);
+		let (_, cursor_value, record_field, _) = gather_refs(cursor_by_char, &mut reader)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -354,4 +201,70 @@ impl Backend {
 			None => Ok(None),
 		}
 	}
+}
+
+fn gather_refs<'read>(
+	cursor_by_char: usize,
+	reader: &mut Tokenizer<'read>,
+) -> miette::Result<(Option<Tag>, Option<StrSpan<'read>>, Option<RecordField>, Option<String>)> {
+	let mut tag = None;
+	let mut cursor_value = None;
+	let mut record_field = None;
+	let mut model_filter = None;
+	for token in reader {
+		match token {
+			Ok(Token::ElementStart { local, .. }) => match local.as_str() {
+				"field" => tag = Some(Tag::Field),
+				"template" => {
+					tag = Some(Tag::Template);
+					model_filter = Some("ir.ui.view".to_string());
+				}
+				"record" => tag = Some(Tag::Record),
+				_ => {}
+			},
+			Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
+				if local.as_str() == "ref"
+					&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char)
+				{
+					cursor_value = Some(value);
+				} else if local.as_str() == "name" && value.as_str() == "inherit_id" {
+					record_field = Some(RecordField::InheritId);
+				}
+			}
+			Ok(Token::Attribute { local, value, .. })
+				if matches!(tag, Some(Tag::Template))
+					&& local.as_str() == "inherit_id"
+					&& value.range().contains(&cursor_by_char) =>
+			{
+				cursor_value = Some(value);
+				record_field = Some(RecordField::InheritId);
+			}
+			Ok(Token::Attribute { local, value, .. })
+				if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>
+			{
+				if value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char {
+					cursor_value = Some(value);
+					record_field = Some(RecordField::Model);
+				} else {
+					model_filter = Some(value.as_str().to_string());
+				}
+			}
+			Ok(Token::Attribute { local, value, .. })
+				if matches!(tag, Some(Tag::Record | Tag::Template))
+					&& local.as_str() == "id"
+					&& value.range().contains(&cursor_by_char) =>
+			{
+				cursor_value = Some(value);
+				record_field = Some(RecordField::Id);
+			}
+			Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
+			Err(_) => break,
+			Ok(token) => {
+				if token_span(&token).start() > cursor_by_char {
+					break;
+				}
+			}
+		}
+	}
+	Ok((tag, cursor_value, record_field, model_filter))
 }

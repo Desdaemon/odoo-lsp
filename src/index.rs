@@ -9,9 +9,7 @@ use log::{debug, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::notification::Progress;
-use tower_lsp::lsp_types::{
-	ProgressParams, ProgressParamsValue, ProgressToken, Url, WorkDoneProgress, WorkDoneProgressReport,
-};
+use tower_lsp::lsp_types::*;
 use tree_sitter::{Query, QueryCursor};
 use xmlparser::{Token, Tokenizer};
 
@@ -30,7 +28,7 @@ pub struct ModuleIndex {
 
 enum Output {
 	Records(Vec<Record>),
-	Models(FastStr, Vec<Model>),
+	Models { path: FastStr, models: Vec<Model> },
 }
 
 pub struct AddRootResults {
@@ -154,9 +152,15 @@ impl ModuleIndex {
 						self.records.insert(key, record);
 					}
 				}
-				Output::Models(path, models) => {
+				Output::Models { path, models } => {
 					model_count += models.len();
-					let uri = Url::parse(&format!("file://{path}")).into_diagnostic()?;
+					let uri = match format!("file://{path}").parse() {
+						Ok(uri) => uri,
+						Err(err) => {
+							debug!("{err}");
+							continue;
+						}
+					};
 					self.models.extend_models(&uri, models);
 				}
 			}
@@ -310,5 +314,8 @@ async fn add_root_py(path: PathBuf, _: FastStr) -> miette::Result<Output> {
 		out.extend(model);
 	}
 
-	Ok(Output::Models(path.to_string_lossy().to_string().into(), out))
+	Ok(Output::Models {
+		path: path.to_string_lossy().to_string().into(),
+		models: out,
+	})
 }

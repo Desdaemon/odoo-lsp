@@ -165,4 +165,4 @@ jobs:
           name: ${{ env.TAG }}
           tag_name: ${{ env.TAG }}
           generate_release_notes: true
-          prerelease: ${{ inputs.prerelease }}
+          prerelease: ${{ github.event.inputs.prerelease }}
