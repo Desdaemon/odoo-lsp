@@ -4,9 +4,9 @@
 
 ## Features
 
-### Completion and definitions for XML IDs
+### Completion, definition and references of XML IDs
 
-Works for `record`s, `template`s and `env.ref()`.
+Works for `record`s, `template`s and `env.ref()`
 
 [![template inherit_id demo](https://raw.githubusercontent.com/Desdaemon/odoo-lsp/main/static/inherit_id.gif)](https://asciinema.org/a/603783)
 

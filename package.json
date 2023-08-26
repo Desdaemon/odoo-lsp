@@ -1,6 +1,6 @@
 {
 	"name": "odoo-lsp",
-	"description": "Odoo LSP",
+	"description": "Language server for Odoo Python/JS/XML",
 	"license": "MIT",
 	"version": "0.1.0",
 	"categories": [
