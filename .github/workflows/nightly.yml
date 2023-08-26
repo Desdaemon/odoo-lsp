@@ -6,6 +6,9 @@ on:
       release_name:
         type: string
         description: Defaults to `nightly-YYYYMMDD`
+      prerelease:
+        type: boolean
+        default: true
   schedule:
     - cron: "0 5 * * *"
 
@@ -124,7 +127,8 @@ jobs:
       - name: Inject custom release name
         if: "${{ inputs.release_name != '' }}"
         run: |
-          cat package.json | jq '. +{"_release":"${{ inputs.release_name }}"}' > package.json
+          cat package.json | jq '. +{"_release":"${{ inputs.release_name }}"}' > __temp__
+          mv __temp__ package.json
       - run: pnpm package
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
@@ -161,4 +165,4 @@ jobs:
           name: ${{ env.TAG }}
           tag_name: ${{ env.TAG }}
           generate_release_notes: true
-          prerelease: true
+          prerelease: ${{ inputs.prerelease }}

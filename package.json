@@ -17,7 +17,6 @@
 	"engines": {
 		"vscode": "^1.66.0"
 	},
-	"enabledApiProposals": [],
 	"activationEvents": [
 		"onLanguage:xml",
 		"onLanguage:python",
