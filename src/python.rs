@@ -181,17 +181,36 @@ impl Backend {
 		let mut cursor = tree_sitter::QueryCursor::new();
 		cursor.set_match_limit(256);
 		cursor.set_byte_range(range);
+		let current_module = self
+			.module_index
+			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
+			.map(|ref_| ref_.to_string());
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
-			for model in match_.nodes_for_capture_index(1) {
-				let range = model.byte_range();
-				if range.contains(&offset) {
-					let range = range.contract(1);
-					let Some(slice) = rope.get_byte_slice(range.clone()) else {
-						dbg!(&range);
-						break 'match_;
-					};
-					let slice = Cow::from(slice);
-					return self.model_references(&slice);
+			for capture in match_.captures {
+				if capture.index == 2 {
+					// @xml_id
+					let range = capture.node.byte_range();
+					if range.contains(&offset) {
+						let range = range.contract(1);
+						let Some(slice) = rope.get_byte_slice(range.clone()) else {
+							dbg!(&range);
+							break 'match_;
+						};
+						let slice = Cow::from(slice);
+						return self.record_references(&slice, current_module.as_deref());
+					}
+				} else if capture.index == 3 {
+					// @model
+					let range = capture.node.byte_range();
+					if range.contains(&offset) {
+						let range = range.contract(1);
+						let Some(slice) = rope.get_byte_slice(range.clone()) else {
+							dbg!(&range);
+							break 'match_;
+						};
+						let slice = Cow::from(slice);
+						return self.model_references(&slice);
+					}
 				}
 			}
 		}

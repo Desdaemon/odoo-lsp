@@ -1,3 +1,4 @@
 <odoo>
-  <template id="asd" inherit_id='one.one'
+  <template id="asd" inherit_id='one.one'>
+  </template>
 </odoo>

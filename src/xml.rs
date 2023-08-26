@@ -14,8 +14,20 @@ use xmlparser::{StrSpan, Token, Tokenizer};
 use odoo_lsp::record::Record;
 use odoo_lsp::utils::*;
 
+enum RecordField {
+	InheritId,
+	Model,
+	Id,
+}
+
+enum Tag {
+	Field,
+	Template,
+	Record,
+}
+
 impl Backend {
-	pub async fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
+	pub fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
 			// Assume rope is up to date
@@ -115,11 +127,7 @@ impl Backend {
 
 		Ok((slice, cursor_by_char, relative_offset))
 	}
-	pub async fn xml_completions(
-		&self,
-		params: CompletionParams,
-		rope: Rope,
-	) -> miette::Result<Option<CompletionResponse>> {
+	pub fn xml_completions(&self, params: CompletionParams, rope: Rope) -> miette::Result<Option<CompletionResponse>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
 		let (slice, cursor_by_char, relative_offset) = self.record_slice(&rope, uri, position)?;
@@ -129,17 +137,6 @@ impl Backend {
 			.module_index
 			.module_of_path(Path::new(uri.path()))
 			.expect("must be in a module");
-
-		enum Tag {
-			Record,
-			Template,
-			Field,
-		}
-
-		enum RecordField {
-			InheritId,
-			Model,
-		}
 
 		let mut items = vec![];
 		let mut model_filter = None;
@@ -215,6 +212,7 @@ impl Backend {
 				&mut items,
 			)?,
 			RecordField::Model => self.complete_model(needle, replace_range, rope.clone(), &mut items)?,
+			RecordField::Id => return Ok(None),
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
@@ -222,22 +220,11 @@ impl Backend {
 			items,
 		})))
 	}
-	pub async fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
+	pub fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let reader = Tokenizer::from(&slice[..]);
-
-		enum RecordField {
-			InheritId,
-			Model,
-		}
-
-		enum Tag {
-			Field,
-			Template,
-			Record,
-		}
 
 		let mut record_field = None::<RecordField>;
 		let mut cursor_value = None::<StrSpan>;
@@ -290,6 +277,80 @@ impl Backend {
 		match record_field {
 			Some(RecordField::InheritId) => self.jump_def_inherit_id(&cursor_value, uri),
 			Some(RecordField::Model) => self.jump_def_model(&cursor_value),
+			Some(RecordField::Id) | None => Ok(None),
+		}
+	}
+	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
+		let position = params.text_document_position.position;
+		let uri = &params.text_document_position.text_document.uri;
+		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
+		let reader = Tokenizer::from(&slice[..]);
+
+		let mut record_field = None::<RecordField>;
+		let mut cursor_value = None::<StrSpan>;
+		let mut tag = None::<Tag>;
+
+		for token in reader {
+			match token {
+				Ok(Token::ElementStart { local, .. }) => match local.as_str() {
+					"field" => tag = Some(Tag::Field),
+					"template" => tag = Some(Tag::Template),
+					"record" => tag = Some(Tag::Record),
+					_ => {}
+				},
+				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
+					if local.as_str() == "ref" && value.range().contains(&cursor_by_char) {
+						cursor_value = Some(value);
+					} else if local.as_str() == "name" && value.as_str() == "inherit_id" {
+						record_field = Some(RecordField::InheritId);
+					}
+				}
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Template))
+						&& local.as_str() == "inherit_id"
+						&& value.range().contains(&cursor_by_char) =>
+				{
+					cursor_value = Some(value);
+					record_field = Some(RecordField::InheritId);
+				}
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Record))
+						&& local.as_str() == "model"
+						&& value.range().contains(&cursor_by_char) =>
+				{
+					cursor_value = Some(value);
+					record_field = Some(RecordField::Model);
+				}
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Record | Tag::Template))
+						&& local.as_str() == "id"
+						&& value.range().contains(&cursor_by_char) =>
+				{
+					cursor_value = Some(value);
+					record_field = Some(RecordField::Id);
+				}
+				Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
+				Err(_) => break,
+				Ok(token) => {
+					if token_span(&token).start() > cursor_by_char {
+						break;
+					}
+				}
+			}
+		}
+
+		let Some(cursor_value) = cursor_value else {
+			return Ok(None);
+		};
+		let current_module = self
+			.module_index
+			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
+			.map(|ref_| ref_.to_string());
+		match record_field {
+			Some(RecordField::Model) => self.model_references(&cursor_value),
+			Some(RecordField::InheritId) | Some(RecordField::Id) => {
+				self.record_references(&cursor_value, current_module.as_deref())
+			}
 			None => Ok(None),
 		}
 	}

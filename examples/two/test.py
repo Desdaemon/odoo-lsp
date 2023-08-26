@@ -1,4 +1,4 @@
-self.env.ref('generic_tax_report')
+self.env.ref('one.one')
 
 class Foo(Model):
     pass

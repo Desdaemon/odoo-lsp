@@ -335,7 +335,6 @@ impl LanguageServer for Backend {
 		if ext == "xml" {
 			location = self
 				.xml_jump_def(params, document.value().clone())
-				.await
 				.map_err(|err| error!("Error retrieving references:\n{err}"))
 				.ok()
 				.flatten();
@@ -380,6 +379,19 @@ impl LanguageServer for Backend {
 					Ok(None)
 				}
 			}
+		} else if ext == "xml" {
+			match self.xml_references(params, document.value().clone()) {
+				Ok(ret) => Ok(ret),
+				Err(report) => {
+					self.client
+						.show_message(
+							MessageType::ERROR,
+							format!("error during gathering python references:\n{report}"),
+						)
+						.await;
+					Ok(None)
+				}
+			}
 		} else {
 			Ok(None)
 		}
@@ -396,7 +408,7 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 		if ext == "xml" {
-			match self.xml_completions(params, document.value().clone()).await {
+			match self.xml_completions(params, document.value().clone()) {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
 					self.client
@@ -521,8 +533,7 @@ impl Backend {
 			(None, Text::Delta(_)) => Err(diagnostic!("No rope and got delta"))?,
 		};
 		if matches!(split_uri, Some((_, "xml"))) || matches!(params.language, Some(Language::Xml)) {
-			self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
-				.await;
+			self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics);
 		} else if matches!(split_uri, Some((_, "py"))) || matches!(params.language, Some(Language::Python)) {
 			self.on_change_python(&params.text, &params.uri, rope, params.old_rope)
 				.await?;
@@ -712,6 +723,26 @@ impl Backend {
 			.filter_map(|record| (record.model.as_deref() == Some(cursor_value)).then(|| record.location.clone()));
 		locations.extend(record_locations);
 		Ok(Some(locations))
+	}
+	fn record_references(
+		&self,
+		cursor_value: &str,
+		current_module: Option<&str>,
+	) -> miette::Result<Option<Vec<Location>>> {
+		let cursor_match = cursor_value.split_once('.');
+		let locations = self.module_index.records.iter().filter_map(|entry| {
+			match (&entry.module, &entry.inherit_id, cursor_match, current_module) {
+				(_, Some((Some(lhs_mod), lhs_id)), Some((rhs_mod, rhs_id)), _) => {
+					lhs_mod == rhs_mod && lhs_id == rhs_id
+				}
+				(lhs_mod, Some((None, lhs_id)), Some((rhs_mod, rhs_id)), _) => lhs_mod == rhs_mod && lhs_id == rhs_id,
+				(_, Some((Some(lhs_mod), xml_id)), None, Some(rhs_mod)) => lhs_mod == rhs_mod && xml_id == cursor_value,
+				(lhs_mod, Some((None, xml_id)), None, Some(rhs_mod)) => lhs_mod == rhs_mod && xml_id == cursor_value,
+				_ => false,
+			}
+			.then(|| entry.location.clone())
+		});
+		Ok(Some(locations.collect()))
 	}
 	async fn on_change_config(&self, config: Config) {
 		if let Some(SymbolsConfig { limit: Some(limit) }) = config.symbols {
