@@ -48,7 +48,7 @@ impl Backend {
 							let Ok(Some(record)) = Record::from_reader(
 								offset,
 								current_module.clone(),
-								uri.path(),
+								uri.clone(),
 								&mut reader,
 								rope.clone(),
 							) else {
@@ -64,9 +64,13 @@ impl Backend {
 								.await;
 						}
 						"template" => {
-							let Ok(Some(template)) =
-								Record::template(offset, current_module.clone(), uri.path(), &mut reader, rope.clone())
-							else {
+							let Ok(Some(template)) = Record::template(
+								offset,
+								current_module.clone(),
+								uri.clone(),
+								&mut reader,
+								rope.clone(),
+							) else {
 								continue;
 							};
 							let Some(range) = lsp_range_to_char_range(template.location.range, rope.clone()) else {

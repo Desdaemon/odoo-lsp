@@ -1,4 +1,4 @@
-use miette::{diagnostic, IntoDiagnostic};
+use miette::diagnostic;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
@@ -33,7 +33,7 @@ impl Record {
 	pub fn from_reader(
 		offset: CharOffset,
 		module: ImStr,
-		uri: &str,
+		uri: Url,
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
@@ -44,7 +44,7 @@ impl Record {
 		// nested records are a thing apparently
 		let mut stack = 1;
 		let mut in_record = true;
-		let uri = format!("file://{uri}").parse().into_diagnostic()?;
+		// let uri = format!("file://{uri}").parse().into_diagnostic()?;
 		let start =
 			char_to_position(offset.0, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
 
@@ -150,11 +150,10 @@ impl Record {
 	pub fn template(
 		offset: CharOffset,
 		module: ImStr,
-		uri: &str,
+		uri: Url,
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
-		let uri: Url = format!("file://{uri}").parse().into_diagnostic()?;
 		let start = char_to_position(offset.0, rope.clone())
 			.ok_or_else(|| diagnostic!("(template) Failed to parse start location"))?;
 		let mut id = None;
@@ -255,9 +254,15 @@ mod tests {
 		let Record {
 			location: Location { range, .. },
 			..
-		} = Record::from_reader(CharOffset(0), "foo".into(), "/foo", &mut reader, rope.clone())
-			.unwrap()
-			.unwrap();
+		} = Record::from_reader(
+			CharOffset(0),
+			"foo".into(),
+			"/foo".parse().unwrap(),
+			&mut reader,
+			rope.clone(),
+		)
+		.unwrap()
+		.unwrap();
 		let range = lsp_range_to_char_range(range, rope).unwrap();
 		assert_eq!(&document[range.map_unit(|unit| unit.0)], fragment);
 	}

@@ -495,11 +495,11 @@ impl LanguageServer for Backend {
 		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
 			self.module_index.models.get(key).into_iter().flat_map(|entry| {
 				entry.0.as_ref().map(|loc| SymbolInformation {
-					name: entry.key().clone(),
+					name: entry.key().to_string(),
 					kind: SymbolKind::CONSTANT,
 					tags: None,
 					deprecated: None,
-					location: loc.0.clone(),
+					location: loc.0.clone().into(),
 					container_name: None,
 				})
 			})
@@ -511,7 +511,7 @@ impl LanguageServer for Backend {
 				kind: SymbolKind::VARIABLE,
 				tags: None,
 				deprecated: None,
-				location: record.location.clone(),
+				location: record.location.clone().into(),
 				container_name: None,
 			}
 		}
@@ -579,7 +579,7 @@ impl Backend {
 				.await?;
 		}
 		self.client
-			.publish_diagnostics(params.uri.clone(), diagnostics, Some(params.version))
+			.publish_diagnostics(params.uri, diagnostics, Some(params.version))
 			.await;
 
 		Ok(())
@@ -736,7 +736,7 @@ impl Backend {
 				return Ok(None);
 			}
 		}
-		return Ok((self.module_index.records.get(value.as_ref())).map(|entry| entry.location.clone()));
+		return Ok((self.module_index.records.get(value.as_ref())).map(|entry| entry.location.clone().into()));
 	}
 	fn jump_def_model(&self, cursor_value: &str) -> miette::Result<Option<Location>> {
 		match self
@@ -745,20 +745,20 @@ impl Backend {
 			.get(cursor_value)
 			.and_then(|entry| entry.0.as_ref().cloned())
 		{
-			Some(ModelLocation(base)) => Ok(Some(base)),
+			Some(ModelLocation(base)) => Ok(Some(base.into())),
 			None => Ok(None),
 		}
 	}
 	fn model_references(&self, model: &str) -> miette::Result<Option<Vec<Location>>> {
 		let mut locations = match self.module_index.models.get(model) {
-			Some(entry) => entry.1.iter().map(|loc| loc.0.clone()).collect::<Vec<_>>(),
+			Some(entry) => entry.1.iter().map(|loc| loc.0.clone().into()).collect::<Vec<_>>(),
 			None => vec![],
 		};
 		locations.extend(
 			self.module_index
 				.records
 				.by_model(model)
-				.map(|record| record.location.clone()),
+				.map(|record| record.location.clone().into()),
 		);
 		Ok(Some(locations))
 	}
@@ -779,7 +779,7 @@ impl Backend {
 			.module_index
 			.records
 			.by_inherit_id(&inherit_id)
-			.map(|record| record.location.clone());
+			.map(|record| record.location.clone().into());
 		Ok(Some(locations.collect()))
 	}
 	async fn on_change_config(&self, config: Config) {

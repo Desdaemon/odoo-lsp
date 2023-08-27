@@ -13,7 +13,7 @@ use tree_sitter::{Query, QueryCursor};
 use xmlparser::{Token, Tokenizer};
 
 use crate::format_loc;
-use crate::model::{Model, ModelIndex};
+use crate::model::{Model, ModelId, ModelIndex};
 use crate::record::Record;
 use crate::utils::{offset_range_to_lsp_range, ByteOffset, CharOffset, ImStr, RangeExt};
 
@@ -185,7 +185,7 @@ impl ModuleIndex {
 }
 
 async fn add_root_xml(path: PathBuf, module_name: ImStr) -> miette::Result<Output> {
-	let path_uri = path.to_string_lossy();
+	let uri: Url = format!("file://{}", path.to_string_lossy()).parse().into_diagnostic()?;
 	let file = tokio::fs::read(&path)
 		.await
 		.into_diagnostic()
@@ -201,7 +201,7 @@ async fn add_root_xml(path: PathBuf, module_name: ImStr) -> miette::Result<Outpu
 					let record = Record::from_reader(
 						CharOffset(span.start()),
 						module_name.clone(),
-						&path_uri,
+						uri.clone(),
 						&mut reader,
 						rope.clone(),
 					)?;
@@ -210,7 +210,7 @@ async fn add_root_xml(path: PathBuf, module_name: ImStr) -> miette::Result<Outpu
 					let template = Record::template(
 						CharOffset(span.start()),
 						module_name.clone(),
-						&path_uri,
+						uri.clone(),
 						&mut reader,
 						rope.clone(),
 					)?;
@@ -238,7 +238,7 @@ fn model_query() -> &'static Query {
 }
 
 async fn add_root_py(path: PathBuf, _: ImStr) -> miette::Result<Output> {
-	let file = tokio::fs::read(&path)
+	let contents = tokio::fs::read(&path)
 		.await
 		.into_diagnostic()
 		.with_context(|| format_loc!("Could not read {}", path.display()))?;
@@ -246,64 +246,54 @@ async fn add_root_py(path: PathBuf, _: ImStr) -> miette::Result<Output> {
 	let mut parser = tree_sitter::Parser::new();
 	parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
 
-	let ast = parser.parse(&file, None).ok_or_else(|| diagnostic!("AST not parsed"))?;
+	let ast = parser
+		.parse(&contents, None)
+		.ok_or_else(|| diagnostic!("AST not parsed"))?;
 	let query = model_query();
 	let mut cursor = QueryCursor::new();
 
 	let mut out = vec![];
-	let rope = Rope::from_str(&String::from_utf8_lossy(&file));
-	let eq_slice = |range: std::ops::Range<usize>, slice: &[u8]| &file[range] == slice;
-	for match_ in cursor.matches(query, ast.root_node(), file.as_slice()) {
-		let mut captures = match_.captures;
-		let tail = match captures {
-			[models, _, tail @ ..] if eq_slice(models.node.byte_range(), b"models") => tail,
-			[_model, tail @ ..] => {
-				debug_assert!(matches!(&file[_model.node.byte_range()], b"Model" | b"TransientModel"));
-				tail
-			}
-			unk => Err(diagnostic!(
-				"Bug: Unknown pattern {:?}",
-				unk.iter()
-					.map(|capture| String::from_utf8_lossy(&file[capture.node.byte_range()]))
-					.collect::<Vec<_>>()
-			))?,
-		};
-		captures = tail;
-		let mut model = None;
-		while !captures.is_empty() {
-			match captures {
-				[_name, name, tail @ ..] if eq_slice(_name.node.byte_range(), b"_name") => {
-					captures = tail;
-					let name = name.node.byte_range().contract(1);
-					if name.is_empty() {
-						break;
-					}
-					model = Some(Model {
-						model: String::from_utf8_lossy(&file[name.clone()]).to_string(),
-						range: offset_range_to_lsp_range(name.map_unit(ByteOffset), rope.clone())
-							.ok_or_else(|| diagnostic!("name range"))?,
-						inherit: false,
-					});
+	let rope = Rope::from_str(&String::from_utf8_lossy(&contents));
+	'match_: for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
+		let mut inherits = vec![];
+		let mut range = None;
+		let mut maybe_base = None;
+		for capture in match_.captures {
+			if capture.index == 3 && maybe_base.is_none() {
+				// @name
+				let name = capture.node.byte_range().contract(1);
+				if name.is_empty() {
+					continue 'match_;
 				}
-				[_inherit, inherit, tail @ ..] if eq_slice(_inherit.node.byte_range(), b"_inherit") => {
-					captures = tail;
-					let inherit = inherit.node.byte_range().contract(1);
-					if inherit.is_empty() {
-						continue;
-					}
-					if model.is_none() {
-						model = Some(Model {
-							model: String::from_utf8_lossy(&file[inherit.clone()]).to_string(),
-							range: offset_range_to_lsp_range(inherit.map_unit(ByteOffset), rope.clone())
-								.ok_or_else(|| diagnostic!("inherit range"))?,
-							inherit: true,
-						});
-					}
+				maybe_base = Some(String::from_utf8_lossy(&contents[name]));
+			} else if capture.index == 5 {
+				// @inherit
+				let inherit = capture.node.byte_range().contract(1);
+				if !inherit.is_empty() {
+					inherits.push(ImStr::from(String::from_utf8_lossy(&contents[inherit]).as_ref()));
 				}
-				unk => Err(diagnostic!("Bug: Leftover captures: {unk:?}"))?,
+			} else if capture.index == 6 {
+				// @model
+				range = Some(capture.node.byte_range());
 			}
 		}
-		out.extend(model);
+		let range = offset_range_to_lsp_range(range.unwrap().map_unit(ByteOffset), rope.clone())
+			.ok_or_else(|| diagnostic!("model range"))?;
+		match (inherits.as_slice(), maybe_base) {
+			([single], Some(base)) if base.as_ref() == single => out.push(Model {
+				model: ModelId::Inherit(inherits.into_boxed_slice()),
+				range,
+			}),
+			(_, None) if !inherits.is_empty() => out.push(Model {
+				model: ModelId::Inherit(inherits.into_boxed_slice()),
+				range,
+			}),
+			(_, Some(base)) => out.push(Model {
+				model: ModelId::Base(base.as_ref().into()),
+				range,
+			}),
+			_ => {}
+		}
 	}
 
 	Ok(Output::Models {

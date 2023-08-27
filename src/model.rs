@@ -1,22 +1,28 @@
 use std::{fmt::Display, ops::Deref, sync::Arc};
 
 use dashmap::DashMap;
-use log::warn;
 use qp_trie::{wrapper::BString, Trie};
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::{Location, Range, Url};
 
+use crate::utils::ImStr;
+
 #[derive(Clone, Debug)]
 pub struct Model {
-	pub model: String,
+	pub model: ModelId,
 	pub range: Range,
-	pub inherit: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum ModelId {
+	Base(ImStr),
+	Inherit(Box<[ImStr]>),
 }
 
 #[derive(Default, Clone)]
 pub struct ModelIndex {
-	inner: DashMap<String, (Option<ModelLocation>, Vec<ModelLocation>)>,
-	pub by_prefix: Arc<RwLock<Trie<BString, String>>>,
+	inner: DashMap<ImStr, (Option<ModelLocation>, Vec<ModelLocation>)>,
+	pub by_prefix: Arc<RwLock<Trie<BString, ImStr>>>,
 }
 
 #[derive(Clone)]
@@ -48,7 +54,7 @@ impl Display for ModelLocation {
 }
 
 impl Deref for ModelIndex {
-	type Target = DashMap<String, (Option<ModelLocation>, Vec<ModelLocation>)>;
+	type Target = DashMap<ImStr, (Option<ModelLocation>, Vec<ModelLocation>)>;
 
 	fn deref(&self) -> &Self::Target {
 		&self.inner
@@ -62,21 +68,27 @@ impl ModelIndex {
 	{
 		let mut by_prefix = self.by_prefix.write().await;
 		for item in items {
-			let mut entry = self.entry(item.model.to_string()).or_default();
-			if item.inherit {
-				by_prefix.insert_str(&item.model, item.model.to_string());
-				entry.1.push(ModelLocation(Location {
-					uri: uri.clone(),
-					range: item.range,
-				}));
-			} else if let Some(base) = &entry.0 {
-				warn!("{} already defined at {base}", entry.key());
-			} else {
-				by_prefix.insert_str(&item.model, item.model.to_string());
-				entry.0 = Some(ModelLocation(Location {
-					uri: uri.clone(),
-					range: item.range,
-				}))
+			match item.model {
+				ModelId::Base(base) => {
+					by_prefix.insert_str(&base, base.clone());
+					let mut location = Some(ModelLocation(Location {
+						uri: uri.clone(),
+						range: item.range,
+					}));
+					core::mem::swap(&mut self.entry(base.clone()).or_default().0, &mut location);
+					#[cfg(debug_assertions)]
+					if let Some(leftover) = location {
+						log::debug!("leftover base class {leftover}");
+					}
+				}
+				ModelId::Inherit(inherits) => {
+					for inherit in inherits.iter() {
+						self.entry(inherit.clone()).or_default().1.push(ModelLocation(Location {
+							uri: uri.clone(),
+							range: item.range,
+						}))
+					}
+				}
 			}
 		}
 	}

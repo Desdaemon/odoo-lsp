@@ -14,3 +14,6 @@ class Quux(models.Model):
     _inherit = 'bar'
 
     what = fields.Many2one(comodel_name='bar')
+
+class Moo(models.Model):
+    _inherit = ['bar', 'quux']

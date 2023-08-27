@@ -16,7 +16,8 @@
     (expression_statement
       (assignment
         (identifier) @_inherit
-        (string) @model))))
+        [(string) @model
+         (list (string) @model)]))))
  (#eq? @_inherit "_inherit"))
 
 ((call
@@ -25,6 +26,6 @@
   [(argument_list . (string) @model)
    (argument_list
     (keyword_argument (identifier) @_comodel_name (string) @model))])
-  (#eq? @_fields "fields")
-  (#eq? @_comodel_name "comodel_name")
-  (#match? @_Field "^(Many2one|One2many|Many2many)$"))
+ (#eq? @_fields "fields")
+ (#eq? @_comodel_name "comodel_name")
+ (#match? @_Field "^(Many2one|One2many|Many2many)$"))

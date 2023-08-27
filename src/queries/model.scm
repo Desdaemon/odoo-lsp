@@ -9,8 +9,9 @@
         (string) @name)?
       (assignment
         (identifier) @_inherit
-        (string) @inherit)?)))
-  (#eq? @_models "models")
-  (#match? @_Model "^(Transient)?Model$")
-  (#eq? @_name "_name")
-  (#eq? @_inherit "_inherit"))
+        [(string) @inherit
+         (list (string) @inherit)])?))) @model
+ (#eq? @_models "models")
+ (#match? @_Model "^(Transient)?Model$")
+ (#eq? @_name "_name")
+ (#eq? @_inherit "_inherit"))
