@@ -18,7 +18,7 @@ impl Deref for ImStr {
 	#[inline]
 	fn deref(&self) -> &Self::Target {
 		match &self.0 {
-			Repr::Arc(inner) => &inner,
+			Repr::Arc(inner) => inner,
 			Repr::Inline(len, bytes) => {
 				let slice = &bytes[..(*len as usize)];
 				unsafe { std::str::from_utf8_unchecked(slice) }
@@ -116,6 +116,7 @@ impl std::hash::Hash for ImStr {
 }
 
 impl ImStr {
+	#[inline]
 	pub fn as_str(&self) -> &str {
 		self.deref()
 	}

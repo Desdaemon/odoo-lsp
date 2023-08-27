@@ -18,7 +18,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tree_sitter::{Parser, Tree};
 
-use odoo_lsp::config::{Config, ModuleConfig, SymbolsConfig};
+use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::ModuleIndex;
 use odoo_lsp::model::ModelLocation;
 use odoo_lsp::utils::isolate::Isolate;
@@ -38,6 +38,7 @@ pub struct Backend {
 	capabilities: Capabilities,
 	root_setup: AtomicBool,
 	symbols_limit: AtomicUsize,
+	references_limit: AtomicUsize,
 	isolate: Isolate,
 }
 
@@ -137,6 +138,7 @@ impl LanguageServer for Backend {
 			capabilities: _,
 			root_setup: _,
 			symbols_limit: _,
+			references_limit: _,
 			isolate: _,
 		} = self;
 		document_map.remove(path);
@@ -172,7 +174,7 @@ impl LanguageServer for Backend {
 		}
 
 		for root in self.roots.iter() {
-			match self.module_index.add_root(&root.as_str(), progress.clone()).await {
+			match self.module_index.add_root(root.as_str(), progress.clone()).await {
 				Ok(Some(results)) => {
 					info!(
 						"{} | {} modules | {} records | {} models | {:.2}s",
@@ -750,17 +752,18 @@ impl Backend {
 		}
 	}
 	fn model_references(&self, model: &str) -> miette::Result<Option<Vec<Location>>> {
-		let mut locations = match self.module_index.models.get(model) {
-			Some(entry) => entry.1.iter().map(|loc| loc.0.clone().into()).collect::<Vec<_>>(),
-			None => vec![],
-		};
-		locations.extend(
-			self.module_index
-				.records
-				.by_model(model)
-				.map(|record| record.location.clone().into()),
-		);
-		Ok(Some(locations))
+		let record_locations = self
+			.module_index
+			.records
+			.by_model(model)
+			.map(|record| record.location.clone().into());
+		let limit = self.references_limit.load(Relaxed);
+		if let Some(entry) = self.module_index.models.get(model) {
+			let inherit_locations = entry.1.iter().map(|loc| loc.0.clone().into());
+			Ok(Some(inherit_locations.chain(record_locations).take(limit).collect()))
+		} else {
+			Ok(Some(record_locations.take(limit).collect()))
+		}
 	}
 	fn record_references(
 		&self,
@@ -775,16 +778,21 @@ impl Backend {
 			debug!("No current module to resolve the XML ID {inherit_id}");
 			return Ok(None);
 		};
+		let limit = self.references_limit.load(Relaxed);
 		let locations = self
 			.module_index
 			.records
 			.by_inherit_id(&inherit_id)
-			.map(|record| record.location.clone().into());
+			.map(|record| record.location.clone().into())
+			.take(limit);
 		Ok(Some(locations.collect()))
 	}
 	async fn on_change_config(&self, config: Config) {
 		if let Some(SymbolsConfig { limit: Some(limit) }) = config.symbols {
 			self.symbols_limit.store(limit as usize, Relaxed);
+		}
+		if let Some(ReferencesConfig { limit: Some(limit) }) = config.references {
+			self.references_limit.store(limit as usize, Relaxed);
 		}
 		let Some(ModuleConfig { roots: Some(roots), .. }) = config.module else {
 			return;
@@ -830,6 +838,7 @@ async fn main() {
 		root_setup: Default::default(),
 		ast_map: DashMap::new(),
 		symbols_limit: AtomicUsize::new(100),
+		references_limit: AtomicUsize::new(100),
 		isolate: Isolate::new(),
 	})
 	.finish();

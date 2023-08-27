@@ -3,8 +3,8 @@ use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::utils::ImStr;
 use crate::utils::{char_to_position, position_to_char, CharOffset};
+use crate::utils::{ImStr, MinLoc};
 
 macro_rules! unwrap_or_none {
 	($opt:expr) => {
@@ -23,7 +23,7 @@ pub struct Record {
 	pub model: Option<ImStr>,
 	/// (inherit_module?, xml_id)
 	pub inherit_id: Option<(Option<ImStr>, ImStr)>,
-	pub location: Location,
+	pub location: MinLoc,
 }
 
 impl Record {
@@ -33,7 +33,7 @@ impl Record {
 	pub fn from_reader(
 		offset: CharOffset,
 		module: ImStr,
-		uri: Url,
+		path: ImStr,
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
@@ -144,13 +144,13 @@ impl Record {
 			module,
 			model,
 			inherit_id,
-			location: Location { uri, range },
+			location: MinLoc { path, range },
 		}))
 	}
 	pub fn template(
 		offset: CharOffset,
 		module: ImStr,
-		uri: Url,
+		path: ImStr,
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
@@ -231,7 +231,7 @@ impl Record {
 			model: Some("ir.ui.view".into()),
 			module,
 			inherit_id,
-			location: Location { uri, range },
+			location: MinLoc { path, range },
 		}))
 	}
 }
@@ -252,17 +252,11 @@ mod tests {
 		_ = reader.next();
 		let rope = Rope::from_str(&document);
 		let Record {
-			location: Location { range, .. },
+			location: MinLoc { range, .. },
 			..
-		} = Record::from_reader(
-			CharOffset(0),
-			"foo".into(),
-			"/foo".parse().unwrap(),
-			&mut reader,
-			rope.clone(),
-		)
-		.unwrap()
-		.unwrap();
+		} = Record::from_reader(CharOffset(0), "foo".into(), "/foo".into(), &mut reader, rope.clone())
+			.unwrap()
+			.unwrap();
 		let range = lsp_range_to_char_range(range, rope).unwrap();
 		assert_eq!(&document[range.map_unit(|unit| unit.0)], fragment);
 	}

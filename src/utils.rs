@@ -14,6 +14,22 @@ pub use str::ImStr;
 
 pub type PrefixTrie = qp_trie::Trie<BString, DashSet<ImStr>>;
 
+/// A more economical version of [Location].
+#[derive(Clone, Debug)]
+pub struct MinLoc {
+	pub path: ImStr,
+	pub range: Range,
+}
+
+impl From<MinLoc> for Location {
+	fn from(value: MinLoc) -> Self {
+		Location {
+			uri: format!("file://{}", value.path).parse().unwrap(),
+			range: value.range,
+		}
+	}
+}
+
 pub fn offset_to_position(offset: usize, rope: Rope) -> Option<Position> {
 	let line = rope.try_char_to_line(offset).ok()?;
 	let first_char_of_line = rope.try_line_to_char(line).ok()?;

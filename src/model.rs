@@ -3,9 +3,9 @@ use std::{fmt::Display, ops::Deref, sync::Arc};
 use dashmap::DashMap;
 use qp_trie::{wrapper::BString, Trie};
 use tokio::sync::RwLock;
-use tower_lsp::lsp_types::{Location, Range, Url};
+use tower_lsp::lsp_types::Range;
 
-use crate::utils::ImStr;
+use crate::utils::{ImStr, MinLoc};
 
 #[derive(Clone, Debug)]
 pub struct Model {
@@ -16,7 +16,7 @@ pub struct Model {
 #[derive(Clone, Debug)]
 pub enum ModelId {
 	Base(ImStr),
-	Inherit(Box<[ImStr]>),
+	Inherit(Vec<ImStr>),
 }
 
 #[derive(Default, Clone)]
@@ -26,7 +26,7 @@ pub struct ModelIndex {
 }
 
 #[derive(Clone)]
-pub struct ModelLocation(pub Location);
+pub struct ModelLocation(pub MinLoc);
 
 impl Display for ModelLocation {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -34,16 +34,13 @@ impl Display for ModelLocation {
 			write!(
 				f,
 				"{} [{}:{}..{}]",
-				self.0.uri.path(),
-				self.0.range.start.line,
-				self.0.range.start.character,
-				self.0.range.end.character,
+				self.0.path, self.0.range.start.line, self.0.range.start.character, self.0.range.end.character,
 			)
 		} else {
 			write!(
 				f,
 				"{} [{}:{}..{}:{}]",
-				self.0.uri.path(),
+				self.0.path,
 				self.0.range.start.line,
 				self.0.range.start.character,
 				self.0.range.end.line,
@@ -62,7 +59,7 @@ impl Deref for ModelIndex {
 }
 
 impl ModelIndex {
-	pub async fn extend_models<I>(&self, uri: &Url, items: I)
+	pub async fn extend_models<I>(&self, path: ImStr, items: I)
 	where
 		I: IntoIterator<Item = Model>,
 	{
@@ -71,8 +68,8 @@ impl ModelIndex {
 			match item.model {
 				ModelId::Base(base) => {
 					by_prefix.insert_str(&base, base.clone());
-					let mut location = Some(ModelLocation(Location {
-						uri: uri.clone(),
+					let mut location = Some(ModelLocation(MinLoc {
+						path: path.clone(),
 						range: item.range,
 					}));
 					core::mem::swap(&mut self.entry(base.clone()).or_default().0, &mut location);
@@ -83,8 +80,8 @@ impl ModelIndex {
 				}
 				ModelId::Inherit(inherits) => {
 					for inherit in inherits.iter() {
-						self.entry(inherit.clone()).or_default().1.push(ModelLocation(Location {
-							uri: uri.clone(),
+						self.entry(inherit.clone()).or_default().1.push(ModelLocation(MinLoc {
+							path: path.clone(),
 							range: item.range,
 						}))
 					}

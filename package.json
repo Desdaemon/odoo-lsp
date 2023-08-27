@@ -48,7 +48,12 @@
 				"odoo-lsp.symbols.limit": {
 					"type": "number",
 					"default": 80,
-					"description": "Maximum amount of workspace symbols to view at once."
+					"description": "Maximum amount of workspace symbols to retrieve at once."
+				},
+				"odoo-lsp.references.limit": {
+					"type": "number",
+					"default": 80,
+					"description": "Maximum amount of model/record references to retrieve at once."
 				},
 				"odoo-lsp.module.roots": {
 					"type": "array",

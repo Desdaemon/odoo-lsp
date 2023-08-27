@@ -39,6 +39,7 @@ impl Backend {
 		};
 		let current_module = ImStr::from(current_module.as_str());
 		let mut record_prefix = self.module_index.records.by_prefix.write().await;
+		let path_uri = ImStr::from(uri.path());
 		loop {
 			match reader.next() {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
@@ -48,7 +49,7 @@ impl Backend {
 							let Ok(Some(record)) = Record::from_reader(
 								offset,
 								current_module.clone(),
-								uri.clone(),
+								path_uri.clone(),
 								&mut reader,
 								rope.clone(),
 							) else {
@@ -67,7 +68,7 @@ impl Backend {
 							let Ok(Some(template)) = Record::template(
 								offset,
 								current_module.clone(),
-								uri.clone(),
+								path_uri.clone(),
 								&mut reader,
 								rope.clone(),
 							) else {

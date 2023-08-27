@@ -4,6 +4,7 @@ use serde::Deserialize;
 pub struct Config {
 	pub module: Option<ModuleConfig>,
 	pub symbols: Option<SymbolsConfig>,
+	pub references: Option<ReferencesConfig>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -13,5 +14,10 @@ pub struct ModuleConfig {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct SymbolsConfig {
+	pub limit: Option<u32>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ReferencesConfig {
 	pub limit: Option<u32>,
 }

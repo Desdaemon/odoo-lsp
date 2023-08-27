@@ -56,7 +56,7 @@ impl RecordIndex {
 				.or_insert_with(DashSet::default)
 				.insert(qualified_id.clone());
 		}
-		self.inner.insert(qualified_id.into(), record);
+		self.inner.insert(qualified_id, record);
 	}
 	pub async fn extend_records(&self, prefix: Option<&mut PrefixTrie>, records: impl IntoIterator<Item = Record>) {
 		if let Some(prefix) = prefix {

@@ -146,14 +146,7 @@ impl ModuleIndex {
 				}
 				Output::Models { path, models } => {
 					model_count += models.len();
-					let uri = match format!("file://{path}").parse() {
-						Ok(uri) => uri,
-						Err(err) => {
-							debug!("{err}");
-							continue;
-						}
-					};
-					self.models.extend_models(&uri, models).await;
+					self.models.extend_models(path, models).await;
 				}
 			}
 		}
@@ -185,7 +178,7 @@ impl ModuleIndex {
 }
 
 async fn add_root_xml(path: PathBuf, module_name: ImStr) -> miette::Result<Output> {
-	let uri: Url = format!("file://{}", path.to_string_lossy()).parse().into_diagnostic()?;
+	let path_uri = ImStr::from(path.to_string_lossy().as_ref());
 	let file = tokio::fs::read(&path)
 		.await
 		.into_diagnostic()
@@ -201,7 +194,7 @@ async fn add_root_xml(path: PathBuf, module_name: ImStr) -> miette::Result<Outpu
 					let record = Record::from_reader(
 						CharOffset(span.start()),
 						module_name.clone(),
-						uri.clone(),
+						path_uri.clone(),
 						&mut reader,
 						rope.clone(),
 					)?;
@@ -210,7 +203,7 @@ async fn add_root_xml(path: PathBuf, module_name: ImStr) -> miette::Result<Outpu
 					let template = Record::template(
 						CharOffset(span.start()),
 						module_name.clone(),
-						uri.clone(),
+						path_uri.clone(),
 						&mut reader,
 						rope.clone(),
 					)?;
@@ -281,11 +274,11 @@ async fn add_root_py(path: PathBuf, _: ImStr) -> miette::Result<Output> {
 			.ok_or_else(|| diagnostic!("model range"))?;
 		match (inherits.as_slice(), maybe_base) {
 			([single], Some(base)) if base.as_ref() == single => out.push(Model {
-				model: ModelId::Inherit(inherits.into_boxed_slice()),
+				model: ModelId::Inherit(inherits),
 				range,
 			}),
 			(_, None) if !inherits.is_empty() => out.push(Model {
-				model: ModelId::Inherit(inherits.into_boxed_slice()),
+				model: ModelId::Inherit(inherits),
 				range,
 			}),
 			(_, Some(base)) => out.push(Model {
