@@ -8,6 +8,7 @@ use dashmap::{DashMap, DashSet};
 use globwalk::FileType;
 use log::{debug, error, info};
 use miette::{diagnostic, IntoDiagnostic};
+use odoo_lsp::utils::isolate::Isolate;
 use ropey::Rope;
 use serde_json::Value;
 use tower::ServiceBuilder;
@@ -37,6 +38,7 @@ pub struct Backend {
 	capabilities: Capabilities,
 	root_setup: AtomicBool,
 	symbols_limit: AtomicUsize,
+	isolate: Isolate,
 }
 
 #[derive(Debug, Default)]
@@ -135,6 +137,7 @@ impl LanguageServer for Backend {
 			capabilities: _,
 			root_setup: _,
 			symbols_limit: _,
+			isolate: _,
 		} = self;
 		document_map.remove(path);
 		record_ranges.remove(path);
@@ -408,7 +411,10 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 		if ext == "xml" {
-			match self.xml_completions(params, document.value().clone()) {
+			let completions = self.isolate.send_task(|send| {
+				Box::pin(async { _ = send.send(self.xml_completions(params, document.value().clone()).await) })
+			});
+			match completions.await.expect("isolate error") {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
 					self.client
@@ -422,7 +428,15 @@ impl LanguageServer for Backend {
 				debug!("Bug: did not build AST for {}", uri.path());
 				return Ok(None);
 			};
-			match self.python_completions(params, ast.value().clone(), document.value().clone()) {
+			let completions = self.isolate.send_task(|send| {
+				Box::pin(async {
+					_ = send.send(
+						self.python_completions(params, ast.value().clone(), document.value().clone())
+							.await,
+					);
+				})
+			});
+			match completions.await.expect("isolate error") {
 				Ok(ret) => Ok(ret),
 				Err(err) => {
 					self.client
@@ -475,8 +489,9 @@ impl LanguageServer for Backend {
 	#[allow(deprecated)]
 	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
 		let query = &params.query;
-		let records = self.module_index.records.iter().filter_map(|entry| {
-			entry.id.contains(query).then(|| SymbolInformation {
+		let records_by_prefix = self.module_index.records.by_prefix.read().await;
+		let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
+			self.module_index.records.get(key).map(|entry| SymbolInformation {
 				name: entry.id.to_string(),
 				kind: SymbolKind::VARIABLE,
 				tags: None,
@@ -485,9 +500,10 @@ impl LanguageServer for Backend {
 				container_name: None,
 			})
 		});
-		let models = self.module_index.models.iter().filter_map(|entry| {
-			entry.0.as_ref().and_then(|loc| {
-				entry.key().contains(query).then(|| SymbolInformation {
+		let models_by_prefix = self.module_index.models.by_prefix.read().await;
+		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
+			self.module_index.models.get(key).into_iter().flat_map(|entry| {
+				entry.0.as_ref().map(|loc| SymbolInformation {
 					name: entry.key().clone(),
 					kind: SymbolKind::CONSTANT,
 					tags: None,
@@ -533,7 +549,8 @@ impl Backend {
 			(None, Text::Delta(_)) => Err(diagnostic!("No rope and got delta"))?,
 		};
 		if matches!(split_uri, Some((_, "xml"))) || matches!(params.language, Some(Language::Xml)) {
-			self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics);
+			self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
+				.await;
 		} else if matches!(split_uri, Some((_, "py"))) || matches!(params.language, Some(Language::Python)) {
 			self.on_change_python(&params.text, &params.uri, rope, params.old_rope)
 				.await?;
@@ -652,7 +669,7 @@ impl Backend {
 		items.extend(matches);
 		Ok(())
 	}
-	fn complete_model(
+	async fn complete_model(
 		&self,
 		needle: &str,
 		range: std::ops::Range<CharOffset>,
@@ -660,12 +677,10 @@ impl Backend {
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_model) range"))?;
-		let matches = self
-			.module_index
-			.models
-			.iter()
-			.filter(|entry| entry.key().contains(needle))
-			.take(Self::LIMIT)
+		let by_prefix = self.module_index.models.by_prefix.read().await;
+		let matches = by_prefix
+			.iter_prefix(needle.as_bytes())
+			.flat_map(|(_, key)| self.module_index.models.get(key))
 			.map(|entry| {
 				let label = entry.key().to_string();
 				CompletionItem {
@@ -711,37 +726,37 @@ impl Backend {
 			None => Ok(None),
 		}
 	}
-	fn model_references(&self, cursor_value: &str) -> miette::Result<Option<Vec<Location>>> {
-		let mut locations = match self.module_index.models.get(cursor_value) {
+	fn model_references(&self, model: &str) -> miette::Result<Option<Vec<Location>>> {
+		let mut locations = match self.module_index.models.get(model) {
 			Some(entry) => entry.1.iter().map(|loc| loc.0.clone()).collect::<Vec<_>>(),
 			None => vec![],
 		};
-		let record_locations = self
-			.module_index
-			.records
-			.iter()
-			.filter_map(|record| (record.model.as_deref() == Some(cursor_value)).then(|| record.location.clone()));
-		locations.extend(record_locations);
+		locations.extend(
+			self.module_index
+				.records
+				.by_model(model)
+				.map(|record| record.location.clone()),
+		);
 		Ok(Some(locations))
 	}
 	fn record_references(
 		&self,
-		cursor_value: &str,
+		inherit_id: &str,
 		current_module: Option<&str>,
 	) -> miette::Result<Option<Vec<Location>>> {
-		let cursor_match = cursor_value.split_once('.');
-		let locations = self.module_index.records.iter().filter_map(|entry| {
-			match (&entry.module, &entry.inherit_id, cursor_match, current_module) {
-				(_, Some((Some(lhs_mod), lhs_id)), Some((rhs_mod, rhs_id)), _) => {
-					lhs_mod == rhs_mod && lhs_id == rhs_id
-				}
-				(lhs_mod, Some((None, lhs_id)), Some((rhs_mod, rhs_id)), _) => lhs_mod == rhs_mod && lhs_id == rhs_id,
-				(_, Some((Some(lhs_mod), xml_id)), None, Some(rhs_mod)) => lhs_mod == rhs_mod && xml_id == cursor_value,
-				(lhs_mod, Some((None, xml_id)), None, Some(rhs_mod)) => lhs_mod == rhs_mod && xml_id == cursor_value,
-				_ => false,
-			}
-			.then(|| entry.location.clone())
-		});
+		let inherit_id = if inherit_id.contains('.') {
+			Cow::from(inherit_id)
+		} else if let Some(current_module) = current_module {
+			Cow::from(format!("{}.{}", current_module, inherit_id))
+		} else {
+			debug!("No current module to resolve the XML ID {inherit_id}");
+			return Ok(None);
+		};
+		let locations = self
+			.module_index
+			.records
+			.by_inherit_id(&inherit_id)
+			.map(|record| record.location.clone());
 		Ok(Some(locations.collect()))
 	}
 	async fn on_change_config(&self, config: Config) {
@@ -791,7 +806,8 @@ async fn main() {
 		capabilities: Default::default(),
 		root_setup: Default::default(),
 		ast_map: DashMap::new(),
-		symbols_limit: AtomicUsize::new(80),
+		symbols_limit: AtomicUsize::new(100),
+		isolate: Isolate::new(),
 	})
 	.finish();
 

@@ -1,10 +1,9 @@
-use std::{
-	fmt::Display,
-	ops::{Deref, DerefMut},
-};
+use std::{fmt::Display, ops::Deref, sync::Arc};
 
 use dashmap::DashMap;
 use log::warn;
+use qp_trie::{wrapper::BString, Trie};
+use tokio::sync::RwLock;
 use tower_lsp::lsp_types::{Location, Range, Url};
 
 #[derive(Clone, Debug)]
@@ -15,7 +14,10 @@ pub struct Model {
 }
 
 #[derive(Default, Clone)]
-pub struct ModelIndex(DashMap<String, (Option<ModelLocation>, Vec<ModelLocation>)>);
+pub struct ModelIndex {
+	inner: DashMap<String, (Option<ModelLocation>, Vec<ModelLocation>)>,
+	pub by_prefix: Arc<RwLock<Trie<BString, String>>>,
+}
 
 #[derive(Clone)]
 pub struct ModelLocation(pub Location);
@@ -49,24 +51,20 @@ impl Deref for ModelIndex {
 	type Target = DashMap<String, (Option<ModelLocation>, Vec<ModelLocation>)>;
 
 	fn deref(&self) -> &Self::Target {
-		&self.0
-	}
-}
-
-impl DerefMut for ModelIndex {
-	fn deref_mut(&mut self) -> &mut Self::Target {
-		&mut self.0
+		&self.inner
 	}
 }
 
 impl ModelIndex {
-	pub fn extend_models<I>(&self, uri: &Url, items: I)
+	pub async fn extend_models<I>(&self, uri: &Url, items: I)
 	where
 		I: IntoIterator<Item = Model>,
 	{
+		let mut by_prefix = self.by_prefix.write().await;
 		for item in items {
-			let mut entry = self.entry(item.model).or_default();
+			let mut entry = self.entry(item.model.to_string()).or_default();
 			if item.inherit {
+				by_prefix.insert_str(&item.model, item.model.to_string());
 				entry.1.push(ModelLocation(Location {
 					uri: uri.clone(),
 					range: item.range,
@@ -74,6 +72,7 @@ impl ModelIndex {
 			} else if let Some(base) = &entry.0 {
 				warn!("{} already defined at {base}", entry.key());
 			} else {
+				by_prefix.insert_str(&item.model, item.model.to_string());
 				entry.0 = Some(ModelLocation(Location {
 					uri: uri.clone(),
 					range: item.range,

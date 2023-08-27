@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use faststr::FastStr;
 use globwalk::FileType;
 use log::{debug, warn};
@@ -18,11 +18,13 @@ use crate::model::{Model, ModelIndex};
 use crate::record::Record;
 use crate::utils::{offset_range_to_lsp_range, ByteOffset, CharOffset, RangeExt};
 
+mod record;
+
 #[derive(Default)]
 pub struct ModuleIndex {
 	pub roots: DashSet<String>,
 	pub modules: DashSet<String>,
-	pub records: DashMap<String, Record>,
+	pub records: record::RecordIndex,
 	pub models: ModelIndex,
 }
 
@@ -140,17 +142,8 @@ impl ModuleIndex {
 			match outputs {
 				Output::Records(records) => {
 					record_count += records.len();
-					for record in records {
-						let key = record.qualified_id();
-						if let Some((_, discarded)) = self.records.remove(&key) {
-							debug!(
-								"{key}:\n{} -> {}",
-								discarded.location.uri.path(),
-								record.location.uri.path()
-							)
-						}
-						self.records.insert(key, record);
-					}
+					let mut prefix = self.records.by_prefix.write().await;
+					self.records.extend_records(Some(&mut prefix), records).await;
 				}
 				Output::Models { path, models } => {
 					model_count += models.len();
@@ -161,7 +154,7 @@ impl ModuleIndex {
 							continue;
 						}
 					};
-					self.models.extend_models(&uri, models);
+					self.models.extend_models(&uri, models).await;
 				}
 			}
 		}

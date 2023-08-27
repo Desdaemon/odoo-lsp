@@ -27,7 +27,7 @@ enum Tag {
 }
 
 impl Backend {
-	pub fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
+	pub async fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
 			// Assume rope is up to date
@@ -39,6 +39,7 @@ impl Backend {
 			return;
 		};
 		let current_module = FastStr::from(current_module.to_string());
+		let mut record_prefix = self.module_index.records.by_prefix.write().await;
 		loop {
 			match reader.next() {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
@@ -58,7 +59,10 @@ impl Backend {
 								continue;
 							};
 							record_ranges.push(range);
-							self.module_index.records.insert(record.qualified_id(), record);
+							self.module_index
+								.records
+								.insert(record.qualified_id(), record, Some(&mut record_prefix))
+								.await;
 						}
 						"template" => {
 							let Ok(Some(template)) =
@@ -70,7 +74,10 @@ impl Backend {
 								continue;
 							};
 							record_ranges.push(range);
-							self.module_index.records.insert(template.qualified_id(), template);
+							self.module_index
+								.records
+								.insert(template.qualified_id(), template, Some(&mut record_prefix))
+								.await;
 						}
 						_ => {}
 					}
@@ -127,7 +134,11 @@ impl Backend {
 
 		Ok((slice, cursor_by_char, relative_offset))
 	}
-	pub fn xml_completions(&self, params: CompletionParams, rope: Rope) -> miette::Result<Option<CompletionResponse>> {
+	pub async fn xml_completions(
+		&self,
+		params: CompletionParams,
+		rope: Rope,
+	) -> miette::Result<Option<CompletionResponse>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
 		let (slice, cursor_by_char, relative_offset) = self.record_slice(&rope, uri, position)?;
@@ -154,7 +165,10 @@ impl Backend {
 				&current_module,
 				&mut items,
 			)?,
-			RecordField::Model => self.complete_model(needle, replace_range, rope.clone(), &mut items)?,
+			RecordField::Model => {
+				self.complete_model(needle, replace_range, rope.clone(), &mut items)
+					.await?
+			}
 			RecordField::Id => return Ok(None),
 		}
 
