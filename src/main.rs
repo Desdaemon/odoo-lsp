@@ -8,7 +8,6 @@ use dashmap::{DashMap, DashSet};
 use globwalk::FileType;
 use log::{debug, error, info};
 use miette::{diagnostic, IntoDiagnostic};
-use odoo_lsp::utils::isolate::Isolate;
 use ropey::Rope;
 use serde_json::Value;
 use tower::ServiceBuilder;
@@ -22,6 +21,7 @@ use tree_sitter::{Parser, Tree};
 use odoo_lsp::config::{Config, ModuleConfig, SymbolsConfig};
 use odoo_lsp::index::ModuleIndex;
 use odoo_lsp::model::ModelLocation;
+use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{format_loc, utils::*};
 
 mod catch_panic;
@@ -489,18 +489,9 @@ impl LanguageServer for Backend {
 	#[allow(deprecated)]
 	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
 		let query = &params.query;
-		let records_by_prefix = self.module_index.records.by_prefix.read().await;
-		let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
-			self.module_index.records.get(key).map(|entry| SymbolInformation {
-				name: entry.id.to_string(),
-				kind: SymbolKind::VARIABLE,
-				tags: None,
-				deprecated: None,
-				location: entry.location.clone(),
-				container_name: None,
-			})
-		});
+
 		let models_by_prefix = self.module_index.models.by_prefix.read().await;
+		let records_by_prefix = self.module_index.records.by_prefix.read().await;
 		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
 			self.module_index.models.get(key).into_iter().flat_map(|entry| {
 				entry.0.as_ref().map(|loc| SymbolInformation {
@@ -514,7 +505,39 @@ impl LanguageServer for Backend {
 			})
 		});
 		let limit = self.symbols_limit.load(Relaxed);
-		Ok(Some(models.chain(records).take(limit).collect()))
+		fn to_symbol_information(record: &odoo_lsp::record::Record) -> SymbolInformation {
+			SymbolInformation {
+				name: record.qualified_id(),
+				kind: SymbolKind::VARIABLE,
+				tags: None,
+				deprecated: None,
+				location: record.location.clone(),
+				container_name: None,
+			}
+		}
+		if let Some((module, xml_id_query)) = query.split_once('.') {
+			let records = records_by_prefix
+				.iter_prefix(xml_id_query.as_bytes())
+				.flat_map(|(_, keys)| {
+					keys.iter().flat_map(|key| {
+						self.module_index
+							.records
+							.get(key.as_str())
+							.and_then(|record| (record.module == module).then(|| to_symbol_information(&record)))
+					})
+				});
+			Ok(Some(models.chain(records).take(limit).collect()))
+		} else {
+			let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, keys)| {
+				keys.iter().flat_map(|key| {
+					self.module_index
+						.records
+						.get(key.as_str())
+						.map(|record| to_symbol_information(&record))
+				})
+			});
+			Ok(Some(models.chain(records).take(limit).collect()))
+		}
 	}
 }
 

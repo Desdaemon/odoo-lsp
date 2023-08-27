@@ -3,7 +3,6 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use dashmap::DashSet;
-use faststr::FastStr;
 use globwalk::FileType;
 use log::{debug, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
@@ -16,21 +15,21 @@ use xmlparser::{Token, Tokenizer};
 use crate::format_loc;
 use crate::model::{Model, ModelIndex};
 use crate::record::Record;
-use crate::utils::{offset_range_to_lsp_range, ByteOffset, CharOffset, RangeExt};
+use crate::utils::{offset_range_to_lsp_range, ByteOffset, CharOffset, ImStr, RangeExt};
 
 mod record;
 
 #[derive(Default)]
 pub struct ModuleIndex {
-	pub roots: DashSet<String>,
-	pub modules: DashSet<String>,
+	pub roots: DashSet<ImStr>,
+	pub modules: DashSet<ImStr>,
 	pub records: record::RecordIndex,
 	pub models: ModelIndex,
 }
 
 enum Output {
 	Records(Vec<Record>),
-	Models { path: FastStr, models: Vec<Model> },
+	Models { path: ImStr, models: Vec<Model> },
 }
 
 pub struct AddRootResults {
@@ -49,7 +48,7 @@ impl ModuleIndex {
 		root: &str,
 		progress: Option<(&tower_lsp::Client, ProgressToken)>,
 	) -> miette::Result<Option<AddRootResults>> {
-		if !self.roots.insert(root.to_string()) {
+		if !self.roots.insert(root.into()) {
 			return Ok(None);
 		}
 
@@ -83,8 +82,8 @@ impl ModuleIndex {
 					})
 					.await;
 			}
-			let module_name = FastStr::from(module_name);
-			if !self.modules.insert(module_name.to_string()) {
+			let module_name = ImStr::from(module_name);
+			if !self.modules.insert(module_name.clone()) {
 				debug!("duplicate module {module_name}");
 				continue;
 			}
@@ -173,7 +172,7 @@ impl ModuleIndex {
 			}
 		}
 	}
-	pub fn module_of_path(&self, path: &Path) -> Option<dashmap::setref::one::Ref<String>> {
+	pub fn module_of_path(&self, path: &Path) -> Option<dashmap::setref::one::Ref<ImStr>> {
 		let mut path = Some(path);
 		while let Some(path_) = &path {
 			if let Some(module) = self.modules.get(path_.file_name()?.to_string_lossy().as_ref()) {
@@ -185,7 +184,7 @@ impl ModuleIndex {
 	}
 }
 
-async fn add_root_xml(path: PathBuf, module_name: FastStr) -> miette::Result<Output> {
+async fn add_root_xml(path: PathBuf, module_name: ImStr) -> miette::Result<Output> {
 	let path_uri = path.to_string_lossy();
 	let file = tokio::fs::read(&path)
 		.await
@@ -238,7 +237,7 @@ fn model_query() -> &'static Query {
 	})
 }
 
-async fn add_root_py(path: PathBuf, _: FastStr) -> miette::Result<Output> {
+async fn add_root_py(path: PathBuf, _: ImStr) -> miette::Result<Output> {
 	let file = tokio::fs::read(&path)
 		.await
 		.into_diagnostic()

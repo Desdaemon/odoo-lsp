@@ -1,6 +1,7 @@
 use std::fmt::Display;
 use std::ops::{Add, Sub};
 
+use dashmap::DashSet;
 use log::warn;
 use qp_trie::wrapper::BString;
 use ropey::Rope;
@@ -8,8 +9,10 @@ use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token};
 
 pub mod isolate;
+pub mod str;
+pub use str::ImStr;
 
-pub type PrefixTrie<V = String> = qp_trie::Trie<BString, V>;
+pub type PrefixTrie = qp_trie::Trie<BString, DashSet<ImStr>>;
 
 pub fn offset_to_position(offset: usize, rope: Rope) -> Option<Position> {
 	let line = rope.try_char_to_line(offset).ok()?;

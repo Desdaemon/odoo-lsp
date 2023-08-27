@@ -1,9 +1,9 @@
-use faststr::FastStr;
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
+use crate::utils::ImStr;
 use crate::utils::{char_to_position, position_to_char, CharOffset};
 
 macro_rules! unwrap_or_none {
@@ -18,11 +18,11 @@ macro_rules! unwrap_or_none {
 #[derive(Debug)]
 pub struct Record {
 	pub deleted: bool,
-	pub id: FastStr,
-	pub module: FastStr,
-	pub model: Option<FastStr>,
+	pub id: ImStr,
+	pub module: ImStr,
+	pub model: Option<ImStr>,
 	/// (inherit_module?, xml_id)
-	pub inherit_id: Option<(Option<FastStr>, FastStr)>,
+	pub inherit_id: Option<(Option<ImStr>, ImStr)>,
 	pub location: Location,
 }
 
@@ -32,7 +32,7 @@ impl Record {
 	}
 	pub fn from_reader(
 		offset: CharOffset,
-		module: FastStr,
+		module: ImStr,
 		uri: &str,
 		reader: &mut Tokenizer,
 		rope: Rope,
@@ -52,8 +52,14 @@ impl Record {
 			match reader.next() {
 				// TODO: No nested records yet
 				Some(Ok(Token::Attribute { local, value, .. })) if stack == 1 => match local.as_str() {
-					"id" => id = Some(value.as_str().to_string().into()),
-					"model" => model = Some(value.as_str().to_string().into()),
+					"id" => {
+						if let Some((_, xml_id)) = value.split_once('.') {
+							id = Some(xml_id.into());
+						} else {
+							id = Some(value.as_str().into());
+						}
+					}
+					"model" => model = Some(value.to_string().into()),
 					_ => {}
 				},
 				Some(Ok(Token::ElementStart { local, .. })) => {
@@ -143,7 +149,7 @@ impl Record {
 	}
 	pub fn template(
 		offset: CharOffset,
-		module: FastStr,
+		module: ImStr,
 		uri: &str,
 		reader: &mut Tokenizer,
 		rope: Rope,
@@ -161,8 +167,14 @@ impl Record {
 		loop {
 			match reader.next() {
 				Some(Ok(Token::Attribute { local, value, .. })) if in_template => match local.as_bytes() {
-					b"id" => id = Some(value.as_str().to_string().into()),
-					b"inherit_id" => match value.as_str().split_once('.') {
+					b"id" => {
+						if let Some((_, xml_id)) = value.split_once('.') {
+							id = Some(xml_id.to_string().into());
+						} else {
+							id = Some(value.to_string().into());
+						}
+					}
+					b"inherit_id" => match value.split_once('.') {
 						Some((module, xml_id)) => {
 							inherit_id = Some((Some(module.to_string().into()), xml_id.to_string().into()))
 						}

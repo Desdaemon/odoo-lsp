@@ -4,7 +4,6 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::path::Path;
 
-use faststr::FastStr;
 use log::debug;
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
@@ -38,7 +37,7 @@ impl Backend {
 		let Some(current_module) = self.module_index.module_of_path(Path::new(uri.path())) else {
 			return;
 		};
-		let current_module = FastStr::from(current_module.to_string());
+		let current_module = ImStr::from(current_module.as_str());
 		let mut record_prefix = self.module_index.records.by_prefix.write().await;
 		loop {
 			match reader.next() {
@@ -61,7 +60,7 @@ impl Backend {
 							record_ranges.push(range);
 							self.module_index
 								.records
-								.insert(record.qualified_id(), record, Some(&mut record_prefix))
+								.insert(record.qualified_id().into(), record, Some(&mut record_prefix))
 								.await;
 						}
 						"template" => {
@@ -76,7 +75,7 @@ impl Backend {
 							record_ranges.push(range);
 							self.module_index
 								.records
-								.insert(template.qualified_id(), template, Some(&mut record_prefix))
+								.insert(template.qualified_id().into(), template, Some(&mut record_prefix))
 								.await;
 						}
 						_ => {}

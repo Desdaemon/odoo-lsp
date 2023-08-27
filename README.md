@@ -41,7 +41,7 @@ Alternatively, you can grab the latest nightly builds from [Releases].
 
 See [.helix/languages.toml](./examples/.helix/languages.toml)
 
-1. Ensure that you have `odoo-lsp` on your path (or define the SERVER_PATH environment variable pointing to one)
+1. Ensure that you have `odoo-lsp` on your path
 2. Determine your Helix runtime folder, e.g. `~/.config/helix/` on Linux
 3. Modify `languages.toml` in your Helix runtime folder (create one if none exists) to include these lines:
 
@@ -53,9 +53,14 @@ odoo-lsp.command = "odoo-lsp"
 [[language]]
 name = "xml"
 language-servers = ["odoo-lsp"]
+roots = [".odoo_lsp", ".odoo_lsp.json"]
 
 [[language]]
 name = "python"
+roots = [
+   ".odoo_lsp", ".odoo_lsp.json",
+   # add the default roots here
+]
 # Order is important here
 language-servers = [
    "odoo-lsp",
