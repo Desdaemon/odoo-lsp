@@ -232,6 +232,7 @@ mod tests {
 	use super::*;
 
 	#[test]
+	#[cfg_attr(miri, ignore)]
 	fn test_nested_records() {
 		let fragment =
 			"<record id='foo'><field name='wah' /><field foo='bar'><record>Another</record></field></record>";

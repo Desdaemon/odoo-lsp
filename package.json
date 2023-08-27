@@ -76,7 +76,8 @@
 		"test": "node ./out/test/runTest.js",
 		"build": "webpack --config webpack.config.js",
 		"package": "vsce package --no-dependencies",
-		"publish": "vsce publish --no-dependencies"
+		"publish": "vsce publish --no-dependencies",
+		"miri": "cargo +nightly miri test"
 	},
 	"devDependencies": {
 		"@electron/rebuild": "^3.3.0",

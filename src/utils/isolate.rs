@@ -42,3 +42,15 @@ impl Isolate {
 		recv
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::Isolate;
+
+	#[test]
+	fn test_sanity_check() {
+		let isolate = Isolate::new();
+		let recv = isolate.send_task(|send| async { _ = send.send(123) });
+		assert_eq!(recv.blocking_recv(), Ok(123));
+	}
+}
