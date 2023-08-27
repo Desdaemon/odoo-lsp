@@ -1,13 +1,29 @@
 [package]
 name = "odoo-lsp"
-version = "0.1.0"
+version = "0.1.0-dev.3"
 edition = "2021"
+authors = ["Viet Dinh <54ckb0y789@gmail.com>"]
+description = "Language server for Odoo Python/JS/XML"
+repository = "https://github.com/Desdaemon/odoo-lsp"
+license = "MIT"
+keywords = ["lsp", "language-server", "python", "javascript", "xml"]
+categories = ["development-tools"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[package.metadata.binstall]
+pkg-url = "{repo}/releases/download/v{version}/{name}-{target}{archive-suffix}"
+bin-dir = "{bin}{binary-ext}"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.i686-pc-windows-msvc]
+pkg-fmt = "zip"
 
 [dependencies]
 env_logger = "0.10.0"

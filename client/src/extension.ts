@@ -49,7 +49,7 @@ const REPO = "https://github.com/Desdaemon/odoo-lsp";
 
 async function downloadLspBinary(context: ExtensionContext) {
 	const isWindows = process.platform === "win32";
-	const archiveExtension = isWindows ? ".zip" : ".tar.gz";
+	const archiveExtension = isWindows ? ".zip" : ".tgz";
 	const runtimeDir = context.globalStorageUri.fsPath;
 	await mkdir(runtimeDir, { recursive: true });
 

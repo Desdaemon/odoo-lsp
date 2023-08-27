@@ -98,14 +98,14 @@ jobs:
             7z a -tzip odoo-lsp-${{ matrix.target }}.zip ./odoo-lsp.exe
           else
             mv ./target/${{ matrix.target }}/release/odoo-lsp .
-            tar -czvf odoo-lsp-${{ matrix.target }}.tar.gz ./odoo-lsp
+            tar -czvf odoo-lsp-${{ matrix.target }}.tgz ./odoo-lsp
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
-          path: ./odoo-lsp-${{ matrix.target }}.${{ matrix.runs-on == 'windows-latest' && 'zip' || 'tar.gz' }}
-          name: odoo-lsp-${{ matrix.target }}.${{ matrix.runs-on == 'windows-latest' && 'zip' || 'tar.gz' }}
+          path: ./odoo-lsp-${{ matrix.target }}.${{ matrix.runs-on == 'windows-latest' && 'zip' || 'tgz' }}
+          name: odoo-lsp-${{ matrix.target }}.${{ matrix.runs-on == 'windows-latest' && 'zip' || 'tgz' }}
 
   build-extension:
     needs: check
@@ -165,4 +165,5 @@ jobs:
           name: ${{ env.TAG }}
           tag_name: ${{ env.TAG }}
           generate_release_notes: true
-          prerelease: ${{ github.event.inputs.prerelease }}
+          # https://medium.com/@sohail.ra5/github-actions-passing-boolean-input-variables-to-reusable-workflow-call-42d39bf7342e
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
