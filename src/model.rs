@@ -1,28 +1,44 @@
 use std::{fmt::Display, ops::Deref, sync::Arc};
 
 use dashmap::DashMap;
+use intmap::IntMap;
+use lasso::{Key, Spur};
 use qp_trie::{wrapper::BString, Trie};
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
 
-use crate::utils::{ImStr, MinLoc};
+use crate::{utils::MinLoc, ImStr};
 
 #[derive(Clone, Debug)]
 pub struct Model {
 	pub model: ModelId,
 	pub range: Range,
+	pub fields: Vec<(Spur, Field)>,
 }
 
 #[derive(Clone, Debug)]
 pub enum ModelId {
 	Base(ImStr),
-	Inherit(Vec<ImStr>),
+	Inherit { inherits: Vec<ImStr>, has_primary: bool },
 }
 
 #[derive(Default, Clone)]
 pub struct ModelIndex {
-	inner: DashMap<ImStr, (Option<ModelLocation>, Vec<ModelLocation>)>,
+	inner: DashMap<ImStr, ModelEntry>,
 	pub by_prefix: Arc<RwLock<Trie<BString, ImStr>>>,
+}
+
+#[derive(Clone, Default)]
+pub struct ModelEntry {
+	pub base: Option<ModelLocation>,
+	pub descendants: Vec<ModelLocation>,
+	pub fields: IntMap<Field>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Field {
+	Value,
+	Relational(Spur),
 }
 
 #[derive(Clone)]
@@ -51,7 +67,7 @@ impl Display for ModelLocation {
 }
 
 impl Deref for ModelIndex {
-	type Target = DashMap<ImStr, (Option<ModelLocation>, Vec<ModelLocation>)>;
+	type Target = DashMap<ImStr, ModelEntry>;
 
 	fn deref(&self) -> &Self::Target {
 		&self.inner
@@ -68,22 +84,28 @@ impl ModelIndex {
 			match item.model {
 				ModelId::Base(base) => {
 					by_prefix.insert_str(&base, base.clone());
-					let mut location = Some(ModelLocation(MinLoc {
+					let mut entry = self.entry(base.clone()).or_default();
+					entry.base = Some(ModelLocation(MinLoc {
 						path: path.clone(),
 						range: item.range,
 					}));
-					core::mem::swap(&mut self.entry(base.clone()).or_default().0, &mut location);
-					#[cfg(debug_assertions)]
-					if let Some(leftover) = location {
-						log::debug!("leftover base class {leftover}");
+					for (field, type_) in item.fields {
+						entry.fields.insert(field.into_usize() as u64, type_);
 					}
 				}
-				ModelId::Inherit(inherits) => {
-					for inherit in inherits.iter() {
-						self.entry(inherit.clone()).or_default().1.push(ModelLocation(MinLoc {
+				ModelId::Inherit { inherits, has_primary } => {
+					if has_primary {
+						let primary = &inherits[0];
+						let mut entry = self.entry(primary.clone()).or_default();
+						for (field, type_) in item.fields {
+							entry.fields.insert(field.into_usize() as u64, type_);
+						}
+					}
+					for inherit in inherits {
+						self.entry(inherit).or_default().descendants.push(ModelLocation(MinLoc {
 							path: path.clone(),
 							range: item.range,
-						}))
+						}));
 					}
 				}
 			}

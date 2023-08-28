@@ -43,4 +43,6 @@ pin-project-lite = "0.2.12"
 tree-sitter = "0.20.10"
 tree-sitter-python = "0.20.4"
 qp-trie = "0.8.1"
+lasso = { version = "0.7.2", features = ["multi-threaded"] }
+intmap = "2.0.0"
 

@@ -8,9 +8,9 @@ use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token};
 
+use crate::ImStr;
+
 pub mod isolate;
-pub mod str;
-pub use str::ImStr;
 
 pub type PrefixTrie = qp_trie::Trie<BString, DashSet<ImStr>>;
 
@@ -30,10 +30,10 @@ impl From<MinLoc> for Location {
 	}
 }
 
-pub fn offset_to_position(offset: usize, rope: Rope) -> Option<Position> {
-	let line = rope.try_char_to_line(offset).ok()?;
+pub fn offset_to_position(offset: ByteOffset, rope: Rope) -> Option<Position> {
+	let line = rope.try_byte_to_line(offset.0).ok()?;
 	let first_char_of_line = rope.try_line_to_char(line).ok()?;
-	let column = offset - first_char_of_line;
+	let column = offset.0 - first_char_of_line;
 	Some(Position::new(line as u32, column as u32))
 }
 
@@ -49,10 +49,10 @@ pub fn position_to_char(position: Position, rope: Rope) -> Option<CharOffset> {
 	Some(CharOffset(line_end))
 }
 
-pub fn char_to_position(offset: usize, rope: Rope) -> Option<Position> {
-	let line = rope.try_char_to_line(offset).ok()?;
+pub fn char_to_position(offset: CharOffset, rope: Rope) -> Option<Position> {
+	let line = rope.try_char_to_line(offset.0).ok()?;
 	let line_offset = rope.try_line_to_char(line).ok()?;
-	Some(Position::new(line as u32, (offset - line_offset) as u32))
+	Some(Position::new(line as u32, (offset.0 - line_offset) as u32))
 }
 
 pub fn lsp_range_to_char_range(range: Range, rope: Rope) -> Option<std::ops::Range<CharOffset>> {
@@ -62,8 +62,8 @@ pub fn lsp_range_to_char_range(range: Range, rope: Rope) -> Option<std::ops::Ran
 }
 
 pub fn char_range_to_lsp_range(range: std::ops::Range<CharOffset>, rope: Rope) -> Option<Range> {
-	let start = char_to_position(range.start.0, rope.clone())?;
-	let end = char_to_position(range.end.0, rope)?;
+	let start = char_to_position(range.start, rope.clone())?;
+	let end = char_to_position(range.end, rope)?;
 	Some(Range { start, end })
 }
 
@@ -75,8 +75,8 @@ pub fn position_to_point(position: Position) -> tree_sitter::Point {
 }
 
 pub fn offset_range_to_lsp_range(range: std::ops::Range<ByteOffset>, rope: Rope) -> Option<Range> {
-	let start = offset_to_position(range.start.0, rope.clone())?;
-	let end = offset_to_position(range.end.0, rope)?;
+	let start = offset_to_position(range.start, rope.clone())?;
+	let end = offset_to_position(range.end, rope)?;
 	Some(Range { start, end })
 }
 

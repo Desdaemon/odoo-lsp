@@ -3,8 +3,9 @@ use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
+use crate::utils::MinLoc;
 use crate::utils::{char_to_position, position_to_char, CharOffset};
-use crate::utils::{ImStr, MinLoc};
+use crate::ImStr;
 
 macro_rules! unwrap_or_none {
 	($opt:expr) => {
@@ -46,7 +47,7 @@ impl Record {
 		let mut in_record = true;
 		// let uri = format!("file://{uri}").parse().into_diagnostic()?;
 		let start =
-			char_to_position(offset.0, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
+			char_to_position(offset, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
 
 		loop {
 			match reader.next() {
@@ -105,7 +106,7 @@ impl Record {
 				})) if local.as_str() == "record" => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(span.end());
+						end = Some(CharOffset(span.end()));
 						break;
 					}
 				}
@@ -116,7 +117,7 @@ impl Record {
 				})) if in_record => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(span.end());
+						end = Some(CharOffset(span.end()));
 						break;
 					}
 				}
@@ -127,7 +128,7 @@ impl Record {
 						line: err.pos().row,
 						character: err.pos().col,
 					};
-					end = position_to_char(pos, rope.clone()).map(|offset| offset.0);
+					end = position_to_char(pos, rope.clone());
 					break;
 				}
 				_ => {}
@@ -154,7 +155,7 @@ impl Record {
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
-		let start = char_to_position(offset.0, rope.clone())
+		let start = char_to_position(offset, rope.clone())
 			.ok_or_else(|| diagnostic!("(template) Failed to parse start location"))?;
 		let mut id = None;
 		let mut inherit_id = None;
@@ -188,7 +189,7 @@ impl Record {
 				})) if in_template => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(span.end());
+						end = Some(CharOffset(span.end()));
 						break;
 					}
 				}
@@ -199,7 +200,7 @@ impl Record {
 				})) if local.as_str() == "template" => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(span.end());
+						end = Some(CharOffset(span.end()));
 						break;
 					}
 				}
@@ -215,7 +216,7 @@ impl Record {
 						line: err.pos().row,
 						character: err.pos().col,
 					};
-					end = position_to_char(pos, rope.clone()).map(|offset| offset.0);
+					end = position_to_char(pos, rope.clone());
 					break;
 				}
 				_ => {}

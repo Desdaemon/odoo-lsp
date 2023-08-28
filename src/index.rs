@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use dashmap::DashSet;
 use globwalk::FileType;
+use lasso::ThreadedRodeo;
 use log::{debug, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
@@ -12,10 +13,10 @@ use tower_lsp::lsp_types::*;
 use tree_sitter::{Query, QueryCursor};
 use xmlparser::{Token, Tokenizer};
 
-use crate::format_loc;
 use crate::model::{Model, ModelId, ModelIndex};
 use crate::record::Record;
-use crate::utils::{offset_range_to_lsp_range, ByteOffset, CharOffset, ImStr, RangeExt};
+use crate::utils::{offset_range_to_lsp_range, ByteOffset, CharOffset, RangeExt};
+use crate::{format_loc, ImStr};
 
 mod record;
 
@@ -25,6 +26,7 @@ pub struct ModuleIndex {
 	pub modules: DashSet<ImStr>,
 	pub records: record::RecordIndex,
 	pub models: ModelIndex,
+	pub interner: Arc<ThreadedRodeo>,
 }
 
 enum Output {
@@ -118,9 +120,8 @@ impl ModuleIndex {
 						continue;
 					}
 				};
-				let module_name = module_name.clone();
 				let path = py.path().to_path_buf();
-				outputs.spawn(add_root_py(path, module_name));
+				outputs.spawn(add_root_py(path, self.interner.clone()));
 			}
 		}
 
@@ -230,7 +231,7 @@ fn model_query() -> &'static Query {
 	})
 }
 
-async fn add_root_py(path: PathBuf, _: ImStr) -> miette::Result<Output> {
+async fn add_root_py(path: PathBuf, _: Arc<ThreadedRodeo>) -> miette::Result<Output> {
 	let contents = tokio::fs::read(&path)
 		.await
 		.into_diagnostic()
@@ -249,8 +250,10 @@ async fn add_root_py(path: PathBuf, _: ImStr) -> miette::Result<Output> {
 	let rope = Rope::from_str(&String::from_utf8_lossy(&contents));
 	'match_: for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
 		let mut inherits = vec![];
+		// let mut fields = vec![];
 		let mut range = None;
 		let mut maybe_base = None;
+		// let mut current_field = None;
 		for capture in match_.captures {
 			if capture.index == 3 && maybe_base.is_none() {
 				// @name
@@ -258,34 +261,77 @@ async fn add_root_py(path: PathBuf, _: ImStr) -> miette::Result<Output> {
 				if name.is_empty() {
 					continue 'match_;
 				}
-				maybe_base = Some(String::from_utf8_lossy(&contents[name]));
+				maybe_base = Some(String::from_utf8_lossy(&contents[name.clone()]));
+				range = Some(name);
 			} else if capture.index == 5 {
 				// @inherit
 				let inherit = capture.node.byte_range().contract(1);
 				if !inherit.is_empty() {
 					inherits.push(ImStr::from(String::from_utf8_lossy(&contents[inherit]).as_ref()));
 				}
+			// } else if capture.index == 6 {
+			// 	// @field
+			// 	current_field = Some(capture.node.byte_range());
+			// } else if capture.index == 9 {
+			// 	// @relation
+			// 	if let Some(current_field) = current_field.take() {
+			// 		let field = String::from_utf8_lossy(&contents[current_field]);
+			// 		let field = interner.get_or_intern(&field);
+			// 		let field_relation = capture.node.byte_range().contract(1);
+			// 		let field_relation = String::from_utf8_lossy(&contents[field_relation]);
+			// 		let field_relation = interner.get_or_intern(field_relation.as_ref());
+			// 		fields.push((field, Field::Relational(field_relation)));
+			// 	}
+			// } else if capture.index == 11 {
+			// 	// @_Type
+			// 	if let Some(current_field) = current_field.take() {
+			// 		let field = String::from_utf8_lossy(&contents[current_field]);
+			// 		let field = interner.get_or_intern(&field);
+			// 		fields.push((field, Field::Value));
+			// 	}
 			} else if capture.index == 6 {
 				// @model
-				range = Some(capture.node.byte_range());
+				if range.is_none() {
+					range = Some(capture.node.byte_range());
+				}
 			}
 		}
-		let range = offset_range_to_lsp_range(range.unwrap().map_unit(ByteOffset), rope.clone())
-			.ok_or_else(|| diagnostic!("model range"))?;
+		let Some(range) = range else { continue };
+		let range = offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone())
+			.ok_or_else(|| diagnostic!("model out of bounds"))?;
+		let mut has_primary = false;
+		if !inherits.is_empty() {
+			// Rearranges the primary inherit to the first index
+			if let Some(maybe_base) = &maybe_base {
+				if let Some(position) = inherits.iter().position(|inherit| inherit == maybe_base) {
+					inherits.swap(position, 0);
+					has_primary = true;
+				}
+			}
+		}
+		let fields = vec![];
 		match (inherits.as_slice(), maybe_base) {
-			([single], Some(base)) if base.as_ref() == single => out.push(Model {
-				model: ModelId::Inherit(inherits),
+			([_, ..], None) => out.push(Model {
+				model: ModelId::Inherit { inherits, has_primary },
 				range,
+				fields,
 			}),
-			(_, None) if !inherits.is_empty() => out.push(Model {
-				model: ModelId::Inherit(inherits),
-				range,
-			}),
-			(_, Some(base)) => out.push(Model {
-				model: ModelId::Base(base.as_ref().into()),
-				range,
-			}),
-			_ => {}
+			([], None) => {}
+			(_, Some(base)) => {
+				if has_primary {
+					out.push(Model {
+						model: ModelId::Inherit { inherits, has_primary },
+						range,
+						fields,
+					});
+				} else {
+					out.push(Model {
+						model: ModelId::Base(base.as_ref().into()),
+						range,
+						fields,
+					})
+				}
+			}
 		}
 	}
 

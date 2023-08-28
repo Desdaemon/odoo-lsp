@@ -4,10 +4,7 @@ use dashmap::{mapref::one::Ref, DashMap, DashSet};
 use qp_trie::wrapper::BString;
 use tokio::sync::RwLock;
 
-use crate::{
-	record::Record,
-	utils::{ImStr, PrefixTrie},
-};
+use crate::{record::Record, utils::PrefixTrie, ImStr};
 
 #[derive(Default)]
 pub struct RecordIndex {

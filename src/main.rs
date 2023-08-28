@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
 use globwalk::FileType;
+use lasso::{Key, Spur};
 use log::{debug, error, info};
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
@@ -496,7 +497,7 @@ impl LanguageServer for Backend {
 		let records_by_prefix = self.module_index.records.by_prefix.read().await;
 		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
 			self.module_index.models.get(key).into_iter().flat_map(|entry| {
-				entry.0.as_ref().map(|loc| SymbolInformation {
+				entry.base.as_ref().map(|loc| SymbolInformation {
 					name: entry.key().to_string(),
 					kind: SymbolKind::CONSTANT,
 					tags: None,
@@ -621,7 +622,7 @@ impl Backend {
 					};
 					// calculate new_end_position using rope
 					let start_char = rope.try_byte_to_char(start.0).into_diagnostic()?;
-					let new_end_offset = start_char + len_new;
+					let new_end_offset = CharOffset(start_char + len_new);
 					let new_end_position = char_to_position(new_end_offset, rope.clone())
 						.ok_or_else(|| diagnostic!("new_end_position"))?;
 					let new_end_position = tree_sitter::Point {
@@ -694,6 +695,37 @@ impl Backend {
 		items.extend(matches);
 		Ok(())
 	}
+	fn complete_field_name(
+		&self,
+		needle: &str,
+		range: std::ops::Range<CharOffset>,
+		model: String,
+		rope: Rope,
+		items: &mut Vec<CompletionItem>,
+	) -> miette::Result<()> {
+		let Some(entry) = self.module_index.models.get(model.as_str()) else {
+			return Ok(());
+		};
+		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
+		let completions = entry.fields.iter().flat_map(|(key, _)| {
+			let field_name = self
+				.module_index
+				.interner
+				.resolve(&Spur::try_from_usize(*key as usize).unwrap());
+			field_name.contains(needle).then(|| CompletionItem {
+				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+					new_text: field_name.to_string(),
+					insert: range,
+					replace: range,
+				})),
+				label: field_name.to_string(),
+				kind: Some(CompletionItemKind::FIELD),
+				..Default::default()
+			})
+		});
+		items.extend(completions);
+		Ok(())
+	}
 	async fn complete_model(
 		&self,
 		needle: &str,
@@ -740,12 +772,12 @@ impl Backend {
 		}
 		return Ok((self.module_index.records.get(value.as_ref())).map(|entry| entry.location.clone().into()));
 	}
-	fn jump_def_model(&self, cursor_value: &str) -> miette::Result<Option<Location>> {
+	fn jump_def_model(&self, model: &str) -> miette::Result<Option<Location>> {
 		match self
 			.module_index
 			.models
-			.get(cursor_value)
-			.and_then(|entry| entry.0.as_ref().cloned())
+			.get(model)
+			.and_then(|entry| entry.base.as_ref().cloned())
 		{
 			Some(ModelLocation(base)) => Ok(Some(base.into())),
 			None => Ok(None),
@@ -759,7 +791,7 @@ impl Backend {
 			.map(|record| record.location.clone().into());
 		let limit = self.references_limit.load(Relaxed);
 		if let Some(entry) = self.module_index.models.get(model) {
-			let inherit_locations = entry.1.iter().map(|loc| loc.0.clone().into());
+			let inherit_locations = entry.descendants.iter().map(|loc| loc.0.clone().into());
 			Ok(Some(inherit_locations.chain(record_locations).take(limit).collect()))
 		} else {
 			Ok(Some(record_locations.take(limit).collect()))

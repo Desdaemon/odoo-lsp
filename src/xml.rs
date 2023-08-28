@@ -11,12 +11,13 @@ use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token, Tokenizer};
 
 use odoo_lsp::record::Record;
-use odoo_lsp::utils::*;
+use odoo_lsp::{utils::*, ImStr};
 
-enum RecordField {
+enum RefKind {
 	InheritId,
 	Model,
 	Id,
+	FieldName,
 }
 
 enum Tag {
@@ -154,14 +155,14 @@ impl Backend {
 			.expect("must be in a module");
 
 		let mut items = vec![];
-		let (_, cursor_value, mut record_field, model_filter) = gather_refs(cursor_by_char, &mut reader)?;
-		let (Some(value), Some(record_field)) = (cursor_value, record_field.take()) else {
+		let (_, cursor_value, record_field, model_filter) = gather_refs(cursor_by_char, &mut reader)?;
+		let (Some(value), Some(record_field)) = (cursor_value, record_field) else {
 			return Ok(None);
 		};
 		let needle = &value.as_str()[..cursor_by_char - value.range().start];
 		let replace_range = value.range().map_unit(|unit| CharOffset(unit + relative_offset));
 		match record_field {
-			RecordField::InheritId => self.complete_inherit_id(
+			RefKind::InheritId => self.complete_inherit_id(
 				needle,
 				replace_range,
 				rope.clone(),
@@ -169,11 +170,16 @@ impl Backend {
 				&current_module,
 				&mut items,
 			)?,
-			RecordField::Model => {
+			RefKind::Model => {
 				self.complete_model(needle, replace_range, rope.clone(), &mut items)
 					.await?
 			}
-			RecordField::Id => return Ok(None),
+			RefKind::FieldName => {
+				if let Some(model) = model_filter {
+					self.complete_field_name(needle, replace_range, model, rope.clone(), &mut items)?;
+				}
+			}
+			RefKind::Id => return Ok(None),
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
@@ -186,15 +192,15 @@ impl Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
-		let (_, cursor_value, record_field, _) = gather_refs(cursor_by_char, &mut reader)?;
+		let (_, cursor_value, ref_, _) = gather_refs(cursor_by_char, &mut reader)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
 		};
-		match record_field {
-			Some(RecordField::InheritId) => self.jump_def_inherit_id(&cursor_value, uri),
-			Some(RecordField::Model) => self.jump_def_model(&cursor_value),
-			Some(RecordField::Id) | None => Ok(None),
+		match ref_ {
+			Some(RefKind::InheritId) => self.jump_def_inherit_id(&cursor_value, uri),
+			Some(RefKind::Model) => self.jump_def_model(&cursor_value),
+			Some(RefKind::Id) | Some(RefKind::FieldName) | None => Ok(None),
 		}
 	}
 	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
@@ -202,7 +208,7 @@ impl Backend {
 		let uri = &params.text_document_position.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
-		let (_, cursor_value, record_field, _) = gather_refs(cursor_by_char, &mut reader)?;
+		let (_, cursor_value, ref_, _) = gather_refs(cursor_by_char, &mut reader)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -211,12 +217,12 @@ impl Backend {
 			.module_index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
 			.map(|ref_| ref_.to_string());
-		match record_field {
-			Some(RecordField::Model) => self.model_references(&cursor_value),
-			Some(RecordField::InheritId) | Some(RecordField::Id) => {
+		match ref_ {
+			Some(RefKind::Model) => self.model_references(&cursor_value),
+			Some(RefKind::InheritId) | Some(RefKind::Id) => {
 				self.record_references(&cursor_value, current_module.as_deref())
 			}
-			None => Ok(None),
+			Some(RefKind::FieldName) | None => Ok(None),
 		}
 	}
 }
@@ -224,10 +230,10 @@ impl Backend {
 fn gather_refs<'read>(
 	cursor_by_char: usize,
 	reader: &mut Tokenizer<'read>,
-) -> miette::Result<(Option<Tag>, Option<StrSpan<'read>>, Option<RecordField>, Option<String>)> {
+) -> miette::Result<(Option<Tag>, Option<StrSpan<'read>>, Option<RefKind>, Option<String>)> {
 	let mut tag = None;
 	let mut cursor_value = None;
-	let mut record_field = None;
+	let mut ref_kind = None;
 	let mut model_filter = None;
 	for token in reader {
 		match token {
@@ -241,12 +247,14 @@ fn gather_refs<'read>(
 				_ => {}
 			},
 			Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
-				if local.as_str() == "ref"
-					&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char)
-				{
+				let value_in_range = value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char;
+				if local.as_str() == "ref" && value_in_range {
 					cursor_value = Some(value);
+				} else if local.as_str() == "name" && value_in_range {
+					cursor_value = Some(value);
+					ref_kind = Some(RefKind::FieldName);
 				} else if local.as_str() == "name" && value.as_str() == "inherit_id" {
-					record_field = Some(RecordField::InheritId);
+					ref_kind = Some(RefKind::InheritId);
 				}
 			}
 			Ok(Token::Attribute { local, value, .. })
@@ -255,14 +263,14 @@ fn gather_refs<'read>(
 					&& value.range().contains(&cursor_by_char) =>
 			{
 				cursor_value = Some(value);
-				record_field = Some(RecordField::InheritId);
+				ref_kind = Some(RefKind::InheritId);
 			}
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>
 			{
 				if value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char {
 					cursor_value = Some(value);
-					record_field = Some(RecordField::Model);
+					ref_kind = Some(RefKind::Model);
 				} else {
 					model_filter = Some(value.as_str().to_string());
 				}
@@ -273,7 +281,7 @@ fn gather_refs<'read>(
 					&& value.range().contains(&cursor_by_char) =>
 			{
 				cursor_value = Some(value);
-				record_field = Some(RecordField::Id);
+				ref_kind = Some(RefKind::Id);
 			}
 			Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
 			Err(_) => break,
@@ -284,5 +292,5 @@ fn gather_refs<'read>(
 			}
 		}
 	}
-	Ok((tag, cursor_value, record_field, model_filter))
+	Ok((tag, cursor_value, ref_kind, model_filter))
 }

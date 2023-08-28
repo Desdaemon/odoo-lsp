@@ -1,4 +1,5 @@
 <odoo>
-  <template id="asd" inherit_id='one.one'>
-  </template>
+  <record id="another" model='quux'>
+    <field name='what'></field>
+  </record>
 </odoo>
