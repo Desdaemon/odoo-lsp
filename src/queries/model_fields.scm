@@ -15,4 +15,5 @@
  (#eq? @_fields "fields")
  (#match? @_Relational "^(Many2one|One2many|Many2many)$")
  (#match? @_Type "^[A-Z]")
+ (#not-match? @_Type "^(Many2one|One2many|Many2many)$")
  (#eq? @_comodel_name "comodel_name"))

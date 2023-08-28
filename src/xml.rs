@@ -4,8 +4,10 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::path::Path;
 
+use lasso::{Key, Spur, ThreadedRodeo};
 use log::debug;
 use miette::{diagnostic, IntoDiagnostic};
+use odoo_lsp::model::Field;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token, Tokenizer};
@@ -14,7 +16,7 @@ use odoo_lsp::record::Record;
 use odoo_lsp::{utils::*, ImStr};
 
 enum RefKind {
-	InheritId,
+	Ref(Spur),
 	Model,
 	Id,
 	FieldName,
@@ -155,21 +157,40 @@ impl Backend {
 			.expect("must be in a module");
 
 		let mut items = vec![];
-		let (_, cursor_value, ref_kind, model_filter) = gather_refs(cursor_by_char, &mut reader)?;
+		let (_, cursor_value, ref_kind, model_filter) =
+			gather_refs(cursor_by_char, &mut reader, &self.module_index.interner)?;
 		let (Some(value), Some(record_field)) = (cursor_value, ref_kind) else {
 			return Ok(None);
 		};
 		let needle = &value.as_str()[..cursor_by_char - value.range().start];
 		let replace_range = value.range().map_unit(|unit| CharOffset(unit + relative_offset));
 		match record_field {
-			RefKind::InheritId => self.complete_inherit_id(
-				needle,
-				replace_range,
-				rope.clone(),
-				model_filter.as_deref(),
-				&current_module,
-				&mut items,
-			)?,
+			RefKind::Ref(relation) => {
+				let Some(model) = model_filter else { return Ok(None) };
+				let Some(mut entry) = self.module_index.models.get_mut(model.as_str()) else {
+					return Ok(None);
+				};
+				// TODO: Extract into method
+				let fields = if let Some(fields) = &entry.fields {
+					fields
+				} else {
+					let range = char_range_to_lsp_range(replace_range.clone(), rope.clone()).unwrap();
+					let fields = self.populate_field_names(&entry, None, range).await?;
+					entry.fields.insert(fields)
+				};
+				let Some(Field::Relational(relation)) = dbg!(fields.get(dbg!(relation).into_usize() as u64)) else {
+					return Ok(None);
+				};
+				self.complete_xml_id(
+					needle,
+					replace_range,
+					rope.clone(),
+					Some(self.module_index.interner.resolve(relation)),
+					&current_module,
+					&mut items,
+				)
+				.await?
+			}
 			RefKind::Model => {
 				self.complete_model(needle, replace_range, rope.clone(), &mut items)
 					.await?
@@ -194,13 +215,13 @@ impl Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
-		let (_, cursor_value, ref_, _) = gather_refs(cursor_by_char, &mut reader)?;
+		let (_, cursor_value, ref_, _) = gather_refs(cursor_by_char, &mut reader, &self.module_index.interner)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
 		};
 		match ref_ {
-			Some(RefKind::InheritId) => self.jump_def_inherit_id(&cursor_value, uri),
+			Some(RefKind::Ref(_)) => self.jump_def_inherit_id(&cursor_value, uri),
 			Some(RefKind::Model) => self.jump_def_model(&cursor_value),
 			Some(RefKind::Id) | Some(RefKind::FieldName) | None => Ok(None),
 		}
@@ -210,7 +231,7 @@ impl Backend {
 		let uri = &params.text_document_position.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
-		let (_, cursor_value, ref_, _) = gather_refs(cursor_by_char, &mut reader)?;
+		let (_, cursor_value, ref_, _) = gather_refs(cursor_by_char, &mut reader, &self.module_index.interner)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -221,7 +242,7 @@ impl Backend {
 			.map(|ref_| ref_.to_string());
 		match ref_ {
 			Some(RefKind::Model) => self.model_references(&cursor_value),
-			Some(RefKind::InheritId) | Some(RefKind::Id) => {
+			Some(RefKind::Ref(_)) | Some(RefKind::Id) => {
 				self.record_references(&cursor_value, current_module.as_deref())
 			}
 			Some(RefKind::FieldName) | None => Ok(None),
@@ -232,6 +253,7 @@ impl Backend {
 fn gather_refs<'read>(
 	cursor_by_char: usize,
 	reader: &mut Tokenizer<'read>,
+	interner: &ThreadedRodeo,
 ) -> miette::Result<(Option<Tag>, Option<StrSpan<'read>>, Option<RefKind>, Option<String>)> {
 	let mut tag = None;
 	let mut cursor_value = None;
@@ -255,8 +277,9 @@ fn gather_refs<'read>(
 				} else if local.as_str() == "name" && value_in_range {
 					cursor_value = Some(value);
 					ref_kind = Some(RefKind::FieldName);
-				} else if local.as_str() == "name" && value.as_str() == "inherit_id" {
-					ref_kind = Some(RefKind::InheritId);
+				} else if local.as_str() == "name" {
+					let relation = interner.get_or_intern(value.as_str());
+					ref_kind = Some(RefKind::Ref(relation));
 				}
 			}
 			Ok(Token::Attribute { local, value, .. })
@@ -264,8 +287,9 @@ fn gather_refs<'read>(
 					&& local.as_str() == "inherit_id"
 					&& value.range().contains(&cursor_by_char) =>
 			{
+				let inherit_id = interner.get_or_intern("ir.ui.view");
 				cursor_value = Some(value);
-				ref_kind = Some(RefKind::InheritId);
+				ref_kind = Some(RefKind::Ref(inherit_id));
 			}
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>

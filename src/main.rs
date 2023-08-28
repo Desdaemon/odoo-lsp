@@ -9,6 +9,7 @@ use globwalk::FileType;
 use lasso::{Key, Spur};
 use log::{debug, error, info};
 use miette::{diagnostic, IntoDiagnostic};
+use odoo_lsp::record::Record;
 use ropey::Rope;
 use serde_json::Value;
 use tower::ServiceBuilder;
@@ -566,7 +567,7 @@ enum Language {
 }
 
 impl Backend {
-	const LIMIT: usize = 20;
+	const LIMIT: usize = 80;
 	async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
 		let split_uri = params.uri.path().rsplit_once('.');
 		let mut diagnostics = vec![];
@@ -649,7 +650,7 @@ impl Backend {
 		self.ast_map.insert(uri.path().to_string(), ast);
 		Ok(())
 	}
-	fn complete_inherit_id(
+	async fn complete_xml_id(
 		&self,
 		needle: &str,
 		range: std::ops::Range<CharOffset>,
@@ -659,41 +660,45 @@ impl Backend {
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_inherit_id) range"))?;
-		let matches = self
-			.module_index
-			.records
-			.iter()
-			.filter(|entry| {
-				let id_filter = if let Some((module, xml_id)) = needle.split_once('.') {
-					entry.module == module && entry.id.contains(xml_id)
-				} else {
-					entry.id.contains(needle)
-				};
-				if let (Some(filter), Some(model)) = (model_filter, &entry.model) {
-					id_filter && filter == model
-				} else {
-					id_filter && model_filter.is_none()
-				}
-			})
-			.take(Self::LIMIT)
-			.map(|entry| {
-				let label = if entry.module == current_module {
-					entry.id.to_string()
-				} else {
-					entry.qualified_id()
-				};
-				CompletionItem {
-					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-						new_text: label.clone(),
-						insert: range,
-						replace: range,
-					})),
-					label,
-					kind: Some(CompletionItemKind::REFERENCE),
-					..Default::default()
-				}
+		let by_prefix = self.module_index.records.by_prefix.read().await;
+		fn to_completion_items(entry: &Record, current_module: &str, range: Range) -> CompletionItem {
+			let label = if entry.module == current_module {
+				entry.id.to_string()
+			} else {
+				entry.qualified_id()
+			};
+			CompletionItem {
+				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+					new_text: label.clone(),
+					insert: range,
+					replace: range,
+				})),
+				label,
+				kind: Some(CompletionItemKind::REFERENCE),
+				..Default::default()
+			}
+		}
+		if let Some((module, needle)) = needle.split_once('.') {
+			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
+				keys.iter().flat_map(|key| {
+					self.module_index.records.get(key.as_str()).and_then(|entry| {
+						(entry.module == module && entry.model.as_deref() == model_filter)
+							.then(|| to_completion_items(&entry, current_module, range))
+					})
+				})
 			});
-		items.extend(matches);
+			items.extend(completions.take(Self::LIMIT));
+		} else {
+			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
+				keys.iter().flat_map(|key| {
+					self.module_index.records.get(key.as_str()).and_then(|entry| {
+						(entry.model.as_deref() == model_filter)
+							.then(|| to_completion_items(&entry, current_module, range))
+					})
+				})
+			});
+			items.extend(completions.take(Self::LIMIT));
+		}
 		Ok(())
 	}
 	async fn complete_field_name(

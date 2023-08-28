@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use intmap::IntMap;
 use lasso::Key;
-use log::{debug, error, info};
+use log::{debug, error};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
@@ -102,7 +102,8 @@ impl Backend {
 						let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 						// remove the quotes
 						let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-						self.complete_inherit_id(&needle, range, rope.clone(), None, &current_module, &mut items)?;
+						self.complete_xml_id(&needle, range, rope.clone(), None, &current_module, &mut items)
+							.await?;
 						return Ok(Some(CompletionResponse::List(CompletionList {
 							is_incomplete: items.len() >= Self::LIMIT,
 							items,
