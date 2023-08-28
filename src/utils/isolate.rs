@@ -50,7 +50,11 @@ mod tests {
 	#[test]
 	fn test_sanity_check() {
 		let isolate = Isolate::new();
-		let recv = isolate.send_task(|send| async { _ = send.send(123) });
+		let item = Box::leak(Box::new(123)) as *mut i32;
+		let recv = isolate.send_task(|send| async move {
+			let item = unsafe { Box::from_raw(item) };
+			_ = send.send(*item)
+		});
 		assert_eq!(recv.blocking_recv(), Ok(123));
 	}
 }

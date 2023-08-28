@@ -2,24 +2,27 @@ use std::{fmt::Display, ops::Deref, sync::Arc};
 
 use dashmap::DashMap;
 use intmap::IntMap;
-use lasso::{Key, Spur};
+use lasso::Spur;
 use qp_trie::{wrapper::BString, Trie};
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
 
-use crate::{utils::MinLoc, ImStr};
+use crate::{
+	utils::{ByteOffset, MinLoc},
+	ImStr,
+};
 
 #[derive(Clone, Debug)]
 pub struct Model {
 	pub model: ModelId,
 	pub range: Range,
-	pub fields: Vec<(Spur, Field)>,
+	pub byte_range: std::ops::Range<ByteOffset>,
 }
 
 #[derive(Clone, Debug)]
 pub enum ModelId {
 	Base(ImStr),
-	Inherit { inherits: Vec<ImStr>, has_primary: bool },
+	Inherit(Vec<ImStr>),
 }
 
 #[derive(Default, Clone)]
@@ -32,7 +35,7 @@ pub struct ModelIndex {
 pub struct ModelEntry {
 	pub base: Option<ModelLocation>,
 	pub descendants: Vec<ModelLocation>,
-	pub fields: IntMap<Field>,
+	pub fields: Option<IntMap<Field>>,
 }
 
 #[derive(Clone, Debug)]
@@ -42,7 +45,7 @@ pub enum Field {
 }
 
 #[derive(Clone)]
-pub struct ModelLocation(pub MinLoc);
+pub struct ModelLocation(pub MinLoc, pub std::ops::Range<ByteOffset>);
 
 impl Display for ModelLocation {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -85,27 +88,23 @@ impl ModelIndex {
 				ModelId::Base(base) => {
 					by_prefix.insert_str(&base, base.clone());
 					let mut entry = self.entry(base.clone()).or_default();
-					entry.base = Some(ModelLocation(MinLoc {
-						path: path.clone(),
-						range: item.range,
-					}));
-					for (field, type_) in item.fields {
-						entry.fields.insert(field.into_usize() as u64, type_);
-					}
-				}
-				ModelId::Inherit { inherits, has_primary } => {
-					if has_primary {
-						let primary = &inherits[0];
-						let mut entry = self.entry(primary.clone()).or_default();
-						for (field, type_) in item.fields {
-							entry.fields.insert(field.into_usize() as u64, type_);
-						}
-					}
-					for inherit in inherits {
-						self.entry(inherit).or_default().descendants.push(ModelLocation(MinLoc {
+					entry.base = Some(ModelLocation(
+						MinLoc {
 							path: path.clone(),
 							range: item.range,
-						}));
+						},
+						item.byte_range,
+					));
+				}
+				ModelId::Inherit(inherits) => {
+					for inherit in inherits {
+						self.entry(inherit).or_default().descendants.push(ModelLocation(
+							MinLoc {
+								path: path.clone(),
+								range: item.range,
+							},
+							item.byte_range.clone(),
+						));
 					}
 				}
 			}

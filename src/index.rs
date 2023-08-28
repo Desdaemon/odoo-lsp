@@ -262,17 +262,16 @@ async fn add_root_py(path: PathBuf, _: Arc<ThreadedRodeo>) -> miette::Result<Out
 					continue 'match_;
 				}
 				maybe_base = Some(String::from_utf8_lossy(&contents[name.clone()]));
-				range = Some(name);
 			} else if capture.index == 5 {
 				// @inherit
 				let inherit = capture.node.byte_range().contract(1);
 				if !inherit.is_empty() {
 					inherits.push(ImStr::from(String::from_utf8_lossy(&contents[inherit]).as_ref()));
 				}
-			// } else if capture.index == 6 {
+			// } else if capture.index == 7 {
 			// 	// @field
 			// 	current_field = Some(capture.node.byte_range());
-			// } else if capture.index == 9 {
+			// } else if capture.index == 10 {
 			// 	// @relation
 			// 	if let Some(current_field) = current_field.take() {
 			// 		let field = String::from_utf8_lossy(&contents[current_field]);
@@ -282,7 +281,7 @@ async fn add_root_py(path: PathBuf, _: Arc<ThreadedRodeo>) -> miette::Result<Out
 			// 		let field_relation = interner.get_or_intern(field_relation.as_ref());
 			// 		fields.push((field, Field::Relational(field_relation)));
 			// 	}
-			// } else if capture.index == 11 {
+			// } else if capture.index == 12 {
 			// 	// @_Type
 			// 	if let Some(current_field) = current_field.take() {
 			// 		let field = String::from_utf8_lossy(&contents[current_field]);
@@ -297,38 +296,40 @@ async fn add_root_py(path: PathBuf, _: Arc<ThreadedRodeo>) -> miette::Result<Out
 			}
 		}
 		let Some(range) = range else { continue };
-		let range = offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone())
-			.ok_or_else(|| diagnostic!("model out of bounds"))?;
-		let mut has_primary = false;
+		let range = range.map_unit(ByteOffset);
+		let lsp_range =
+			offset_range_to_lsp_range(range.clone(), rope.clone()).ok_or_else(|| diagnostic!("model out of bounds"))?;
+		let mut has_primary = inherits.len() == 1;
 		if !inherits.is_empty() {
 			// Rearranges the primary inherit to the first index
 			if let Some(maybe_base) = &maybe_base {
 				if let Some(position) = inherits.iter().position(|inherit| inherit == maybe_base) {
 					inherits.swap(position, 0);
 					has_primary = true;
+				} else {
+					has_primary = false;
 				}
 			}
 		}
-		let fields = vec![];
 		match (inherits.as_slice(), maybe_base) {
 			([_, ..], None) => out.push(Model {
-				model: ModelId::Inherit { inherits, has_primary },
-				range,
-				fields,
+				model: ModelId::Inherit(inherits),
+				range: lsp_range,
+				byte_range: range,
 			}),
 			([], None) => {}
 			(_, Some(base)) => {
 				if has_primary {
 					out.push(Model {
-						model: ModelId::Inherit { inherits, has_primary },
-						range,
-						fields,
+						model: ModelId::Inherit(inherits),
+						range: lsp_range,
+						byte_range: range,
 					});
 				} else {
 					out.push(Model {
 						model: ModelId::Base(base.as_ref().into()),
-						range,
-						fields,
+						range: lsp_range,
+						byte_range: range,
 					})
 				}
 			}

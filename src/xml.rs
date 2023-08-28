@@ -155,8 +155,8 @@ impl Backend {
 			.expect("must be in a module");
 
 		let mut items = vec![];
-		let (_, cursor_value, record_field, model_filter) = gather_refs(cursor_by_char, &mut reader)?;
-		let (Some(value), Some(record_field)) = (cursor_value, record_field) else {
+		let (_, cursor_value, ref_kind, model_filter) = gather_refs(cursor_by_char, &mut reader)?;
+		let (Some(value), Some(record_field)) = (cursor_value, ref_kind) else {
 			return Ok(None);
 		};
 		let needle = &value.as_str()[..cursor_by_char - value.range().start];
@@ -176,7 +176,9 @@ impl Backend {
 			}
 			RefKind::FieldName => {
 				if let Some(model) = model_filter {
-					self.complete_field_name(needle, replace_range, model, rope.clone(), &mut items)?;
+					let partial_token = params.partial_result_params.partial_result_token;
+					self.complete_field_name(needle, replace_range, model, rope.clone(), partial_token, &mut items)
+						.await?;
 				}
 			}
 			RefKind::Id => return Ok(None),

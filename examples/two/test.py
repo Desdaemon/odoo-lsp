@@ -6,11 +6,12 @@ class Foo(Model):
 class Bar(Model):
     _name = 'bar'
     _description = 'asd'
+    barr = Boolean()
+    bark = Char()
 
 class Baz(models.Model):
     _inherit = 'bar'
-
-    foo = Char()
+    foo = fields.Char()
 
 class Quux(models.Model):
     _name = 'quux'

@@ -1,16 +1,21 @@
+use crate::partial::{emit_partial, PartialCompletions};
 use crate::{Backend, Text};
 
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use log::{debug, error};
+use intmap::IntMap;
+use lasso::Key;
+use log::{debug, error, info};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
-use tree_sitter::{Parser, Query, Tree};
+use tree_sitter::{Parser, Query, QueryCursor, Tree};
 
-use odoo_lsp::{format_loc, utils::*};
+use odoo_lsp::format_loc;
+use odoo_lsp::model::{Field, ModelEntry, ModelLocation};
+use odoo_lsp::utils::*;
 
 fn py_completions() -> &'static Query {
 	static QUERY: OnceLock<Query> = OnceLock::new();
@@ -31,6 +36,13 @@ fn py_references() -> &'static Query {
 			include_str!("queries/py_references.scm"),
 		)
 		.unwrap()
+	})
+}
+
+fn model_fields() -> &'static Query {
+	static QUERY: OnceLock<Query> = OnceLock::new();
+	QUERY.get_or_init(|| {
+		tree_sitter::Query::new(tree_sitter_python::language(), include_str!("queries/model_fields.scm")).unwrap()
 	})
 }
 
@@ -215,5 +227,96 @@ impl Backend {
 			}
 		}
 		Ok(None)
+	}
+	pub async fn populate_field_names(
+		&self,
+		entry: &ModelEntry,
+		partial_token: Option<ProgressToken>,
+		range: Range,
+	) -> miette::Result<IntMap<Field>> {
+		let mut out = IntMap::new();
+		let locations = entry.base.iter().chain(entry.descendants.iter());
+		let query = model_fields();
+		let mut tasks = tokio::task::JoinSet::<miette::Result<Vec<_>>>::new();
+		for ModelLocation(location, byte_range) in locations.cloned() {
+			let interner = self.module_index.interner.clone();
+			tasks.spawn(async move {
+				let mut fields = vec![];
+				let contents = tokio::fs::read(location.path.as_str()).await.into_diagnostic()?;
+				let mut parser = Parser::new();
+				parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
+				let ast = parser
+					.parse(&contents, None)
+					.ok_or_else(|| diagnostic!("AST not built"))?;
+				let byte_range = byte_range.clone().map_unit(|unit| unit.0);
+				let mut cursor = QueryCursor::new();
+				cursor.set_byte_range(byte_range);
+				for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
+					let mut field = None;
+					for capture in match_.captures {
+						if capture.index == 0 {
+							// @field
+							field = Some(capture.node.byte_range());
+						} else if capture.index == 3 {
+							// @relation
+							if let Some(field) = field.take() {
+								let field = String::from_utf8_lossy(&contents[field]);
+								let field = interner.get_or_intern(&field);
+								let relation = capture.node.byte_range().contract(1);
+								let relation = String::from_utf8_lossy(&contents[relation]);
+								let relation = interner.get_or_intern(&relation);
+								fields.push((field, Field::Relational(relation)));
+							}
+						} else if capture.index == 5 {
+							// @_Type
+							if let Some(field) = field.take() {
+								let field = String::from_utf8_lossy(&contents[field]);
+								let field = interner.get_or_intern(&field);
+								fields.push((field, Field::Value));
+							}
+						}
+					}
+				}
+				Ok(fields)
+			});
+		}
+		while let Some(fields) = tasks.join_next().await {
+			let fields = match fields {
+				Ok(Ok(ret)) => ret,
+				Ok(Err(err)) => {
+					debug!("{err}");
+					continue;
+				}
+				Err(err) => {
+					debug!("join error {err}");
+					continue;
+				}
+			};
+			if let Some(partial_token) = partial_token.clone() {
+				let resp = fields.iter().map(|(key, _)| {
+					let label = self.module_index.interner.resolve(key);
+					CompletionItem {
+						label: label.to_string(),
+						kind: Some(CompletionItemKind::FIELD),
+						text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+							new_text: label.to_string(),
+							insert: range,
+							replace: range,
+						})),
+						..Default::default()
+					}
+				});
+				emit_partial::<PartialCompletions, _>(
+					&self.client,
+					partial_token,
+					CompletionResponse::Array(resp.collect()),
+				)
+				.await;
+			}
+			for (key, type_) in fields {
+				out.insert_checked(key.into_usize() as u64, type_);
+			}
+		}
+		Ok(out)
 	}
 }

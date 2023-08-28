@@ -26,6 +26,7 @@ use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{format_loc, utils::*};
 
 mod catch_panic;
+mod partial;
 mod python;
 mod xml;
 
@@ -695,19 +696,26 @@ impl Backend {
 		items.extend(matches);
 		Ok(())
 	}
-	fn complete_field_name(
+	async fn complete_field_name(
 		&self,
 		needle: &str,
 		range: std::ops::Range<CharOffset>,
 		model: String,
 		rope: Rope,
+		partial_token: Option<ProgressToken>,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
-		let Some(entry) = self.module_index.models.get(model.as_str()) else {
+		let Some(mut entry) = self.module_index.models.get_mut(model.as_str()) else {
 			return Ok(());
 		};
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
-		let completions = entry.fields.iter().flat_map(|(key, _)| {
+		let fields = if let Some(fields) = &entry.fields {
+			fields
+		} else {
+			let fields = self.populate_field_names(&entry, partial_token, range).await?;
+			entry.fields.insert(fields)
+		};
+		let completions = fields.iter().flat_map(|(key, _)| {
 			let field_name = self
 				.module_index
 				.interner
@@ -779,7 +787,7 @@ impl Backend {
 			.get(model)
 			.and_then(|entry| entry.base.as_ref().cloned())
 		{
-			Some(ModelLocation(base)) => Ok(Some(base.into())),
+			Some(ModelLocation(base, _)) => Ok(Some(base.into())),
 			None => Ok(None),
 		}
 	}
