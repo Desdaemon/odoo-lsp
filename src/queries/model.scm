@@ -10,6 +10,6 @@
         [(string) @inherit
          (list (string) @inherit)] @model)])))
  (#eq? @_models "models")
- (#match? @_Model "^(Transient)?Model$")
+ (#match? @_Model "^(Transient|Abstract)?Model$")
  (#eq? @_name "_name")
  (#eq? @_inherit "_inherit"))
