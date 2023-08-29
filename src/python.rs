@@ -9,9 +9,10 @@ use intmap::IntMap;
 use lasso::Key;
 use log::{debug, error};
 use miette::{diagnostic, Context, IntoDiagnostic};
+use odoo_lsp::str::Text as TextStr;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
-use tree_sitter::{Parser, Query, QueryCursor, Tree};
+use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
 
 use odoo_lsp::format_loc;
 use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation};
@@ -44,6 +45,38 @@ fn model_fields() -> &'static Query {
 	QUERY.get_or_init(|| {
 		tree_sitter::Query::new(tree_sitter_python::language(), include_str!("queries/model_fields.scm")).unwrap()
 	})
+}
+
+/// `node` must be `[(string) (concatenated_string)]`
+fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
+	let mut cursor = node.walk();
+	match node.kind() {
+		"string" => {
+			let content = node
+				.children(&mut cursor)
+				.find_map(|child| (child.kind() == "string_content").then(|| &contents[child.byte_range()]));
+			String::from_utf8_lossy(content.unwrap_or(&[]))
+		}
+		"concatenated_string" => {
+			let mut content = vec![];
+			for string in node.children(&mut cursor) {
+				if string.kind() == "string" {
+					let mut cursor = string.walk();
+					let children = string.children(&mut cursor).find_map(|child| {
+						(child.kind() == "string_content").then(|| {
+							String::from_utf8_lossy(&contents[child.byte_range()])
+								.trim()
+								.replace("\\n", "\n")
+								.replace("\\t", "\t")
+						})
+					});
+					content.extend(children);
+				}
+			}
+			Cow::from(content.join(""))
+		}
+		_ => unreachable!(),
+	}
 }
 
 impl Backend {
@@ -274,11 +307,21 @@ impl Backend {
 								let relation = interner.get_or_intern(&relation);
 								let type_ = String::from_utf8_lossy(&contents[type_]);
 								let type_ = interner.get_or_intern(&type_);
+								let help = match_
+									.captures
+									.iter()
+									.skip_while(|capture_| capture_.node.byte_range() != capture.node.byte_range())
+									.find(|capture| capture.index == 5 /* @help */)
+									.map(|capture| {
+										TextStr::try_from(parse_help(&capture.node, &contents).as_ref())
+											.expect("encoder error")
+									});
 								fields.push((
 									field,
 									Field {
 										kind: FieldKind::Relational(relation),
 										type_,
+										help,
 										location: MinLoc {
 											range,
 											path: location.path.clone(),
@@ -286,7 +329,7 @@ impl Backend {
 									},
 								))
 							}
-						} else if capture.index == 5 {
+						} else if capture.index == 7 {
 							// @_Type
 							if let Some(field) = field.take() {
 								let range = ts_range_to_lsp_range(field.range());
@@ -295,11 +338,21 @@ impl Backend {
 								let type_ = capture.node.byte_range();
 								let type_ = String::from_utf8_lossy(&contents[type_]);
 								let type_ = interner.get_or_intern(&type_);
+								let help = match_
+									.captures
+									.iter()
+									.skip_while(|capture_| capture_.node.byte_range() != capture.node.byte_range())
+									.find(|capture| capture.index == 5 /* @help */)
+									.map(|capture| {
+										TextStr::try_from(parse_help(&capture.node, &contents).as_ref())
+											.expect("encoder error")
+									});
 								fields.push((
 									field,
 									Field {
 										kind: FieldKind::Value,
 										type_,
+										help,
 										location: MinLoc {
 											range,
 											path: location.path.clone(),

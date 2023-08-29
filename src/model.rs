@@ -53,6 +53,7 @@ pub struct Field {
 	pub kind: FieldKind,
 	pub type_: Spur,
 	pub location: MinLoc,
+	pub help: Option<Text>,
 }
 
 #[derive(Clone)]

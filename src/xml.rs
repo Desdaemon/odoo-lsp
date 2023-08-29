@@ -285,9 +285,9 @@ fn gather_refs<'read>(
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Template))
 					&& local.as_str() == "inherit_id"
-					&& value.range().contains(&cursor_by_char) =>
+					&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
 			{
-				let inherit_id = interner.get_or_intern("ir.ui.view");
+				let inherit_id = interner.get_or_intern("inherit_id");
 				cursor_value = Some(value);
 				ref_kind = Some(RefKind::Ref(inherit_id));
 			}

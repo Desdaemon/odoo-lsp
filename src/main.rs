@@ -22,7 +22,7 @@ use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::ModuleIndex;
-use odoo_lsp::model::ModelLocation;
+use odoo_lsp::model::{FieldKind, ModelLocation};
 use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{format_loc, unwrap_or_none, utils::*};
 
@@ -471,6 +471,35 @@ impl LanguageServer for Backend {
 						completion.documentation = Some(Documentation::String(help));
 					}
 				}
+				Some(CompletionItemKind::FIELD) => {
+					// NOTE: This was injected by complete().
+					let Some(Value::String(value)) = &completion.data else {
+						break 'resolve;
+					};
+					let Some(mut entry) = self.module_index.models.get_mut(value.as_str()) else {
+						break 'resolve;
+					};
+					if let Err(err) = entry.resolve_details().await {
+						dbg!(err);
+					}
+					let Some(fields) = &entry.fields else { break 'resolve };
+					let Some(field) = self.module_index.interner.get(&completion.label) else {
+						break 'resolve;
+					};
+					if let Some(field) = fields.get(field.into_usize() as u64) {
+						let type_ = self.module_index.interner.resolve(&field.type_);
+						completion.detail = match field.kind {
+							FieldKind::Value => Some(format!("fields.{type_}(…)")),
+							FieldKind::Relational(relation) => {
+								let relation = self.module_index.interner.resolve(&relation);
+								Some(format!("fields.{type_}(\"{relation}\", …)"))
+							}
+						};
+						if let Some(help) = &field.help {
+							completion.documentation = Some(Documentation::String(help.to_string().into_owned()));
+						}
+					}
+				}
 				_ => {}
 			}
 		}
@@ -748,6 +777,8 @@ impl Backend {
 				})),
 				label: field_name.to_string(),
 				kind: Some(CompletionItemKind::FIELD),
+				// TODO: Make this type-safe
+				data: Some(Value::String(model.clone())),
 				..Default::default()
 			})
 		});

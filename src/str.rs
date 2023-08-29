@@ -1,6 +1,6 @@
 use libflate::deflate::{Decoder, Encoder};
 use std::borrow::Cow;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::io::{Read, Write};
 use std::ops::Deref;
 use std::sync::Arc;
@@ -67,7 +67,7 @@ impl AsRef<str> for ImStr {
 
 impl Display for ImStr {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		self.deref().fmt(f)
+		Display::fmt(self.deref(), f)
 	}
 }
 
@@ -134,6 +134,15 @@ enum TextRepr {
 	Inline(u8, [u8; INLINE_BYTES]),
 	Arc(Arc<str>),
 	Compressed(u32, Arc<[u8]>),
+}
+
+impl Debug for Text {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match &self.0 {
+			TextRepr::Inline(..) | TextRepr::Arc(..) => Debug::fmt(&self.to_string(), f),
+			TextRepr::Compressed(..) => f.debug_tuple("Text").field(&"<compressed>").finish(),
+		}
+	}
 }
 
 impl TryFrom<&str> for Text {
