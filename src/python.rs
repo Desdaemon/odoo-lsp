@@ -1,4 +1,4 @@
-use crate::partial::{emit_partial, PartialCompletions};
+// use crate::partial::{emit_partial, PartialCompletions};
 use crate::{Backend, Text};
 
 use std::borrow::Cow;
@@ -14,7 +14,7 @@ use tower_lsp::lsp_types::*;
 use tree_sitter::{Parser, Query, QueryCursor, Tree};
 
 use odoo_lsp::format_loc;
-use odoo_lsp::model::{Field, ModelEntry, ModelLocation};
+use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation};
 use odoo_lsp::utils::*;
 
 fn py_completions() -> &'static Query {
@@ -229,12 +229,13 @@ impl Backend {
 		}
 		Ok(None)
 	}
-	pub async fn populate_field_names(
+	pub async fn populate_field_names<'model>(
 		&self,
-		entry: &ModelEntry,
-		partial_token: Option<ProgressToken>,
-		range: Range,
-	) -> miette::Result<IntMap<Field>> {
+		entry: &'model mut ModelEntry,
+	) -> miette::Result<&'model mut IntMap<Field>> {
+		if entry.fields.is_some() {
+			return Ok(entry.fields.as_mut().unwrap());
+		}
 		let mut out = IntMap::new();
 		let locations = entry.base.iter().chain(entry.descendants.iter());
 		let query = model_fields();
@@ -249,31 +250,62 @@ impl Backend {
 				let ast = parser
 					.parse(&contents, None)
 					.ok_or_else(|| diagnostic!("AST not built"))?;
-				let byte_range = byte_range.clone().map_unit(|unit| unit.0);
+				let byte_range = byte_range.erase();
 				let mut cursor = QueryCursor::new();
 				cursor.set_byte_range(byte_range);
 				for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
 					let mut field = None;
+					let mut type_ = None;
 					for capture in match_.captures {
 						if capture.index == 0 {
 							// @field
-							field = Some(capture.node.byte_range());
+							field = Some(capture.node);
+						} else if capture.index == 1 {
+							// @_Relational
+							type_ = Some(capture.node.byte_range());
 						} else if capture.index == 3 {
 							// @relation
-							if let Some(field) = field.take() {
-								let field = String::from_utf8_lossy(&contents[field]);
+							if let (Some(field), Some(type_)) = (field.take(), type_.take()) {
+								let range = ts_range_to_lsp_range(field.range());
+								let field = String::from_utf8_lossy(&contents[field.byte_range()]);
 								let field = interner.get_or_intern(&field);
 								let relation = capture.node.byte_range().contract(1);
 								let relation = String::from_utf8_lossy(&contents[relation]);
 								let relation = interner.get_or_intern(&relation);
-								fields.push((field, Field::Relational(relation)));
+								let type_ = String::from_utf8_lossy(&contents[type_]);
+								let type_ = interner.get_or_intern(&type_);
+								fields.push((
+									field,
+									Field {
+										kind: FieldKind::Relational(relation),
+										type_,
+										location: MinLoc {
+											range,
+											path: location.path.clone(),
+										},
+									},
+								))
 							}
 						} else if capture.index == 5 {
 							// @_Type
 							if let Some(field) = field.take() {
-								let field = String::from_utf8_lossy(&contents[field]);
+								let range = ts_range_to_lsp_range(field.range());
+								let field = String::from_utf8_lossy(&contents[field.byte_range()]);
 								let field = interner.get_or_intern(&field);
-								fields.push((field, Field::Value));
+								let type_ = capture.node.byte_range();
+								let type_ = String::from_utf8_lossy(&contents[type_]);
+								let type_ = interner.get_or_intern(&type_);
+								fields.push((
+									field,
+									Field {
+										kind: FieldKind::Value,
+										type_,
+										location: MinLoc {
+											range,
+											path: location.path.clone(),
+										},
+									},
+								))
 							}
 						}
 					}
@@ -293,31 +325,31 @@ impl Backend {
 					continue;
 				}
 			};
-			if let Some(partial_token) = partial_token.clone() {
-				let resp = fields.iter().map(|(key, _)| {
-					let label = self.module_index.interner.resolve(key);
-					CompletionItem {
-						label: label.to_string(),
-						kind: Some(CompletionItemKind::FIELD),
-						text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-							new_text: label.to_string(),
-							insert: range,
-							replace: range,
-						})),
-						..Default::default()
-					}
-				});
-				emit_partial::<PartialCompletions, _>(
-					&self.client,
-					partial_token,
-					CompletionResponse::Array(resp.collect()),
-				)
-				.await;
-			}
+			// if let Some(partial_token) = partial_token.clone() {
+			// 	let resp = fields.iter().map(|(key, _)| {
+			// 		let label = self.module_index.interner.resolve(key);
+			// 		CompletionItem {
+			// 			label: label.to_string(),
+			// 			kind: Some(CompletionItemKind::FIELD),
+			// 			text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+			// 				new_text: label.to_string(),
+			// 				insert: replace_range,
+			// 				replace: replace_range,
+			// 			})),
+			// 			..Default::default()
+			// 		}
+			// 	});
+			// 	emit_partial::<PartialCompletions, _>(
+			// 		&self.client,
+			// 		partial_token,
+			// 		CompletionResponse::Array(resp.collect()),
+			// 	)
+			// 	.await;
+			// }
 			for (key, type_) in fields {
 				out.insert_checked(key.into_usize() as u64, type_);
 			}
 		}
-		Ok(out)
+		Ok(entry.fields.insert(out))
 	}
 }

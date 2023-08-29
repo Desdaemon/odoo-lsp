@@ -7,13 +7,13 @@ use std::path::Path;
 use lasso::{Key, Spur, ThreadedRodeo};
 use log::debug;
 use miette::{diagnostic, IntoDiagnostic};
-use odoo_lsp::model::Field;
+use odoo_lsp::model::{Field, FieldKind};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token, Tokenizer};
 
 use odoo_lsp::record::Record;
-use odoo_lsp::{utils::*, ImStr};
+use odoo_lsp::{unwrap_or_none, utils::*, ImStr};
 
 enum RefKind {
 	Ref(Spur),
@@ -170,15 +170,12 @@ impl Backend {
 				let Some(mut entry) = self.module_index.models.get_mut(model.as_str()) else {
 					return Ok(None);
 				};
-				// TODO: Extract into method
-				let fields = if let Some(fields) = &entry.fields {
-					fields
-				} else {
-					let range = char_range_to_lsp_range(replace_range.clone(), rope.clone()).unwrap();
-					let fields = self.populate_field_names(&entry, None, range).await?;
-					entry.fields.insert(fields)
-				};
-				let Some(Field::Relational(relation)) = dbg!(fields.get(dbg!(relation).into_usize() as u64)) else {
+				let fields = self.populate_field_names(&mut entry).await?;
+				let Some(Field {
+					kind: FieldKind::Relational(relation),
+					..
+				}) = fields.get(relation.into_usize() as u64)
+				else {
 					return Ok(None);
 				};
 				self.complete_xml_id(
@@ -197,8 +194,7 @@ impl Backend {
 			}
 			RefKind::FieldName => {
 				if let Some(model) = model_filter {
-					let partial_token = params.partial_result_params.partial_result_token;
-					self.complete_field_name(needle, replace_range, model, rope.clone(), partial_token, &mut items)
+					self.complete_field_name(needle, replace_range, model, rope.clone(), &mut items)
 						.await?;
 				}
 			}
@@ -210,12 +206,12 @@ impl Backend {
 			items,
 		})))
 	}
-	pub fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
+	pub async fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
-		let (_, cursor_value, ref_, _) = gather_refs(cursor_by_char, &mut reader, &self.module_index.interner)?;
+		let (_, cursor_value, ref_, model) = gather_refs(cursor_by_char, &mut reader, &self.module_index.interner)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -223,7 +219,11 @@ impl Backend {
 		match ref_ {
 			Some(RefKind::Ref(_)) => self.jump_def_inherit_id(&cursor_value, uri),
 			Some(RefKind::Model) => self.jump_def_model(&cursor_value),
-			Some(RefKind::Id) | Some(RefKind::FieldName) | None => Ok(None),
+			Some(RefKind::FieldName) => {
+				let model = unwrap_or_none!(model);
+				self.jump_def_field_name(&cursor_value, &model).await
+			}
+			Some(RefKind::Id) | None => Ok(None),
 		}
 	}
 	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {

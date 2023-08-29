@@ -24,10 +24,10 @@ use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::ModuleIndex;
 use odoo_lsp::model::ModelLocation;
 use odoo_lsp::utils::isolate::Isolate;
-use odoo_lsp::{format_loc, utils::*};
+use odoo_lsp::{format_loc, unwrap_or_none, utils::*};
 
 mod catch_panic;
-mod partial;
+// mod partial;
 mod python;
 mod xml;
 
@@ -109,11 +109,11 @@ impl LanguageServer for Backend {
 				workspace_symbol_provider: Some(OneOf::Left(true)),
 				text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::INCREMENTAL)),
 				completion_provider: Some(CompletionOptions {
-					resolve_provider: None,
+					resolve_provider: Some(true),
 					trigger_characters: Some(vec!["\"".to_string(), "'".to_string(), ".".to_string()]),
-					work_done_progress_options: Default::default(),
 					all_commit_characters: None,
 					completion_item: None,
+					work_done_progress_options: Default::default(),
 				}),
 				workspace: Some(WorkspaceServerCapabilities {
 					workspace_folders: Some(WorkspaceFoldersServerCapabilities {
@@ -343,6 +343,7 @@ impl LanguageServer for Backend {
 		if ext == "xml" {
 			location = self
 				.xml_jump_def(params, document.value().clone())
+				.await
 				.map_err(|err| error!("Error retrieving references:\n{err}"))
 				.ok()
 				.flatten();
@@ -454,6 +455,26 @@ impl LanguageServer for Backend {
 			debug!("Unsupported file {}", uri.path());
 			Ok(None)
 		}
+	}
+	async fn completion_resolve(&self, mut completion: CompletionItem) -> Result<CompletionItem> {
+		'resolve: {
+			match &completion.kind {
+				Some(CompletionItemKind::CLASS) => {
+					let Some(mut entry) = self.module_index.models.get_mut(completion.label.as_str()) else {
+						break 'resolve;
+					};
+					if let Err(err) = entry.resolve_details().await {
+						dbg!(err);
+					}
+					if let Some(help) = &entry.docstring {
+						let help = help.to_string().into_owned();
+						completion.documentation = Some(Documentation::String(help));
+					}
+				}
+				_ => {}
+			}
+		}
+		Ok(completion)
 	}
 	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
 		let items = self
@@ -707,19 +728,13 @@ impl Backend {
 		range: std::ops::Range<CharOffset>,
 		model: String,
 		rope: Rope,
-		partial_token: Option<ProgressToken>,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
 		let Some(mut entry) = self.module_index.models.get_mut(model.as_str()) else {
 			return Ok(());
 		};
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
-		let fields = if let Some(fields) = &entry.fields {
-			fields
-		} else {
-			let fields = self.populate_field_names(&entry, partial_token, range).await?;
-			entry.fields.insert(fields)
-		};
+		let fields = self.populate_field_names(&mut entry).await?;
 		let completions = fields.iter().flat_map(|(key, _)| {
 			let field_name = self
 				.module_index
@@ -795,6 +810,13 @@ impl Backend {
 			Some(ModelLocation(base, _)) => Ok(Some(base.into())),
 			None => Ok(None),
 		}
+	}
+	async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
+		let mut entry = unwrap_or_none!(self.module_index.models.get_mut(model));
+		let field = unwrap_or_none!(self.module_index.interner.get(field));
+		let fields = self.populate_field_names(&mut entry).await?;
+		let field = unwrap_or_none!(fields.get(field.into_usize() as u64));
+		Ok(Some(field.location.clone().into()))
 	}
 	fn model_references(&self, model: &str) -> miette::Result<Option<Vec<Location>>> {
 		let record_locations = self

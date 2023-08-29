@@ -45,4 +45,5 @@ tree-sitter-python = "0.20.4"
 qp-trie = "0.8.1"
 lasso = { version = "0.7.2", features = ["multi-threaded"] }
 intmap = "2.0.0"
+libflate = "2.0.0"
 

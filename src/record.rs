@@ -7,6 +7,7 @@ use crate::utils::MinLoc;
 use crate::utils::{char_to_position, position_to_char, CharOffset};
 use crate::ImStr;
 
+#[macro_export]
 macro_rules! unwrap_or_none {
 	($opt:expr) => {
 		match $opt {

@@ -1,4 +1,7 @@
+use libflate::deflate::{Decoder, Encoder};
+use std::borrow::Cow;
 use std::fmt::Display;
+use std::io::{Read, Write};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -119,5 +122,78 @@ impl ImStr {
 	#[inline]
 	pub fn as_str(&self) -> &str {
 		self.deref()
+	}
+}
+
+/// [String]-sized clone-friendly container optimized for freeform text.
+#[derive(Clone)]
+pub struct Text(TextRepr);
+
+#[derive(Clone)]
+enum TextRepr {
+	Inline(u8, [u8; INLINE_BYTES]),
+	Arc(Arc<str>),
+	Compressed(u32, Arc<[u8]>),
+}
+
+impl TryFrom<&str> for Text {
+	type Error = std::io::Error;
+	fn try_from(value: &str) -> Result<Self, Self::Error> {
+		let bytes = value.as_bytes();
+		if bytes.len() <= INLINE_BYTES {
+			let mut buf = [0u8; INLINE_BYTES];
+			let slice = &mut buf[..bytes.len()];
+			slice.copy_from_slice(bytes);
+			return Ok(Text(TextRepr::Inline(bytes.len() as u8, buf)));
+		}
+		let mut enc = Encoder::new(Vec::new());
+		enc.write_all(bytes)?;
+		let data = enc.finish().into_result()?;
+		if data.len() >= bytes.len() {
+			Ok(Self(TextRepr::Arc(value.into())))
+		} else {
+			Ok(Self(TextRepr::Compressed(bytes.len() as u32, data.into())))
+		}
+	}
+}
+
+impl Text {
+	pub fn to_string(&self) -> Cow<str> {
+		match &self.0 {
+			TextRepr::Inline(len, bytes) => {
+				let slice = &bytes[..(*len as usize)];
+				let slice = unsafe { std::str::from_utf8_unchecked(slice) };
+				Cow::Borrowed(slice)
+			}
+			TextRepr::Arc(ptr) => Cow::Borrowed(&ptr),
+			TextRepr::Compressed(len, encoded) => {
+				let mut buf = Vec::with_capacity(*len as usize);
+				let mut dec = Decoder::new(&encoded[..]);
+				dec.read_to_end(&mut buf).expect("decoding error");
+				// SAFETY: As long as the decoder returns valid UTF-8.
+				let str = unsafe { String::from_utf8_unchecked(buf) };
+				Cow::Owned(str)
+			}
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::Text;
+
+	#[test]
+	fn test_sanity_check() {
+		const TEXTS: &[&str] = &[
+			"Short text",
+			"Short text goes over 22",
+			"Hey there, you, you're awake. You were trying to cross the border?",
+			"The quick brown fox jumps over the lazy dog. Five plus five equals ten, a monad is a monoid in the category of endofunctors."
+		];
+		for text in TEXTS {
+			let enc = Text::try_from(*text).unwrap();
+			let dec = enc.to_string();
+			assert_eq!(*text, dec);
+		}
 	}
 }

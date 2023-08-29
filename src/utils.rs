@@ -80,6 +80,19 @@ pub fn offset_range_to_lsp_range(range: std::ops::Range<ByteOffset>, rope: Rope)
 	Some(Range { start, end })
 }
 
+pub fn ts_range_to_lsp_range(range: tree_sitter::Range) -> Range {
+	Range {
+		start: Position {
+			line: range.start_point.row as u32,
+			character: range.start_point.column as u32,
+		},
+		end: Position {
+			line: range.end_point.row as u32,
+			character: range.end_point.column as u32,
+		},
+	}
+}
+
 pub fn token_span<'r, 't>(token: &'r Token<'t>) -> &'r StrSpan<'t> {
 	match token {
 		Token::Declaration { span, .. }
@@ -100,10 +113,12 @@ pub fn token_span<'r, 't>(token: &'r Token<'t>) -> &'r StrSpan<'t> {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct ByteOffset(pub usize);
+pub type ByteRange = core::ops::Range<ByteOffset>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct CharOffset(pub usize);
+pub type CharRange = core::ops::Range<CharOffset>;
 
 pub trait RangeExt {
 	type Unit;
@@ -115,6 +130,23 @@ pub trait RangeExt {
 	where
 		Self: Sized,
 		Self::Unit: Add<Self::Unit, Output = Self::Unit> + Sub<Self::Unit, Output = Self::Unit> + Copy;
+}
+
+pub trait Erase {
+	fn erase(&self) -> core::ops::Range<usize>;
+}
+
+impl Erase for ByteRange {
+	#[inline]
+	fn erase(&self) -> core::ops::Range<usize> {
+		self.clone().map_unit(|unit| unit.0)
+	}
+}
+impl Erase for CharRange {
+	#[inline]
+	fn erase(&self) -> core::ops::Range<usize> {
+		self.clone().map_unit(|unit| unit.0)
+	}
 }
 
 impl<T> RangeExt for std::ops::Range<T> {
