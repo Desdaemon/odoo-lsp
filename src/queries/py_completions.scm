@@ -1,9 +1,12 @@
 ((call
   [(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
-   (attribute (identifier) @_env (identifier) @_ref)]
+   (attribute (identifier) @_env (identifier) @_ref)
+   (attribute (identifier) @_request (identifier) @_render)]
   (argument_list . (string) @xml_id))
  (#eq? @_env "env")
- (#eq? @_ref "ref"))
+ (#eq? @_ref "ref")
+ (#eq? @_request "request")
+ (#eq? @_render "render"))
 
 ((subscript
   [(identifier) @_env

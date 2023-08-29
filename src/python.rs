@@ -122,8 +122,12 @@ impl Backend {
 		cursor.set_byte_range(range.clone());
 		let mut items = vec![];
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
+			let mut model_filter = None;
 			for capture in match_.captures {
 				if capture.index == 2 {
+					// @_request
+					model_filter = Some("ir.ui.view");
+				} else if capture.index == 4 {
 					// @xml_id
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
@@ -135,14 +139,14 @@ impl Backend {
 						let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 						// remove the quotes
 						let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-						self.complete_xml_id(&needle, range, rope.clone(), None, &current_module, &mut items)
+						self.complete_xml_id(&needle, range, rope.clone(), model_filter, &current_module, &mut items)
 							.await?;
 						return Ok(Some(CompletionResponse::List(CompletionList {
 							is_incomplete: items.len() >= Self::LIMIT,
 							items,
 						})));
 					}
-				} else if capture.index == 3 {
+				} else if capture.index == 5 {
 					// @model
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
@@ -182,7 +186,7 @@ impl Backend {
 		cursor.set_byte_range(range);
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			for capture in match_.captures {
-				if capture.index == 2 {
+				if capture.index == 4 {
 					// @xml_id
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
@@ -195,7 +199,7 @@ impl Backend {
 						return self
 							.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
 					}
-				} else if capture.index == 3 {
+				} else if capture.index == 5 {
 					// @model
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {

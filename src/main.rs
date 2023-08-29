@@ -709,10 +709,10 @@ impl Backend {
 		current_module: &str,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
-		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_inherit_id) range"))?;
+		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_xml_id) range"))?;
 		let by_prefix = self.module_index.records.by_prefix.read().await;
-		fn to_completion_items(entry: &Record, current_module: &str, range: Range) -> CompletionItem {
-			let label = if entry.module == current_module {
+		fn to_completion_items(entry: &Record, current_module: &str, range: Range, scoped: bool) -> CompletionItem {
+			let label = if entry.module == current_module && !scoped {
 				entry.id.to_string()
 			} else {
 				entry.qualified_id()
@@ -732,8 +732,8 @@ impl Backend {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter().flat_map(|key| {
 					self.module_index.records.get(key.as_str()).and_then(|entry| {
-						(entry.module == module && entry.model.as_deref() == model_filter)
-							.then(|| to_completion_items(&entry, current_module, range))
+						(entry.module == module && (model_filter.is_none() || entry.model.as_deref() == model_filter))
+							.then(|| to_completion_items(&entry, current_module, range, true))
 					})
 				})
 			});
@@ -742,8 +742,8 @@ impl Backend {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter().flat_map(|key| {
 					self.module_index.records.get(key.as_str()).and_then(|entry| {
-						(entry.model.as_deref() == model_filter)
-							.then(|| to_completion_items(&entry, current_module, range))
+						(model_filter.is_none() || entry.model.as_deref() == model_filter)
+							.then(|| to_completion_items(&entry, current_module, range, false))
 					})
 				})
 			});

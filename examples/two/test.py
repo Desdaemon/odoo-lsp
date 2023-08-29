@@ -22,3 +22,5 @@ class Moo(models.Model):
     _inherit = ['quux']
 
     what = fields.Many2one(comodel_name='bar')
+    def foo():
+        request.render('generic_tax_report')
