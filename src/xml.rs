@@ -13,7 +13,7 @@ use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token, Tokenizer};
 
 use odoo_lsp::record::Record;
-use odoo_lsp::{unwrap_or_none, utils::*, ImStr};
+use odoo_lsp::{some, utils::*, ImStr};
 
 enum RefKind {
 	Ref(Spur),
@@ -177,10 +177,9 @@ impl Backend {
 		let replace_range = value.range().map_unit(|unit| CharOffset(unit + relative_offset));
 		match record_field {
 			RefKind::Ref(relation) => {
-				let Some(model) = model_filter else { return Ok(None) };
-				let Some(mut entry) = self.module_index.models.get_mut(model.as_str()) else {
-					return Ok(None);
-				};
+				let model = some!(model_filter);
+				let model = some!(self.module_index.interner.get(model));
+				let mut entry = some!(self.module_index.models.get_mut(&model.into()));
 				let fields = self.populate_field_names(&mut entry).await?;
 				let Some(Field {
 					kind: FieldKind::Relational(relation),
@@ -231,7 +230,7 @@ impl Backend {
 			Some(RefKind::Ref(_)) => self.jump_def_inherit_id(&cursor_value, uri),
 			Some(RefKind::Model) => self.jump_def_model(&cursor_value),
 			Some(RefKind::FieldName) => {
-				let model = unwrap_or_none!(model);
+				let model = some!(model);
 				self.jump_def_field_name(&cursor_value, &model).await
 			}
 			Some(RefKind::Id) | None => Ok(None),

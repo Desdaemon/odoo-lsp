@@ -10,7 +10,7 @@ use crate::utils::{char_to_position, position_to_char, CharOffset};
 use crate::ImStr;
 
 #[macro_export]
-macro_rules! unwrap_or_none {
+macro_rules! some {
 	($opt:expr) => {
 		match $opt {
 			Some(it) => it,
@@ -136,7 +136,7 @@ impl Record {
 				_ => {}
 			}
 		}
-		let id = unwrap_or_none!(id);
+		let id = some!(id);
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for record"))?;
 		let end = char_to_position(end, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse end location"))?;
 		let range = Range { start, end };
@@ -227,7 +227,7 @@ impl Record {
 		let range = Range { start, end };
 
 		Ok(Some(Self {
-			id: unwrap_or_none!(id),
+			id: some!(id),
 			deleted: false,
 			model: Some("ir.ui.view".into()),
 			module,

@@ -1,13 +1,10 @@
-use std::hash::Hash;
-use std::marker::PhantomData;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use dashmap::DashSet;
 use globwalk::FileType;
-use lasso::{Spur, ThreadedRodeo};
+use lasso::ThreadedRodeo;
 use log::{debug, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
@@ -16,13 +13,15 @@ use tower_lsp::lsp_types::*;
 use tree_sitter::{Query, QueryCursor};
 use xmlparser::{Token, Tokenizer};
 
-use crate::model::{Model, ModelId, ModelIndex};
+use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
 use crate::utils::{offset_range_to_lsp_range, ByteOffset, CharOffset, RangeExt};
 use crate::{format_loc, ImStr};
 
 mod record;
 pub use record::{RecordId, SymbolMap, SymbolSet};
+mod symbol;
+pub use symbol::Symbol;
 
 #[derive(Default)]
 pub struct ModuleIndex {
@@ -33,59 +32,9 @@ pub struct ModuleIndex {
 	pub interner: Arc<ThreadedRodeo>,
 }
 
-/// Type-safe wrapper around [Spur].
-#[derive(Debug)]
-pub struct Symbol<T> {
-	inner: Spur,
-	_kind: PhantomData<T>,
-}
-
 pub type ModuleName = Symbol<Module>;
 #[derive(Debug)]
 pub enum Module {}
-
-impl<T> From<Spur> for Symbol<T> {
-	#[inline]
-	fn from(inner: Spur) -> Self {
-		Symbol {
-			inner,
-			_kind: PhantomData,
-		}
-	}
-}
-
-impl<T> Clone for Symbol<T> {
-	#[inline]
-	fn clone(&self) -> Self {
-		Symbol {
-			inner: self.inner.clone(),
-			_kind: PhantomData,
-		}
-	}
-}
-
-impl<T> Copy for Symbol<T> {}
-impl<T> Eq for Symbol<T> {}
-impl<T> PartialEq for Symbol<T> {
-	#[inline]
-	fn eq(&self, other: &Self) -> bool {
-		self.inner.eq(&other.inner)
-	}
-}
-
-impl<T> Hash for Symbol<T> {
-	#[inline]
-	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-		self.inner.hash(state)
-	}
-}
-
-impl<T> Deref for Symbol<T> {
-	type Target = Spur;
-	fn deref(&self) -> &Self::Target {
-		&self.inner
-	}
-}
 
 enum Output {
 	Records(Vec<Record>),
@@ -206,7 +155,7 @@ impl ModuleIndex {
 				}
 				Output::Models { path, models } => {
 					model_count += models.len();
-					self.models.extend_models(path, models).await;
+					self.models.extend_models(path, &self.interner, models).await;
 				}
 			}
 		}
@@ -378,7 +327,7 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 		}
 		match (inherits.as_slice(), maybe_base) {
 			([_, ..], None) => out.push(Model {
-				model: ModelId::Inherit(inherits),
+				type_: ModelType::Inherit(inherits),
 				range: lsp_range,
 				byte_range: range,
 			}),
@@ -386,13 +335,13 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 			(_, Some(base)) => {
 				if has_primary {
 					out.push(Model {
-						model: ModelId::Inherit(inherits),
+						type_: ModelType::Inherit(inherits),
 						range: lsp_range,
 						byte_range: range,
 					});
 				} else {
 					out.push(Model {
-						model: ModelId::Base(base.as_ref().into()),
+						type_: ModelType::Base(base.as_ref().into()),
 						range: lsp_range,
 						byte_range: range,
 					})

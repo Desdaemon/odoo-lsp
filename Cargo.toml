@@ -47,3 +47,6 @@ lasso = { version = "0.7.2", features = ["multi-threaded"] }
 intmap = "2.0.0"
 libflate = "2.0.0"
 
+[dev-dependencies]
+pretty_assertions = "1.4.0"
+

@@ -3,37 +3,38 @@ use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
-use lasso::Spur;
+use lasso::{Spur, ThreadedRodeo};
 use miette::{diagnostic, IntoDiagnostic};
 use qp_trie::{wrapper::BString, Trie};
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
 use tree_sitter::{Parser, Query, QueryCursor};
 
-use crate::index::SymbolMap;
+use crate::index::{Symbol, SymbolMap};
 use crate::str::Text;
-use crate::utils::{ByteOffset, Erase, MinLoc};
+use crate::utils::{ByteOffset, ByteRange, Erase, MinLoc};
 use crate::ImStr;
 
 #[derive(Clone, Debug)]
 pub struct Model {
-	pub model: ModelId,
+	pub type_: ModelType,
 	pub range: Range,
-	pub byte_range: std::ops::Range<ByteOffset>,
+	pub byte_range: ByteRange,
 }
 
 #[derive(Clone, Debug)]
-pub enum ModelId {
+pub enum ModelType {
 	Base(ImStr),
 	Inherit(Vec<ImStr>),
 }
 
 #[derive(Default)]
 pub struct ModelIndex {
-	inner: DashMap<ImStr, ModelEntry>,
-	pub by_prefix: Arc<RwLock<Trie<BString, ImStr>>>,
+	inner: DashMap<ModelName, ModelEntry>,
+	pub by_prefix: Arc<RwLock<Trie<BString, ModelName>>>,
 }
 
+pub type ModelName = Symbol<ModelEntry>;
 #[derive(Default)]
 pub struct ModelEntry {
 	pub base: Option<ModelLocation>,
@@ -85,7 +86,7 @@ impl Display for ModelLocation {
 }
 
 impl Deref for ModelIndex {
-	type Target = DashMap<ImStr, ModelEntry>;
+	type Target = DashMap<ModelName, ModelEntry>;
 
 	fn deref(&self) -> &Self::Target {
 		&self.inner
@@ -93,16 +94,17 @@ impl Deref for ModelIndex {
 }
 
 impl ModelIndex {
-	pub async fn extend_models<I>(&self, path: ImStr, items: I)
+	pub async fn extend_models<I>(&self, path: ImStr, interner: &ThreadedRodeo, items: I)
 	where
 		I: IntoIterator<Item = Model>,
 	{
 		let mut by_prefix = self.by_prefix.write().await;
 		for item in items {
-			match item.model {
-				ModelId::Base(base) => {
-					by_prefix.insert_str(&base, base.clone());
-					let mut entry = self.entry(base.clone()).or_default();
+			match item.type_ {
+				ModelType::Base(base) => {
+					let name = interner.get_or_intern(&base).into();
+					by_prefix.insert_str(&base, name);
+					let mut entry = self.entry(name).or_default();
 					entry.base = Some(ModelLocation(
 						MinLoc {
 							path: path.clone(),
@@ -111,8 +113,9 @@ impl ModelIndex {
 						item.byte_range,
 					));
 				}
-				ModelId::Inherit(inherits) => {
+				ModelType::Inherit(inherits) => {
 					for inherit in inherits {
+						let inherit = interner.get_or_intern(inherit).into();
 						self.entry(inherit).or_default().descendants.push(ModelLocation(
 							MinLoc {
 								path: path.clone(),

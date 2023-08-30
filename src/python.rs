@@ -310,7 +310,7 @@ impl Backend {
 								b"One2many" | b"Many2one" | b"Many2many"
 							);
 						} else if capture.index == 3 {
-							// @comodel_name
+							// @relation
 							if is_relational {
 								relation = Some(capture.node.byte_range().contract(1));
 							}
@@ -330,7 +330,9 @@ impl Backend {
 									}
 								}
 								Some(Kwargs::Help) => {
-									help = Some(parse_help(&capture.node, &contents));
+									if matches!(capture.node.kind(), "string" | "concatenated_string") {
+										help = Some(parse_help(&capture.node, &contents));
+									}
 								}
 								None => {}
 							}
@@ -394,6 +396,11 @@ impl Backend {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use pretty_assertions::assert_eq;
+
+	/// Tricky behavior here. The query syntax required to match the trailing comma between
+	/// named arguments, and this test checks that. Furthermore, @help cannot be matched
+	/// as a `(string)` since that would reify its shape and refuse subsequent matches.
 	#[test]
 	fn test_model_fields() {
 		let mut parser = Parser::new();
@@ -404,17 +411,29 @@ class Foo(models.Model):
 	bar = fields.Many2one(comodel_name='asd', help='asd')
 	what = fields.What(asd)
 	haha = fields.Many2many('asd')
-	html = fields.Html(related='asd', foo=123)"#;
+	html = fields.Html(related='asd', foo=123, help='asdf')"#;
 		let ast = parser.parse(&contents[..], None).unwrap();
 		let query = model_fields();
 		let mut cursor = QueryCursor::new();
-		for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
-			let captures = match_
-				.captures
-				.iter()
-				.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
-				.collect::<Vec<_>>();
-			dbg!(captures);
-		}
+		let expected: &[&[&str]] = &[
+			&["foo", "fields", "Char", "'asd'", "help", "'asd'"],
+			&["bar", "fields", "Many2one", "comodel_name", "'asd'", "help", "'asd'"],
+			&["what", "fields", "What"],
+			&["haha", "fields", "Many2many", "'asd'"],
+			&[
+				"html", "fields", "Html", "related", "'asd'", "foo", "123", "help", "'asdf'",
+			],
+		];
+		let actual = cursor
+			.matches(query, ast.root_node(), &contents[..])
+			.map(|match_| {
+				match_
+					.captures
+					.into_iter()
+					.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
+					.collect::<Vec<_>>()
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(expected, actual);
 	}
 }

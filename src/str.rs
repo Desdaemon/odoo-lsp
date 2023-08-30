@@ -174,7 +174,7 @@ impl Text {
 				let slice = unsafe { std::str::from_utf8_unchecked(slice) };
 				Cow::Borrowed(slice)
 			}
-			TextRepr::Arc(ptr) => Cow::Borrowed(&ptr),
+			TextRepr::Arc(ptr) => Cow::Borrowed(ptr),
 			TextRepr::Compressed(len, encoded) => {
 				let mut buf = Vec::with_capacity(*len as usize);
 				let mut dec = Decoder::new(&encoded[..]);

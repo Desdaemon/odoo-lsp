@@ -24,7 +24,7 @@ use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{ModuleIndex, ModuleName, RecordId};
 use odoo_lsp::model::{FieldKind, ModelLocation};
 use odoo_lsp::utils::isolate::Isolate;
-use odoo_lsp::{format_loc, unwrap_or_none, utils::*};
+use odoo_lsp::{format_loc, some, utils::*};
 
 mod catch_panic;
 mod python;
@@ -459,7 +459,10 @@ impl LanguageServer for Backend {
 		'resolve: {
 			match &completion.kind {
 				Some(CompletionItemKind::CLASS) => {
-					let Some(mut entry) = self.module_index.models.get_mut(completion.label.as_str()) else {
+					let Some(model) = self.module_index.interner.get(&completion.label) else {
+						break 'resolve;
+					};
+					let Some(mut entry) = self.module_index.models.get_mut(&model.into()) else {
 						break 'resolve;
 					};
 					if let Err(err) = entry.resolve_details().await {
@@ -475,7 +478,10 @@ impl LanguageServer for Backend {
 					let Some(Value::String(value)) = &completion.data else {
 						break 'resolve;
 					};
-					let Some(mut entry) = self.module_index.models.get_mut(value.as_str()) else {
+					let Some(model) = self.module_index.interner.get(&value) else {
+						break 'resolve;
+					};
+					let Some(mut entry) = self.module_index.models.get_mut(&model.into()) else {
 						break 'resolve;
 					};
 					if let Err(err) = entry.resolve_details().await {
@@ -549,7 +555,7 @@ impl LanguageServer for Backend {
 		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
 			self.module_index.models.get(key).into_iter().flat_map(|entry| {
 				entry.base.as_ref().map(|loc| SymbolInformation {
-					name: entry.key().to_string(),
+					name: self.module_index.interner.resolve(entry.key()).to_string(),
 					kind: SymbolKind::CONSTANT,
 					tags: None,
 					deprecated: None,
@@ -571,7 +577,7 @@ impl LanguageServer for Backend {
 		}
 		let interner = &self.module_index.interner;
 		if let Some((module, xml_id_query)) = query.split_once('.') {
-			let module = unwrap_or_none!(interner.get(&module)).into();
+			let module = some!(interner.get(&module)).into();
 			let records = records_by_prefix
 				.iter_prefix(xml_id_query.as_bytes())
 				.flat_map(|(_, keys)| {
@@ -769,7 +775,10 @@ impl Backend {
 		rope: Rope,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
-		let Some(mut entry) = self.module_index.models.get_mut(model.as_str()) else {
+		let Some(model_key) = self.module_index.interner.get(&model) else {
+			return Ok(());
+		};
+		let Some(mut entry) = self.module_index.models.get_mut(&model_key.into()) else {
 			return Ok(());
 		};
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
@@ -808,7 +817,7 @@ impl Backend {
 			.iter_prefix(needle.as_bytes())
 			.flat_map(|(_, key)| self.module_index.models.get(key))
 			.map(|entry| {
-				let label = entry.key().to_string();
+				let label = self.module_index.interner.resolve(entry.key()).to_string();
 				CompletionItem {
 					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 						new_text: label.clone(),
@@ -839,14 +848,15 @@ impl Backend {
 				return Ok(None);
 			}
 		}
-		let record_id = unwrap_or_none!(self.module_index.interner.get(value));
+		let record_id = some!(self.module_index.interner.get(value));
 		return Ok((self.module_index.records.get(&record_id.into())).map(|entry| entry.location.clone().into()));
 	}
 	fn jump_def_model(&self, model: &str) -> miette::Result<Option<Location>> {
+		let model = some!(self.module_index.interner.get(model));
 		match self
 			.module_index
 			.models
-			.get(model)
+			.get(&model.into())
 			.and_then(|entry| entry.base.as_ref().cloned())
 		{
 			Some(ModelLocation(base, _)) => Ok(Some(base.into())),
@@ -854,10 +864,11 @@ impl Backend {
 		}
 	}
 	async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
-		let mut entry = unwrap_or_none!(self.module_index.models.get_mut(model));
-		let field = unwrap_or_none!(self.module_index.interner.get(field));
+		let model = self.module_index.interner.get_or_intern(model);
+		let mut entry = some!(self.module_index.models.get_mut(&model.into()));
+		let field = some!(self.module_index.interner.get(field));
 		let fields = self.populate_field_names(&mut entry).await?;
-		let field = unwrap_or_none!(fields.get(&field.into()));
+		let field = some!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
 	}
 	fn model_references(&self, model: &str) -> miette::Result<Option<Vec<Location>>> {
@@ -866,8 +877,9 @@ impl Backend {
 			.records
 			.by_model(model)
 			.map(|record| record.location.clone().into());
+		let model = some!(self.module_index.interner.get(model));
 		let limit = self.references_limit.load(Relaxed);
-		if let Some(entry) = self.module_index.models.get(model) {
+		if let Some(entry) = self.module_index.models.get(&model.into()) {
 			let inherit_locations = entry.descendants.iter().map(|loc| loc.0.clone().into());
 			Ok(Some(inherit_locations.chain(record_locations).take(limit).collect()))
 		} else {
@@ -888,7 +900,7 @@ impl Backend {
 			debug!("No current module to resolve the XML ID {inherit_id}");
 			return Ok(None);
 		};
-		let inherit_id = RecordId::from(unwrap_or_none!(interner.get(inherit_id)));
+		let inherit_id = RecordId::from(some!(interner.get(inherit_id)));
 		let limit = self.references_limit.load(Relaxed);
 		let locations = self
 			.module_index
