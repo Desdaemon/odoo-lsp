@@ -489,10 +489,10 @@ impl LanguageServer for Backend {
 					if let Some(field) = fields.get(field.into_usize() as u64) {
 						let type_ = self.module_index.interner.resolve(&field.type_);
 						completion.detail = match field.kind {
-							FieldKind::Value => Some(format!("fields.{type_}(…)")),
+							FieldKind::Value => Some(format!("{type_}(…)")),
 							FieldKind::Relational(relation) => {
 								let relation = self.module_index.interner.resolve(&relation);
-								Some(format!("fields.{type_}(\"{relation}\", …)"))
+								Some(format!("{type_}(\"{relation}\", …)"))
 							}
 						};
 						if let Some(help) = &field.help {
