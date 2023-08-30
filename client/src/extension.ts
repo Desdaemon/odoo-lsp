@@ -52,11 +52,16 @@ async function downloadLspBinary(context: ExtensionContext) {
 	const archiveExtension = isWindows ? ".zip" : ".tgz";
 	const runtimeDir = context.globalStorageUri.fsPath;
 	await mkdir(runtimeDir, { recursive: true });
+	const preferNightly = !!workspace.getConfiguration("odoo-lsp.binary").get("preferNightly");
+	const overrideVersion = workspace.getConfiguration("odoo-lsp.binary").get("overrideVersion");
 
 	// We follow nightly releases, so only download if today's build is not already downloaded.
 	// The format is nightly-YYYYMMDD
 	const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-	const release = context.extension.packageJSON._release || `nightly-${today}`;
+	let release = overrideVersion || `nightly-${today}`;
+	if (!preferNightly && !overrideVersion) {
+		release = context.extension.packageJSON._release || release;
+	}
 	if (typeof release !== "string" || !release) {
 		window.showErrorMessage(`Bug: invalid release "${release}"`);
 		return;
@@ -114,11 +119,12 @@ async function downloadLspBinary(context: ExtensionContext) {
 	const shaLink = `${link}.sha256`;
 	const shaOutput = `${latest}.sha256`;
 
+	const powershell = { shell: "powershell.exe" };
+	const sh = { shell: "sh" };
 	if (!existsSync(latest)) {
 		window.setStatusBarMessage(`Downloading odoo-lsp@${release}...`, 5);
 		try {
 			if (isWindows) {
-				const powershell = { shell: "powershell.exe" };
 				await execAsync(`Invoke-WebRequest -Uri ${link} -OutFile ${latest}`, powershell);
 				await execAsync(`Invoke-WebRequest -Uri ${shaLink} -OutFile ${shaOutput}`, powershell);
 				const { stdout } = await execAsync(
@@ -128,7 +134,6 @@ async function downloadLspBinary(context: ExtensionContext) {
 				if (stdout.toString().trim() !== "True") throw new Error("Checksum verification failed");
 				await execAsync(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
 			} else {
-				const sh = { shell: "sh" };
 				await execAsync(`wget -O ${latest} ${link}`, sh);
 				await execAsync(`wget -O ${shaOutput} ${shaLink}`, sh);
 				await execAsync(
@@ -140,6 +145,12 @@ async function downloadLspBinary(context: ExtensionContext) {
 		} catch (err) {
 			window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
 			await rm(latest);
+		}
+	} else if (!existsSync(odooLspBin)) {
+		if (isWindows) {
+			await execAsync(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
+		} else {
+			await execAsync(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
 		}
 	}
 
@@ -171,7 +182,7 @@ async function openLink(url: string) {
 export async function activate(context: ExtensionContext) {
 	const traceOutputChannel = window.createOutputChannel("Odoo LSP");
 	let command = process.env.SERVER_PATH || "odoo-lsp";
-	if (!(await which(command)) && context.extensionMode === ExtensionMode.Production) {
+	if (!(await which(command))) {
 		command = (await downloadLspBinary(context)) || command;
 	}
 	traceOutputChannel.appendLine(`odoo-lsp executable: ${command}`);

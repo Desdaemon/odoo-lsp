@@ -18,11 +18,20 @@ For more features check out the [wiki].
 
 ## Install
 
-```shell
-cargo install --git https://github.com/Desdaemon/odoo-lsp
-```
+The VSCode extension handles downloading the latest releases automatically; other editors need `odoo-lsp` on the path.
+Nightly binaries are also available for major platforms, please check [Releases] for the latest downloads.
 
-Nightly binaries are also available for some platforms, please check [Releases] for the latest downloads.
+```shell
+# One-line
+wget -qO- "https://github.com/Desdaemon/odoo-lsp/releases/download/nightly-$(date +'%Y%m%d')/odoo-lsp-x86_64-unknown-linux-musl.tgz" | \
+   tar --transform 's/^dbt2-0.37.50.3/dbt2/' -xvz
+
+# With cargo-binstall
+cargo binstall odoo-lsp
+
+# Install from source
+cargo install odoo-lsp
+```
 
 ## Setup
 
@@ -30,8 +39,8 @@ For usage instructions please check the [wiki] (work in progress).
 
 ### VSCode
 
-odoo-lsp is available from the Visual Studio Marketplace and the Open VSX Registry.
-Alternatively, you can grab the latest nightly builds from [Releases].
+odoo-lsp is available from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Desdaemon.odoo-lsp) and the
+[Open VSX Registry](https://open-vsx.org/extension/Desdaemon/odoo-lsp). Alternatively, you can grab the latest nightly builds from [Releases].
 
 ### Helix
 

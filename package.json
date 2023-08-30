@@ -2,7 +2,7 @@
 	"name": "odoo-lsp",
 	"description": "Language server for Odoo Python/JS/XML",
 	"license": "MIT",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"categories": [
 		"Programming Languages"
 	],
@@ -61,8 +61,17 @@
 					"items": {
 						"type": "string"
 					},
-					"description": "List of module roots similar to `--addons-path`, either absolute or relative to the workspace root. Overrides any configuration files if exists. Accepts globs.",
+					"markdownDescription": "List of module roots similar to `--addons-path`, either absolute or relative to the workspace root. Overrides any configuration files if exists. Accepts globs.",
 					"default": []
+				},
+				"odoo-lsp.binary.preferNightly": {
+					"type": "boolean",
+					"default": true,
+					"description": "Prefer nightly versions of odoo-lsp binaries. Set to false if you encounter any bugs with nightly binaries."
+				},
+				"odoo-lsp.binary.overrideVersion": {
+					"type": "string",
+					"description": "Always download a specific version of odoo-lsp, mainly used for debugging build issues. For example, nightly versions follow the format of 'nightly-YYYYMMDD'."
 				}
 			}
 		}
@@ -76,7 +85,7 @@
 		"test-compile": "tsc -p ./",
 		"compile": "cross-env NODE_ENV=production tsc -b",
 		"watch": "rm -rf dist && tsc -b -w",
-		"lint": "prettier --write . && cargo +nightly fmt",
+		"lint": "prettier --write . && cargo fmt",
 		"pretest": "npm run compile && npm run lint",
 		"test": "node ./out/test/runTest.js",
 		"build": "webpack --config webpack.config.js",
@@ -89,7 +98,7 @@
 		"@types/glob": "^7.2.0",
 		"@types/mocha": "^8.2.3",
 		"@types/node": "^12.20.55",
-		"@types/vscode": "1.66.0",
+		"@types/vscode": "^1.66.0",
 		"@typescript-eslint/eslint-plugin": "^3.10.1",
 		"@typescript-eslint/parser": "^3.10.1",
 		"@vscode/test-electron": "^2.3.4",

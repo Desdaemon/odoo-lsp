@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "odoo-lsp"
-version = "0.1.0-dev.3"
+version = "0.1.1"
 dependencies = [
  "dashmap",
  "env_logger",

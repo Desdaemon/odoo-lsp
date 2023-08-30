@@ -19,14 +19,22 @@
 				"RUST_BACKTRACE": "1"
 			}
 		},
-		// {
-		//   "type": "node",
-		//   "request": "attach",
-		//   "name": "Attach to Server",
-		//   "port": 6009,
-		//   "restart": true,
-		//   "outFiles": ["${workspaceRoot}/server/out/**/*.js"]
-		// },
+		{
+			"type": "extensionHost",
+			"request": "launch",
+			"name": "Launch Client (Production Flow)",
+			"runtimeExecutable": "${execPath}",
+			"args": ["--extensionDevelopmentPath=${workspaceRoot}", "${workspaceRoot}/examples"],
+			"outFiles": ["${workspaceRoot}/dist/*.js"],
+			"preLaunchTask": {
+				"type": "npm",
+				"script": "watch"
+			},
+			"env": {
+				"RUST_LOG": "info",
+				"RUST_BACKTRACE": "1"
+			}
+		},
 		{
 			"name": "Language Server E2E Test",
 			"type": "extensionHost",

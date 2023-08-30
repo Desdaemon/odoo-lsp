@@ -9,8 +9,8 @@ devDependencies:
     specifier: ^17.0.45
     version: 17.0.45
   '@types/vscode':
-    specifier: ~1.65.0
-    version: 1.65.0
+    specifier: ^1.66.0
+    version: 1.66.0
   vscode-test:
     specifier: ^1.6.1
     version: 1.6.1
@@ -26,8 +26,8 @@ packages:
     resolution: {integrity: sha512-w+tIMs3rq2afQdsPJlODhoUEKzFP1ayaoyl1CcnwtIlsVe7K7bA1NGm4s3PraqTLlXnbIN84zuBlxBWo1u9BLw==}
     dev: true
 
-  /@types/vscode@1.65.0:
-    resolution: {integrity: sha512-wQhExnh2nEzpjDMSKhUvnNmz3ucpd3E+R7wJkOhBNK3No6fG3VUdmVmMOKD0A8NDZDDDiQcLNxe3oGmX5SjJ5w==}
+  /@types/vscode@1.66.0:
+    resolution: {integrity: sha512-ZfJck4M7nrGasfs4A4YbUoxis3Vu24cETw3DERsNYtDZmYSYtk6ljKexKFKhImO/ZmY6ZMsmegu2FPkXoUFImA==}
     dev: true
 
   /agent-base@6.0.2:

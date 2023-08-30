@@ -4,11 +4,11 @@
 	"license": "MIT",
 	"version": "0.0.1",
 	"engines": {
-		"vscode": "^1.65.0"
+		"vscode": "^1.66.0"
 	},
 	"devDependencies": {
 		"@types/node": "^17.0.45",
-		"@types/vscode": "~1.65.0",
+		"@types/vscode": "^1.66.0",
 		"vscode-test": "^1.6.1"
 	}
 }
