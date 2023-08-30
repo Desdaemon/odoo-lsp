@@ -355,3 +355,45 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 		models: out,
 	})
 }
+
+#[cfg(test)]
+mod tests {
+	use crate::index::model_query;
+	use pretty_assertions::assert_eq;
+	use tree_sitter::{Parser, QueryCursor};
+
+	#[test]
+	fn test_model_query() {
+		let mut parser = Parser::new();
+		parser.set_language(tree_sitter_python::language()).unwrap();
+		let contents = br#"
+class Foo(models.AbstractModel):
+	_name = 'foo'
+	_inherit = ['foo', 'bar']
+"#;
+		let ast = parser.parse(&contents[..], None).unwrap();
+		let query = model_query();
+		let mut cursor = QueryCursor::new();
+		let expected: &[&[&str]] = &[&[
+			"models",
+			"AbstractModel",
+			"_name",
+			"'foo'",
+			"_inherit",
+			"'foo'",
+			"'bar'",
+		]];
+		let actual = cursor
+			.matches(query, ast.root_node(), &contents[..])
+			.map(|match_| {
+				match_
+					.captures
+					.into_iter()
+					.skip(1)
+					.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
+					.collect::<Vec<_>>()
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(expected, actual);
+	}
+}
