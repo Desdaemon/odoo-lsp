@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::path::Path;
 
-use lasso::{Key, Spur, ThreadedRodeo};
+use lasso::{Spur, ThreadedRodeo};
 use log::debug;
 use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::model::{Field, FieldKind};
@@ -30,6 +30,7 @@ enum Tag {
 
 impl Backend {
 	pub async fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
+		let interner = &self.module_index.interner;
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
 			// Assume rope is up to date
@@ -40,7 +41,7 @@ impl Backend {
 		let Some(current_module) = self.module_index.module_of_path(Path::new(uri.path())) else {
 			return;
 		};
-		let current_module = ImStr::from(current_module.as_str());
+		// let current_module = ImStr::from(current_module.as_str());
 		let mut record_prefix = self.module_index.records.by_prefix.write().await;
 		let path_uri = ImStr::from(uri.path());
 		loop {
@@ -64,7 +65,12 @@ impl Backend {
 							record_ranges.push(range);
 							self.module_index
 								.records
-								.insert(record.qualified_id().into(), record, Some(&mut record_prefix))
+								.insert(
+									interner.get_or_intern(record.qualified_id(interner)).into(),
+									record,
+									Some(&mut record_prefix),
+									interner,
+								)
 								.await;
 						}
 						"template" => {
@@ -83,7 +89,12 @@ impl Backend {
 							record_ranges.push(range);
 							self.module_index
 								.records
-								.insert(template.qualified_id().into(), template, Some(&mut record_prefix))
+								.insert(
+									interner.get_or_intern(template.qualified_id(interner)).into(),
+									template,
+									Some(&mut record_prefix),
+									interner,
+								)
 								.await;
 						}
 						_ => {}
@@ -174,7 +185,7 @@ impl Backend {
 				let Some(Field {
 					kind: FieldKind::Relational(relation),
 					..
-				}) = fields.get(relation.into_usize() as u64)
+				}) = fields.get(&relation.into())
 				else {
 					return Ok(None);
 				};
@@ -182,8 +193,8 @@ impl Backend {
 					needle,
 					replace_range,
 					rope.clone(),
-					Some(self.module_index.interner.resolve(relation)),
-					&current_module,
+					Some(self.module_index.interner.resolve(&relation)),
+					*current_module,
 					&mut items,
 				)
 				.await?
@@ -238,8 +249,7 @@ impl Backend {
 		};
 		let current_module = self
 			.module_index
-			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
-			.map(|ref_| ref_.to_string());
+			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
 		match ref_ {
 			Some(RefKind::Model) => self.model_references(&cursor_value),
 			Some(RefKind::Ref(_)) | Some(RefKind::Id) => {

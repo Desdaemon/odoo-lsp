@@ -3,7 +3,6 @@ use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
-use intmap::IntMap;
 use lasso::Spur;
 use miette::{diagnostic, IntoDiagnostic};
 use qp_trie::{wrapper::BString, Trie};
@@ -11,6 +10,7 @@ use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
 use tree_sitter::{Parser, Query, QueryCursor};
 
+use crate::index::SymbolMap;
 use crate::str::Text;
 use crate::utils::{ByteOffset, Erase, MinLoc};
 use crate::ImStr;
@@ -28,19 +28,22 @@ pub enum ModelId {
 	Inherit(Vec<ImStr>),
 }
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct ModelIndex {
 	inner: DashMap<ImStr, ModelEntry>,
 	pub by_prefix: Arc<RwLock<Trie<BString, ImStr>>>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct ModelEntry {
 	pub base: Option<ModelLocation>,
 	pub descendants: Vec<ModelLocation>,
-	pub fields: Option<IntMap<Field>>,
+	pub fields: Option<SymbolMap<FieldName, Field>>,
 	pub docstring: Option<Text>,
 }
+
+#[derive(Clone)]
+pub enum FieldName {}
 
 #[derive(Clone, Debug)]
 pub enum FieldKind {

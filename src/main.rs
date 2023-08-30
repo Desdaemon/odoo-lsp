@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
 use globwalk::FileType;
-use lasso::{Key, Spur};
+use lasso::{Key, Spur, ThreadedRodeo};
 use log::{debug, error, info};
 use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::record::Record;
@@ -21,13 +21,12 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
-use odoo_lsp::index::ModuleIndex;
+use odoo_lsp::index::{ModuleIndex, ModuleName, RecordId};
 use odoo_lsp::model::{FieldKind, ModelLocation};
 use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{format_loc, unwrap_or_none, utils::*};
 
 mod catch_panic;
-// mod partial;
 mod python;
 mod xml;
 
@@ -486,7 +485,7 @@ impl LanguageServer for Backend {
 					let Some(field) = self.module_index.interner.get(&completion.label) else {
 						break 'resolve;
 					};
-					if let Some(field) = fields.get(field.into_usize() as u64) {
+					if let Some(field) = fields.get(&field.into()) {
 						let type_ = self.module_index.interner.resolve(&field.type_);
 						completion.detail = match field.kind {
 							FieldKind::Value => Some(format!("{type_}(…)")),
@@ -525,7 +524,6 @@ impl LanguageServer for Backend {
 		}
 	}
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
-		self.module_index.mark_n_sweep();
 		for added in params.event.added {
 			let file_path = added.uri.to_file_path().expect("not a file path");
 			let file_path = file_path.as_os_str().to_string_lossy();
@@ -537,6 +535,7 @@ impl LanguageServer for Backend {
 		for removed in params.event.removed {
 			self.module_index.remove_root(removed.uri.path());
 		}
+		self.module_index.mark_n_sweep();
 	}
 	async fn execute_command(&self, _: ExecuteCommandParams) -> Result<Option<Value>> {
 		Ok(None)
@@ -560,9 +559,9 @@ impl LanguageServer for Backend {
 			})
 		});
 		let limit = self.symbols_limit.load(Relaxed);
-		fn to_symbol_information(record: &odoo_lsp::record::Record) -> SymbolInformation {
+		fn to_symbol_information(record: &odoo_lsp::record::Record, interner: &ThreadedRodeo) -> SymbolInformation {
 			SymbolInformation {
-				name: record.qualified_id(),
+				name: record.qualified_id(interner),
 				kind: SymbolKind::VARIABLE,
 				tags: None,
 				deprecated: None,
@@ -570,25 +569,26 @@ impl LanguageServer for Backend {
 				container_name: None,
 			}
 		}
+		let interner = &self.module_index.interner;
 		if let Some((module, xml_id_query)) = query.split_once('.') {
+			let module = unwrap_or_none!(interner.get(&module)).into();
 			let records = records_by_prefix
 				.iter_prefix(xml_id_query.as_bytes())
 				.flat_map(|(_, keys)| {
-					keys.iter().flat_map(|key| {
-						self.module_index
-							.records
-							.get(key.as_str())
-							.and_then(|record| (record.module == module).then(|| to_symbol_information(&record)))
+					keys.keys().flat_map(|key| {
+						self.module_index.records.get(&key).and_then(|record| {
+							(record.module == module).then(|| to_symbol_information(&record, &interner))
+						})
 					})
 				});
 			Ok(Some(models.chain(records).take(limit).collect()))
 		} else {
 			let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, keys)| {
-				keys.iter().flat_map(|key| {
+				keys.keys().flat_map(|key| {
 					self.module_index
 						.records
-						.get(key.as_str())
-						.map(|record| to_symbol_information(&record))
+						.get(&key)
+						.map(|record| to_symbol_information(&record, interner))
 				})
 			});
 			Ok(Some(models.chain(records).take(limit).collect()))
@@ -706,16 +706,22 @@ impl Backend {
 		range: std::ops::Range<CharOffset>,
 		rope: Rope,
 		model_filter: Option<&str>,
-		current_module: &str,
+		current_module: ModuleName,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_xml_id) range"))?;
 		let by_prefix = self.module_index.records.by_prefix.read().await;
-		fn to_completion_items(entry: &Record, current_module: &str, range: Range, scoped: bool) -> CompletionItem {
+		fn to_completion_items(
+			entry: &Record,
+			current_module: ModuleName,
+			range: Range,
+			scoped: bool,
+			interner: &ThreadedRodeo,
+		) -> CompletionItem {
 			let label = if entry.module == current_module && !scoped {
 				entry.id.to_string()
 			} else {
-				entry.qualified_id()
+				entry.qualified_id(interner)
 			};
 			CompletionItem {
 				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
@@ -728,22 +734,26 @@ impl Backend {
 				..Default::default()
 			}
 		}
+		let interner = &self.module_index.interner;
 		if let Some((module, needle)) = needle.split_once('.') {
+			let Some(module) = interner.get(module).map(Into::into) else {
+				return Ok(());
+			};
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
-				keys.iter().flat_map(|key| {
-					self.module_index.records.get(key.as_str()).and_then(|entry| {
+				keys.keys().flat_map(|key| {
+					self.module_index.records.get(&key).and_then(|entry| {
 						(entry.module == module && (model_filter.is_none() || entry.model.as_deref() == model_filter))
-							.then(|| to_completion_items(&entry, current_module, range, true))
+							.then(|| to_completion_items(&entry, current_module, range, true, interner))
 					})
 				})
 			});
 			items.extend(completions.take(Self::LIMIT));
 		} else {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
-				keys.iter().flat_map(|key| {
-					self.module_index.records.get(key.as_str()).and_then(|entry| {
+				keys.keys().flat_map(|key| {
+					self.module_index.records.get(&key).and_then(|entry| {
 						(model_filter.is_none() || entry.model.as_deref() == model_filter)
-							.then(|| to_completion_items(&entry, current_module, range, false))
+							.then(|| to_completion_items(&entry, current_module, range, false, interner))
 					})
 				})
 			});
@@ -816,10 +826,10 @@ impl Backend {
 	fn jump_def_inherit_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
 		let mut value = Cow::from(cursor_value);
 		if !value.contains('.') {
-			'unqualified: {
+			'unscoped: {
 				if let Some(module) = self.module_index.module_of_path(Path::new(uri.path())) {
-					value = format!("{}.{value}", module.key()).into();
-					break 'unqualified;
+					value = format!("{}.{value}", self.module_index.interner.resolve(module.key())).into();
+					break 'unscoped;
 				}
 				debug!(
 					"Could not find a reference for {} in {}: could not infer module",
@@ -829,7 +839,8 @@ impl Backend {
 				return Ok(None);
 			}
 		}
-		return Ok((self.module_index.records.get(value.as_ref())).map(|entry| entry.location.clone().into()));
+		let record_id = unwrap_or_none!(self.module_index.interner.get(value));
+		return Ok((self.module_index.records.get(&record_id.into())).map(|entry| entry.location.clone().into()));
 	}
 	fn jump_def_model(&self, model: &str) -> miette::Result<Option<Location>> {
 		match self
@@ -846,7 +857,7 @@ impl Backend {
 		let mut entry = unwrap_or_none!(self.module_index.models.get_mut(model));
 		let field = unwrap_or_none!(self.module_index.interner.get(field));
 		let fields = self.populate_field_names(&mut entry).await?;
-		let field = unwrap_or_none!(fields.get(field.into_usize() as u64));
+		let field = unwrap_or_none!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
 	}
 	fn model_references(&self, model: &str) -> miette::Result<Option<Vec<Location>>> {
@@ -866,16 +877,18 @@ impl Backend {
 	fn record_references(
 		&self,
 		inherit_id: &str,
-		current_module: Option<&str>,
+		current_module: Option<&ModuleName>,
 	) -> miette::Result<Option<Vec<Location>>> {
+		let interner = &self.module_index.interner;
 		let inherit_id = if inherit_id.contains('.') {
 			Cow::from(inherit_id)
 		} else if let Some(current_module) = current_module {
-			Cow::from(format!("{}.{}", current_module, inherit_id))
+			Cow::from(format!("{}.{}", interner.resolve(current_module), inherit_id))
 		} else {
 			debug!("No current module to resolve the XML ID {inherit_id}");
 			return Ok(None);
 		};
+		let inherit_id = RecordId::from(unwrap_or_none!(interner.get(inherit_id)));
 		let limit = self.references_limit.load(Relaxed);
 		let locations = self
 			.module_index

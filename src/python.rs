@@ -4,16 +4,16 @@ use std::borrow::Cow;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use intmap::IntMap;
 use lasso::Key;
 use log::{debug, error};
 use miette::{diagnostic, Context, IntoDiagnostic};
+use odoo_lsp::index::SymbolMap;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
 
 use odoo_lsp::format_loc;
-use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation};
+use odoo_lsp::model::{Field, FieldKind, FieldName, ModelEntry, ModelLocation};
 use odoo_lsp::utils::*;
 
 fn py_completions() -> &'static Query {
@@ -137,7 +137,7 @@ impl Backend {
 						let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 						// remove the quotes
 						let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-						self.complete_xml_id(&needle, range, rope.clone(), model_filter, &current_module, &mut items)
+						self.complete_xml_id(&needle, range, rope.clone(), model_filter, *current_module, &mut items)
 							.await?;
 						return Ok(Some(CompletionResponse::List(CompletionList {
 							is_incomplete: items.len() >= Self::LIMIT,
@@ -231,8 +231,7 @@ impl Backend {
 		cursor.set_byte_range(range);
 		let current_module = self
 			.module_index
-			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
-			.map(|ref_| ref_.to_string());
+			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			for capture in match_.captures {
 				if capture.index == 2 {
@@ -267,11 +266,11 @@ impl Backend {
 	pub async fn populate_field_names<'model>(
 		&self,
 		entry: &'model mut ModelEntry,
-	) -> miette::Result<&'model mut IntMap<Field>> {
+	) -> miette::Result<&'model mut SymbolMap<FieldName, Field>> {
 		if entry.fields.is_some() {
 			return Ok(entry.fields.as_mut().unwrap());
 		}
-		let mut out = IntMap::new();
+		let mut out = SymbolMap::default();
 		let locations = entry.base.iter().chain(entry.descendants.iter());
 		let query = model_fields();
 		let mut tasks = tokio::task::JoinSet::<miette::Result<Vec<_>>>::new();

@@ -1,10 +1,13 @@
+use std::hash::Hash;
+use std::marker::PhantomData;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use dashmap::DashSet;
 use globwalk::FileType;
-use lasso::ThreadedRodeo;
+use lasso::{Spur, ThreadedRodeo};
 use log::{debug, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
@@ -19,14 +22,69 @@ use crate::utils::{offset_range_to_lsp_range, ByteOffset, CharOffset, RangeExt};
 use crate::{format_loc, ImStr};
 
 mod record;
+pub use record::{RecordId, SymbolMap, SymbolSet};
 
 #[derive(Default)]
 pub struct ModuleIndex {
 	pub roots: DashSet<ImStr>,
-	pub modules: DashSet<ImStr>,
+	pub modules: DashSet<ModuleName>,
 	pub records: record::RecordIndex,
 	pub models: ModelIndex,
 	pub interner: Arc<ThreadedRodeo>,
+}
+
+/// Type-safe wrapper around [Spur].
+#[derive(Debug)]
+pub struct Symbol<T> {
+	inner: Spur,
+	_kind: PhantomData<T>,
+}
+
+pub type ModuleName = Symbol<Module>;
+#[derive(Debug)]
+pub enum Module {}
+
+impl<T> From<Spur> for Symbol<T> {
+	#[inline]
+	fn from(inner: Spur) -> Self {
+		Symbol {
+			inner,
+			_kind: PhantomData,
+		}
+	}
+}
+
+impl<T> Clone for Symbol<T> {
+	#[inline]
+	fn clone(&self) -> Self {
+		Symbol {
+			inner: self.inner.clone(),
+			_kind: PhantomData,
+		}
+	}
+}
+
+impl<T> Copy for Symbol<T> {}
+impl<T> Eq for Symbol<T> {}
+impl<T> PartialEq for Symbol<T> {
+	#[inline]
+	fn eq(&self, other: &Self) -> bool {
+		self.inner.eq(&other.inner)
+	}
+}
+
+impl<T> Hash for Symbol<T> {
+	#[inline]
+	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+		self.inner.hash(state)
+	}
+}
+
+impl<T> Deref for Symbol<T> {
+	type Target = Spur;
+	fn deref(&self) -> &Self::Target {
+		&self.inner
+	}
 }
 
 enum Output {
@@ -84,8 +142,8 @@ impl ModuleIndex {
 					})
 					.await;
 			}
-			let module_name = ImStr::from(module_name);
-			if !self.modules.insert(module_name.clone()) {
+			let module_key = self.interner.get_or_intern(&module_name);
+			if !self.modules.insert(module_key.into()) {
 				debug!("duplicate module {module_name}");
 				continue;
 			}
@@ -103,8 +161,7 @@ impl ModuleIndex {
 						continue;
 					}
 				};
-				let module_name = module_name.clone();
-				outputs.spawn(add_root_xml(xml.path().to_path_buf(), module_name));
+				outputs.spawn(add_root_xml(xml.path().to_path_buf(), module_key.into()));
 			}
 			let pys = globwalk::glob_builder(format!("{}/**/*.py", module_dir.display()))
 				.file_type(FileType::FILE | FileType::SYMLINK)
@@ -121,7 +178,7 @@ impl ModuleIndex {
 					}
 				};
 				let path = py.path().to_path_buf();
-				outputs.spawn(add_root_py(path, self.interner.clone()));
+				outputs.spawn(add_root_py(path));
 			}
 		}
 
@@ -143,7 +200,9 @@ impl ModuleIndex {
 				Output::Records(records) => {
 					record_count += records.len();
 					let mut prefix = self.records.by_prefix.write().await;
-					self.records.extend_records(Some(&mut prefix), records).await;
+					self.records
+						.extend_records(Some(&mut prefix), records, &self.interner)
+						.await;
 				}
 				Output::Models { path, models } => {
 					model_count += models.len();
@@ -161,16 +220,22 @@ impl ModuleIndex {
 	pub fn remove_root(&self, root: &str) {
 		self.roots.remove(root);
 		for mut entry in self.records.iter_mut() {
-			if root.contains(entry.module.as_str()) {
+			let module = self.interner.resolve(&entry.module);
+			if root.contains(module) {
 				entry.deleted = true;
 			}
 		}
 	}
-	pub fn module_of_path(&self, path: &Path) -> Option<dashmap::setref::one::Ref<ImStr>> {
+	pub fn module_of_path(&self, path: &Path) -> Option<dashmap::setref::one::Ref<ModuleName>> {
 		let mut path = Some(path);
 		while let Some(path_) = &path {
-			if let Some(module) = self.modules.get(path_.file_name()?.to_string_lossy().as_ref()) {
-				return Some(module);
+			let module = path_.file_name()?.to_string_lossy();
+			// By this point, if this module hadn't been interned,
+			// it certainly is not a valid module name.
+			if let Some(module) = self.interner.get(module.as_ref()) {
+				if let Some(name) = self.modules.get(&ModuleName::from(module)) {
+					return Some(name);
+				}
 			}
 			path = path_.parent();
 		}
@@ -178,7 +243,7 @@ impl ModuleIndex {
 	}
 }
 
-async fn add_root_xml(path: PathBuf, module_name: ImStr) -> miette::Result<Output> {
+async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<Output> {
 	let path_uri = ImStr::from(path.to_string_lossy().as_ref());
 	let file = tokio::fs::read(&path)
 		.await
@@ -194,7 +259,7 @@ async fn add_root_xml(path: PathBuf, module_name: ImStr) -> miette::Result<Outpu
 				if local.as_str() == "record" {
 					let record = Record::from_reader(
 						CharOffset(span.start()),
-						module_name.clone(),
+						module_name,
 						path_uri.clone(),
 						&mut reader,
 						rope.clone(),
@@ -203,7 +268,7 @@ async fn add_root_xml(path: PathBuf, module_name: ImStr) -> miette::Result<Outpu
 				} else if local.as_str() == "template" {
 					let template = Record::template(
 						CharOffset(span.start()),
-						module_name.clone(),
+						module_name,
 						path_uri.clone(),
 						&mut reader,
 						rope.clone(),
@@ -231,7 +296,7 @@ fn model_query() -> &'static Query {
 	})
 }
 
-async fn add_root_py(path: PathBuf, _: Arc<ThreadedRodeo>) -> miette::Result<Output> {
+async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 	let contents = tokio::fs::read(&path)
 		.await
 		.into_diagnostic()

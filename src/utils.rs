@@ -1,9 +1,7 @@
 use std::fmt::Display;
 use std::ops::{Add, Sub};
 
-use dashmap::DashSet;
 use log::warn;
-use qp_trie::wrapper::BString;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token};
@@ -11,8 +9,6 @@ use xmlparser::{StrSpan, Token};
 use crate::ImStr;
 
 pub mod isolate;
-
-pub type PrefixTrie = qp_trie::Trie<BString, DashSet<ImStr>>;
 
 /// A more economical version of [Location].
 #[derive(Clone, Debug)]

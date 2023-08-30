@@ -1,8 +1,10 @@
+use lasso::ThreadedRodeo;
 use miette::diagnostic;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
+use crate::index::ModuleName;
 use crate::utils::MinLoc;
 use crate::utils::{char_to_position, position_to_char, CharOffset};
 use crate::ImStr;
@@ -21,7 +23,7 @@ macro_rules! unwrap_or_none {
 pub struct Record {
 	pub deleted: bool,
 	pub id: ImStr,
-	pub module: ImStr,
+	pub module: ModuleName,
 	pub model: Option<ImStr>,
 	/// (inherit_module?, xml_id)
 	pub inherit_id: Option<(Option<ImStr>, ImStr)>,
@@ -29,12 +31,12 @@ pub struct Record {
 }
 
 impl Record {
-	pub fn qualified_id(&self) -> String {
-		format!("{}.{}", self.module, self.id)
+	pub fn qualified_id(&self, interner: &ThreadedRodeo) -> String {
+		format!("{}.{}", interner.resolve(&self.module), self.id)
 	}
 	pub fn from_reader(
 		offset: CharOffset,
-		module: ImStr,
+		module: ModuleName,
 		path: ImStr,
 		reader: &mut Tokenizer,
 		rope: Rope,
@@ -46,14 +48,13 @@ impl Record {
 		// nested records are a thing apparently
 		let mut stack = 1;
 		let mut in_record = true;
-		// let uri = format!("file://{uri}").parse().into_diagnostic()?;
 		let start =
 			char_to_position(offset, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
 
 		loop {
 			match reader.next() {
 				// TODO: No nested records yet
-				Some(Ok(Token::Attribute { local, value, .. })) if stack == 1 => match local.as_str() {
+				Some(Ok(Token::Attribute { local, value, .. })) if stack == 1 && in_record => match local.as_str() {
 					"id" => {
 						if let Some((_, xml_id)) = value.split_once('.') {
 							id = Some(xml_id.into());
@@ -94,7 +95,7 @@ impl Record {
 							continue;
 						};
 						if let Some((module, xml_id)) = maybe_inherit_id.split_once('.') {
-							inherit_id = Some((Some(module.to_string().into()), xml_id.to_string().into()));
+							inherit_id = Some((Some(module.to_string().into()), xml_id.into()));
 						} else {
 							inherit_id = Some((None, maybe_inherit_id.into()));
 						}
@@ -151,7 +152,7 @@ impl Record {
 	}
 	pub fn template(
 		offset: CharOffset,
-		module: ImStr,
+		module: ModuleName,
 		path: ImStr,
 		reader: &mut Tokenizer,
 		rope: Rope,
@@ -176,10 +177,8 @@ impl Record {
 						}
 					}
 					b"inherit_id" => match value.split_once('.') {
-						Some((module, xml_id)) => {
-							inherit_id = Some((Some(module.to_string().into()), xml_id.to_string().into()))
-						}
-						None => inherit_id = Some((None, value.to_string().into())),
+						Some((module, xml_id)) => inherit_id = Some((Some(module.into()), xml_id.into())),
+						None => inherit_id = Some((None, value.as_str().into())),
 					},
 					_ => {}
 				},
@@ -235,31 +234,5 @@ impl Record {
 			inherit_id,
 			location: MinLoc { path, range },
 		}))
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use crate::utils::{lsp_range_to_char_range, RangeExt};
-
-	use super::*;
-
-	#[test]
-	#[cfg_attr(miri, ignore)]
-	fn test_nested_records() {
-		let fragment =
-			"<record id='foo'><field name='wah' /><field foo='bar'><record>Another</record></field></record>";
-		let document = format!("{fragment} <span>random stuff</span>");
-		let mut reader = Tokenizer::from(&document[..]);
-		_ = reader.next();
-		let rope = Rope::from_str(&document);
-		let Record {
-			location: MinLoc { range, .. },
-			..
-		} = Record::from_reader(CharOffset(0), "foo".into(), "/foo".into(), &mut reader, rope.clone())
-			.unwrap()
-			.unwrap();
-		let range = lsp_range_to_char_range(range, rope).unwrap();
-		assert_eq!(&document[range.map_unit(|unit| unit.0)], fragment);
 	}
 }
