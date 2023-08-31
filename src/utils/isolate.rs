@@ -43,6 +43,13 @@ impl Isolate {
 	}
 }
 
+impl Default for Isolate {
+	#[inline]
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::Isolate;

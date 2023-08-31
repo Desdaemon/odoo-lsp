@@ -74,13 +74,9 @@ impl Backend {
 								.await;
 						}
 						"template" => {
-							let Ok(Some(template)) = Record::template(
-								offset,
-								*current_module,
-								path_uri.clone(),
-								&mut reader,
-								rope.clone(),
-							) else {
+							let Ok(Some(template)) =
+								Record::template(offset, *current_module, path_uri.clone(), &mut reader, rope.clone())
+							else {
 								continue;
 							};
 							let Some(range) = lsp_range_to_char_range(template.location.range, rope.clone()) else {
@@ -168,7 +164,12 @@ impl Backend {
 			.expect("must be in a module");
 
 		let mut items = vec![];
-		let (_, cursor_value, ref_kind, model_filter) = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
+		let XmlRefs {
+			cursor_value,
+			ref_kind,
+			model_filter,
+			..
+		} = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
 		let (Some(value), Some(record_field)) = (cursor_value, ref_kind) else {
 			return Ok(None);
 		};
@@ -220,16 +221,21 @@ impl Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
-		let (_, cursor_value, ref_, model) = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
+		let XmlRefs {
+			cursor_value,
+			ref_kind,
+			model_filter,
+			..
+		} = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
 		};
-		match ref_ {
+		match ref_kind {
 			Some(RefKind::Ref(_)) => self.jump_def_inherit_id(&cursor_value, uri),
 			Some(RefKind::Model) => self.jump_def_model(&cursor_value),
 			Some(RefKind::FieldName) => {
-				let model = some!(model);
+				let model = some!(model_filter);
 				self.jump_def_field_name(&cursor_value, &model).await
 			}
 			Some(RefKind::Id) | None => Ok(None),
@@ -240,7 +246,9 @@ impl Backend {
 		let uri = &params.text_document_position.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
-		let (_, cursor_value, ref_, _) = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
+		let XmlRefs {
+			cursor_value, ref_kind, ..
+		} = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -248,7 +256,7 @@ impl Backend {
 		let current_module = self
 			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
-		match ref_ {
+		match ref_kind {
 			Some(RefKind::Model) => self.model_references(&cursor_value),
 			Some(RefKind::Ref(_)) | Some(RefKind::Id) => {
 				self.record_references(&cursor_value, current_module.as_deref())
@@ -258,11 +266,17 @@ impl Backend {
 	}
 }
 
+struct XmlRefs<'a> {
+	cursor_value: Option<StrSpan<'a>>,
+	ref_kind: Option<RefKind>,
+	model_filter: Option<String>,
+}
+
 fn gather_refs<'read>(
 	cursor_by_char: usize,
 	reader: &mut Tokenizer<'read>,
 	interner: &ThreadedRodeo,
-) -> miette::Result<(Option<Tag>, Option<StrSpan<'read>>, Option<RefKind>, Option<String>)> {
+) -> miette::Result<XmlRefs<'read>> {
 	let mut tag = None;
 	let mut cursor_value = None;
 	let mut ref_kind = None;
@@ -326,5 +340,9 @@ fn gather_refs<'read>(
 			}
 		}
 	}
-	Ok((tag, cursor_value, ref_kind, model_filter))
+	Ok(XmlRefs {
+		cursor_value,
+		ref_kind,
+		model_filter,
+	})
 }

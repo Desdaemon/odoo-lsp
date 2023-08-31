@@ -23,10 +23,7 @@ impl<T> From<Spur> for Symbol<T> {
 impl<T> Clone for Symbol<T> {
 	#[inline]
 	fn clone(&self) -> Self {
-		Symbol {
-			inner: self.inner,
-			_kind: PhantomData,
-		}
+		*self
 	}
 }
 

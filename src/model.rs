@@ -151,7 +151,7 @@ impl ModelEntry {
 			let mut cursor = QueryCursor::new();
 			cursor.set_byte_range(byte_range.erase());
 			'docstring: for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
-				for docstring in match_.nodes_for_capture_index(0) {
+				if let Some(docstring) = match_.nodes_for_capture_index(0).next() {
 					let contents = String::from_utf8_lossy(&contents[docstring.byte_range()]);
 					self.docstring = Some(Text::try_from(contents.trim()).into_diagnostic()?);
 					break 'docstring;
