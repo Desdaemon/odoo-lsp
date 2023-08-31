@@ -9,8 +9,9 @@ on:
       prerelease:
         type: boolean
         default: true
+        description: 'Is this a prerelease?'
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "0 0 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -166,4 +167,4 @@ jobs:
           tag_name: ${{ env.TAG }}
           generate_release_notes: true
           # https://medium.com/@sohail.ra5/github-actions-passing-boolean-input-variables-to-reusable-workflow-call-42d39bf7342e
-          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          prerelease: ${{ inputs.prerelease == 'true' }}
