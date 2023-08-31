@@ -71,7 +71,7 @@ fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
 					content.extend(children);
 				}
 			}
-			Cow::from(content.join(""))
+			Cow::from(content.join(" "))
 		}
 		_ => unreachable!(),
 	}

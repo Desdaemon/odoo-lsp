@@ -500,9 +500,20 @@ impl LanguageServer for Backend {
 								Some(format!("{type_}(\"{relation}\", …)"))
 							}
 						};
-						if let Some(help) = &field.help {
-							completion.documentation = Some(Documentation::String(help.to_string().into_owned()));
-						}
+						let module = self
+							.module_index
+							.module_of_path(Path::new(field.location.path.as_str()))
+							.unwrap();
+						let module = self.module_index.interner.resolve(&module);
+						let text = if let Some(help) = &field.help {
+							format!("*Defined in:* `{module}`\n\n{}", help.to_string())
+						} else {
+							format!("*Defined in:* `{module}`")
+						};
+						completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
+							kind: MarkupKind::Markdown,
+							value: text,
+						}));
 					}
 				}
 				_ => {}
