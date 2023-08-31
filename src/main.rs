@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
 use globwalk::FileType;
-use lasso::{Key, Spur, ThreadedRodeo};
+use lasso::{Key, Spur};
 use log::{debug, error, info};
 use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::record::Record;
@@ -21,7 +21,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
-use odoo_lsp::index::{ModuleIndex, ModuleName, RecordId};
+use odoo_lsp::index::{Index, Interner, ModuleName, RecordId};
 use odoo_lsp::model::{FieldKind, ModelLocation};
 use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{format_loc, some, utils::*};
@@ -35,7 +35,7 @@ pub struct Backend {
 	document_map: DashMap<String, Rope>,
 	record_ranges: DashMap<String, Box<[std::ops::Range<CharOffset>]>>,
 	ast_map: DashMap<String, Tree>,
-	module_index: ModuleIndex,
+	index: Index,
 	roots: DashSet<String>,
 	capabilities: Capabilities,
 	root_setup: AtomicBool,
@@ -135,7 +135,7 @@ impl LanguageServer for Backend {
 			record_ranges,
 			ast_map,
 			client: _,
-			module_index: _,
+			index: _,
 			roots: _,
 			capabilities: _,
 			root_setup: _,
@@ -176,7 +176,7 @@ impl LanguageServer for Backend {
 		}
 
 		for root in self.roots.iter() {
-			match self.module_index.add_root(root.as_str(), progress.clone()).await {
+			match self.index.add_root(root.as_str(), progress.clone()).await {
 				Ok(Some(results)) => {
 					info!(
 						"{} | {} modules | {} records | {} models | {:.2}s",
@@ -233,7 +233,7 @@ impl LanguageServer for Backend {
 			.insert(params.text_document.uri.path().to_string(), rope.clone());
 
 		if self
-			.module_index
+			.index
 			.module_of_path(Path::new(params.text_document.uri.path()))
 			.is_none()
 		{
@@ -250,7 +250,7 @@ impl LanguageServer for Backend {
 						.unwrap_or(false)
 					{
 						let file_path = path_.parent().expect("has parent").to_string_lossy();
-						self.module_index
+						self.index
 							.add_root(&file_path, None)
 							.await
 							.report(|| format_loc!("failed to add root {}", file_path));
@@ -459,10 +459,10 @@ impl LanguageServer for Backend {
 		'resolve: {
 			match &completion.kind {
 				Some(CompletionItemKind::CLASS) => {
-					let Some(model) = self.module_index.interner.get(&completion.label) else {
+					let Some(model) = self.index.interner.get(&completion.label) else {
 						break 'resolve;
 					};
-					let Some(mut entry) = self.module_index.models.get_mut(&model.into()) else {
+					let Some(mut entry) = self.index.models.get_mut(&model.into()) else {
 						break 'resolve;
 					};
 					if let Err(err) = entry.resolve_details().await {
@@ -478,33 +478,30 @@ impl LanguageServer for Backend {
 					let Some(Value::String(value)) = &completion.data else {
 						break 'resolve;
 					};
-					let Some(model) = self.module_index.interner.get(&value) else {
+					let Some(field) = self.index.interner.get(&completion.label) else {
 						break 'resolve;
 					};
-					let Some(mut entry) = self.module_index.models.get_mut(&model.into()) else {
+					let Some(model) = self.index.interner.get(value) else {
 						break 'resolve;
 					};
-					if let Err(err) = entry.resolve_details().await {
-						dbg!(err);
-					}
+					let Some(entry) = self.index.models.get(&model.into()) else {
+						break 'resolve;
+					};
 					let Some(fields) = &entry.fields else { break 'resolve };
-					let Some(field) = self.module_index.interner.get(&completion.label) else {
-						break 'resolve;
-					};
 					if let Some(field) = fields.get(&field.into()) {
-						let type_ = self.module_index.interner.resolve(&field.type_);
+						let type_ = self.index.interner.resolve(&field.type_);
 						completion.detail = match field.kind {
 							FieldKind::Value => Some(format!("{type_}(…)")),
 							FieldKind::Relational(relation) => {
-								let relation = self.module_index.interner.resolve(&relation);
+								let relation = self.index.interner.resolve(&relation);
 								Some(format!("{type_}(\"{relation}\", …)"))
 							}
 						};
 						let module = self
-							.module_index
+							.index
 							.module_of_path(Path::new(field.location.path.as_str()))
 							.unwrap();
-						let module = self.module_index.interner.resolve(&module);
+						let module = self.index.interner.resolve(&module);
 						let text = if let Some(help) = &field.help {
 							format!("*Defined in:* `{module}`\n\n{}", help.to_string())
 						} else {
@@ -544,15 +541,15 @@ impl LanguageServer for Backend {
 		for added in params.event.added {
 			let file_path = added.uri.to_file_path().expect("not a file path");
 			let file_path = file_path.as_os_str().to_string_lossy();
-			self.module_index
+			self.index
 				.add_root(&file_path, None)
 				.await
 				.report(|| format_loc!("(did_change_workspace_folders) failed to add root {}", file_path));
 		}
 		for removed in params.event.removed {
-			self.module_index.remove_root(removed.uri.path());
+			self.index.remove_root(removed.uri.path());
 		}
-		self.module_index.mark_n_sweep();
+		self.index.mark_n_sweep();
 	}
 	async fn execute_command(&self, _: ExecuteCommandParams) -> Result<Option<Value>> {
 		Ok(None)
@@ -561,12 +558,12 @@ impl LanguageServer for Backend {
 	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
 		let query = &params.query;
 
-		let models_by_prefix = self.module_index.models.by_prefix.read().await;
-		let records_by_prefix = self.module_index.records.by_prefix.read().await;
+		let models_by_prefix = self.index.models.by_prefix.read().await;
+		let records_by_prefix = self.index.records.by_prefix.read().await;
 		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
-			self.module_index.models.get(key).into_iter().flat_map(|entry| {
+			self.index.models.get(key).into_iter().flat_map(|entry| {
 				entry.base.as_ref().map(|loc| SymbolInformation {
-					name: self.module_index.interner.resolve(entry.key()).to_string(),
+					name: self.index.interner.resolve(entry.key()).to_string(),
 					kind: SymbolKind::CONSTANT,
 					tags: None,
 					deprecated: None,
@@ -576,7 +573,7 @@ impl LanguageServer for Backend {
 			})
 		});
 		let limit = self.symbols_limit.load(Relaxed);
-		fn to_symbol_information(record: &odoo_lsp::record::Record, interner: &ThreadedRodeo) -> SymbolInformation {
+		fn to_symbol_information(record: &odoo_lsp::record::Record, interner: &Interner) -> SymbolInformation {
 			SymbolInformation {
 				name: record.qualified_id(interner),
 				kind: SymbolKind::VARIABLE,
@@ -586,15 +583,15 @@ impl LanguageServer for Backend {
 				container_name: None,
 			}
 		}
-		let interner = &self.module_index.interner;
+		let interner = &self.index.interner;
 		if let Some((module, xml_id_query)) = query.split_once('.') {
-			let module = some!(interner.get(&module)).into();
+			let module = some!(interner.get(module)).into();
 			let records = records_by_prefix
 				.iter_prefix(xml_id_query.as_bytes())
 				.flat_map(|(_, keys)| {
 					keys.keys().flat_map(|key| {
-						self.module_index.records.get(&key).and_then(|record| {
-							(record.module == module).then(|| to_symbol_information(&record, &interner))
+						self.index.records.get(&key).and_then(|record| {
+							(record.module == module).then(|| to_symbol_information(&record, interner))
 						})
 					})
 				});
@@ -602,7 +599,7 @@ impl LanguageServer for Backend {
 		} else {
 			let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, keys)| {
 				keys.keys().flat_map(|key| {
-					self.module_index
+					self.index
 						.records
 						.get(&key)
 						.map(|record| to_symbol_information(&record, interner))
@@ -727,13 +724,13 @@ impl Backend {
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_xml_id) range"))?;
-		let by_prefix = self.module_index.records.by_prefix.read().await;
+		let by_prefix = self.index.records.by_prefix.read().await;
 		fn to_completion_items(
 			entry: &Record,
 			current_module: ModuleName,
 			range: Range,
 			scoped: bool,
-			interner: &ThreadedRodeo,
+			interner: &Interner,
 		) -> CompletionItem {
 			let label = if entry.module == current_module && !scoped {
 				entry.id.to_string()
@@ -751,14 +748,14 @@ impl Backend {
 				..Default::default()
 			}
 		}
-		let interner = &self.module_index.interner;
+		let interner = &self.index.interner;
 		if let Some((module, needle)) = needle.split_once('.') {
 			let Some(module) = interner.get(module).map(Into::into) else {
 				return Ok(());
 			};
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.keys().flat_map(|key| {
-					self.module_index.records.get(&key).and_then(|entry| {
+					self.index.records.get(&key).and_then(|entry| {
 						(entry.module == module && (model_filter.is_none() || entry.model.as_deref() == model_filter))
 							.then(|| to_completion_items(&entry, current_module, range, true, interner))
 					})
@@ -768,7 +765,7 @@ impl Backend {
 		} else {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.keys().flat_map(|key| {
-					self.module_index.records.get(&key).and_then(|entry| {
+					self.index.records.get(&key).and_then(|entry| {
 						(model_filter.is_none() || entry.model.as_deref() == model_filter)
 							.then(|| to_completion_items(&entry, current_module, range, false, interner))
 					})
@@ -786,17 +783,15 @@ impl Backend {
 		rope: Rope,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
-		let Some(model_key) = self.module_index.interner.get(&model) else {
-			return Ok(());
-		};
-		let Some(mut entry) = self.module_index.models.get_mut(&model_key.into()) else {
+		let model_key = self.index.interner.get_or_intern(&model);
+		let Some(mut entry) = self.index.models.get_mut(&model_key.into()) else {
 			return Ok(());
 		};
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
 		let fields = self.populate_field_names(&mut entry).await?;
 		let completions = fields.iter().flat_map(|(key, _)| {
 			let field_name = self
-				.module_index
+				.index
 				.interner
 				.resolve(&Spur::try_from_usize(*key as usize).unwrap());
 			field_name.contains(needle).then(|| CompletionItem {
@@ -823,12 +818,12 @@ impl Backend {
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_model) range"))?;
-		let by_prefix = self.module_index.models.by_prefix.read().await;
+		let by_prefix = self.index.models.by_prefix.read().await;
 		let matches = by_prefix
 			.iter_prefix(needle.as_bytes())
-			.flat_map(|(_, key)| self.module_index.models.get(key))
+			.flat_map(|(_, key)| self.index.models.get(key))
 			.map(|entry| {
-				let label = self.module_index.interner.resolve(entry.key()).to_string();
+				let label = self.index.interner.resolve(entry.key()).to_string();
 				CompletionItem {
 					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 						new_text: label.clone(),
@@ -847,8 +842,8 @@ impl Backend {
 		let mut value = Cow::from(cursor_value);
 		if !value.contains('.') {
 			'unscoped: {
-				if let Some(module) = self.module_index.module_of_path(Path::new(uri.path())) {
-					value = format!("{}.{value}", self.module_index.interner.resolve(module.key())).into();
+				if let Some(module) = self.index.module_of_path(Path::new(uri.path())) {
+					value = format!("{}.{value}", self.index.interner.resolve(module.key())).into();
 					break 'unscoped;
 				}
 				debug!(
@@ -859,13 +854,13 @@ impl Backend {
 				return Ok(None);
 			}
 		}
-		let record_id = some!(self.module_index.interner.get(value));
-		return Ok((self.module_index.records.get(&record_id.into())).map(|entry| entry.location.clone().into()));
+		let record_id = some!(self.index.interner.get(value));
+		return Ok((self.index.records.get(&record_id.into())).map(|entry| entry.location.clone().into()));
 	}
 	fn jump_def_model(&self, model: &str) -> miette::Result<Option<Location>> {
-		let model = some!(self.module_index.interner.get(model));
+		let model = some!(self.index.interner.get(model));
 		match self
-			.module_index
+			.index
 			.models
 			.get(&model.into())
 			.and_then(|entry| entry.base.as_ref().cloned())
@@ -875,22 +870,22 @@ impl Backend {
 		}
 	}
 	async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
-		let model = self.module_index.interner.get_or_intern(model);
-		let mut entry = some!(self.module_index.models.get_mut(&model.into()));
-		let field = some!(self.module_index.interner.get(field));
+		let model = self.index.interner.get_or_intern(model);
+		let mut entry = some!(self.index.models.get_mut(&model.into()));
+		let field = some!(self.index.interner.get(field));
 		let fields = self.populate_field_names(&mut entry).await?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
 	}
 	fn model_references(&self, model: &str) -> miette::Result<Option<Vec<Location>>> {
 		let record_locations = self
-			.module_index
+			.index
 			.records
 			.by_model(model)
 			.map(|record| record.location.clone().into());
-		let model = some!(self.module_index.interner.get(model));
+		let model = some!(self.index.interner.get(model));
 		let limit = self.references_limit.load(Relaxed);
-		if let Some(entry) = self.module_index.models.get(&model.into()) {
+		if let Some(entry) = self.index.models.get(&model.into()) {
 			let inherit_locations = entry.descendants.iter().map(|loc| loc.0.clone().into());
 			Ok(Some(inherit_locations.chain(record_locations).take(limit).collect()))
 		} else {
@@ -902,7 +897,7 @@ impl Backend {
 		inherit_id: &str,
 		current_module: Option<&ModuleName>,
 	) -> miette::Result<Option<Vec<Location>>> {
-		let interner = &self.module_index.interner;
+		let interner = &self.index.interner;
 		let inherit_id = if inherit_id.contains('.') {
 			Cow::from(inherit_id)
 		} else if let Some(current_module) = current_module {
@@ -914,7 +909,7 @@ impl Backend {
 		let inherit_id = RecordId::from(some!(interner.get(inherit_id)));
 		let limit = self.references_limit.load(Relaxed);
 		let locations = self
-			.module_index
+			.index
 			.records
 			.by_inherit_id(&inherit_id)
 			.map(|record| record.location.clone().into())
@@ -964,7 +959,7 @@ async fn main() {
 
 	let (service, socket) = LspService::build(|client| Backend {
 		client,
-		module_index: Default::default(),
+		index: Default::default(),
 		document_map: DashMap::new(),
 		record_ranges: DashMap::new(),
 		roots: DashSet::new(),

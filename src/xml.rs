@@ -30,7 +30,7 @@ enum Tag {
 
 impl Backend {
 	pub async fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
-		let interner = &self.module_index.interner;
+		let interner = &self.index.interner;
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
 			// Assume rope is up to date
@@ -38,11 +38,11 @@ impl Backend {
 		};
 		let mut reader = Tokenizer::from(text.as_ref());
 		let mut record_ranges = vec![];
-		let Some(current_module) = self.module_index.module_of_path(Path::new(uri.path())) else {
+		let Some(current_module) = self.index.module_of_path(Path::new(uri.path())) else {
 			return;
 		};
 		// let current_module = ImStr::from(current_module.as_str());
-		let mut record_prefix = self.module_index.records.by_prefix.write().await;
+		let mut record_prefix = self.index.records.by_prefix.write().await;
 		let path_uri = ImStr::from(uri.path());
 		loop {
 			match reader.next() {
@@ -52,7 +52,7 @@ impl Backend {
 						"record" => {
 							let Ok(Some(record)) = Record::from_reader(
 								offset,
-								current_module.clone(),
+								*current_module,
 								path_uri.clone(),
 								&mut reader,
 								rope.clone(),
@@ -63,7 +63,7 @@ impl Backend {
 								continue;
 							};
 							record_ranges.push(range);
-							self.module_index
+							self.index
 								.records
 								.insert(
 									interner.get_or_intern(record.qualified_id(interner)).into(),
@@ -76,7 +76,7 @@ impl Backend {
 						"template" => {
 							let Ok(Some(template)) = Record::template(
 								offset,
-								current_module.clone(),
+								*current_module,
 								path_uri.clone(),
 								&mut reader,
 								rope.clone(),
@@ -87,7 +87,7 @@ impl Backend {
 								continue;
 							};
 							record_ranges.push(range);
-							self.module_index
+							self.index
 								.records
 								.insert(
 									interner.get_or_intern(template.qualified_id(interner)).into(),
@@ -163,13 +163,12 @@ impl Backend {
 		let mut reader = Tokenizer::from(&slice[..]);
 
 		let current_module = self
-			.module_index
+			.index
 			.module_of_path(Path::new(uri.path()))
 			.expect("must be in a module");
 
 		let mut items = vec![];
-		let (_, cursor_value, ref_kind, model_filter) =
-			gather_refs(cursor_by_char, &mut reader, &self.module_index.interner)?;
+		let (_, cursor_value, ref_kind, model_filter) = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
 		let (Some(value), Some(record_field)) = (cursor_value, ref_kind) else {
 			return Ok(None);
 		};
@@ -178,8 +177,8 @@ impl Backend {
 		match record_field {
 			RefKind::Ref(relation) => {
 				let model = some!(model_filter);
-				let model = some!(self.module_index.interner.get(model));
-				let mut entry = some!(self.module_index.models.get_mut(&model.into()));
+				let model = some!(self.index.interner.get(model));
+				let mut entry = some!(self.index.models.get_mut(&model.into()));
 				let fields = self.populate_field_names(&mut entry).await?;
 				let Some(Field {
 					kind: FieldKind::Relational(relation),
@@ -192,7 +191,7 @@ impl Backend {
 					needle,
 					replace_range,
 					rope.clone(),
-					Some(self.module_index.interner.resolve(&relation)),
+					Some(self.index.interner.resolve(relation)),
 					*current_module,
 					&mut items,
 				)
@@ -221,7 +220,7 @@ impl Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
-		let (_, cursor_value, ref_, model) = gather_refs(cursor_by_char, &mut reader, &self.module_index.interner)?;
+		let (_, cursor_value, ref_, model) = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -241,13 +240,13 @@ impl Backend {
 		let uri = &params.text_document_position.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
-		let (_, cursor_value, ref_, _) = gather_refs(cursor_by_char, &mut reader, &self.module_index.interner)?;
+		let (_, cursor_value, ref_, _) = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
 		};
 		let current_module = self
-			.module_index
+			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
 		match ref_ {
 			Some(RefKind::Model) => self.model_references(&cursor_value),

@@ -23,13 +23,15 @@ pub use record::{RecordId, SymbolMap, SymbolSet};
 mod symbol;
 pub use symbol::Symbol;
 
+pub type Interner = ThreadedRodeo;
+
 #[derive(Default)]
-pub struct ModuleIndex {
+pub struct Index {
 	pub roots: DashSet<ImStr>,
 	pub modules: DashSet<ModuleName>,
 	pub records: record::RecordIndex,
 	pub models: ModelIndex,
-	pub interner: Arc<ThreadedRodeo>,
+	pub interner: Arc<Interner>,
 }
 
 pub type ModuleName = Symbol<Module>;
@@ -37,7 +39,7 @@ pub type ModuleName = Symbol<Module>;
 pub enum Module {}
 
 enum Output {
-	Records(Vec<Record>),
+	Xml { records: Vec<Record> },
 	Models { path: ImStr, models: Vec<Model> },
 }
 
@@ -48,7 +50,7 @@ pub struct AddRootResults {
 	pub elapsed: Duration,
 }
 
-impl ModuleIndex {
+impl Index {
 	pub fn mark_n_sweep(&self) {
 		self.records.retain(|_, record| !record.deleted)
 	}
@@ -146,7 +148,7 @@ impl ModuleIndex {
 				}
 			};
 			match outputs {
-				Output::Records(records) => {
+				Output::Xml { records } => {
 					record_count += records.len();
 					let mut prefix = self.records.by_prefix.write().await;
 					self.records
@@ -223,6 +225,8 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 						rope.clone(),
 					)?;
 					records.extend(template);
+				} else if local.as_str() == "templates" {
+					// QWeb templates
 				}
 			}
 			None => break,
@@ -234,7 +238,7 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 		}
 	}
 
-	Ok(Output::Records(records))
+	Ok(Output::Xml { records })
 }
 
 fn model_query() -> &'static Query {
@@ -388,7 +392,7 @@ class Foo(models.AbstractModel):
 			.map(|match_| {
 				match_
 					.captures
-					.into_iter()
+					.iter()
 					.skip(1)
 					.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
 					.collect::<Vec<_>>()

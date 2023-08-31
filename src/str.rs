@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::fmt::{Debug, Display};
 use std::io::{Read, Write};
 use std::ops::Deref;
+use std::path::Path;
 use std::sync::Arc;
 
 /// Immutable, [String]-sized clone-friendly string.
@@ -115,6 +116,12 @@ impl std::hash::Hash for ImStr {
 	#[inline]
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
 		self.deref().hash(state)
+	}
+}
+
+impl AsRef<Path> for ImStr {
+	fn as_ref(&self) -> &Path {
+		Path::new(self.as_str())
 	}
 }
 

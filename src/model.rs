@@ -3,14 +3,14 @@ use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
-use lasso::{Spur, ThreadedRodeo};
+use lasso::Spur;
 use miette::{diagnostic, IntoDiagnostic};
 use qp_trie::{wrapper::BString, Trie};
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
 use tree_sitter::{Parser, Query, QueryCursor};
 
-use crate::index::{Symbol, SymbolMap};
+use crate::index::{Interner, Symbol, SymbolMap};
 use crate::str::Text;
 use crate::utils::{ByteOffset, ByteRange, Erase, MinLoc};
 use crate::ImStr;
@@ -35,6 +35,7 @@ pub struct ModelIndex {
 }
 
 pub type ModelName = Symbol<ModelEntry>;
+
 #[derive(Default)]
 pub struct ModelEntry {
 	pub base: Option<ModelLocation>,
@@ -43,7 +44,6 @@ pub struct ModelEntry {
 	pub docstring: Option<Text>,
 }
 
-#[derive(Clone)]
 pub enum FieldName {}
 
 #[derive(Clone, Debug)]
@@ -94,7 +94,7 @@ impl Deref for ModelIndex {
 }
 
 impl ModelIndex {
-	pub async fn extend_models<I>(&self, path: ImStr, interner: &ThreadedRodeo, items: I)
+	pub async fn extend_models<I>(&self, path: ImStr, interner: &Interner, items: I)
 	where
 		I: IntoIterator<Item = Model>,
 	{

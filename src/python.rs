@@ -105,7 +105,7 @@ impl Backend {
 			return Ok(None);
 		};
 		let Some(current_module) = self
-			.module_index
+			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
 		else {
 			debug!(format_loc!("python_completions: no current_module"));
@@ -230,7 +230,7 @@ impl Backend {
 		cursor.set_match_limit(256);
 		cursor.set_byte_range(range);
 		let current_module = self
-			.module_index
+			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			for capture in match_.captures {
@@ -275,7 +275,7 @@ impl Backend {
 		let query = model_fields();
 		let mut tasks = tokio::task::JoinSet::<miette::Result<Vec<_>>>::new();
 		for ModelLocation(location, byte_range) in locations.cloned() {
-			let interner = self.module_index.interner.clone();
+			let interner = self.index.interner.clone();
 			tasks.spawn(async move {
 				let mut fields = vec![];
 				let contents = tokio::fs::read(location.path.as_str()).await.into_diagnostic()?;
@@ -429,7 +429,7 @@ class Foo(models.Model):
 			.map(|match_| {
 				match_
 					.captures
-					.into_iter()
+					.iter()
 					.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
 					.collect::<Vec<_>>()
 			})
