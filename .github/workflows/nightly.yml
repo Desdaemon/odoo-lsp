@@ -9,7 +9,7 @@ on:
       prerelease:
         type: boolean
         default: true
-        description: 'Is this a prerelease?'
+        description: "Is this a prerelease?"
   schedule:
     - cron: "0 0 * * *"
 

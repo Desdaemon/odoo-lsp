@@ -32,3 +32,6 @@
  (#eq? @_fields "fields")
  (#eq? @_comodel_name "comodel_name")
  (#match? @_Field "^(Many2one|One2many|Many2many)$"))
+
+((attribute (_) (identifier) @access)
+ (#match? @access "^[a-z]"))

@@ -7,14 +7,14 @@ use std::sync::OnceLock;
 use lasso::Key;
 use log::{debug, error};
 use miette::{diagnostic, Context, IntoDiagnostic};
-use odoo_lsp::index::SymbolMap;
+use odoo_lsp::index::{interner, SymbolMap};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
 
-use odoo_lsp::format_loc;
 use odoo_lsp::model::{Field, FieldKind, FieldName, ModelEntry, ModelLocation};
 use odoo_lsp::utils::*;
+use odoo_lsp::{format_loc, some};
 
 fn py_completions() -> &'static Query {
 	static QUERY: OnceLock<Query> = OnceLock::new();
@@ -161,6 +161,29 @@ impl Backend {
 							items,
 						})));
 					}
+				} else if capture.index == 10 {
+					// @access
+					let range = capture.node.byte_range();
+					if range.contains(&offset) || range.end == offset {
+						let Some(slice) = rope.get_byte_slice(range.clone()) else {
+							dbg!(&range);
+							break 'match_;
+						};
+						let lhs = some!(capture.node.prev_named_sibling());
+						let model = some!(
+							self.model_of_range(ast.root_node(), lhs.byte_range().map_unit(ByteOffset), None, &bytes)
+								.await
+						);
+						let model = interner().resolve(&model);
+						let needle = Cow::from(slice.byte_slice(..offset - range.start));
+						let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
+						self.complete_field_name(&needle, range, model.to_string(), rope.clone(), &mut items)
+							.await?;
+						return Ok(Some(CompletionResponse::List(CompletionList {
+							is_incomplete: items.len() >= Self::LIMIT,
+							items,
+						})));
+					}
 				}
 			}
 		}
@@ -275,7 +298,7 @@ impl Backend {
 		let query = model_fields();
 		let mut tasks = tokio::task::JoinSet::<miette::Result<Vec<_>>>::new();
 		for ModelLocation(location, byte_range) in locations.cloned() {
-			let interner = self.index.interner.clone();
+			let interner = interner().clone();
 			tasks.spawn(async move {
 				let mut fields = vec![];
 				let contents = tokio::fs::read(location.path.as_str()).await.into_diagnostic()?;

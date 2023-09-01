@@ -7,6 +7,7 @@ use std::path::Path;
 use lasso::{Spur, ThreadedRodeo};
 use log::debug;
 use miette::{diagnostic, IntoDiagnostic};
+use odoo_lsp::index::interner;
 use odoo_lsp::model::{Field, FieldKind};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
@@ -30,7 +31,7 @@ enum Tag {
 
 impl Backend {
 	pub async fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
-		let interner = &self.index.interner;
+		let interner = interner();
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
 			// Assume rope is up to date
@@ -169,7 +170,7 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			..
-		} = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
+		} = gather_refs(cursor_by_char, &mut reader, interner())?;
 		let (Some(value), Some(record_field)) = (cursor_value, ref_kind) else {
 			return Ok(None);
 		};
@@ -178,7 +179,7 @@ impl Backend {
 		match record_field {
 			RefKind::Ref(relation) => {
 				let model = some!(model_filter);
-				let model = some!(self.index.interner.get(model));
+				let model = some!(interner().get(model));
 				let mut entry = some!(self.index.models.get_mut(&model.into()));
 				let fields = self.populate_field_names(&mut entry).await?;
 				let Some(Field {
@@ -192,7 +193,7 @@ impl Backend {
 					needle,
 					replace_range,
 					rope.clone(),
-					Some(self.index.interner.resolve(relation)),
+					Some(interner().resolve(relation)),
 					*current_module,
 					&mut items,
 				)
@@ -226,7 +227,7 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			..
-		} = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
+		} = gather_refs(cursor_by_char, &mut reader, interner())?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -248,7 +249,7 @@ impl Backend {
 		let mut reader = Tokenizer::from(&slice[..]);
 		let XmlRefs {
 			cursor_value, ref_kind, ..
-		} = gather_refs(cursor_by_char, &mut reader, &self.index.interner)?;
+		} = gather_refs(cursor_by_char, &mut reader, interner())?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);

@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use dashmap::DashSet;
@@ -21,7 +21,7 @@ use crate::{format_loc, ImStr};
 mod record;
 pub use record::{RecordId, SymbolMap, SymbolSet};
 mod symbol;
-pub use symbol::Symbol;
+pub use symbol::{interner, Symbol};
 
 pub type Interner = ThreadedRodeo;
 
@@ -31,7 +31,6 @@ pub struct Index {
 	pub modules: DashSet<ModuleName>,
 	pub records: record::RecordIndex,
 	pub models: ModelIndex,
-	pub interner: Arc<Interner>,
 }
 
 pub type ModuleName = Symbol<Module>;
@@ -72,6 +71,7 @@ impl Index {
 
 		let mut module_count = 0;
 		let mut outputs = tokio::task::JoinSet::new();
+		let interner = interner();
 		for module in modules {
 			module_count += 1;
 			let module = module.into_diagnostic()?;
@@ -93,7 +93,7 @@ impl Index {
 					})
 					.await;
 			}
-			let module_key = self.interner.get_or_intern(&module_name);
+			let module_key = interner.get_or_intern(&module_name);
 			if !self.modules.insert(module_key.into()) {
 				debug!("duplicate module {module_name}");
 				continue;
@@ -151,13 +151,11 @@ impl Index {
 				Output::Xml { records } => {
 					record_count += records.len();
 					let mut prefix = self.records.by_prefix.write().await;
-					self.records
-						.extend_records(Some(&mut prefix), records, &self.interner)
-						.await;
+					self.records.extend_records(Some(&mut prefix), records, interner).await;
 				}
 				Output::Models { path, models } => {
 					model_count += models.len();
-					self.models.extend_models(path, &self.interner, models).await;
+					self.models.extend_models(path, interner, models).await;
 				}
 			}
 		}
@@ -171,7 +169,7 @@ impl Index {
 	pub fn remove_root(&self, root: &str) {
 		self.roots.remove(root);
 		for mut entry in self.records.iter_mut() {
-			let module = self.interner.resolve(&entry.module);
+			let module = interner().resolve(&entry.module);
 			if root.contains(module) {
 				entry.deleted = true;
 			}
@@ -183,7 +181,7 @@ impl Index {
 			let module = path_.file_name()?.to_string_lossy();
 			// By this point, if this module hadn't been interned,
 			// it certainly is not a valid module name.
-			if let Some(module) = self.interner.get(module.as_ref()) {
+			if let Some(module) = interner().get(module.as_ref()) {
 				if let Some(name) = self.modules.get(&ModuleName::from(module)) {
 					return Some(name);
 				}
@@ -268,10 +266,8 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 	let rope = Rope::from_str(&String::from_utf8_lossy(&contents));
 	'match_: for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
 		let mut inherits = vec![];
-		// let mut fields = vec![];
 		let mut range = None;
 		let mut maybe_base = None;
-		// let mut current_field = None;
 		for capture in match_.captures {
 			if capture.index == 3 && maybe_base.is_none() {
 				// @name
@@ -286,26 +282,6 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 				if !inherit.is_empty() {
 					inherits.push(ImStr::from(String::from_utf8_lossy(&contents[inherit]).as_ref()));
 				}
-			// } else if capture.index == 7 {
-			// 	// @field
-			// 	current_field = Some(capture.node.byte_range());
-			// } else if capture.index == 10 {
-			// 	// @relation
-			// 	if let Some(current_field) = current_field.take() {
-			// 		let field = String::from_utf8_lossy(&contents[current_field]);
-			// 		let field = interner.get_or_intern(&field);
-			// 		let field_relation = capture.node.byte_range().contract(1);
-			// 		let field_relation = String::from_utf8_lossy(&contents[field_relation]);
-			// 		let field_relation = interner.get_or_intern(field_relation.as_ref());
-			// 		fields.push((field, Field::Relational(field_relation)));
-			// 	}
-			// } else if capture.index == 12 {
-			// 	// @_Type
-			// 	if let Some(current_field) = current_field.take() {
-			// 		let field = String::from_utf8_lossy(&contents[current_field]);
-			// 		let field = interner.get_or_intern(&field);
-			// 		fields.push((field, Field::Value));
-			// 	}
 			} else if capture.index == 6 {
 				// @model
 				if range.is_none() {

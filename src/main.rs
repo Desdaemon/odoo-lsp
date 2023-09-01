@@ -21,11 +21,12 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
-use odoo_lsp::index::{Index, Interner, ModuleName, RecordId};
+use odoo_lsp::index::{interner, Index, Interner, ModuleName, RecordId};
 use odoo_lsp::model::{FieldKind, ModelLocation};
 use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{format_loc, some, utils::*};
 
+mod analyze;
 mod catch_panic;
 mod python;
 mod xml;
@@ -459,7 +460,7 @@ impl LanguageServer for Backend {
 		'resolve: {
 			match &completion.kind {
 				Some(CompletionItemKind::CLASS) => {
-					let Some(model) = self.index.interner.get(&completion.label) else {
+					let Some(model) = interner().get(&completion.label) else {
 						break 'resolve;
 					};
 					let Some(mut entry) = self.index.models.get_mut(&model.into()) else {
@@ -478,10 +479,10 @@ impl LanguageServer for Backend {
 					let Some(Value::String(value)) = &completion.data else {
 						break 'resolve;
 					};
-					let Some(field) = self.index.interner.get(&completion.label) else {
+					let Some(field) = interner().get(&completion.label) else {
 						break 'resolve;
 					};
-					let Some(model) = self.index.interner.get(value) else {
+					let Some(model) = interner().get(value) else {
 						break 'resolve;
 					};
 					let Some(entry) = self.index.models.get(&model.into()) else {
@@ -489,11 +490,11 @@ impl LanguageServer for Backend {
 					};
 					let Some(fields) = &entry.fields else { break 'resolve };
 					if let Some(field) = fields.get(&field.into()) {
-						let type_ = self.index.interner.resolve(&field.type_);
+						let type_ = interner().resolve(&field.type_);
 						completion.detail = match field.kind {
 							FieldKind::Value => Some(format!("{type_}(…)")),
 							FieldKind::Relational(relation) => {
-								let relation = self.index.interner.resolve(&relation);
+								let relation = interner().resolve(&relation);
 								Some(format!("{type_}(\"{relation}\", …)"))
 							}
 						};
@@ -501,7 +502,7 @@ impl LanguageServer for Backend {
 							.index
 							.module_of_path(Path::new(field.location.path.as_str()))
 							.unwrap();
-						let module = self.index.interner.resolve(&module);
+						let module = interner().resolve(&module);
 						let text = if let Some(help) = &field.help {
 							format!("*Defined in:* `{module}`\n\n{}", help.to_string())
 						} else {
@@ -563,7 +564,7 @@ impl LanguageServer for Backend {
 		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
 			self.index.models.get(key).into_iter().flat_map(|entry| {
 				entry.base.as_ref().map(|loc| SymbolInformation {
-					name: self.index.interner.resolve(entry.key()).to_string(),
+					name: interner().resolve(entry.key()).to_string(),
 					kind: SymbolKind::CONSTANT,
 					tags: None,
 					deprecated: None,
@@ -583,7 +584,7 @@ impl LanguageServer for Backend {
 				container_name: None,
 			}
 		}
-		let interner = &self.index.interner;
+		let interner = &interner();
 		if let Some((module, xml_id_query)) = query.split_once('.') {
 			let module = some!(interner.get(module)).into();
 			let records = records_by_prefix
@@ -748,7 +749,7 @@ impl Backend {
 				..Default::default()
 			}
 		}
-		let interner = &self.index.interner;
+		let interner = &interner();
 		if let Some((module, needle)) = needle.split_once('.') {
 			let Some(module) = interner.get(module).map(Into::into) else {
 				return Ok(());
@@ -783,17 +784,14 @@ impl Backend {
 		rope: Rope,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
-		let model_key = self.index.interner.get_or_intern(&model);
+		let model_key = interner().get_or_intern(&model);
 		let Some(mut entry) = self.index.models.get_mut(&model_key.into()) else {
 			return Ok(());
 		};
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
 		let fields = self.populate_field_names(&mut entry).await?;
 		let completions = fields.iter().flat_map(|(key, _)| {
-			let field_name = self
-				.index
-				.interner
-				.resolve(&Spur::try_from_usize(*key as usize).unwrap());
+			let field_name = interner().resolve(&Spur::try_from_usize(*key as usize).unwrap());
 			field_name.contains(needle).then(|| CompletionItem {
 				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 					new_text: field_name.to_string(),
@@ -823,7 +821,7 @@ impl Backend {
 			.iter_prefix(needle.as_bytes())
 			.flat_map(|(_, key)| self.index.models.get(key))
 			.map(|entry| {
-				let label = self.index.interner.resolve(entry.key()).to_string();
+				let label = interner().resolve(entry.key()).to_string();
 				CompletionItem {
 					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 						new_text: label.clone(),
@@ -843,7 +841,7 @@ impl Backend {
 		if !value.contains('.') {
 			'unscoped: {
 				if let Some(module) = self.index.module_of_path(Path::new(uri.path())) {
-					value = format!("{}.{value}", self.index.interner.resolve(module.key())).into();
+					value = format!("{}.{value}", interner().resolve(module.key())).into();
 					break 'unscoped;
 				}
 				debug!(
@@ -854,11 +852,11 @@ impl Backend {
 				return Ok(None);
 			}
 		}
-		let record_id = some!(self.index.interner.get(value));
+		let record_id = some!(interner().get(value));
 		return Ok((self.index.records.get(&record_id.into())).map(|entry| entry.location.clone().into()));
 	}
 	fn jump_def_model(&self, model: &str) -> miette::Result<Option<Location>> {
-		let model = some!(self.index.interner.get(model));
+		let model = some!(interner().get(model));
 		match self
 			.index
 			.models
@@ -870,9 +868,9 @@ impl Backend {
 		}
 	}
 	async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
-		let model = self.index.interner.get_or_intern(model);
+		let model = interner().get_or_intern(model);
 		let mut entry = some!(self.index.models.get_mut(&model.into()));
-		let field = some!(self.index.interner.get(field));
+		let field = some!(interner().get(field));
 		let fields = self.populate_field_names(&mut entry).await?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
@@ -883,7 +881,7 @@ impl Backend {
 			.records
 			.by_model(model)
 			.map(|record| record.location.clone().into());
-		let model = some!(self.index.interner.get(model));
+		let model = some!(interner().get(model));
 		let limit = self.references_limit.load(Relaxed);
 		if let Some(entry) = self.index.models.get(&model.into()) {
 			let inherit_locations = entry.descendants.iter().map(|loc| loc.0.clone().into());
@@ -897,7 +895,7 @@ impl Backend {
 		inherit_id: &str,
 		current_module: Option<&ModuleName>,
 	) -> miette::Result<Option<Vec<Location>>> {
-		let interner = &self.index.interner;
+		let interner = &interner();
 		let inherit_id = if inherit_id.contains('.') {
 			Cow::from(inherit_id)
 		} else if let Some(current_module) = current_module {

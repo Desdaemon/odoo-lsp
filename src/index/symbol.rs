@@ -1,6 +1,11 @@
-use std::{hash::Hash, marker::PhantomData, ops::Deref};
+use std::hash::Hash;
+use std::marker::PhantomData;
+use std::ops::Deref;
+use std::sync::{Arc, OnceLock};
 
 use lasso::Spur;
+
+use super::Interner;
 
 /// Type-safe wrapper around [Spur].
 #[derive(Debug)]
@@ -48,4 +53,9 @@ impl<T> Deref for Symbol<T> {
 	fn deref(&self) -> &Self::Target {
 		&self.inner
 	}
+}
+
+pub fn interner() -> &'static Arc<Interner> {
+	static INTERNER: OnceLock<Arc<Interner>> = OnceLock::new();
+	INTERNER.get_or_init(Default::default)
 }

@@ -1,0 +1,319 @@
+use std::{borrow::Borrow, collections::HashMap, sync::OnceLock};
+
+use async_recursion::async_recursion;
+use log::debug;
+use tree_sitter::{Node, Query, QueryCursor};
+
+use odoo_lsp::{
+	index::interner,
+	model::{FieldKind, ModelName},
+	utils::{ByteRange, Erase, RangeExt},
+	ImStr,
+};
+
+use crate::Backend;
+
+/// The subset of types that may resolve to a model.
+#[derive(Clone)]
+pub enum Type {
+	Env,
+	/// \*.env.ref()
+	RefFn,
+	/// Functions that return another model, regardless of input.
+	ModelFn(ImStr),
+	Model(ImStr),
+	/// Unresolved model.
+	Record(ImStr),
+}
+
+#[derive(Default)]
+pub struct Scope {
+	variables: HashMap<String, Type>,
+	parent: Option<Box<Scope>>,
+}
+
+fn normalize<'r, 'n>(node: &'r mut Node<'n>) -> &'r mut Node<'n> {
+	while matches!(node.kind(), "expression_statement" | "parenthesized_expression") {
+		*node = node.named_child(0).unwrap();
+	}
+	node
+}
+
+impl Scope {
+	#[inline]
+	pub fn new(parent: Option<Scope>) -> Scope {
+		Self {
+			variables: Default::default(),
+			parent: parent.map(Box::new),
+		}
+	}
+	pub fn get(&self, key: impl Borrow<str>) -> Option<&Type> {
+		fn impl_<'me>(self_: &'me Scope, key: &str) -> Option<&'me Type> {
+			self_
+				.variables
+				.get(key)
+				.or_else(|| self_.parent.as_ref().and_then(|parent| parent.get(key)))
+		}
+		impl_(self, key.borrow())
+	}
+	pub fn insert(&mut self, key: String, value: Type) -> bool {
+		if let Some(parent) = &mut self.parent {
+			if (*parent).insert(key.clone(), value.clone()) {
+				return true;
+			}
+		}
+		if self.variables.contains_key(&key) {
+			return false;
+		}
+		self.variables.insert(key, value);
+		true
+	}
+}
+
+fn field_completion() -> &'static Query {
+	static QUERY: OnceLock<Query> = OnceLock::new();
+	QUERY.get_or_init(|| {
+		Query::new(
+			tree_sitter_python::language(),
+			include_str!("queries/field_completion.scm"),
+		)
+		.unwrap()
+	})
+}
+
+impl Backend {
+	pub async fn model_of_range(
+		&self,
+		node: Node<'_>,
+		range: ByteRange,
+		scope: Option<Scope>,
+		contents: &[u8],
+	) -> Option<ModelName> {
+		debug!("model_of_range {}", String::from_utf8_lossy(&contents[range.erase()]));
+		// Phase 1: Determine the scope.
+		let query = field_completion();
+		let mut self_type = None; // (string)
+		let mut self_param = None; // (identifier)
+		let mut fn_scope = None; // (block)
+		let mut cursor = QueryCursor::new();
+		'scoping: for match_ in cursor.matches(query, node, contents) {
+			// @class
+			let class = match_.captures.first()?;
+			if !class.node.byte_range().contains(&range.end.0) {
+				continue;
+			}
+			for capture in match_.captures {
+				if capture.index == 1 {
+					// @name
+					self_type = Some(capture.node);
+				} else if capture.index == 3 && self_type.is_none() {
+					// @inherit
+					self_type = Some(capture.node);
+				} else if capture.index == 4 {
+					self_param = Some(capture.node);
+				} else if capture.index == 5 && capture.node.byte_range().contains(&range.end.0) {
+					// @scope
+					fn_scope = Some(capture.node);
+					break 'scoping;
+				}
+			}
+		}
+		let node = fn_scope?;
+		// let self_type = self_type?;
+		let self_param = String::from_utf8_lossy(&contents[self_param?.byte_range()]);
+
+		// Phase 2: Build the scope up to offset
+		// What contributes to a method scope's variables?
+		// 1. Top-level statements; completely opaque to us.
+		// 2. Class definitions; technically useless to us.
+		//    Self-type analysis only uses a small part of the class definition.
+		// 3. Parameters, e.g. self which always has a fixed type
+		// 4. Assignments (augmented or otherwise)
+		let mut scope = scope.unwrap_or_default();
+		let self_type = match self_type {
+			Some(type_) => &contents[type_.byte_range().contract(1)],
+			None => &[],
+		};
+		scope.insert(
+			self_param.into_owned(),
+			Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
+		);
+		let mut cursor = node.walk();
+		let mut children = node.named_children(&mut cursor).peekable();
+		let mut stack = vec![];
+		let mut target = None;
+		while let Some(mut child) = children.next() {
+			match normalize(&mut child).kind() {
+				"assignment" => {
+					let lhs = child.named_child(0)?;
+					let rhs = child.named_child(1)?;
+					if lhs.kind() == "identifier" {
+						let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
+						let type_ = self.type_of(rhs, &scope, contents).await?;
+						scope.insert(lhs.into_owned(), type_);
+					}
+				}
+				"for_statement" => {
+					let iteratee = child.named_child(0)?;
+					let src = child.named_child(1)?;
+					if iteratee.kind() == "identifier" {
+						let type_ = self.type_of(src, &scope, contents).await?;
+						if let Some(next) = children.peek().cloned() {
+							stack.push(next);
+						}
+						drop(children);
+						// (for_statement (_) @iteratee (_) @src (block))
+						children = child.named_child(2)?.named_children(&mut cursor).peekable();
+						scope = Scope::new(Some(scope));
+						let src = String::from_utf8_lossy(&contents[src.byte_range()]);
+						scope.insert(src.into_owned(), type_);
+					}
+				}
+				_ => {}
+			}
+			if child.byte_range().contains(&range.end.0) {
+				target = Some(child);
+				break;
+			}
+			if children.peek().is_none() {
+				if let Some(next) = stack.pop() {
+					drop(children);
+					children = next.named_children(&mut cursor).peekable();
+					scope = *scope.parent?;
+				}
+			}
+		}
+		// Phase 3: Determine type of cursor expression using recursive ascent
+		let mut descendant = Some(target?.descendant_for_byte_range(range.start.0, range.end.0)?);
+		while let Some(descendant_) = descendant {
+			match self.type_of(descendant_, &scope, contents).await {
+				Some(Type::Model(model)) => {
+					return interner().get(model).map(Into::into);
+				}
+				Some(Type::Record(xml_id)) => {
+					// TODO: Refactor into method
+					let interner = interner();
+					let xml_id = interner.get(xml_id)?;
+					let record = self.index.records.get(&xml_id.into())?;
+					let model = interner.get(record.model.as_ref()?);
+					return model.map(Into::into);
+				}
+				_ => {}
+			}
+			descendant = descendant_.parent();
+		}
+		None
+	}
+	#[async_recursion(?Send)]
+	async fn type_of(&self, mut node: Node<'async_recursion>, scope: &Scope, contents: &[u8]) -> Option<Type> {
+		debug!("type_of {}", String::from_utf8_lossy(&contents[node.byte_range()]));
+		// What creates local scope, but doesn't contribute to method scope?
+		// 1. For-statements: only within the block
+		// 2. List comprehension: only within the object
+
+		// What contributes to value types?
+		// 1. *.env['foo'] => Model('foo')
+		// 2. *.env.ref(<record-id>) => Model(<model of record-id>)
+
+		// What preserves value types?
+		// 1. for foo in bar;
+		//    bar: 't => foo: 't
+		// 2. foo = bar;
+		//    bar: 't => foo: 't (and various other operators)
+		// 3. foo.sudo();
+		//    foo: 't => foo.sudo(): 't
+		//    sudo, with_user, with_env, with_context, ..
+		// 4. [foo for foo in bar];
+		//    bar: 't => foo: 't
+
+		// What transforms value types?
+		// 1. foo.bar;
+		//    foo: Model('t) => bar: Model('t).field('bar')
+		let interner = interner();
+		match normalize(&mut node).kind() {
+			"subscript" => {
+				let rhs = node.named_child(1)?;
+				if rhs.kind() != "string" {
+					return None;
+				}
+				let obj_ty = self.type_of(node.child(0)?, scope, contents).await?;
+				matches!(obj_ty, Type::Env).then(|| {
+					Type::Model(
+						String::from_utf8_lossy(&contents[rhs.byte_range().contract(1)])
+							.as_ref()
+							.into(),
+					)
+				})
+			}
+			"attribute" => {
+				let lhs = self.type_of(node.named_child(0)?, scope, contents).await?;
+				let rhs = node.named_child(1)?;
+				match &contents[rhs.byte_range()] {
+					b"env" if matches!(lhs, Type::Model(..) | Type::Record(..)) => Some(Type::Env),
+					b"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
+					b"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
+					b"company" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
+					b"create" | b"browse" | b"mapped" | b"filtered" | b"search" => match lhs {
+						Type::Model(model) => Some(Type::ModelFn(model)),
+						Type::Record(xml_id) => {
+							let xml_id = interner.get(xml_id)?;
+							let record = self.index.records.get(&xml_id.into())?;
+							Some(Type::ModelFn(record.model.clone()?))
+						}
+						_ => None,
+					},
+					ident if rhs.kind() == "identifier" => {
+						let model = match lhs {
+							Type::Model(model) => model,
+							Type::Record(xml_id) => {
+								let xml_id = interner.get(xml_id)?;
+								let record = self.index.records.get(&xml_id.into())?;
+								record.model.clone()?
+							}
+							_ => return None,
+						};
+						let model = interner.get(model.as_str())?;
+						let ident = String::from_utf8_lossy(ident);
+						let ident = interner.get_or_intern(ident.as_ref());
+						let mut entry = self.index.models.get_mut(&model.into())?;
+						let fields = self.populate_field_names(&mut entry).await;
+						let field = fields.ok()?.get(&ident.into())?;
+						match field.kind {
+							FieldKind::Relational(model) => Some(Type::Model(interner.resolve(&model).into())),
+							FieldKind::Value => None,
+						}
+					}
+					_ => None,
+				}
+			}
+			"identifier" => {
+				let key = String::from_utf8_lossy(&contents[node.byte_range()]);
+				scope.get(key).cloned()
+			}
+			"assignment" => {
+				let rhs = node.named_child(1)?;
+				self.type_of(rhs, scope, contents).await
+			}
+			"call" => {
+				let func = node.named_child(0)?;
+				let func = self.type_of(func, scope, contents).await?;
+				match func {
+					Type::RefFn => {
+						// (call (_) @func (argument_list . (string) @xml_id))
+						let xml_id = node.named_child(1)?.named_child(0)?;
+						matches!(xml_id.kind(), "string").then(|| {
+							Type::Record(
+								String::from_utf8_lossy(&contents[xml_id.byte_range().contract(1)])
+									.as_ref()
+									.into(),
+							)
+						})
+					}
+					Type::ModelFn(model) => Some(Type::Model(model)),
+					_ => None,
+				}
+			}
+			_ => None,
+		}
+	}
+}
