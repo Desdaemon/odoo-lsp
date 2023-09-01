@@ -1,6 +1,6 @@
 use std::{borrow::Borrow, collections::HashMap, sync::OnceLock};
 
-use async_recursion::async_recursion;
+use futures::executor::block_on;
 use log::debug;
 use tree_sitter::{Node, Query, QueryCursor};
 
@@ -82,7 +82,7 @@ fn field_completion() -> &'static Query {
 }
 
 impl Backend {
-	pub async fn model_of_range(
+	pub fn model_of_range(
 		&self,
 		node: Node<'_>,
 		range: ByteRange,
@@ -149,7 +149,7 @@ impl Backend {
 					let rhs = child.named_child(1)?;
 					if lhs.kind() == "identifier" {
 						let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
-						let type_ = self.type_of(rhs, &scope, contents).await?;
+						let type_ = self.type_of(rhs, &scope, contents)?;
 						scope.insert(lhs.into_owned(), type_);
 					}
 				}
@@ -157,7 +157,7 @@ impl Backend {
 					let iteratee = child.named_child(0)?;
 					let src = child.named_child(1)?;
 					if iteratee.kind() == "identifier" {
-						let type_ = self.type_of(src, &scope, contents).await?;
+						let type_ = self.type_of(src, &scope, contents)?;
 						if let Some(next) = children.peek().cloned() {
 							stack.push(next);
 						}
@@ -186,7 +186,7 @@ impl Backend {
 		// Phase 3: Determine type of cursor expression using recursive ascent
 		let mut descendant = Some(target?.descendant_for_byte_range(range.start.0, range.end.0)?);
 		while let Some(descendant_) = descendant {
-			match self.type_of(descendant_, &scope, contents).await {
+			match self.type_of(descendant_, &scope, contents) {
 				Some(Type::Model(model)) => {
 					return interner().get(model).map(Into::into);
 				}
@@ -204,9 +204,8 @@ impl Backend {
 		}
 		None
 	}
-	#[async_recursion(?Send)]
-	async fn type_of(&self, mut node: Node<'async_recursion>, scope: &Scope, contents: &[u8]) -> Option<Type> {
-		debug!("type_of {}", String::from_utf8_lossy(&contents[node.byte_range()]));
+	fn type_of(&self, mut node: Node, scope: &Scope, contents: &[u8]) -> Option<Type> {
+		// debug!("type_of {}", String::from_utf8_lossy(&contents[node.byte_range()]));
 		// What creates local scope, but doesn't contribute to method scope?
 		// 1. For-statements: only within the block
 		// 2. List comprehension: only within the object
@@ -230,23 +229,22 @@ impl Backend {
 		// 1. foo.bar;
 		//    foo: Model('t) => bar: Model('t).field('bar')
 		let interner = interner();
-		match normalize(&mut node).kind() {
+		let kind = normalize(&mut node).kind();
+		match kind {
 			"subscript" => {
 				let rhs = node.named_child(1)?;
+				let rhs_range = rhs.byte_range().contract(1);
 				if rhs.kind() != "string" {
 					return None;
 				}
-				let obj_ty = self.type_of(node.child(0)?, scope, contents).await?;
-				matches!(obj_ty, Type::Env).then(|| {
-					Type::Model(
-						String::from_utf8_lossy(&contents[rhs.byte_range().contract(1)])
-							.as_ref()
-							.into(),
-					)
-				})
+				let lhs = node.named_child(0)?;
+				let obj_ty = self.type_of(lhs, scope, contents)?;
+				matches!(obj_ty, Type::Env)
+					.then(|| Type::Model(String::from_utf8_lossy(&contents[rhs_range]).as_ref().into()))
 			}
 			"attribute" => {
-				let lhs = self.type_of(node.named_child(0)?, scope, contents).await?;
+				let lhs = node.named_child(0)?;
+				let lhs = self.type_of(lhs, scope, contents)?;
 				let rhs = node.named_child(1)?;
 				match &contents[rhs.byte_range()] {
 					b"env" if matches!(lhs, Type::Model(..) | Type::Record(..)) => Some(Type::Env),
@@ -276,7 +274,7 @@ impl Backend {
 						let ident = String::from_utf8_lossy(ident);
 						let ident = interner.get_or_intern(ident.as_ref());
 						let mut entry = self.index.models.get_mut(&model.into())?;
-						let fields = self.populate_field_names(&mut entry).await;
+						let fields = block_on(self.populate_field_names(&mut entry));
 						let field = fields.ok()?.get(&ident.into())?;
 						match field.kind {
 							FieldKind::Relational(model) => Some(Type::Model(interner.resolve(&model).into())),
@@ -292,11 +290,11 @@ impl Backend {
 			}
 			"assignment" => {
 				let rhs = node.named_child(1)?;
-				self.type_of(rhs, scope, contents).await
+				self.type_of(rhs, scope, contents)
 			}
 			"call" => {
 				let func = node.named_child(0)?;
-				let func = self.type_of(func, scope, contents).await?;
+				let func = self.type_of(func, scope, contents)?;
 				match func {
 					Type::RefFn => {
 						// (call (_) @func (argument_list . (string) @xml_id))

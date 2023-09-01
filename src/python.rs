@@ -170,10 +170,12 @@ impl Backend {
 							break 'match_;
 						};
 						let lhs = some!(capture.node.prev_named_sibling());
-						let model = some!(
-							self.model_of_range(ast.root_node(), lhs.byte_range().map_unit(ByteOffset), None, &bytes)
-								.await
-						);
+						let model = some!(self.model_of_range(
+							ast.root_node(),
+							lhs.byte_range().map_unit(ByteOffset),
+							None,
+							&bytes
+						));
 						let model = interner().resolve(&model);
 						let needle = Cow::from(slice.byte_slice(..offset - range.start));
 						let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
@@ -189,7 +191,7 @@ impl Backend {
 		}
 		Ok(None)
 	}
-	pub fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
+	pub async fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
@@ -231,6 +233,17 @@ impl Backend {
 						};
 						let slice = Cow::from(slice);
 						return self.jump_def_model(&slice);
+					}
+				} else if capture.index == 10 {
+					// @access
+					let range = capture.node.byte_range();
+					if range.contains(&offset) || range.end == offset {
+						let lhs = some!(capture.node.prev_named_sibling());
+						let lhs = lhs.byte_range().map_unit(ByteOffset);
+						let model = some!(self.model_of_range(ast.root_node(), lhs, None, &bytes));
+						let field = String::from_utf8_lossy(&bytes[range]);
+						let model = interner().resolve(&model);
+						return self.jump_def_field_name(&field, model);
 					}
 				}
 			}

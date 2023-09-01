@@ -237,7 +237,7 @@ impl Backend {
 			Some(RefKind::Model) => self.jump_def_model(&cursor_value),
 			Some(RefKind::FieldName) => {
 				let model = some!(model_filter);
-				self.jump_def_field_name(&cursor_value, &model).await
+				self.jump_def_field_name(&cursor_value, &model)
 			}
 			Some(RefKind::Id) | None => Ok(None),
 		}

@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
+use futures::executor::block_on;
 use globwalk::FileType;
 use lasso::{Key, Spur};
 use log::{debug, error, info};
@@ -350,6 +351,7 @@ impl LanguageServer for Backend {
 		} else if ext == "py" {
 			location = self
 				.python_jump_def(params, document.value().clone())
+				.await
 				.map_err(|err| error!("Error retrieving references:\n{err}"))
 				.ok()
 				.flatten();
@@ -867,11 +869,11 @@ impl Backend {
 			None => Ok(None),
 		}
 	}
-	async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
+	fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model = interner().get_or_intern(model);
 		let mut entry = some!(self.index.models.get_mut(&model.into()));
 		let field = some!(interner().get(field));
-		let fields = self.populate_field_names(&mut entry).await?;
+		let fields = block_on(self.populate_field_names(&mut entry))?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
 	}
