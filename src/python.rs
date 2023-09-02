@@ -177,7 +177,14 @@ impl Backend {
 							&bytes
 						));
 						let model = interner().resolve(&model);
-						let needle = Cow::from(slice.byte_slice(..offset - range.start));
+						let needle = if offset - range.start <= 2 {
+							// Since tree-sitter-python has limited facility for error recovery,
+							// we allow the first few characters to match all elements since autocompletion
+							// only kicks in for valid syntax.
+							Cow::from("")
+						} else {
+							Cow::from(slice.byte_slice(..offset - range.start))
+						};
 						let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
 						self.complete_field_name(&needle, range, model.to_string(), rope.clone(), &mut items)
 							.await?;

@@ -13,6 +13,25 @@ use odoo_lsp::{
 
 use crate::Backend;
 
+static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
+	b"create",
+	b"copy",
+	b"name_create",
+	b"browse",
+	b"mapped",
+	b"filtered",
+	b"filtered_domain",
+	b"sorted",
+	b"search",
+	b"name_search",
+	b"ensure_one",
+	b"with_context",
+	b"with_user",
+	b"with_company",
+	b"with_env",
+	b"sudo"
+);
+
 /// The subset of types that may resolve to a model.
 #[derive(Clone)]
 pub enum Type {
@@ -58,7 +77,7 @@ impl Scope {
 	}
 	pub fn insert(&mut self, key: String, value: Type) -> bool {
 		if let Some(parent) = &mut self.parent {
-			if (*parent).insert(key.clone(), value.clone()) {
+			if parent.insert(key.clone(), value.clone()) {
 				return true;
 			}
 		}
@@ -119,7 +138,6 @@ impl Backend {
 			}
 		}
 		let node = fn_scope?;
-		// let self_type = self_type?;
 		let self_param = String::from_utf8_lossy(&contents[self_param?.byte_range()]);
 
 		// Phase 2: Build the scope up to offset
@@ -143,6 +161,9 @@ impl Backend {
 		let mut stack = vec![];
 		let mut target = None;
 		while let Some(mut child) = children.next() {
+			// What creates local scope, but doesn't contribute to method scope?
+			// 1. For-statements: only within the block
+			// 2. List comprehension: only within the object
 			match normalize(&mut child).kind() {
 				"assignment" => {
 					let lhs = child.named_child(0)?;
@@ -154,9 +175,9 @@ impl Backend {
 					}
 				}
 				"for_statement" => {
-					let iteratee = child.named_child(0)?;
+					let iter = child.named_child(0)?;
 					let src = child.named_child(1)?;
-					if iteratee.kind() == "identifier" {
+					if iter.kind() == "identifier" {
 						let type_ = self.type_of(src, &scope, contents)?;
 						if let Some(next) = children.peek().cloned() {
 							stack.push(next);
@@ -164,6 +185,23 @@ impl Backend {
 						drop(children);
 						// (for_statement (_) @iteratee (_) @src (block))
 						children = child.named_child(2)?.named_children(&mut cursor).peekable();
+						scope = Scope::new(Some(scope));
+						let src = String::from_utf8_lossy(&contents[src.byte_range()]);
+						scope.insert(src.into_owned(), type_);
+					}
+				}
+				"list_comprehension" | "set_comprehension" | "dictionary_comprehension" => {
+					// (_ body: (_) (for_in_clause))
+					let clause = child.named_child(1)?;
+					let iter = clause.named_child(0)?;
+					let src = clause.named_child(1)?;
+					if iter.kind() == "identifier" {
+						let type_ = self.type_of(src, &scope, contents)?;
+						if let Some(next) = children.peek().cloned() {
+							stack.push(next);
+						}
+						drop(children);
+						children = clause.named_children(&mut cursor).peekable();
 						scope = Scope::new(Some(scope));
 						let src = String::from_utf8_lossy(&contents[src.byte_range()]);
 						scope.insert(src.into_owned(), type_);
@@ -205,11 +243,6 @@ impl Backend {
 		None
 	}
 	fn type_of(&self, mut node: Node, scope: &Scope, contents: &[u8]) -> Option<Type> {
-		// debug!("type_of {}", String::from_utf8_lossy(&contents[node.byte_range()]));
-		// What creates local scope, but doesn't contribute to method scope?
-		// 1. For-statements: only within the block
-		// 2. List comprehension: only within the object
-
 		// What contributes to value types?
 		// 1. *.env['foo'] => Model('foo')
 		// 2. *.env.ref(<record-id>) => Model(<model of record-id>)
@@ -250,8 +283,8 @@ impl Backend {
 					b"env" if matches!(lhs, Type::Model(..) | Type::Record(..)) => Some(Type::Env),
 					b"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
 					b"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
-					b"company" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
-					b"create" | b"browse" | b"mapped" | b"filtered" | b"search" => match lhs {
+					b"company" | b"companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
+					func if MODEL_METHODS.contains(func) => match lhs {
 						Type::Model(model) => Some(Type::ModelFn(model)),
 						Type::Record(xml_id) => {
 							let xml_id = interner.get(xml_id)?;
