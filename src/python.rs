@@ -438,6 +438,68 @@ impl Backend {
 		}
 		Ok(entry.fields.insert(out))
 	}
+
+	pub async fn python_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
+		let uri = &params.text_document_position_params.text_document.uri;
+		let ast = self
+			.ast_map
+			.get(uri.path())
+			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, rope.clone())
+		else {
+			Err(diagnostic!("could not find offset for {}", uri.path()))?
+		};
+		let query = py_completions();
+		let bytes = rope.bytes().collect::<Vec<_>>();
+		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
+		let mut cursor = tree_sitter::QueryCursor::new();
+		cursor.set_match_limit(256);
+		cursor.set_byte_range(range);
+		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
+			for capture in match_.captures {
+				if capture.index == 4 {
+					// @xml_id
+					// let range = capture.node.byte_range();
+					// if range.contains(&offset) {
+					// 	let range = range.contract(1);
+					// 	let Some(slice) = rope.get_byte_slice(range.clone()) else {
+					// 		dbg!(&range);
+					// 		break 'match_;
+					// 	};
+					// 	let slice = Cow::from(slice);
+					// 	return self
+					// 		.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
+					// }
+				} else if capture.index == 5 {
+					// @model
+					let range = capture.node.byte_range();
+					if range.contains(&offset) {
+						let range = range.contract(1);
+						let lsp_range = offset_range_to_lsp_range(range.clone().map_unit(ByteOffset), rope.clone());
+						let Some(slice) = rope.get_byte_slice(range.clone()) else {
+							dbg!(&range);
+							break 'match_;
+						};
+						let slice = Cow::from(slice);
+						return self.hover_model(&slice, lsp_range);
+					}
+				} else if capture.index == 10 {
+					// @access
+					let range = capture.node.byte_range();
+					if range.contains(&offset) || range.end == offset {
+						let lsp_range = ts_range_to_lsp_range(capture.node.range());
+						let lhs = some!(capture.node.prev_named_sibling());
+						let lhs = lhs.byte_range().map_unit(ByteOffset);
+						let model = some!(self.model_of_range(ast.root_node(), lhs, None, &bytes));
+						let field = String::from_utf8_lossy(&bytes[range]);
+						let model = interner().resolve(&model);
+						return self.hover_field_name(&field, model, Some(lsp_range));
+					}
+				}
+			}
+		}
+		Ok(None)
+	}
 }
 
 #[cfg(test)]

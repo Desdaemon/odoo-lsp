@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -22,8 +23,8 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
-use odoo_lsp::index::{interner, Index, Interner, ModuleName, RecordId};
-use odoo_lsp::model::{FieldKind, ModelLocation, ModelName};
+use odoo_lsp::index::{interner, Index, Interner, ModuleName, RecordId, SymbolSet};
+use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName};
 use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{format_loc, some, utils::*};
 
@@ -31,6 +32,9 @@ mod analyze;
 mod catch_panic;
 mod python;
 mod xml;
+
+/// Maximum number of descendants to show in docstring.
+const INHERITS_LIMIT: usize = 3;
 
 pub struct Backend {
 	client: Client,
@@ -106,6 +110,7 @@ impl LanguageServer for Backend {
 			offset_encoding: None,
 			capabilities: ServerCapabilities {
 				definition_provider: Some(OneOf::Left(true)),
+				hover_provider: Some(HoverProviderCapability::Simple(true)),
 				references_provider: Some(OneOf::Left(true)),
 				workspace_symbol_provider: Some(OneOf::Left(true)),
 				text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::INCREMENTAL)),
@@ -471,10 +476,10 @@ impl LanguageServer for Backend {
 					if let Err(err) = entry.resolve_details().await {
 						dbg!(err);
 					}
-					if let Some(help) = &entry.docstring {
-						let help = help.to_string().into_owned();
-						completion.documentation = Some(Documentation::String(help));
-					}
+					completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
+						kind: MarkupKind::Markdown,
+						value: self.model_docstring(&entry),
+					}))
 				}
 				Some(CompletionItemKind::FIELD) => {
 					// NOTE: This was injected by complete().
@@ -484,6 +489,7 @@ impl LanguageServer for Backend {
 					let Some(field) = interner().get(&completion.label) else {
 						break 'resolve;
 					};
+					let field_name = interner().resolve(&field);
 					let Some(model) = interner().get(value) else {
 						break 'resolve;
 					};
@@ -500,26 +506,33 @@ impl LanguageServer for Backend {
 								Some(format!("{type_}(\"{relation}\", …)"))
 							}
 						};
-						let module = self
-							.index
-							.module_of_path(Path::new(interner().resolve(&field.location.path)))
-							.unwrap();
-						let module = interner().resolve(&module);
-						let text = if let Some(help) = &field.help {
-							format!("*Defined in:* `{module}` \n{}", help.to_string())
-						} else {
-							format!("*Defined in:* `{module}`")
-						};
 						completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 							kind: MarkupKind::Markdown,
-							value: text,
-						}));
+							value: self.field_docstring(field_name, field, false),
+						}))
 					}
 				}
 				_ => {}
 			}
 		}
 		Ok(completion)
+	}
+	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+		let uri = &params.text_document_position_params.text_document.uri;
+		let document = some!(self.document_map.get(uri.path()));
+		let (_, ext) = some!(uri.path().split_once('.'));
+		if ext == "py" {
+			match self.python_hover(params, document.value().clone()).await {
+				Ok(ret) => Ok(ret),
+				Err(err) => {
+					debug!("{err}");
+					Ok(None)
+				}
+			}
+		} else {
+			debug!("Unsupported file {}", uri.path());
+			Ok(None)
+		}
 	}
 	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
 		let items = self
@@ -825,6 +838,11 @@ impl Backend {
 			.flat_map(|(_, key)| self.index.models.get(key))
 			.map(|entry| {
 				let label = interner().resolve(entry.key()).to_string();
+				let module = entry.base.as_ref().and_then(|base| {
+					let loc = interner().resolve(&base.0.path);
+					let module = self.index.module_of_path(Path::new(loc))?;
+					Some(interner().resolve(&module).to_string())
+				});
 				CompletionItem {
 					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 						new_text: label.clone(),
@@ -832,6 +850,7 @@ impl Backend {
 						replace: range,
 					})),
 					label,
+					detail: module,
 					kind: Some(CompletionItemKind::CLASS),
 					..Default::default()
 				}
@@ -870,6 +889,17 @@ impl Backend {
 			None => Ok(None),
 		}
 	}
+	fn hover_model(&self, model: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
+		let model = some!(interner().get(model));
+		let model = some!(self.index.models.get(&model.into()));
+		Ok(Some(Hover {
+			range,
+			contents: HoverContents::Markup(MarkupContent {
+				kind: MarkupKind::Markdown,
+				value: self.model_docstring(&model),
+			}),
+		}))
+	}
 	fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model = interner().get_or_intern(model);
 		let mut entry = some!(self.index.models.get_mut(&model.into()));
@@ -877,6 +907,20 @@ impl Backend {
 		let fields = block_on(self.populate_field_names(&mut entry))?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
+	}
+	fn hover_field_name(&self, name: &str, model: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
+		let model = interner().get_or_intern(model);
+		let mut entry = some!(self.index.models.get_mut(&model.into()));
+		let field = some!(interner().get(name));
+		let fields = block_on(self.populate_field_names(&mut entry))?;
+		let field = some!(fields.get(&field.into()));
+		Ok(Some(Hover {
+			range,
+			contents: HoverContents::Markup(MarkupContent {
+				kind: MarkupKind::Markdown,
+				value: self.field_docstring(name, field, true),
+			}),
+		}))
 	}
 	fn model_references(&self, model: &ModelName) -> miette::Result<Option<Vec<Location>>> {
 		let record_locations = self
@@ -915,6 +959,87 @@ impl Backend {
 			.map(|record| record.location.clone().into())
 			.take(limit);
 		Ok(Some(locations.collect()))
+	}
+	fn model_docstring(&self, model: &ModelEntry) -> String {
+		use std::fmt::Write;
+		let mut out = String::new();
+		if let Some(base) = &model.base {
+			if let Some(module) = self.index.module_of_path(Path::new(interner().resolve(&base.0.path))) {
+				let module = interner().resolve(&module);
+				out = format!("*Defined in:* `{module}` \n");
+			}
+		}
+		let mut descendants = model
+			.descendants
+			.iter()
+			.map(|loc| &loc.0)
+			.scan(SymbolSet::default(), |mods, loc| {
+				let Some(module) = self.index.module_of_path(Path::new(interner().resolve(&loc.path))) else {
+					return Some(None);
+				};
+				if mods.insert(*module) {
+					Some(Some(loc))
+				} else {
+					Some(None)
+				}
+			})
+			.flatten();
+		let mut descendants_count = 0;
+		while descendants_count < INHERITS_LIMIT {
+			let Some(loc) = descendants.next() else {
+				break;
+			};
+			let Some(module) = self.index.module_of_path(Path::new(interner().resolve(&loc.path))) else {
+				continue;
+			};
+			let module = interner().resolve(&module);
+			if descendants_count == 0 {
+				_ = write!(&mut out, "*Inherited in:* `{module}`");
+			} else {
+				_ = write!(&mut out, ", `{module}`");
+			}
+			descendants_count += 1
+		}
+		let remaining = descendants.count();
+		if remaining > 0 {
+			_ = writeln!(&mut out, " (+{remaining} modules) ");
+		} else {
+			_ = writeln!(&mut out, " ");
+		}
+		if let Some(help) = &model.docstring {
+			_ = out.write_str(help.to_string().as_ref());
+		}
+		out
+	}
+	fn field_docstring(&self, name: &str, field: &Field, sig: bool) -> String {
+		use std::fmt::Write;
+		let mut out = String::new();
+		let type_ = interner().resolve(&field.type_);
+		if sig {
+			match &field.kind {
+				FieldKind::Value => {
+					out = format!(concat!("```python\n", "{} = fields.{}(…)\n", "```\n\n"), name, type_)
+				}
+				FieldKind::Relational(relation) => {
+					let relation = interner().resolve(relation);
+					out = format!(
+						concat!("```python\n", "{} = fields.{}(\"{}\", …)\n", "```\n\n"),
+						name, type_, relation
+					);
+				}
+			}
+		}
+		if let Some(module) = self
+			.index
+			.module_of_path(Path::new(interner().resolve(&field.location.path)))
+		{
+			let module = interner().resolve(&module);
+			_ = writeln!(&mut out, "*Defined in:* `{module}` ");
+		}
+		if let Some(help) = &field.help {
+			_ = out.write_str(help.to_string().as_ref());
+		}
+		out
 	}
 	async fn on_change_config(&self, config: Config) {
 		if let Some(SymbolsConfig { limit: Some(limit) }) = config.symbols {
