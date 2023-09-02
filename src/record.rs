@@ -1,10 +1,11 @@
-use lasso::ThreadedRodeo;
+use lasso::{Spur, ThreadedRodeo};
 use miette::diagnostic;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::index::ModuleName;
+use crate::index::{interner, ModuleName};
+use crate::model::ModelName;
 use crate::utils::MinLoc;
 use crate::utils::{char_to_position, position_to_char, CharOffset};
 use crate::ImStr;
@@ -24,9 +25,9 @@ pub struct Record {
 	pub deleted: bool,
 	pub id: ImStr,
 	pub module: ModuleName,
-	pub model: Option<ImStr>,
+	pub model: Option<ModelName>,
 	/// (inherit_module?, xml_id)
-	pub inherit_id: Option<(Option<ImStr>, ImStr)>,
+	pub inherit_id: Option<(Option<ModelName>, ImStr)>,
 	pub location: MinLoc,
 }
 
@@ -37,7 +38,7 @@ impl Record {
 	pub fn from_reader(
 		offset: CharOffset,
 		module: ModuleName,
-		path: ImStr,
+		path: Spur,
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
@@ -62,7 +63,7 @@ impl Record {
 							id = Some(value.as_str().into());
 						}
 					}
-					"model" => model = Some(value.to_string().into()),
+					"model" => model = Some(interner().get_or_intern(value.as_str()).into()),
 					_ => {}
 				},
 				Some(Ok(Token::ElementStart { local, .. })) => {
@@ -81,7 +82,7 @@ impl Record {
 									is_inherit_id = true
 								}
 								Some(Ok(Token::Attribute { local, value, .. })) if local.as_str() == "ref" => {
-									maybe_inherit_id = Some(value.as_str().to_string());
+									maybe_inherit_id = Some(value.as_str());
 								}
 								Some(Ok(Token::ElementEnd { .. })) => break,
 								None | Some(Err(_)) => break,
@@ -95,7 +96,7 @@ impl Record {
 							continue;
 						};
 						if let Some((module, xml_id)) = maybe_inherit_id.split_once('.') {
-							inherit_id = Some((Some(module.to_string().into()), xml_id.into()));
+							inherit_id = Some((Some(interner().get_or_intern(module).into()), xml_id.into()));
 						} else {
 							inherit_id = Some((None, maybe_inherit_id.into()));
 						}
@@ -153,7 +154,7 @@ impl Record {
 	pub fn template(
 		offset: CharOffset,
 		module: ModuleName,
-		path: ImStr,
+		path: Spur,
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
@@ -171,13 +172,15 @@ impl Record {
 				Some(Ok(Token::Attribute { local, value, .. })) if in_template => match local.as_bytes() {
 					b"id" => {
 						if let Some((_, xml_id)) = value.split_once('.') {
-							id = Some(xml_id.to_string().into());
+							id = Some(xml_id.into());
 						} else {
-							id = Some(value.to_string().into());
+							id = Some(value.as_str().into());
 						}
 					}
 					b"inherit_id" => match value.split_once('.') {
-						Some((module, xml_id)) => inherit_id = Some((Some(module.into()), xml_id.into())),
+						Some((module, xml_id)) => {
+							inherit_id = Some((Some(interner().get_or_intern(module).into()), xml_id.into()))
+						}
 						None => inherit_id = Some((None, value.as_str().into())),
 					},
 					_ => {}
@@ -229,7 +232,7 @@ impl Record {
 		Ok(Some(Self {
 			id: some!(id),
 			deleted: false,
-			model: Some("ir.ui.view".into()),
+			model: Some(interner().get_or_intern("ir.ui.view").into()),
 			module,
 			inherit_id,
 			location: MinLoc { path, range },

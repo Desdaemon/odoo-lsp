@@ -14,7 +14,7 @@ use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token, Tokenizer};
 
 use odoo_lsp::record::Record;
-use odoo_lsp::{some, utils::*, ImStr};
+use odoo_lsp::{some, utils::*};
 
 enum RefKind {
 	Ref(Spur),
@@ -44,20 +44,16 @@ impl Backend {
 		};
 		// let current_module = ImStr::from(current_module.as_str());
 		let mut record_prefix = self.index.records.by_prefix.write().await;
-		let path_uri = ImStr::from(uri.path());
+		let path_uri = interner.get_or_intern(uri.path());
 		loop {
 			match reader.next() {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
 					let offset = CharOffset(span.start());
 					match local.as_str() {
 						"record" => {
-							let Ok(Some(record)) = Record::from_reader(
-								offset,
-								*current_module,
-								path_uri.clone(),
-								&mut reader,
-								rope.clone(),
-							) else {
+							let Ok(Some(record)) =
+								Record::from_reader(offset, *current_module, path_uri, &mut reader, rope.clone())
+							else {
 								continue;
 							};
 							let Some(range) = lsp_range_to_char_range(record.location.range, rope.clone()) else {
@@ -70,13 +66,12 @@ impl Backend {
 									interner.get_or_intern(record.qualified_id(interner)).into(),
 									record,
 									Some(&mut record_prefix),
-									interner,
 								)
 								.await;
 						}
 						"template" => {
 							let Ok(Some(template)) =
-								Record::template(offset, *current_module, path_uri.clone(), &mut reader, rope.clone())
+								Record::template(offset, *current_module, path_uri, &mut reader, rope.clone())
 							else {
 								continue;
 							};
@@ -90,7 +85,6 @@ impl Backend {
 									interner.get_or_intern(template.qualified_id(interner)).into(),
 									template,
 									Some(&mut record_prefix),
-									interner,
 								)
 								.await;
 						}
@@ -258,7 +252,10 @@ impl Backend {
 			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
 		match ref_kind {
-			Some(RefKind::Model) => self.model_references(&cursor_value),
+			Some(RefKind::Model) => {
+				let model = some!(interner().get(cursor_value.as_str()));
+				self.model_references(&model.into())
+			}
 			Some(RefKind::Ref(_)) | Some(RefKind::Id) => {
 				self.record_references(&cursor_value, current_module.as_deref())
 			}

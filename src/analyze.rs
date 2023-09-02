@@ -186,8 +186,8 @@ impl Backend {
 						// (for_statement (_) @iteratee (_) @src (block))
 						children = child.named_child(2)?.named_children(&mut cursor).peekable();
 						scope = Scope::new(Some(scope));
-						let src = String::from_utf8_lossy(&contents[src.byte_range()]);
-						scope.insert(src.into_owned(), type_);
+						let iter = String::from_utf8_lossy(&contents[iter.byte_range()]);
+						scope.insert(iter.into_owned(), type_);
 					}
 				}
 				"list_comprehension" | "set_comprehension" | "dictionary_comprehension" => {
@@ -233,8 +233,7 @@ impl Backend {
 					let interner = interner();
 					let xml_id = interner.get(xml_id)?;
 					let record = self.index.records.get(&xml_id.into())?;
-					let model = interner.get(record.model.as_ref()?);
-					return model.map(Into::into);
+					return record.model;
 				}
 				_ => {}
 			}
@@ -289,24 +288,23 @@ impl Backend {
 						Type::Record(xml_id) => {
 							let xml_id = interner.get(xml_id)?;
 							let record = self.index.records.get(&xml_id.into())?;
-							Some(Type::ModelFn(record.model.clone()?))
+							Some(Type::ModelFn(interner.resolve(record.model.as_deref()?).into()))
 						}
 						_ => None,
 					},
 					ident if rhs.kind() == "identifier" => {
 						let model = match lhs {
-							Type::Model(model) => model,
+							Type::Model(model) => ModelName::from(interner.get(model.as_str())?),
 							Type::Record(xml_id) => {
 								let xml_id = interner.get(xml_id)?;
 								let record = self.index.records.get(&xml_id.into())?;
-								record.model.clone()?
+								record.model?
 							}
 							_ => return None,
 						};
-						let model = interner.get(model.as_str())?;
 						let ident = String::from_utf8_lossy(ident);
 						let ident = interner.get_or_intern(ident.as_ref());
-						let mut entry = self.index.models.get_mut(&model.into())?;
+						let mut entry = self.index.models.get_mut(&model)?;
 						let fields = block_on(self.populate_field_names(&mut entry));
 						let field = fields.ok()?.get(&ident.into())?;
 						match field.kind {

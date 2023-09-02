@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
 use tree_sitter::{Parser, Query, QueryCursor};
 
-use crate::index::{Interner, Symbol, SymbolMap};
+use crate::index::{interner, Interner, Symbol, SymbolMap};
 use crate::str::Text;
 use crate::utils::{ByteOffset, ByteRange, Erase, MinLoc};
 use crate::ImStr;
@@ -69,13 +69,16 @@ impl Display for ModelLocation {
 			write!(
 				f,
 				"{} [{}:{}..{}]",
-				self.0.path, self.0.range.start.line, self.0.range.start.character, self.0.range.end.character,
+				interner().resolve(&self.0.path),
+				self.0.range.start.line,
+				self.0.range.start.character,
+				self.0.range.end.character,
 			)
 		} else {
 			write!(
 				f,
 				"{} [{}:{}..{}:{}]",
-				self.0.path,
+				interner().resolve(&self.0.path),
 				self.0.range.start.line,
 				self.0.range.start.character,
 				self.0.range.end.line,
@@ -94,7 +97,7 @@ impl Deref for ModelIndex {
 }
 
 impl ModelIndex {
-	pub async fn extend_models<I>(&self, path: ImStr, interner: &Interner, items: I)
+	pub async fn extend_models<I>(&self, path: Spur, interner: &Interner, items: I)
 	where
 		I: IntoIterator<Item = Model>,
 	{
@@ -107,7 +110,7 @@ impl ModelIndex {
 					let mut entry = self.entry(name).or_default();
 					entry.base = Some(ModelLocation(
 						MinLoc {
-							path: path.clone(),
+							path,
 							range: item.range,
 						},
 						item.byte_range,
@@ -118,7 +121,7 @@ impl ModelIndex {
 						let inherit = interner.get_or_intern(inherit).into();
 						self.entry(inherit).or_default().descendants.push(ModelLocation(
 							MinLoc {
-								path: path.clone(),
+								path,
 								range: item.range,
 							},
 							item.byte_range.clone(),
@@ -141,7 +144,7 @@ impl ModelEntry {
 			return Ok(());
 		};
 		if self.docstring.is_none() {
-			let contents = tokio::fs::read(loc.path.as_str()).await.into_diagnostic()?;
+			let contents = tokio::fs::read(interner().resolve(&loc.path)).await.into_diagnostic()?;
 			let mut parser = Parser::new();
 			parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
 			let ast = parser

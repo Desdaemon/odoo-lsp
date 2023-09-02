@@ -1,26 +1,27 @@
 use std::fmt::Display;
 use std::ops::{Add, Sub};
 
+use lasso::Spur;
 use log::warn;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token};
 
-use crate::ImStr;
+use crate::index::interner;
 
 pub mod isolate;
 
 /// A more economical version of [Location].
 #[derive(Clone, Debug)]
 pub struct MinLoc {
-	pub path: ImStr,
+	pub path: Spur,
 	pub range: Range,
 }
 
 impl From<MinLoc> for Location {
 	fn from(value: MinLoc) -> Self {
 		Location {
-			uri: format!("file://{}", value.path).parse().unwrap(),
+			uri: format!("file://{}", interner().resolve(&value.path)).parse().unwrap(),
 			range: value.range,
 		}
 	}

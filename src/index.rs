@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use dashmap::DashSet;
 use globwalk::FileType;
-use lasso::ThreadedRodeo;
+use lasso::{Spur, ThreadedRodeo};
 use log::{debug, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
@@ -39,7 +39,7 @@ pub enum Module {}
 
 enum Output {
 	Xml { records: Vec<Record> },
-	Models { path: ImStr, models: Vec<Model> },
+	Models { path: Spur, models: Vec<Model> },
 }
 
 pub struct AddRootResults {
@@ -82,7 +82,6 @@ impl Index {
 				.ok_or_else(|| miette::diagnostic!("Unexpected empty path"))?;
 			let module_name = module_dir.file_name().unwrap().to_string_lossy().to_string();
 			if let Some((client, token)) = &progress {
-				// let module_name = module_name.clone();
 				_ = client
 					.send_notification::<Progress>(ProgressParams {
 						token: token.clone(),
@@ -193,7 +192,7 @@ impl Index {
 }
 
 async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<Output> {
-	let path_uri = ImStr::from(path.to_string_lossy().as_ref());
+	let path_uri = interner().get_or_intern(path.to_string_lossy().as_ref());
 	let file = tokio::fs::read(&path)
 		.await
 		.into_diagnostic()
@@ -209,7 +208,7 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 					let record = Record::from_reader(
 						CharOffset(span.start()),
 						module_name,
-						path_uri.clone(),
+						path_uri,
 						&mut reader,
 						rope.clone(),
 					)?;
@@ -218,7 +217,7 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 					let template = Record::template(
 						CharOffset(span.start()),
 						module_name,
-						path_uri.clone(),
+						path_uri,
 						&mut reader,
 						rope.clone(),
 					)?;
@@ -330,10 +329,8 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 		}
 	}
 
-	Ok(Output::Models {
-		path: path.to_string_lossy().to_string().into(),
-		models: out,
-	})
+	let path = interner().get_or_intern(path.to_string_lossy().as_ref());
+	Ok(Output::Models { path, models: out })
 }
 
 #[cfg(test)]

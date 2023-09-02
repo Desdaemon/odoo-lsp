@@ -16,6 +16,11 @@ use odoo_lsp::model::{Field, FieldKind, FieldName, ModelEntry, ModelLocation};
 use odoo_lsp::utils::*;
 use odoo_lsp::{format_loc, some};
 
+/// Since tree-sitter-python has limited facility for error recovery,
+/// we allow this many characters to match all elements since autocompletion
+/// only kicks in for valid syntax.
+const PYTHON_LENIENCY_WINDOW: usize = 3;
+
 fn py_completions() -> &'static Query {
 	static QUERY: OnceLock<Query> = OnceLock::new();
 	QUERY.get_or_init(|| {
@@ -177,10 +182,7 @@ impl Backend {
 							&bytes
 						));
 						let model = interner().resolve(&model);
-						let needle = if offset - range.start <= 2 {
-							// Since tree-sitter-python has limited facility for error recovery,
-							// we allow the first few characters to match all elements since autocompletion
-							// only kicks in for valid syntax.
+						let needle = if offset - range.start <= PYTHON_LENIENCY_WINDOW {
 							Cow::from("")
 						} else {
 							Cow::from(slice.byte_slice(..offset - range.start))
@@ -299,7 +301,8 @@ impl Backend {
 							break 'match_;
 						};
 						let slice = Cow::from(slice);
-						return self.model_references(&slice);
+						let slice = some!(interner().get(slice));
+						return self.model_references(&slice.into());
 					}
 				}
 			}
@@ -318,10 +321,11 @@ impl Backend {
 		let query = model_fields();
 		let mut tasks = tokio::task::JoinSet::<miette::Result<Vec<_>>>::new();
 		for ModelLocation(location, byte_range) in locations.cloned() {
-			let interner = interner().clone();
 			tasks.spawn(async move {
 				let mut fields = vec![];
-				let contents = tokio::fs::read(location.path.as_str()).await.into_diagnostic()?;
+				let contents = tokio::fs::read(interner().resolve(&location.path))
+					.await
+					.into_diagnostic()?;
 				let mut parser = Parser::new();
 				parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
 				let ast = parser
@@ -383,22 +387,22 @@ impl Backend {
 					}
 					if let (Some(field), Some(type_)) = (field, type_) {
 						let range = ts_range_to_lsp_range(field.range());
-						let field = String::from_utf8_lossy(&contents[field.byte_range()]);
-						let field = interner.get_or_intern(&field);
+						let field_str = String::from_utf8_lossy(&contents[field.byte_range()]);
+						let field = interner().get_or_intern(&field_str);
+						let type_ = String::from_utf8_lossy(&contents[type_]);
 						let kind = if let Some(relation) = relation {
 							let relation = String::from_utf8_lossy(&contents[relation]);
-							let relation = interner.get_or_intern(&relation);
+							let relation = interner().get_or_intern(&relation);
 							FieldKind::Relational(relation)
 						} else if is_relational {
-							debug!("is_relational but no relation found");
+							debug!("is_relational but no relation found: field={field_str} type={type_}");
 							continue;
 						} else {
 							FieldKind::Value
 						};
-						let type_ = String::from_utf8_lossy(&contents[type_]);
-						let type_ = interner.get_or_intern(&type_);
+						let type_ = interner().get_or_intern(&type_);
 						let location = MinLoc {
-							path: location.path.clone(),
+							path: location.path,
 							range,
 						};
 						let help = help.map(|help| odoo_lsp::str::Text::try_from(help.as_ref()).unwrap());
@@ -441,7 +445,7 @@ mod tests {
 	use super::*;
 	use pretty_assertions::assert_eq;
 
-	/// Tricky behavior here. The query syntax required to match the trailing comma between
+	/// Tricky behavior here. The query syntax must match the trailing comma between
 	/// named arguments, and this test checks that. Furthermore, @help cannot be matched
 	/// as a `(string)` since that would reify its shape and refuse subsequent matches.
 	#[test]

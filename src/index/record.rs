@@ -11,14 +11,14 @@ use lasso::{Key, Spur, ThreadedRodeo};
 use qp_trie::wrapper::BString;
 use tokio::sync::RwLock;
 
-use crate::{record::Record, ImStr};
+use crate::{model::ModelName, record::Record};
 
-use super::Symbol;
+use super::{interner, Symbol};
 
 #[derive(Default)]
 pub struct RecordIndex {
 	inner: DashMap<RecordId, Record>,
-	by_model: DashMap<ImStr, SymbolSet<Record>>,
+	by_model: DashMap<ModelName, SymbolSet<Record>>,
 	by_inherit_id: DashMap<RecordId, SymbolSet<Record>>,
 	pub by_prefix: Arc<RwLock<RecordPrefixTrie>>,
 }
@@ -35,19 +35,14 @@ impl Deref for RecordIndex {
 }
 
 impl RecordIndex {
-	pub async fn insert(
-		&self,
-		qualified_id: RecordId,
-		record: Record,
-		prefix: Option<&mut RecordPrefixTrie>,
-		interner: &ThreadedRodeo,
-	) {
+	pub async fn insert(&self, qualified_id: RecordId, record: Record, prefix: Option<&mut RecordPrefixTrie>) {
+		let interner = interner();
 		if let Some(model) = &record.model {
-			self.by_model.entry(model.clone()).or_default().insert(qualified_id);
+			self.by_model.entry(*model).or_default().insert(qualified_id);
 		}
 		if let Some(inherit_id) = &record.inherit_id {
 			let inherit_id = match inherit_id {
-				(Some(module), xml_id) => format!("{module}.{xml_id}"),
+				(Some(module), xml_id) => format!("{}.{xml_id}", interner.resolve(module)),
 				(None, xml_id) => format!("{}.{xml_id}", interner.resolve(&record.module)),
 			};
 			let inherit_id = interner.get_or_intern(inherit_id);
@@ -80,17 +75,17 @@ impl RecordIndex {
 		if let Some(prefix) = prefix {
 			for record in records {
 				let id = interner.get_or_intern(record.qualified_id(interner));
-				self.insert(id.into(), record, Some(prefix), interner).await;
+				self.insert(id.into(), record, Some(prefix)).await;
 			}
 		} else {
 			let mut prefix = self.by_prefix.write().await;
 			for record in records {
 				let id = interner.get_or_intern(record.qualified_id(interner));
-				self.insert(id.into(), record, Some(&mut prefix), interner).await;
+				self.insert(id.into(), record, Some(&mut prefix)).await;
 			}
 		}
 	}
-	pub fn by_model(&self, model: &str) -> impl Iterator<Item = Ref<RecordId, Record>> {
+	pub fn by_model(&self, model: &ModelName) -> impl Iterator<Item = Ref<RecordId, Record>> {
 		self.by_model
 			.get(model)
 			.into_iter()

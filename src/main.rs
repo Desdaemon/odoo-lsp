@@ -23,7 +23,7 @@ use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{interner, Index, Interner, ModuleName, RecordId};
-use odoo_lsp::model::{FieldKind, ModelLocation};
+use odoo_lsp::model::{FieldKind, ModelLocation, ModelName};
 use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{format_loc, some, utils::*};
 
@@ -502,11 +502,11 @@ impl LanguageServer for Backend {
 						};
 						let module = self
 							.index
-							.module_of_path(Path::new(field.location.path.as_str()))
+							.module_of_path(Path::new(interner().resolve(&field.location.path)))
 							.unwrap();
 						let module = interner().resolve(&module);
 						let text = if let Some(help) = &field.help {
-							format!("*Defined in:* `{module}`\n\n{}", help.to_string())
+							format!("*Defined in:* `{module}` \n{}", help.to_string())
 						} else {
 							format!("*Defined in:* `{module}`")
 						};
@@ -728,6 +728,7 @@ impl Backend {
 	) -> miette::Result<()> {
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_xml_id) range"))?;
 		let by_prefix = self.index.records.by_prefix.read().await;
+		let model_filter = model_filter.and_then(|model| interner().get(model).map(ModelName::from));
 		fn to_completion_items(
 			entry: &Record,
 			current_module: ModuleName,
@@ -759,7 +760,7 @@ impl Backend {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.keys().flat_map(|key| {
 					self.index.records.get(&key).and_then(|entry| {
-						(entry.module == module && (model_filter.is_none() || entry.model.as_deref() == model_filter))
+						(entry.module == module && (model_filter.is_none() || entry.model == model_filter))
 							.then(|| to_completion_items(&entry, current_module, range, true, interner))
 					})
 				})
@@ -769,7 +770,7 @@ impl Backend {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.keys().flat_map(|key| {
 					self.index.records.get(&key).and_then(|entry| {
-						(model_filter.is_none() || entry.model.as_deref() == model_filter)
+						(model_filter.is_none() || entry.model == model_filter)
 							.then(|| to_completion_items(&entry, current_module, range, false, interner))
 					})
 				})
@@ -877,15 +878,14 @@ impl Backend {
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
 	}
-	fn model_references(&self, model: &str) -> miette::Result<Option<Vec<Location>>> {
+	fn model_references(&self, model: &ModelName) -> miette::Result<Option<Vec<Location>>> {
 		let record_locations = self
 			.index
 			.records
 			.by_model(model)
 			.map(|record| record.location.clone().into());
-		let model = some!(interner().get(model));
 		let limit = self.references_limit.load(Relaxed);
-		if let Some(entry) = self.index.models.get(&model.into()) {
+		if let Some(entry) = self.index.models.get(model) {
 			let inherit_locations = entry.descendants.iter().map(|loc| loc.0.clone().into());
 			Ok(Some(inherit_locations.chain(record_locations).take(limit).collect()))
 		} else {

@@ -1,3 +1,5 @@
+use std::any::type_name;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -8,10 +10,18 @@ use lasso::Spur;
 use super::Interner;
 
 /// Type-safe wrapper around [Spur].
-#[derive(Debug)]
 pub struct Symbol<T> {
 	inner: Spur,
 	_kind: PhantomData<T>,
+}
+
+impl<T> Debug for Symbol<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_tuple("Symbol")
+			.field(&type_name::<T>())
+			.field(&self.inner)
+			.finish()
+	}
 }
 
 // TODO: Remove in favor of strict-type symbols
