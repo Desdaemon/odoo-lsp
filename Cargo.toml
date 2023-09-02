@@ -9,7 +9,7 @@ license = "MIT"
 keywords = ["lsp", "language-server", "python", "javascript", "xml"]
 categories = ["development-tools"]
 exclude = [
-  "/client", "/static", "/examples", ".*",
+  "/client", "/static", "/examples", "/scripts", ".*",
   "pnpm-lock.yaml", "package.json", "tsconfig.json", "webpack.*"
 ]
 

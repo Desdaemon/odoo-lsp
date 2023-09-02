@@ -69,7 +69,7 @@ fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
 						(child.kind() == "string_content").then(|| {
 							String::from_utf8_lossy(&contents[child.byte_range()])
 								.trim()
-								.replace("\\n", "\n")
+								.replace("\\n", "  \n")
 								.replace("\\t", "\t")
 						})
 					});

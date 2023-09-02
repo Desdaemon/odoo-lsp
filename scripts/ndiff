@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+git log --numstat --pretty="%H" $(git describe --tags --match="v*" --abbrev=0)..HEAD | \
+  awk 'NF==3 {plus+=$1; minus+=$2} END {printf ("+%d, -%d\n", plus, minus)}'
+

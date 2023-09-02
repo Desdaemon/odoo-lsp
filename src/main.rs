@@ -754,6 +754,7 @@ impl Backend {
 			} else {
 				entry.qualified_id(interner)
 			};
+			let model = entry.model.as_ref().map(|model| interner.resolve(&model).to_string());
 			CompletionItem {
 				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 					new_text: label.clone(),
@@ -761,6 +762,7 @@ impl Backend {
 					replace: range,
 				})),
 				label,
+				detail: model,
 				kind: Some(CompletionItemKind::REFERENCE),
 				..Default::default()
 			}
@@ -966,7 +968,7 @@ impl Backend {
 		if let Some(base) = &model.base {
 			if let Some(module) = self.index.module_of_path(Path::new(interner().resolve(&base.0.path))) {
 				let module = interner().resolve(&module);
-				out = format!("*Defined in:* `{module}` \n");
+				out = format!("*Defined in:* `{module}`  \n");
 			}
 		}
 		let mut descendants = model
@@ -1002,9 +1004,9 @@ impl Backend {
 		}
 		let remaining = descendants.count();
 		if remaining > 0 {
-			_ = writeln!(&mut out, " (+{remaining} modules) ");
+			_ = writeln!(&mut out, " (+{remaining} modules)  \n");
 		} else {
-			_ = writeln!(&mut out, " ");
+			_ = out.write_str("  \n\n");
 		}
 		if let Some(help) = &model.docstring {
 			_ = out.write_str(help.to_string().as_ref());
@@ -1034,7 +1036,7 @@ impl Backend {
 			.module_of_path(Path::new(interner().resolve(&field.location.path)))
 		{
 			let module = interner().resolve(&module);
-			_ = writeln!(&mut out, "*Defined in:* `{module}` ");
+			_ = writeln!(&mut out, "*Defined in:* `{module}`  ");
 		}
 		if let Some(help) = &field.help {
 			_ = out.write_str(help.to_string().as_ref());
