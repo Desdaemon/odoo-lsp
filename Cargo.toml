@@ -8,6 +8,10 @@ repository = "https://github.com/Desdaemon/odoo-lsp"
 license = "MIT"
 keywords = ["lsp", "language-server", "python", "javascript", "xml"]
 categories = ["development-tools"]
+exclude = [
+  "/client", "/static", "/examples", ".*",
+  "pnpm-lock.yaml", "package.json", "tsconfig.json", "webpack.*"
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
