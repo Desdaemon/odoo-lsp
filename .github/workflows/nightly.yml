@@ -166,5 +166,4 @@ jobs:
           name: ${{ env.TAG }}
           tag_name: ${{ env.TAG }}
           generate_release_notes: true
-          # https://medium.com/@sohail.ra5/github-actions-passing-boolean-input-variables-to-reusable-workflow-call-42d39bf7342e
-          prerelease: ${{ inputs.prerelease == 'true' }}
+          prerelease: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease == 'true' }}
