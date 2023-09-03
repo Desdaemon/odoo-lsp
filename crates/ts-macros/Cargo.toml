@@ -1,0 +1,15 @@
+[package]
+name = "ts-macros"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0.66"
+proc-macro2-diagnostics = "0.10.1"
+quote = "1.0.33"
+syn = { version = "2", default-features = false, features = ["parsing"] }

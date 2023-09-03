@@ -13,6 +13,12 @@ exclude = [
   "pnpm-lock.yaml", "package.json", "tsconfig.json", "webpack.*"
 ]
 
+[workspace]
+members = [
+  ".",
+  "crates/*"
+]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [profile.release]
@@ -51,6 +57,8 @@ lasso = { version = "0.7.2", features = ["multi-threaded"] }
 intmap = "2.0.0"
 libflate = "2.0.0"
 phf = { version = "0.11.2", features = ["macros"] }
+ts-macros = { version = "0.1.0", path = "crates/ts-macros" }
+
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"

@@ -2,7 +2,6 @@ use crate::{Backend, Text};
 
 use std::borrow::Cow;
 use std::path::Path;
-use std::sync::OnceLock;
 
 use lasso::Key;
 use log::{debug, error};
@@ -10,44 +9,119 @@ use miette::{diagnostic, Context, IntoDiagnostic};
 use odoo_lsp::index::{interner, SymbolMap};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
-use tree_sitter::{Node, Parser, Query, QueryCursor, Tree};
+use tree_sitter::{Node, Parser, QueryCursor, Tree};
 
 use odoo_lsp::model::{Field, FieldKind, FieldName, ModelEntry, ModelLocation};
 use odoo_lsp::utils::*;
 use odoo_lsp::{format_loc, some};
+use ts_macros::query;
 
-/// Since tree-sitter-python has limited facility for error recovery,
-/// we allow this many characters to match all elements since autocompletion
-/// only kicks in for valid syntax.
-const PYTHON_LENIENCY_WINDOW: usize = 3;
+query! {
+PyCompletions(_, _, REQUEST, _, XML_ID, MODEL, _, _, _, _, _, _, _, _, ACCESS);
+	r#"
+((call
+  [(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
+   (attribute (identifier) @_env (identifier) @_ref)
+   (attribute (identifier) @REQUEST (identifier) @_render)]
+  (argument_list . (string) @XML_ID))
+ (#eq? @_env "env")
+ (#eq? @_ref "ref")
+ (#eq? @REQUEST "request")
+ (#eq? @_render "render"))
 
-fn py_completions() -> &'static Query {
-	static QUERY: OnceLock<Query> = OnceLock::new();
-	QUERY.get_or_init(|| {
-		tree_sitter::Query::new(
-			tree_sitter_python::language(),
-			include_str!("queries/py_completions.scm"),
-		)
-		.unwrap()
-	})
+((subscript
+  [(identifier) @_env
+   (attribute (_) (identifier) @_env)]
+  (string) @MODEL)
+ (#eq? @_env "env"))
+
+((class_definition
+  (block
+    (expression_statement
+      (assignment (identifier) @_name (string) @NAME))?
+    (expression_statement
+      (assignment
+        (identifier) @_inherit
+        [(string) @MODEL
+         (list ((string) @MODEL ",")*)]))?
+    (decorated_definition
+      (decorator
+        (call
+          (attribute (identifier) @_api (identifier) @_depends)))
+      (function_definition))?))))
+ (#eq? @_inherit "_inherit"))
+
+((call
+  [(identifier) @_Field
+   (attribute (identifier) @_fields (identifier) @_Field)]
+  [(argument_list . (string) @MODEL)
+   (argument_list
+    (keyword_argument (identifier) @_comodel_name (string) @MODEL))])
+ (#eq? @_fields "fields")
+ (#eq? @_comodel_name "comodel_name")
+ (#match? @_Field "^(Many2one|One2many|Many2many)$"))
+
+((attribute (_) (identifier) @ACCESS)
+ (#match? @ACCESS "^[a-z]"))"#
 }
 
-fn py_references() -> &'static Query {
-	static QUERY: OnceLock<Query> = OnceLock::new();
-	QUERY.get_or_init(|| {
-		tree_sitter::Query::new(
-			tree_sitter_python::language(),
-			include_str!("queries/py_references.scm"),
-		)
-		.unwrap()
-	})
+query! {
+	PyReferences(_, _, XML_ID, MODEL, _, _, _, _);
+r#"
+((call
+  [(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
+   (attribute (identifier) @_env (identifier) @_ref)]
+  (argument_list . (string) @XML_ID))
+ (#eq? @_env "env")
+ (#eq? @_ref "ref"))
+
+((subscript
+  [(identifier) @_env
+   (attribute (_) (identifier) @_env)]
+  (string) @MODEL)
+ (#eq? @_env "env"))
+
+((class_definition
+  (block
+    (expression_statement
+      (assignment
+        (identifier) @_field
+        [(string) @MODEL
+         (list (string) @MODEL)]))))
+ (#match? @_field "^_(name|inherit)$"))
+
+((call
+  [(identifier) @_Field
+   (attribute (identifier) @_fields (identifier) @_Field)]
+  [(argument_list . (string) @MODEL)
+   (argument_list
+    (keyword_argument (identifier) @_comodel_name (string) @MODEL))])
+ (#eq? @_fields "fields")
+ (#eq? @_comodel_name "comodel_name")
+ (#match? @_Field "^(Many2one|One2many|Many2many)$"))"#
 }
 
-fn model_fields() -> &'static Query {
-	static QUERY: OnceLock<Query> = OnceLock::new();
-	QUERY.get_or_init(|| {
-		tree_sitter::Query::new(tree_sitter_python::language(), include_str!("queries/model_fields.scm")).unwrap()
-	})
+// fn model_fields() -> &'static Query {
+// 	static QUERY: OnceLock<Query> = OnceLock::new();
+// 	QUERY.get_or_init(|| {
+// 		tree_sitter::Query::new(tree_sitter_python::language(), include_str!("queries/model_fields.scm")).unwrap()
+// 	})
+// }
+query! {
+	ModelFields(FIELD, TYPE, _, RELATION, ARG, VALUE);
+r#"
+((class_definition
+  (block
+    (expression_statement
+      (assignment
+        (identifier) @FIELD
+        (call
+          [(identifier) @TYPE
+           (attribute (identifier) @_fields (identifier) @TYPE)]
+          (argument_list . (string)? @RELATION
+            ((keyword_argument (identifier) @ARG (_) @VALUE) ","?)*))))))
+ (#eq? @_fields "fields")
+ (#match? @TYPE "^[A-Z]"))"#
 }
 
 /// `node` must be `[(string) (concatenated_string)]`
@@ -121,17 +195,15 @@ impl Backend {
 		let bytes = rope.bytes().collect::<Vec<_>>();
 		// TODO: Very inexact, is there a better way?
 		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
-		let query = py_completions();
+		let query = PyCompletions::query();
 		cursor.set_byte_range(range.clone());
 		let mut items = vec![];
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			let mut model_filter = None;
 			for capture in match_.captures {
-				if capture.index == 2 {
-					// @_request
+				if capture.index == PyCompletions::REQUEST {
 					model_filter = Some("ir.ui.view");
-				} else if capture.index == 4 {
-					// @xml_id
+				} else if capture.index == PyCompletions::XML_ID {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
@@ -149,8 +221,7 @@ impl Backend {
 							items,
 						})));
 					}
-				} else if capture.index == 5 {
-					// @model
+				} else if capture.index == PyCompletions::MODEL {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
@@ -166,7 +237,7 @@ impl Backend {
 							items,
 						})));
 					}
-				} else if capture.index == 10 {
+				} else if capture.index == PyCompletions::ACCESS {
 					// @access
 					let range = capture.node.byte_range();
 					if range.contains(&offset) || range.end == offset {
@@ -182,11 +253,7 @@ impl Backend {
 							&bytes
 						));
 						let model = interner().resolve(&model);
-						let needle = if offset - range.start <= PYTHON_LENIENCY_WINDOW {
-							Cow::from("")
-						} else {
-							Cow::from(slice.byte_slice(..offset - range.start))
-						};
+						let needle = Cow::from(slice.byte_slice(..offset - range.start));
 						let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
 						self.complete_field_name(&needle, range, model.to_string(), rope.clone(), &mut items)
 							.await?;
@@ -210,7 +277,7 @@ impl Backend {
 		else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
-		let query = py_completions();
+		let query = PyCompletions::query();
 		let bytes = rope.bytes().collect::<Vec<_>>();
 		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let mut cursor = tree_sitter::QueryCursor::new();
@@ -218,7 +285,7 @@ impl Backend {
 		cursor.set_byte_range(range);
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			for capture in match_.captures {
-				if capture.index == 4 {
+				if capture.index == PyCompletions::XML_ID {
 					// @xml_id
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
@@ -231,7 +298,7 @@ impl Backend {
 						return self
 							.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
 					}
-				} else if capture.index == 5 {
+				} else if capture.index == PyCompletions::MODEL {
 					// @model
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
@@ -243,7 +310,7 @@ impl Backend {
 						let slice = Cow::from(slice);
 						return self.jump_def_model(&slice);
 					}
-				} else if capture.index == 10 {
+				} else if capture.index == PyCompletions::ACCESS {
 					// @access
 					let range = capture.node.byte_range();
 					if range.contains(&offset) || range.end == offset {
@@ -268,7 +335,7 @@ impl Backend {
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope.clone()) else {
 			return Ok(None);
 		};
-		let query = py_references();
+		let query = PyReferences::query();
 		let bytes = rope.bytes().collect::<Vec<_>>();
 		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let mut cursor = tree_sitter::QueryCursor::new();
@@ -279,8 +346,7 @@ impl Backend {
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			for capture in match_.captures {
-				if capture.index == 2 {
-					// @xml_id
+				if capture.index == PyReferences::XML_ID {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
@@ -291,8 +357,7 @@ impl Backend {
 						let slice = Cow::from(slice);
 						return self.record_references(&slice, current_module.as_deref());
 					}
-				} else if capture.index == 3 {
-					// @model
+				} else if capture.index == PyReferences::MODEL {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
@@ -318,7 +383,7 @@ impl Backend {
 		}
 		let mut out = SymbolMap::default();
 		let locations = entry.base.iter().chain(entry.descendants.iter());
-		let query = model_fields();
+		let query = ModelFields::query();
 		let mut tasks = tokio::task::JoinSet::<miette::Result<Vec<_>>>::new();
 		for ModelLocation(location, byte_range) in locations.cloned() {
 			tasks.spawn(async move {
@@ -346,30 +411,25 @@ impl Backend {
 						Help,
 					}
 					for capture in match_.captures {
-						if capture.index == 0 {
-							// @field
+						if capture.index == ModelFields::FIELD {
 							field = Some(capture.node);
-						} else if capture.index == 1 {
-							// @Type
+						} else if capture.index == ModelFields::TYPE {
 							type_ = Some(capture.node.byte_range());
 							is_relational = matches!(
 								&contents[capture.node.byte_range()],
 								b"One2many" | b"Many2one" | b"Many2many"
 							);
-						} else if capture.index == 3 {
-							// @relation
+						} else if capture.index == ModelFields::RELATION {
 							if is_relational {
 								relation = Some(capture.node.byte_range().contract(1));
 							}
-						} else if capture.index == 4 {
-							// @_arg
+						} else if capture.index == ModelFields::ARG {
 							match &contents[capture.node.byte_range()] {
 								b"comodel_name" if is_relational => kwarg = Some(Kwargs::ComodelName),
 								b"help" => kwarg = Some(Kwargs::Help),
 								_ => kwarg = None,
 							}
-						} else if capture.index == 5 {
-							// @value
+						} else if capture.index == ModelFields::VALUE {
 							match kwarg {
 								Some(Kwargs::ComodelName) => {
 									if capture.node.kind() == "string" {
@@ -449,7 +509,7 @@ impl Backend {
 		else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
-		let query = py_completions();
+		let query = PyCompletions::query();
 		let bytes = rope.bytes().collect::<Vec<_>>();
 		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let mut cursor = tree_sitter::QueryCursor::new();
@@ -522,7 +582,7 @@ class Foo(models.Model):
 	haha = fields.Many2many('asd')
 	html = fields.Html(related='asd', foo=123, help='asdf')"#;
 		let ast = parser.parse(&contents[..], None).unwrap();
-		let query = model_fields();
+		let query = ModelFields::query();
 		let mut cursor = QueryCursor::new();
 		let expected: &[&[&str]] = &[
 			&["foo", "fields", "Char", "'asd'", "help", "'asd'"],

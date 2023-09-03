@@ -386,12 +386,7 @@ impl LanguageServer for Backend {
 			match self.python_references(params, document.value().clone(), ast.value().clone()) {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
-					self.client
-						.show_message(
-							MessageType::ERROR,
-							format!("error during gathering python references:\n{report}"),
-						)
-						.await;
+					debug!("{report}");
 					Ok(None)
 				}
 			}
@@ -399,12 +394,7 @@ impl LanguageServer for Backend {
 			match self.xml_references(params, document.value().clone()) {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
-					self.client
-						.show_message(
-							MessageType::ERROR,
-							format!("error during gathering python references:\n{report}"),
-						)
-						.await;
+					debug!("{report}");
 					Ok(None)
 				}
 			}
@@ -754,7 +744,7 @@ impl Backend {
 			} else {
 				entry.qualified_id(interner)
 			};
-			let model = entry.model.as_ref().map(|model| interner.resolve(&model).to_string());
+			let model = entry.model.as_ref().map(|model| interner.resolve(model).to_string());
 			CompletionItem {
 				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 					new_text: label.clone(),

@@ -18,7 +18,6 @@ static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
 	b"copy",
 	b"name_create",
 	b"browse",
-	b"mapped",
 	b"filtered",
 	b"filtered_domain",
 	b"sorted",
