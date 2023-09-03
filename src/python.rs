@@ -535,13 +535,13 @@ impl Backend {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
-						let lsp_range = offset_range_to_lsp_range(range.clone().map_unit(ByteOffset), rope.clone());
+						let lsp_range = ts_range_to_lsp_range(capture.node.range());
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
 							dbg!(&range);
 							break 'match_;
 						};
 						let slice = Cow::from(slice);
-						return self.hover_model(&slice, lsp_range);
+						return self.hover_model(&slice, Some(lsp_range));
 					}
 				} else if capture.index == 10 {
 					// @access
