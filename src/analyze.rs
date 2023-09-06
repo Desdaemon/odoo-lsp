@@ -1,8 +1,8 @@
-use std::{borrow::Borrow, collections::HashMap, sync::OnceLock};
+use std::{borrow::Borrow, collections::HashMap};
 
 use futures::executor::block_on;
 use log::debug;
-use tree_sitter::{Node, Query, QueryCursor};
+use tree_sitter::{Node, QueryCursor};
 
 use odoo_lsp::{
 	index::interner,
@@ -10,6 +10,7 @@ use odoo_lsp::{
 	utils::{ByteRange, Erase, RangeExt},
 	ImStr,
 };
+use ts_macros::query;
 
 use crate::Backend;
 
@@ -88,15 +89,25 @@ impl Scope {
 	}
 }
 
-fn field_completion() -> &'static Query {
-	static QUERY: OnceLock<Query> = OnceLock::new();
-	QUERY.get_or_init(|| {
-		Query::new(
-			tree_sitter_python::language(),
-			include_str!("queries/field_completion.scm"),
-		)
-		.unwrap()
-	})
+query! {
+	FieldCompletion(NAME, INHERIT, SELF, SCOPE);
+r#"
+((class_definition
+	(block
+		(expression_statement [
+			(assignment (identifier) @_name (string) @NAME)
+			(assignment (identifier) @_inherit [
+				(string) @INHERIT
+				(list ((string) @INHERIT ","?)*)
+			])
+		]) [
+			(decorated_definition
+				(function_definition
+					(parameters . (identifier) @SELF) (block) @SCOPE))
+			(function_definition (parameters . (identifier) @SELF) (block) @SCOPE)
+		]*)) @class
+(#eq? @_name "_name")
+(#eq? @_inherit "_inherit"))"#
 }
 
 impl Backend {
@@ -109,7 +120,7 @@ impl Backend {
 	) -> Option<ModelName> {
 		debug!("model_of_range {}", String::from_utf8_lossy(&contents[range.erase()]));
 		// Phase 1: Determine the scope.
-		let query = field_completion();
+		let query = FieldCompletion::query();
 		let mut self_type = None; // (string)
 		let mut self_param = None; // (identifier)
 		let mut fn_scope = None; // (block)
@@ -121,15 +132,14 @@ impl Backend {
 				continue;
 			}
 			for capture in match_.captures {
-				if capture.index == 1 {
-					// @name
+				if capture.index == FieldCompletion::NAME {
 					self_type = Some(capture.node);
-				} else if capture.index == 3 && self_type.is_none() {
+				} else if capture.index == FieldCompletion::INHERIT && self_type.is_none() {
 					// @inherit
 					self_type = Some(capture.node);
-				} else if capture.index == 4 {
+				} else if capture.index == FieldCompletion::SELF {
 					self_param = Some(capture.node);
-				} else if capture.index == 5 && capture.node.byte_range().contains(&range.end.0) {
+				} else if capture.index == FieldCompletion::SCOPE && capture.node.byte_range().contains(&range.end.0) {
 					// @scope
 					fn_scope = Some(capture.node);
 					break 'scoping;

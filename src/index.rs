@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use dashmap::DashSet;
@@ -10,7 +9,8 @@ use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::notification::Progress;
 use tower_lsp::lsp_types::*;
-use tree_sitter::{Query, QueryCursor};
+use tree_sitter::QueryCursor;
+use ts_macros::query;
 use xmlparser::{Token, Tokenizer};
 
 use crate::model::{Model, ModelIndex, ModelType};
@@ -238,12 +238,25 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 	Ok(Output::Xml { records })
 }
 
-fn model_query() -> &'static Query {
-	static MODEL: OnceLock<Query> = OnceLock::new();
-	MODEL.get_or_init(|| {
-		tree_sitter::Query::new(tree_sitter_python::language(), include_str!("queries/model.scm"))
-			.expect("failed to parse query")
-	})
+query! {
+	ModelQuery(NAME, INHERIT, MODEL);
+r#"
+((class_definition
+  (argument_list
+    [(identifier) @_Model
+     (attribute (identifier) @_models (identifier) @_Model)])
+  (block
+   (expression_statement ; _name = ".."
+    (assignment (identifier) @_name (string) @NAME))?
+   (expression_statement ; _inherit = ".."
+    (assignment
+      (identifier) @_inherit
+        [(string) @INHERIT
+         (list ((string) @INHERIT ","?)*)]))?)) @MODEL
+ (#eq? @_models "models")
+ (#match? @_Model "^(Transient|Abstract)?Model$")
+ (#eq? @_name "_name")
+ (#eq? @_inherit "_inherit"))"#
 }
 
 async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
@@ -258,7 +271,7 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 	let ast = parser
 		.parse(&contents, None)
 		.ok_or_else(|| diagnostic!("AST not parsed"))?;
-	let query = model_query();
+	let query = ModelQuery::query();
 	let mut cursor = QueryCursor::new();
 
 	let mut out = vec![];
@@ -268,21 +281,18 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 		let mut range = None;
 		let mut maybe_base = None;
 		for capture in match_.captures {
-			if capture.index == 3 && maybe_base.is_none() {
-				// @name
+			if capture.index == ModelQuery::NAME && maybe_base.is_none() {
 				let name = capture.node.byte_range().contract(1);
 				if name.is_empty() {
 					continue 'match_;
 				}
 				maybe_base = Some(String::from_utf8_lossy(&contents[name.clone()]));
-			} else if capture.index == 5 {
-				// @inherit
+			} else if capture.index == ModelQuery::INHERIT {
 				let inherit = capture.node.byte_range().contract(1);
 				if !inherit.is_empty() {
 					inherits.push(ImStr::from(String::from_utf8_lossy(&contents[inherit]).as_ref()));
 				}
-			} else if capture.index == 6 {
-				// @model
+			} else if capture.index == ModelQuery::MODEL {
 				if range.is_none() {
 					range = Some(capture.node.byte_range());
 				}
@@ -335,7 +345,7 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 
 #[cfg(test)]
 mod tests {
-	use crate::index::model_query;
+	use crate::index::ModelQuery;
 	use pretty_assertions::assert_eq;
 	use tree_sitter::{Parser, QueryCursor};
 
@@ -349,7 +359,7 @@ class Foo(models.AbstractModel):
 	_inherit = ['foo', 'bar']
 "#;
 		let ast = parser.parse(&contents[..], None).unwrap();
-		let query = model_query();
+		let query = ModelQuery::query();
 		let mut cursor = QueryCursor::new();
 		let expected: &[&[&str]] = &[&[
 			"models",

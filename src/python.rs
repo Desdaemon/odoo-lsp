@@ -17,110 +17,108 @@ use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
 query! {
-PyCompletions(_, _, REQUEST, _, XML_ID, MODEL, _, _, _, _, _, _, _, _, ACCESS);
-	r#"
-((call
-  [(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
-   (attribute (identifier) @_env (identifier) @_ref)
-   (attribute (identifier) @REQUEST (identifier) @_render)]
-  (argument_list . (string) @XML_ID))
- (#eq? @_env "env")
- (#eq? @_ref "ref")
- (#eq? @REQUEST "request")
- (#eq? @_render "render"))
+PyCompletions(REQUEST, XML_ID, /* MAPPED, */ MODEL, ACCESS);
+r#"
+((call [
+	(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
+	(attribute (identifier) @_env (identifier) @_ref)
+	(attribute (identifier) @REQUEST (identifier) @_render)
+] (argument_list . (string) @XML_ID))
+(#eq? @_env "env")
+(#eq? @_ref "ref")
+(#eq? @REQUEST "request")
+(#eq? @_render "render"))
 
-((subscript
-  [(identifier) @_env
-   (attribute (_) (identifier) @_env)]
-  (string) @MODEL)
- (#eq? @_env "env"))
+((subscript [
+	(identifier) @_env
+	(attribute (_) (identifier) @_env)
+] (string) @MODEL)
+(#eq? @_env "env"))
 
 ((class_definition
-  (block
-    (expression_statement
-      (assignment (identifier) @_name (string) @NAME))?
-    (expression_statement
-      (assignment
-        (identifier) @_inherit
-        [(string) @MODEL
-         (list ((string) @MODEL ",")*)]))?
-    (decorated_definition
-      (decorator
-        (call
-          (attribute (identifier) @_api (identifier) @_depends))))?))
- (#eq? @_inherit "_inherit"))
+	(block [
+		(expression_statement (assignment (identifier) @_name (string) @NAME))
+		(expression_statement
+			(assignment (identifier) @_inherit [(string) @MODEL (list ((string) @MODEL ",")*)]))
+		(decorated_definition
+			(decorator
+				(call
+					(attribute (identifier) @_api (identifier) @_depends)
+					(argument_list (string)? @MAPPED))))
+		(expression_statement
+			(assignment (identifier)
+				(call
+					(attribute (identifier) @_fields (identifier))
+					(argument_list (keyword_argument (identifier) @_related (string) @MAPPED)))))
+	]*))
+(#eq? @_inherit "_inherit")
+(#eq? @_related "related"))
 
-((call
-  [(identifier) @_Field
-   (attribute (identifier) @_fields (identifier) @_Field)]
-  [(argument_list . (string) @MODEL)
-   (argument_list
-    (keyword_argument (identifier) @_comodel_name (string) @MODEL))])
- (#eq? @_fields "fields")
- (#eq? @_comodel_name "comodel_name")
- (#match? @_Field "^(Many2one|One2many|Many2many)$"))
+((call [
+	(identifier) @_Field
+	(attribute (identifier) @_fields (identifier) @_Field)
+] [
+	(argument_list . (string) @MODEL)
+	(argument_list (keyword_argument (identifier) @_comodel_name (string) @MODEL))
+])
+(#eq? @_fields "fields")
+(#eq? @_comodel_name "comodel_name")
+(#match? @_Field "^(Many2one|One2many|Many2many)$"))
 
-((attribute (_) (identifier) @ACCESS)
- (#match? @ACCESS "^[a-z]"))"#
+((attribute (_) (identifier) @ACCESS) (#match? @ACCESS "^[a-z]"))
+"#
 }
 
 query! {
-	PyReferences(_, _, XML_ID, MODEL, _, _, _, _);
+	PyReferences(XML_ID, MODEL);
 r#"
-((call
-  [(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
-   (attribute (identifier) @_env (identifier) @_ref)]
-  (argument_list . (string) @XML_ID))
- (#eq? @_env "env")
- (#eq? @_ref "ref"))
+((call [
+	(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
+	(attribute (identifier) @_env (identifier) @_ref)
+] (argument_list . (string) @XML_ID))
+(#eq? @_env "env")
+(#eq? @_ref "ref"))
 
-((subscript
-  [(identifier) @_env
-   (attribute (_) (identifier) @_env)]
-  (string) @MODEL)
- (#eq? @_env "env"))
+((subscript [
+	(identifier) @_env
+	(attribute (_) (identifier) @_env)
+] (string) @MODEL)
+(#eq? @_env "env"))
 
 ((class_definition
-  (block
-    (expression_statement
-      (assignment
-        (identifier) @_field
-        [(string) @MODEL
-         (list (string) @MODEL)]))))
- (#match? @_field "^_(name|inherit)$"))
+	(block
+		(expression_statement
+			(assignment
+				(identifier) @_field [(string) @MODEL (list (string) @MODEL)]))))
+(#match? @_field "^_(name|inherit)$"))
 
-((call
-  [(identifier) @_Field
-   (attribute (identifier) @_fields (identifier) @_Field)]
-  [(argument_list . (string) @MODEL)
-   (argument_list
-    (keyword_argument (identifier) @_comodel_name (string) @MODEL))])
- (#eq? @_fields "fields")
- (#eq? @_comodel_name "comodel_name")
- (#match? @_Field "^(Many2one|One2many|Many2many)$"))"#
+((call [
+	(identifier) @_Field
+	(attribute (identifier) @_fields (identifier) @_Field)
+] [
+	(argument_list . (string) @MODEL)
+	(argument_list (keyword_argument (identifier) @_comodel_name (string) @MODEL))
+])
+(#eq? @_fields "fields")
+(#eq? @_comodel_name "comodel_name")
+(#match? @_Field "^(Many2one|One2many|Many2many)$"))"#
 }
 
-// fn model_fields() -> &'static Query {
-// 	static QUERY: OnceLock<Query> = OnceLock::new();
-// 	QUERY.get_or_init(|| {
-// 		tree_sitter::Query::new(tree_sitter_python::language(), include_str!("queries/model_fields.scm")).unwrap()
-// 	})
-// }
 query! {
-	ModelFields(FIELD, TYPE, _, RELATION, ARG, VALUE);
+	ModelFields(FIELD, TYPE, RELATION, ARG, VALUE);
 r#"
 ((class_definition
-  (block
-    (expression_statement
-      (assignment
-        (identifier) @FIELD
-        (call
-          [(identifier) @TYPE
-           (attribute (identifier) @_fields (identifier) @TYPE)]
-          (argument_list . (string)? @RELATION
-            ((keyword_argument (identifier) @ARG (_) @VALUE) ","?)*))))))
- (#eq? @_fields "fields")
- (#match? @TYPE "^[A-Z]"))"#
+	(block
+		(expression_statement
+			(assignment
+				(identifier) @FIELD
+				(call [
+					(identifier) @TYPE
+					(attribute (identifier) @_fields (identifier) @TYPE)
+				] (argument_list . (string)? @RELATION
+					((keyword_argument (identifier) @ARG (_) @VALUE) ","?)*))))))
+(#eq? @_fields "fields")
+(#match? @TYPE "^[A-Z]"))"#
 }
 
 /// `node` must be `[(string) (concatenated_string)]`
@@ -171,7 +169,7 @@ impl Backend {
 		self.update_ast(text, uri, rope, old_rope, parser)?;
 		Ok(())
 	}
-	const BYTE_WINDOW: usize = 200;
+	const BYTE_WINDOW: usize = 150;
 	pub async fn python_completions(
 		&self,
 		params: CompletionParams,
@@ -192,8 +190,8 @@ impl Backend {
 		let mut cursor = tree_sitter::QueryCursor::new();
 		cursor.set_match_limit(256);
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		// TODO: Very inexact, is there a better way?
-		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
+		// TODO: Scope out the range of classes, then use that to scan.
+		let range = 0..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let query = PyCompletions::query();
 		cursor.set_byte_range(range.clone());
 		let mut items = vec![];
@@ -237,7 +235,6 @@ impl Backend {
 						})));
 					}
 				} else if capture.index == PyCompletions::ACCESS {
-					// @access
 					let range = capture.node.byte_range();
 					if range.contains(&offset) || range.end == offset {
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
@@ -278,7 +275,7 @@ impl Backend {
 		};
 		let query = PyCompletions::query();
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
+		let range = 0..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let mut cursor = tree_sitter::QueryCursor::new();
 		cursor.set_match_limit(256);
 		cursor.set_byte_range(range);
@@ -516,8 +513,7 @@ impl Backend {
 		cursor.set_byte_range(range);
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			for capture in match_.captures {
-				if capture.index == 4 {
-					// @xml_id
+				if capture.index == PyCompletions::XML_ID {
 					// let range = capture.node.byte_range();
 					// if range.contains(&offset) {
 					// 	let range = range.contract(1);
@@ -529,8 +525,7 @@ impl Backend {
 					// 	return self
 					// 		.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
 					// }
-				} else if capture.index == 5 {
-					// @model
+				} else if capture.index == PyCompletions::MODEL {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
@@ -542,8 +537,7 @@ impl Backend {
 						let slice = Cow::from(slice);
 						return self.hover_model(&slice, Some(lsp_range));
 					}
-				} else if capture.index == 10 {
-					// @access
+				} else if capture.index == PyCompletions::ACCESS {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) || range.end == offset {
 						let lsp_range = ts_range_to_lsp_range(capture.node.range());

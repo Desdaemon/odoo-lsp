@@ -1,6 +1,6 @@
 use std::fmt::Display;
 use std::ops::Deref;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use lasso::Spur;
@@ -8,7 +8,8 @@ use miette::{diagnostic, IntoDiagnostic};
 use qp_trie::{wrapper::BString, Trie};
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::{Parser, QueryCursor};
+use ts_macros::query;
 
 use crate::index::{interner, Interner, Symbol, SymbolMap};
 use crate::str::Text;
@@ -133,9 +134,14 @@ impl ModelIndex {
 	}
 }
 
-fn model_help() -> &'static Query {
-	static QUERY: OnceLock<Query> = OnceLock::new();
-	QUERY.get_or_init(|| Query::new(tree_sitter_python::language(), include_str!("queries/model_help.scm")).unwrap())
+query! {
+	ModelHelp(DOCSTRING);
+r#"
+(class_definition
+  (block .
+    (expression_statement
+      (string
+        ((string_start) . (string_content) @DOCSTRING)))))"#
 }
 
 impl ModelEntry {
@@ -150,7 +156,7 @@ impl ModelEntry {
 			let ast = parser
 				.parse(&contents, None)
 				.ok_or_else(|| diagnostic!("AST not parsed"))?;
-			let query = model_help();
+			let query = ModelHelp::query();
 			let mut cursor = QueryCursor::new();
 			cursor.set_byte_range(byte_range.erase());
 			'docstring: for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {

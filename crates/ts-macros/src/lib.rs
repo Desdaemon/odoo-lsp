@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use proc_macro2::{Ident, TokenStream};
 use proc_macro2_diagnostics::SpanDiagnosticExt;
@@ -8,7 +8,7 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 /// Usage:
 /// ```rust,noplayground
 /// ts_macros::query! {
-/// 	MyQuery(FOO, _, BAR);
+/// 	MyQuery(FOO, BAR);
 /// 	r#"
 /// (function_definition
 ///   (parameters . (string) @FOO)
@@ -37,13 +37,8 @@ pub fn query(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 struct QueryDefinition {
 	name: syn::Ident,
-	captures: Punctuated<Capture, Token![,]>,
+	captures: Punctuated<Ident, Token![,]>,
 	query: syn::LitStr,
-}
-
-enum Capture {
-	Ignored,
-	Name(Ident),
 }
 
 impl Parse for QueryDefinition {
@@ -62,31 +57,13 @@ impl Parse for QueryDefinition {
 	}
 }
 
-impl Parse for Capture {
-	fn parse(input: parse::ParseStream) -> Result<Self> {
-		let lh = input.lookahead1();
-		if lh.peek(Ident) {
-			let ident: Ident = input.parse()?;
-			if ident.to_string().starts_with('_') {
-				Ok(Capture::Ignored)
-			} else {
-				Ok(Capture::Name(ident))
-			}
-		} else if lh.peek(Token![_]) {
-			input.parse::<Token![_]>().map(|_| Capture::Ignored)
-		} else {
-			Err(lh.error())
-		}
-	}
-}
-
 impl QueryDefinition {
 	fn into_tokens(self) -> TokenStream {
 		let query = self.query.value();
 		let mut query = query.as_str();
-		let mut captures = HashSet::new();
-		let mut const_stack = self.captures.iter();
+		let mut captures = HashMap::new();
 		let mut diagnostics = Vec::new();
+		let mut index = 0;
 		while let Some(mut start) = query.find('@') {
 			start += 1;
 			if start >= query.len() {
@@ -97,27 +74,20 @@ impl QueryDefinition {
 				.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
 				.unwrap_or(query.len() - start);
 			let capture = &query[start..start + end];
-			if captures.insert(capture) {
-				let Some(const_) = const_stack.next() else {
-					diagnostics.push(self.query.span().error(format!("Not enough captures: @{capture}")));
-					break;
-				};
-				if let Capture::Name(name) = const_ {
-					if capture != name.to_string() {
-						diagnostics.push(name.span().error(format!("Expected '{capture}', got '{name}'")));
-					}
-				}
+			if captures.insert(capture, index).is_none() {
+				index += 1;
 			}
 			query = &query[start + end..];
 		}
-		let consts = self.captures.iter().enumerate().filter_map(|(idx, capture)| {
-			let idx = idx as u32;
-			if let Capture::Name(name) = capture {
-				Some(quote_spanned!(name.span()=> pub const #name: u32 = #idx;))
+		let mut consts = vec![];
+		for capture in self.captures.iter() {
+			if let Some(index) = captures.get(&capture.to_string().as_ref()) {
+				let index = *index as u32;
+				consts.push(quote_spanned!(capture.span()=> pub const #capture: u32 = #index;))
 			} else {
-				None
+				diagnostics.push(capture.span().error(format!("No capture '{capture}' found in query")));
 			}
-		});
+		}
 		let name = self.name;
 		let query = self.query;
 		let diagnostics = diagnostics.into_iter().map(|diag| diag.emit_as_item_tokens());
