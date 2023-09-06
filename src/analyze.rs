@@ -202,8 +202,8 @@ impl Backend {
 						drop(children);
 						children = clause.named_children(&mut cursor).peekable();
 						scope = Scope::new(Some(scope));
-						let src = String::from_utf8_lossy(&contents[src.byte_range()]);
-						scope.insert(src.into_owned(), type_);
+						let iter = String::from_utf8_lossy(&contents[iter.byte_range()]);
+						scope.insert(iter.into_owned(), type_);
 					}
 				}
 				_ => {}
