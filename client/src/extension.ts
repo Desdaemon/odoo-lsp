@@ -143,7 +143,10 @@ async function downloadLspBinary(context: ExtensionContext) {
 				await execAsync(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
 			}
 		} catch (err) {
-			window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
+			// We only build nightly when there are changes, so there will be days without nightly builds.
+			if (!(err instanceof Error) || !err.message.includes('404')) { 
+				window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
+			}
 			await rm(latest);
 		}
 	} else if (!existsSync(odooLspBin)) {
