@@ -47,8 +47,7 @@ PyCompletions(_, _, REQUEST, _, XML_ID, MODEL, _, _, _, _, _, _, _, _, ACCESS);
     (decorated_definition
       (decorator
         (call
-          (attribute (identifier) @_api (identifier) @_depends)))
-      (function_definition))?))))
+          (attribute (identifier) @_api (identifier) @_depends))))?))
  (#eq? @_inherit "_inherit"))
 
 ((call
