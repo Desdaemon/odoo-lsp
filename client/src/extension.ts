@@ -144,7 +144,7 @@ async function downloadLspBinary(context: ExtensionContext) {
 			}
 		} catch (err) {
 			// We only build nightly when there are changes, so there will be days without nightly builds.
-			if (!(err instanceof Error) || !err.message.includes('404')) { 
+			if (!(err instanceof Error) || !err.message.includes("404")) {
 				window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
 			}
 			await rm(latest);

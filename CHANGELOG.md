@@ -1,3 +1,23 @@
+## [0.1.2](https://github.com/Desdaemon/odoo-lsp/compare/v0.1.1...v0.1.2) (2023-09-07)
+
+### Features
+
+- change completion markup ([0c187a3](https://github.com/Desdaemon/odoo-lsp/commit/0c187a355c3108fedaf1c8a83c95e9ddea1e87b3))
+- completions for python models/fields ([db656e4](https://github.com/Desdaemon/odoo-lsp/commit/db656e4bbc5748e790bfec828d54ad39fc57aa8c))
+- goto definitions for python fields ([a565bca](https://github.com/Desdaemon/odoo-lsp/commit/a565bca75786fa5e68198453217e1713276f0d35))
+- python field completions ([3dd6a23](https://github.com/Desdaemon/odoo-lsp/commit/3dd6a23fb25b7b987fbda865bbe47d0858e55c84))
+
+### Bug Fixes
+
+- **ci:** attempt to fix prerelease flag ([a0ab8c9](https://github.com/Desdaemon/odoo-lsp/commit/a0ab8c9ef5f6a3e6dd146effbd646272fe8e0272))
+- **ci:** prevent nightly build gap ([cdd5a9c](https://github.com/Desdaemon/odoo-lsp/commit/cdd5a9c798c71852388b1edc2018efc4ae1eee8b))
+- **manifest:** do not include non-Rust files ([2dc129f](https://github.com/Desdaemon/odoo-lsp/commit/2dc129f42ff67cef61dac4da06f32988ab06c7a1))
+- more robust field completions ([dcddf54](https://github.com/Desdaemon/odoo-lsp/commit/dcddf54b4b774517b01cacec2349ac02950af4a8))
+- skip error msg if not 404 ([4f9fedf](https://github.com/Desdaemon/odoo-lsp/commit/4f9fedf6b4bd721a3f6581a6ff65f9317b52a4b0))
+- syntax error in query ([d9c13d8](https://github.com/Desdaemon/odoo-lsp/commit/d9c13d8b962b66bf4740a651ab0f1ecfade265fe))
+- wrong binding for list comprehension ([75c9ca5](https://github.com/Desdaemon/odoo-lsp/commit/75c9ca572c3f6dd0d850b8a22bb6bcda7a824fd7))
+- wrong capture indices ([c4e12d4](https://github.com/Desdaemon/odoo-lsp/commit/c4e12d445e142cf2c06503517f273fde412571ee))
+
 ## [0.1.1](https://github.com/Desdaemon/odoo-lsp/compare/004d33ceb0d67650c19762db40c0968e0d9532db...v0.1.1) (2023-08-31)
 
 ### Features

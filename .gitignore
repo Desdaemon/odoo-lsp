@@ -6,3 +6,4 @@ out/
 *.nrs
 dist/
 *.vsix
+Cargo.toml
