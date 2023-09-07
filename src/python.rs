@@ -17,7 +17,7 @@ use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
 query! {
-	PyCompletions(REQUEST, XML_ID, /* MAPPED, */ MODEL, ACCESS);
+	PyCompletions(REQUEST, XML_ID, /* MAPPED, */ NAME, MODEL, ACCESS);
 r#"
 ([
 	(call [
@@ -59,43 +59,7 @@ r#"
 (#eq? @_fields "fields")
 (#eq? @_comodel_name "comodel_name")  
 (#match? @_Field "^(Many2one|One2many|Many2many)$")
-(#match? @ACCESS "^[a-z]")
-)"#
-}
-
-query! {
-	PyReferences(XML_ID, MODEL);
-r#"
-((call [
-	(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
-	(attribute (identifier) @_env (identifier) @_ref)
-] (argument_list . (string) @XML_ID))
-(#eq? @_env "env")
-(#eq? @_ref "ref"))
-
-((subscript [
-	(identifier) @_env
-	(attribute (_) (identifier) @_env)
-] (string) @MODEL)
-(#eq? @_env "env"))
-
-((class_definition
-	(block
-		(expression_statement
-			(assignment
-				(identifier) @_field [(string) @MODEL (list (string) @MODEL)]))))
-(#match? @_field "^_(name|inherit)$"))
-
-((call [
-	(identifier) @_Field
-	(attribute (identifier) @_fields (identifier) @_Field)
-] [
-	(argument_list . (string) @MODEL)
-	(argument_list (keyword_argument (identifier) @_comodel_name (string) @MODEL))
-])
-(#eq? @_fields "fields")
-(#eq? @_comodel_name "comodel_name")
-(#match? @_Field "^(Many2one|One2many|Many2many)$"))"#
+(#match? @ACCESS "^[a-z]"))"#
 }
 
 query! {
@@ -147,6 +111,13 @@ fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
 	}
 }
 
+/// (module (_)*)
+fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
+	module
+		.named_children(&mut module.walk())
+		.find(|child| child.byte_range().contains(&offset))
+}
+
 impl Backend {
 	pub async fn on_change_python(
 		&self,
@@ -163,7 +134,6 @@ impl Backend {
 		self.update_ast(text, uri, rope, old_rope, parser)?;
 		Ok(())
 	}
-	const BYTE_WINDOW: usize = 150;
 	pub async fn python_completions(
 		&self,
 		params: CompletionParams,
@@ -174,6 +144,7 @@ impl Backend {
 			error!(format_loc!("python_completions: invalid offset"));
 			return Ok(None);
 		};
+		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let Some(current_module) = self
 			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
@@ -182,14 +153,10 @@ impl Backend {
 			return Ok(None);
 		};
 		let mut cursor = tree_sitter::QueryCursor::new();
-		cursor.set_match_limit(256);
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		// TODO: Scope out the range of classes, then use that to scan.
-		// let range = 0..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let query = PyCompletions::query();
-		// cursor.set_byte_range(range.clone());
 		let mut items = vec![];
-		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
+		'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
 			let mut model_filter = None;
 			for capture in match_.captures {
 				if capture.index == PyCompletions::REQUEST {
@@ -252,7 +219,7 @@ impl Backend {
 							items,
 						})));
 					}
-				} else if capture.node.byte_range().contains(&offset) {
+				} else if capture.node.byte_range().start > offset {
 					break 'match_;
 				}
 			}
@@ -269,16 +236,13 @@ impl Backend {
 		else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
+		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		let range = 0..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let mut cursor = tree_sitter::QueryCursor::new();
-		cursor.set_match_limit(256);
-		cursor.set_byte_range(range);
-		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
+		'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
 			for capture in match_.captures {
 				if capture.index == PyCompletions::XML_ID {
-					// @xml_id
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
@@ -291,7 +255,6 @@ impl Backend {
 							.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
 					}
 				} else if capture.index == PyCompletions::MODEL {
-					// @model
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
@@ -303,7 +266,6 @@ impl Backend {
 						return self.jump_def_model(&slice);
 					}
 				} else if capture.index == PyCompletions::ACCESS {
-					// @access
 					let range = capture.node.byte_range();
 					if range.contains(&offset) || range.end == offset {
 						let lhs = some!(capture.node.prev_named_sibling());
@@ -313,6 +275,8 @@ impl Backend {
 						let model = interner().resolve(&model);
 						return self.jump_def_field_name(&field, model);
 					}
+				} else if capture.node.byte_range().start > offset {
+					break 'match_;
 				}
 			}
 		}
@@ -327,18 +291,16 @@ impl Backend {
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope.clone()) else {
 			return Ok(None);
 		};
-		let query = PyReferences::query();
+		let root = some!(top_level_stmt(ast.root_node(), offset));
+		let query = PyCompletions::query();
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let mut cursor = tree_sitter::QueryCursor::new();
-		cursor.set_match_limit(256);
-		cursor.set_byte_range(range);
 		let current_module = self
 			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
-		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
+		'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
 			for capture in match_.captures {
-				if capture.index == PyReferences::XML_ID {
+				if capture.index == PyCompletions::XML_ID {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
@@ -349,7 +311,7 @@ impl Backend {
 						let slice = Cow::from(slice);
 						return self.record_references(&slice, current_module.as_deref());
 					}
-				} else if capture.index == PyReferences::MODEL {
+				} else if capture.index == PyCompletions::MODEL || capture.index == PyCompletions::NAME {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
@@ -501,13 +463,11 @@ impl Backend {
 		else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
+		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		let range = offset.saturating_sub(Self::BYTE_WINDOW)..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let mut cursor = tree_sitter::QueryCursor::new();
-		cursor.set_match_limit(256);
-		cursor.set_byte_range(range);
-		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
+		'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
 			for capture in match_.captures {
 				if capture.index == PyCompletions::XML_ID {
 					// let range = capture.node.byte_range();

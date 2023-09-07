@@ -296,8 +296,8 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 					inherits.push(ImStr::from(String::from_utf8_lossy(&contents[inherit]).as_ref()));
 				}
 			} else if capture.index == ModelQuery::MODEL && range.is_none() {
-   					range = Some(capture.node.byte_range());
-   				}
+				range = Some(capture.node.byte_range());
+			}
 		}
 		let Some(range) = range else { continue };
 		let range = range.map_unit(ByteOffset);
