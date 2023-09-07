@@ -43,12 +43,15 @@ pub enum Type {
 	Model(ImStr),
 	/// Unresolved model.
 	Record(ImStr),
+	Super,
 }
 
 #[derive(Default)]
 pub struct Scope {
 	variables: HashMap<String, Type>,
 	parent: Option<Box<Scope>>,
+	/// TODO: Allow super(_, \<self>)
+	super_: Option<ImStr>,
 }
 
 fn normalize<'r, 'n>(node: &'r mut Node<'n>) -> &'r mut Node<'n> {
@@ -64,6 +67,7 @@ impl Scope {
 		Self {
 			variables: Default::default(),
 			parent: parent.map(Box::new),
+			super_: None,
 		}
 	}
 	pub fn get(&self, key: impl Borrow<str>) -> Option<&Type> {
@@ -155,12 +159,13 @@ impl Backend {
 		// 2. Class definitions; technically useless to us.
 		//    Self-type analysis only uses a small part of the class definition.
 		// 3. Parameters, e.g. self which always has a fixed type
-		// 4. Assignments (augmented or otherwise)
+		// 4. Assignments (including walrus-assignment)
 		let mut scope = scope.unwrap_or_default();
 		let self_type = match self_type {
 			Some(type_) => &contents[type_.byte_range().contract(1)],
 			None => &[],
 		};
+		scope.super_ = Some(self_param.as_ref().into());
 		scope.insert(
 			self_param.into_owned(),
 			Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
@@ -326,6 +331,9 @@ impl Backend {
 			}
 			"identifier" => {
 				let key = String::from_utf8_lossy(&contents[node.byte_range()]);
+				if key == "super" {
+					return Some(Type::Super);
+				}
 				scope.get(key).cloned()
 			}
 			"assignment" => {
@@ -348,7 +356,8 @@ impl Backend {
 						})
 					}
 					Type::ModelFn(model) => Some(Type::Model(model)),
-					_ => None,
+					Type::Super => scope.get(scope.super_.as_deref()?).cloned(),
+					Type::Env | Type::Record(..) | Type::Model(..) => None,
 				}
 			}
 			_ => None,
