@@ -242,17 +242,20 @@ query! {
 	ModelQuery(NAME, INHERIT, MODEL);
 r#"
 ((class_definition
-  (argument_list
-    [(identifier) @_Model
-     (attribute (identifier) @_models (identifier) @_Model)])
-  (block
-   (expression_statement ; _name = ".."
-    (assignment (identifier) @_name (string) @NAME))?
-   (expression_statement ; _inherit = ".."
-    (assignment
-      (identifier) @_inherit
-        [(string) @INHERIT
-         (list ((string) @INHERIT ","?)*)]))?)) @MODEL
+	(argument_list [
+		(identifier) @_Model
+		(attribute (identifier) @_models (identifier) @_Model)
+	])
+	(block [	
+		(expression_statement (assignment (identifier) @_name (string) @NAME))
+		(expression_statement
+			(assignment
+				(identifier) @_inherit [
+					(string) @INHERIT
+					(list ((string) @INHERIT ","?)*)
+				])
+		)]*
+	)) @MODEL
  (#eq? @_models "models")
  (#match? @_Model "^(Transient|Abstract)?Model$")
  (#eq? @_name "_name")
@@ -357,6 +360,9 @@ mod tests {
 class Foo(models.AbstractModel):
 	_name = 'foo'
 	_inherit = ['foo', 'bar']
+	@api.depends('foo')
+	def foo(self):
+		pass
 "#;
 		let ast = parser.parse(&contents[..], None).unwrap();
 		let query = ModelQuery::query();

@@ -17,56 +17,50 @@ use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
 query! {
-PyCompletions(REQUEST, XML_ID, /* MAPPED, */ MODEL, ACCESS);
+	PyCompletions(REQUEST, XML_ID, /* MAPPED, */ MODEL, ACCESS);
 r#"
-((call [
-	(attribute (attribute (_) (identifier) @_env) (identifier) @_ref)
-	(attribute (identifier) @_env (identifier) @_ref)
-	(attribute (identifier) @REQUEST (identifier) @_render)
-] (argument_list . (string) @XML_ID))
-(#eq? @_env "env")
-(#eq? @_ref "ref")
+([
+	(call [
+		(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
+		(attribute (identifier) @REQUEST (identifier) @_render)
+	] (argument_list . (string) @XML_ID))
+	(subscript [(identifier) @_env (attribute (_) (identifier) @_env)] (string) @MODEL)
+	(class_definition
+		(block [
+			(decorated_definition
+				(decorator
+					(call
+						(attribute (identifier) @_api (identifier) @_depends)
+						(argument_list (string)? @MAPPED))))
+			(expression_statement
+				(assignment (identifier) @_inherit [(string) @MODEL (list ((string) @MODEL ","?)*)]))
+			(expression_statement (assignment (identifier) @_name (string) @NAME))
+			(expression_statement
+				(assignment
+					(identifier)
+					(call
+						(attribute (identifier) @_fields (identifier))
+						(argument_list (keyword_argument (identifier) @_related (string) @MAPPED)?))))
+		]+
+	))
+	(call [(identifier) @_Field (attribute (identifier) @_fields (identifier) @_Field)] [
+		(argument_list . (string) @MODEL)
+		(argument_list (keyword_argument (identifier) @_comodel_name (string) @MODEL))
+	])  
+	(attribute (_) (identifier) @ACCESS)
+]+
+(#eq? @_env "env") 
+(#eq? @_ref "ref") 
 (#eq? @REQUEST "request")
-(#eq? @_render "render"))
-
-((subscript [
-	(identifier) @_env
-	(attribute (_) (identifier) @_env)
-] (string) @MODEL)
-(#eq? @_env "env"))
-
-((class_definition
-	(block [
-		(expression_statement (assignment (identifier) @_name (string) @NAME))
-		(expression_statement
-			(assignment (identifier) @_inherit [(string) @MODEL (list ((string) @MODEL ",")*)]))
-		(decorated_definition
-			(decorator
-				(call
-					(attribute (identifier) @_api (identifier) @_depends)
-					(argument_list (string)? @MAPPED))))
-		(expression_statement
-			(assignment (identifier)
-				(call
-					(attribute (identifier) @_fields (identifier))
-					(argument_list (keyword_argument (identifier) @_related (string) @MAPPED)))))
-	]*))
-(#eq? @_inherit "_inherit")
-(#eq? @_related "related"))
-
-((call [
-	(identifier) @_Field
-	(attribute (identifier) @_fields (identifier) @_Field)
-] [
-	(argument_list . (string) @MODEL)
-	(argument_list (keyword_argument (identifier) @_comodel_name (string) @MODEL))
-])
+(#eq? @_render "render")
+(#eq? @_name "_name")
+(#eq? @_inherit "_inherit") 
+(#eq? @_related "related")
 (#eq? @_fields "fields")
-(#eq? @_comodel_name "comodel_name")
-(#match? @_Field "^(Many2one|One2many|Many2many)$"))
-
-((attribute (_) (identifier) @ACCESS) (#match? @ACCESS "^[a-z]"))
-"#
+(#eq? @_comodel_name "comodel_name")  
+(#match? @_Field "^(Many2one|One2many|Many2many)$")
+(#match? @ACCESS "^[a-z]")
+)"#
 }
 
 query! {
@@ -191,9 +185,9 @@ impl Backend {
 		cursor.set_match_limit(256);
 		let bytes = rope.bytes().collect::<Vec<_>>();
 		// TODO: Scope out the range of classes, then use that to scan.
-		let range = 0..bytes.len().min(offset + Self::BYTE_WINDOW);
+		// let range = 0..bytes.len().min(offset + Self::BYTE_WINDOW);
 		let query = PyCompletions::query();
-		cursor.set_byte_range(range.clone());
+		// cursor.set_byte_range(range.clone());
 		let mut items = vec![];
 		'match_: for match_ in cursor.matches(query, ast.root_node(), &bytes[..]) {
 			let mut model_filter = None;
@@ -220,7 +214,7 @@ impl Backend {
 					}
 				} else if capture.index == PyCompletions::MODEL {
 					let range = capture.node.byte_range();
-					if range.contains(&offset) {
+					if range.contains(&offset) || range.end == offset {
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
 							dbg!(&range);
 							break 'match_;
@@ -258,6 +252,8 @@ impl Backend {
 							items,
 						})));
 					}
+				} else if capture.node.byte_range().contains(&offset) {
+					break 'match_;
 				}
 			}
 		}
@@ -584,6 +580,89 @@ class Foo(models.Model):
 			&["haha", "fields", "Many2many", "'asd'"],
 			&[
 				"html", "fields", "Html", "related", "'asd'", "foo", "123", "help", "'asdf'",
+			],
+		];
+		let actual = cursor
+			.matches(query, ast.root_node(), &contents[..])
+			.map(|match_| {
+				match_
+					.captures
+					.iter()
+					.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
+					.collect::<Vec<_>>()
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(expected, actual);
+	}
+
+	#[test]
+	fn test_py_completions() {
+		let mut parser = Parser::new();
+		parser.set_language(tree_sitter_python::language()).unwrap();
+		let contents = br#"
+self.env.ref('ref')
+env['model']
+request.render('template')
+foo = fields.Char()
+bar = fields.Many2one('positional')
+baz = fields.Many2many(comodel_name='named')
+"#;
+		let ast = parser.parse(&contents[..], None).unwrap();
+		let query = PyCompletions::query();
+		let mut cursor = QueryCursor::new();
+		let expected: &[&[&str]] = &[
+			&["env"],
+			&["ref"],
+			&["env", "ref", "'ref'"],
+			&["env", "'model'"],
+			&["render"],
+			&["request", "render", "'template'"],
+			&["fields", "Many2one", "'positional'"],
+			&["fields", "Many2many", "comodel_name", "'named'"],
+		];
+		let actual = cursor
+			.matches(query, ast.root_node(), &contents[..])
+			.map(|match_| {
+				match_
+					.captures
+					.iter()
+					.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
+					.collect::<Vec<_>>()
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(expected, actual);
+	}
+
+	#[test]
+	fn test_py_completions_class_scoped() {
+		let mut parser = Parser::new();
+		parser.set_language(tree_sitter_python::language()).unwrap();
+		let contents = br#"
+class Foo(models.AbstractModel):
+	_name = 'foo'
+	_inherit = ['inherit_foo', 'inherit_bar']
+	foo = fields.Char(related='related')
+	@api.depends('mapped')
+	def foo(self):
+		pass
+"#;
+		let ast = parser.parse(&contents[..], None).unwrap();
+		let query = PyCompletions::query();
+		let mut cursor = QueryCursor::new();
+		let expected: &[&[&str]] = &[
+			&["depends"],
+			&[
+				"_name",
+				"'foo'",
+				"_inherit",
+				"'inherit_foo'",
+				"'inherit_bar'",
+				"fields",
+				"related",
+				"'related'",
+				"api",
+				"depends",
+				"'mapped'",
 			],
 		];
 		let actual = cursor

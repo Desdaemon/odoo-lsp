@@ -63,7 +63,7 @@ impl QueryDefinition {
 		let mut query = query.as_str();
 		let mut captures = HashMap::new();
 		let mut diagnostics = Vec::new();
-		let mut index = 0;
+		let mut index = 0u32;
 		while let Some(mut start) = query.find('@') {
 			start += 1;
 			if start >= query.len() {
@@ -74,7 +74,8 @@ impl QueryDefinition {
 				.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
 				.unwrap_or(query.len() - start);
 			let capture = &query[start..start + end];
-			if captures.insert(capture, index).is_none() {
+			if !captures.contains_key(&capture) {
+				captures.insert(capture, index);
 				index += 1;
 			}
 			query = &query[start + end..];
@@ -82,7 +83,7 @@ impl QueryDefinition {
 		let mut consts = vec![];
 		for capture in self.captures.iter() {
 			if let Some(index) = captures.get(&capture.to_string().as_ref()) {
-				let index = *index as u32;
+				let index = *index;
 				consts.push(quote_spanned!(capture.span()=> pub const #capture: u32 = #index;))
 			} else {
 				diagnostics.push(capture.span().error(format!("No capture '{capture}' found in query")));
