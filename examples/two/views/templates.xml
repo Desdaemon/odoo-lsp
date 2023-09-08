@@ -1,5 +1,5 @@
 <odoo>
   <record id="another" model='bar'>
-    <field name='barr'></field>
+    <field name='foo'></field>
   </record>
 </odoo>

@@ -19,47 +19,51 @@ use ts_macros::query;
 query! {
 	PyCompletions(REQUEST, XML_ID, /* MAPPED, */ NAME, MODEL, ACCESS);
 r#"
-([
-	(call [
-		(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
-		(attribute (identifier) @REQUEST (identifier) @_render)
-	] (argument_list . (string) @XML_ID))
-	(subscript [(identifier) @_env (attribute (_) (identifier) @_env)] (string) @MODEL)
-	(class_definition
-		(block [
-			(decorated_definition
-				(decorator
-					(call
-						(attribute (identifier) @_api (identifier) @_depends)
-						(argument_list (string)? @MAPPED))))
-			(expression_statement
-				(assignment (identifier) @_inherit [(string) @MODEL (list ((string) @MODEL ","?)*)]))
-			(expression_statement (assignment (identifier) @_name (string) @NAME))
-			(expression_statement
-				(assignment
-					(identifier)
-					(call
-						(attribute (identifier) @_fields (identifier))
-						(argument_list (keyword_argument (identifier) @_related (string) @MAPPED)?))))
-		]+
-	))
-	(call [(identifier) @_Field (attribute (identifier) @_fields (identifier) @_Field)] [
-		(argument_list . (string) @MODEL)
-		(argument_list (keyword_argument (identifier) @_comodel_name (string) @MODEL))
-	])  
-	(attribute (_) (identifier) @ACCESS)
-]+
-(#eq? @_env "env") 
-(#eq? @_ref "ref") 
+((call [
+	(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
+	(attribute (identifier) @REQUEST (identifier) @_render)
+] (argument_list . (string) @XML_ID))
+(#eq? @_env "env")
+(#eq? @_ref "ref")
 (#eq? @REQUEST "request")
-(#eq? @_render "render")
+(#eq? @_render "render"))
+
+(subscript [(identifier) @_env (attribute (_) (identifier) @_env)] (string) @MODEL)
+
+((class_definition
+	(block [
+    	(expression_statement
+        	(assignment (identifier) @_inherit
+            	[(string) @MODEL
+                 (list ((string) @MODEL ","?)*)]))
+        (expression_statement
+        	(assignment (identifier) @_name (string) @NAME))
+    ]+ [
+    	(expression_statement
+        	(assignment
+            	(identifier)
+                (call
+                	(attribute (identifier) @_fields (identifier))
+                    (argument_list
+                    	(keyword_argument (identifier) @_related (string) @MAPPED)?))))
+    ]))
 (#eq? @_name "_name")
-(#eq? @_inherit "_inherit") 
-(#eq? @_related "related")
+(#eq? @_inherit "_inherit")
 (#eq? @_fields "fields")
-(#eq? @_comodel_name "comodel_name")  
+(#eq? @_related "related"))
+
+((call [
+	(identifier) @_Field
+    (attribute (identifier) @_fields (identifier) @_Field)
+] [
+ 	(argument_list . (string) @MODEL)
+    (argument_list
+    	(keyword_argument (identifier) @_comodel_name (string) @MODEL))
+])
 (#match? @_Field "^(Many2one|One2many|Many2many)$")
-(#match? @ACCESS "^[a-z]"))"#
+(#eq? @_comodel_name "comodel_name"))
+
+(attribute (_) (identifier) @ACCESS)"#
 }
 
 query! {
@@ -115,7 +119,7 @@ fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
 fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 	module
 		.named_children(&mut module.walk())
-		.find(|child| child.byte_range().contains(&offset))
+		.find(|child| child.byte_range().contains(&offset) || child.end_byte() == offset)
 }
 
 impl Backend {
@@ -203,12 +207,8 @@ impl Backend {
 							break 'match_;
 						};
 						let lhs = some!(capture.node.prev_named_sibling());
-						let model = some!(self.model_of_range(
-							ast.root_node(),
-							lhs.byte_range().map_unit(ByteOffset),
-							None,
-							&bytes
-						));
+						let model =
+							some!(self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), None, &bytes));
 						let model = interner().resolve(&model);
 						let needle = Cow::from(slice.byte_slice(..offset - range.start));
 						let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
@@ -219,9 +219,10 @@ impl Backend {
 							items,
 						})));
 					}
-				} else if capture.node.byte_range().start > offset {
-					break 'match_;
 				}
+				// } else if capture.node.byte_range().start > offset {
+				// 	continue;
+				// }
 			}
 		}
 		Ok(None)
@@ -275,9 +276,10 @@ impl Backend {
 						let model = interner().resolve(&model);
 						return self.jump_def_field_name(&field, model);
 					}
-				} else if capture.node.byte_range().start > offset {
-					break 'match_;
 				}
+				// } else if capture.node.byte_range().start > offset {
+				// 	continue;
+				// }
 			}
 		}
 		Ok(None)
@@ -577,7 +579,10 @@ baz = fields.Many2many(comodel_name='named')
 			&["env", "'model'"],
 			&["render"],
 			&["request", "render", "'template'"],
+			&["Char"],
+			&["Many2one"],
 			&["fields", "Many2one", "'positional'"],
+			&["Many2many"],
 			&["fields", "Many2many", "comodel_name", "'named'"],
 		];
 		let actual = cursor
@@ -605,12 +610,19 @@ class Foo(models.AbstractModel):
 	@api.depends('mapped')
 	def foo(self):
 		pass
+	def bar(self):
+		pass
+	foo = fields.Foo()
+	@api.depends('mapped2')
+	def another(self):
+		pass
 "#;
 		let ast = parser.parse(&contents[..], None).unwrap();
 		let query = PyCompletions::query();
 		let mut cursor = QueryCursor::new();
 		let expected: &[&[&str]] = &[
-			&["depends"],
+			&["AbstractModel"],
+			&["Char"],
 			&[
 				"_name",
 				"'foo'",
@@ -620,10 +632,11 @@ class Foo(models.AbstractModel):
 				"fields",
 				"related",
 				"'related'",
-				"api",
-				"depends",
-				"'mapped'",
 			],
+			&["depends"],
+			&["Foo"],
+			&["_name", "'foo'", "_inherit", "'inherit_foo'", "'inherit_bar'", "fields"],
+			&["depends"],
 		];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])

@@ -98,18 +98,22 @@ query! {
 r#"
 ((class_definition
 	(block
-		(expression_statement [
-			(assignment (identifier) @_name (string) @NAME)
-			(assignment (identifier) @_inherit [
-				(string) @INHERIT
-				(list ((string) @INHERIT ","?)*)
-			])
-		]) [
+		[
+			 (expression_statement
+				(assignment (identifier) @_inherit [
+					(string) @INHERIT
+					(list ((string) @INHERIT ","?)*)
+				])
+			)
+			(expression_statement (assignment (identifier) @_name (string) @NAME))
+		]+
+		[
 			(decorated_definition
 				(function_definition
-					(parameters . (identifier) @SELF) (block) @SCOPE))
+					(parameters . (identifier) @SELF) (block) @SCOPE) .)
 			(function_definition (parameters . (identifier) @SELF) (block) @SCOPE)
-		]*)) @class
+		])
+) @class
 (#eq? @_name "_name")
 (#eq? @_inherit "_inherit"))"#
 }
@@ -132,7 +136,7 @@ impl Backend {
 		'scoping: for match_ in cursor.matches(query, node, contents) {
 			// @class
 			let class = match_.captures.first()?;
-			if !class.node.byte_range().contains(&range.end.0) {
+			if !class.node.byte_range().contains(&range.end.0) && class.node.end_byte() != range.end.0 {
 				continue;
 			}
 			for capture in match_.captures {
@@ -143,7 +147,9 @@ impl Backend {
 					self_type = Some(capture.node);
 				} else if capture.index == FieldCompletion::SELF {
 					self_param = Some(capture.node);
-				} else if capture.index == FieldCompletion::SCOPE && capture.node.byte_range().contains(&range.end.0) {
+				} else if capture.index == FieldCompletion::SCOPE
+					&& (capture.node.byte_range().contains(&range.end.0) || capture.node.end_byte() == range.end.0)
+				{
 					// @scope
 					fn_scope = Some(capture.node);
 					break 'scoping;
@@ -223,7 +229,7 @@ impl Backend {
 				}
 				_ => {}
 			}
-			if child.byte_range().contains(&range.end.0) {
+			if child.byte_range().contains(&range.end.0) || child.end_byte() == range.end.0 {
 				target = Some(child);
 				break;
 			}
@@ -362,5 +368,45 @@ impl Backend {
 			}
 			_ => None,
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use tree_sitter::{Parser, QueryCursor};
+
+	use crate::analyze::FieldCompletion;
+
+	#[test]
+	fn test_field_completion() {
+		let mut parser = Parser::new();
+		parser.set_language(tree_sitter_python::language()).unwrap();
+		let contents = br#"
+class Foo(models.AbstractModel):
+	_name = 'foo'
+	_inherit = ['inherit_foo', 'inherit_bar']
+	foo = fields.Char(related='related')
+	@api.depends('mapped')
+	def foo(self):
+		pass
+"#;
+		let ast = parser.parse(&contents[..], None).unwrap();
+		let query = FieldCompletion::query();
+		let mut cursor = QueryCursor::new();
+		// let expected: &[&[u32]] = &[];
+		let actual = cursor
+			.matches(query, ast.root_node(), &contents[..])
+			.map(|match_| match_.captures.iter().map(|capture| capture.index).collect::<Vec<_>>())
+			.collect::<Vec<_>>();
+		// Allow nested patterns
+		let actual = actual.iter().map(Vec::as_slice).collect::<Vec<_>>();
+		use FieldCompletion as T;
+		assert!(
+			matches!(
+				&actual[..],
+				[[_, _, T::NAME, _, T::INHERIT, T::INHERIT, T::SELF, T::SCOPE]]
+			),
+			"{actual:?}"
+		)
 	}
 }

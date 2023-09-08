@@ -19,9 +19,9 @@ class Quux(models.Model):
 
 class Moo(models.Model):
     _name = 'moo'
-    _inherit = ['quux']
+    _inherit = 'quux'
 
-    what = fields.Many2one(comodel_name='bar')
+    what = fields.Many2one(comodel_name='moo')
     def foo(self):
-        self.env['moo'].what
+        self.env['bar'].bark
         request.render('generic_tax_report')

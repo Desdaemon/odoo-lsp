@@ -246,15 +246,15 @@ r#"
 		(identifier) @_Model
 		(attribute (identifier) @_models (identifier) @_Model)
 	])
-	(block [	
-		(expression_statement (assignment (identifier) @_name (string) @NAME))
+	(block
 		(expression_statement
 			(assignment
 				(identifier) @_inherit [
 					(string) @INHERIT
 					(list ((string) @INHERIT ","?)*)
 				])
-		)]*
+		)?
+		(expression_statement (assignment (identifier) @_name (string) @NAME))?
 	)) @MODEL
  (#eq? @_models "models")
  (#match? @_Model "^(Transient|Abstract)?Model$")
@@ -303,25 +303,23 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 		let range = range.map_unit(ByteOffset);
 		let lsp_range =
 			offset_range_to_lsp_range(range.clone(), rope.clone()).ok_or_else(|| diagnostic!("model out of bounds"))?;
-		let mut has_primary = inherits.len() == 1;
+		let mut has_primary = false;
 		if !inherits.is_empty() {
 			// Rearranges the primary inherit to the first index
 			if let Some(maybe_base) = &maybe_base {
 				if let Some(position) = inherits.iter().position(|inherit| inherit == maybe_base) {
 					inherits.swap(position, 0);
 					has_primary = true;
-				} else {
-					has_primary = false;
 				}
 			}
 		}
-		match (inherits.as_slice(), maybe_base) {
-			([_, ..], None) => out.push(Model {
+		match (inherits.is_empty(), maybe_base) {
+			(false, None) => out.push(Model {
 				type_: ModelType::Inherit(inherits),
 				range: lsp_range,
 				byte_range: range,
 			}),
-			([], None) => {}
+			(true, None) => {}
 			(_, Some(base)) => {
 				if has_primary {
 					out.push(Model {
@@ -361,19 +359,27 @@ class Foo(models.AbstractModel):
 	@api.depends('foo')
 	def foo(self):
 		pass
+
+class Bar(models.Model):
+	_name = 'bar'
+	what = fields.Foo()
+	_inherit = 'baz'
 "#;
 		let ast = parser.parse(&contents[..], None).unwrap();
 		let query = ModelQuery::query();
 		let mut cursor = QueryCursor::new();
-		let expected: &[&[&str]] = &[&[
-			"models",
-			"AbstractModel",
-			"_name",
-			"'foo'",
-			"_inherit",
-			"'foo'",
-			"'bar'",
-		]];
+		let expected: &[&[&str]] = &[
+			&[
+				"models",
+				"AbstractModel",
+				"_name",
+				"'foo'",
+				"_inherit",
+				"'foo'",
+				"'bar'",
+			],
+			&["models", "Model", "_name", "'bar'", "_inherit", "'baz'"],
+		];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])
 			.map(|match_| {
