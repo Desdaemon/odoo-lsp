@@ -21,10 +21,11 @@ For more features check out the [wiki].
 The VSCode extension handles downloading the latest releases automatically; other editors need `odoo-lsp` on the path.
 Nightly binaries are also available for major platforms, please check [Releases] for the latest downloads.
 
-```shell
+```bash
 # One-line
-wget -qO- "https://github.com/Desdaemon/odoo-lsp/releases/download/nightly-$(date +'%Y%m%d')/odoo-lsp-x86_64-unknown-linux-musl.tgz" | \
-   tar --transform 's/^dbt2-0.37.50.3/dbt2/' -xvz
+VERSION="v0.1.2"
+VERSION="nightly-$(date +'%Y%m%d')" # today's nightly build
+wget https://github.com/Desdaemon/odoo-lsp/releases/download/$VERSION/odoo-lsp-x86_64-unknown-linux-musl.tgz -O - | tar -xzvf -
 
 # With cargo-binstall
 cargo binstall odoo-lsp
@@ -77,6 +78,35 @@ language-servers = [
 
 4. Alternatively, modify `$ROOT/.helix/languages.toml` where `$ROOT` is your Odoo modules root to include the above lines.
 
+### Neovim via [lsp-zero.nvim]
+
+1. Ensure that you have `odoo-lsp` on your path
+2. Configure your Neovim (Lua) configuration file e.g. at `~/.config/nvim/init.lua` to use [lsp-zero.nvim],
+   adding odoo-lsp as a new server using `lsp.new_server` before calling `lsp.setup()`:
+
+```lua
+-- lsp-zero stanza
+local lsp = require('lsp-zero').preset({})
+lsp.on_attach(function(client, bufnr)
+  lsp.default_keymaps({buffer = bufnr})
+end)
+
+-- define our custom language server here
+lsp.new_server({
+  name = 'odoo-lsp',
+  cmd = {'odoo-lsp'},
+  filetypes = {'javascript', 'xml', 'python'},
+  root_dir = function()
+    return lsp.dir.find_first({'.odoo_lsp', '.odoo_lsp.json', '.git'})
+  end,
+})
+
+-- LSP setup done
+lsp.setup()
+```
+
+A complete example can be found in [examples/init.lua](examples/init.lua).
+
 ## Development
 
 1. `pnpm i`
@@ -89,3 +119,4 @@ language-servers = [
 
 [wiki]: https://github.com/Desdaemon/odoo-lsp/wiki
 [Releases]: https://github.com/Desdaemon/odoo-lsp/releases
+[lsp-zero.nvim]: https://github.com/VonHeikemen/lsp-zero.nvim
