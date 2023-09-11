@@ -468,7 +468,7 @@ impl LanguageServer for Backend {
 					}
 					completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 						kind: MarkupKind::Markdown,
-						value: self.model_docstring(&entry),
+						value: self.model_docstring(&entry, None),
 					}))
 				}
 				Some(CompletionItemKind::FIELD) => {
@@ -881,14 +881,19 @@ impl Backend {
 			None => Ok(None),
 		}
 	}
-	fn hover_model(&self, model: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
-		let model = some!(interner().get(model));
-		let model = some!(self.index.models.get(&model.into()));
+	fn hover_model(
+		&self,
+		model_str_key: &str,
+		range: Option<Range>,
+		definition: bool,
+	) -> miette::Result<Option<Hover>> {
+		let model_key = some!(interner().get(model_str_key));
+		let model = some!(self.index.models.get(&model_key.into()));
 		Ok(Some(Hover {
 			range,
 			contents: HoverContents::Markup(MarkupContent {
 				kind: MarkupKind::Markdown,
-				value: self.model_docstring(&model),
+				value: self.model_docstring(&model, definition.then_some(model_str_key)),
 			}),
 		}))
 	}
@@ -952,13 +957,21 @@ impl Backend {
 			.take(limit);
 		Ok(Some(locations.collect()))
 	}
-	fn model_docstring(&self, model: &ModelEntry) -> String {
+	fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>) -> String {
 		use std::fmt::Write;
 		let mut out = String::new();
+		if let Some(name) = model_name {
+			_ = writeln!(
+				&mut out,
+				concat!("```python\n", "models.Model[\"{}\"]\n", "```  "),
+				name
+			)
+		}
+
 		if let Some(base) = &model.base {
 			if let Some(module) = self.index.module_of_path(Path::new(interner().resolve(&base.0.path))) {
 				let module = interner().resolve(&module);
-				out = format!("*Defined in:* `{module}`  \n");
+				_ = writeln!(&mut out, "*Defined in:* `{module}`  ")
 			}
 		}
 		let mut descendants = model
@@ -1003,11 +1016,11 @@ impl Backend {
 		}
 		out
 	}
-	fn field_docstring(&self, name: &str, field: &Field, sig: bool) -> String {
+	fn field_docstring(&self, name: &str, field: &Field, signature: bool) -> String {
 		use std::fmt::Write;
 		let mut out = String::new();
 		let type_ = interner().resolve(&field.type_);
-		if sig {
+		if signature {
 			match &field.kind {
 				FieldKind::Value => {
 					out = format!(concat!("```python\n", "{} = fields.{}(…)\n", "```\n\n"), name, type_)

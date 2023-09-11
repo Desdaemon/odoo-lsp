@@ -220,9 +220,6 @@ impl Backend {
 						})));
 					}
 				}
-				// } else if capture.node.byte_range().start > offset {
-				// 	continue;
-				// }
 			}
 		}
 		Ok(None)
@@ -277,9 +274,6 @@ impl Backend {
 						return self.jump_def_field_name(&field, model);
 					}
 				}
-				// } else if capture.node.byte_range().start > offset {
-				// 	continue;
-				// }
 			}
 		}
 		Ok(None)
@@ -471,19 +465,7 @@ impl Backend {
 		let mut cursor = tree_sitter::QueryCursor::new();
 		'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
 			for capture in match_.captures {
-				if capture.index == PyCompletions::XML_ID {
-					// let range = capture.node.byte_range();
-					// if range.contains(&offset) {
-					// 	let range = range.contract(1);
-					// 	let Some(slice) = rope.get_byte_slice(range.clone()) else {
-					// 		dbg!(&range);
-					// 		break 'match_;
-					// 	};
-					// 	let slice = Cow::from(slice);
-					// 	return self
-					// 		.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
-					// }
-				} else if capture.index == PyCompletions::MODEL {
+				if capture.index == PyCompletions::MODEL {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
 						let range = range.contract(1);
@@ -493,15 +475,15 @@ impl Backend {
 							break 'match_;
 						};
 						let slice = Cow::from(slice);
-						return self.hover_model(&slice, Some(lsp_range));
+						return self.hover_model(&slice, Some(lsp_range), false);
 					}
 				} else if capture.index == PyCompletions::ACCESS {
 					let range = capture.node.byte_range();
-					if range.contains(&offset) || range.end == offset {
+					if range.contains(&offset) {
 						let lsp_range = ts_range_to_lsp_range(capture.node.range());
 						let lhs = some!(capture.node.prev_named_sibling());
 						let lhs = lhs.byte_range().map_unit(ByteOffset);
-						let model = some!(self.model_of_range(ast.root_node(), lhs, None, &bytes));
+						let model = some!(self.model_of_range(root, lhs, None, &bytes));
 						let field = String::from_utf8_lossy(&bytes[range]);
 						let model = interner().resolve(&model);
 						return self.hover_field_name(&field, model, Some(lsp_range));
@@ -509,7 +491,12 @@ impl Backend {
 				}
 			}
 		}
-		Ok(None)
+		// No matches, assume arbitrary expression.
+		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
+		let lsp_range = ts_range_to_lsp_range(needle.range());
+		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), None, &bytes));
+		let model = interner().resolve(&model);
+		self.hover_model(model, Some(lsp_range), true)
 	}
 }
 

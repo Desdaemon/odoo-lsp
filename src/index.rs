@@ -393,6 +393,7 @@ class Foo(models.AbstractModel):
 		pass
 
 class Bar(models.Model):
+	def _default_stuff(): pass
 	_name = 'bar'
 	what = fields.Foo()
 	_inherit = 'baz'
