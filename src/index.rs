@@ -154,7 +154,7 @@ impl Index {
 				}
 				Output::Models { path, models } => {
 					model_count += models.len();
-					self.models.extend_models(path, interner, models).await;
+					self.models.extend_models(path, interner, false, &models).await;
 				}
 			}
 		}
@@ -262,18 +262,24 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 		.into_diagnostic()
 		.with_context(|| format_loc!("Could not read {}", path.display()))?;
 
+	let path = interner().get_or_intern(path.to_string_lossy().as_ref());
+	let models = index_models(&contents).await?;
+	Ok(Output::Models { path, models })
+}
+
+pub async fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 	let mut parser = tree_sitter::Parser::new();
 	parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
 
 	let ast = parser
-		.parse(&contents, None)
+		.parse(contents, None)
 		.ok_or_else(|| diagnostic!("AST not parsed"))?;
 	let query = ModelQuery::query();
 	let mut cursor = QueryCursor::new();
 
 	let mut models = vec![];
-	let rope = Rope::from_str(&String::from_utf8_lossy(&contents));
-	'match_: for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
+	let rope = Rope::from_str(&String::from_utf8_lossy(contents));
+	'match_: for match_ in cursor.matches(query, ast.root_node(), contents) {
 		let mut inherits = vec![];
 		let mut range = None;
 		let mut maybe_base = None;
@@ -369,9 +375,7 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 			}
 		}
 	}
-
-	let path = interner().get_or_intern(path.to_string_lossy().as_ref());
-	Ok(Output::Models { path, models })
+	Ok(models)
 }
 
 #[cfg(test)]

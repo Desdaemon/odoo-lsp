@@ -225,7 +225,7 @@ impl Backend {
 			return Ok(());
 		};
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
-		let fields = self.populate_field_names(&mut entry).await?;
+		let fields = self.populate_field_names(&mut entry, &[]).await?;
 		let completions = fields.iter().flat_map(|(key, _)| {
 			let field_name = interner().resolve(&Spur::try_from_usize(*key as usize).unwrap());
 			field_name.contains(needle).then(|| CompletionItem {
@@ -329,7 +329,7 @@ impl Backend {
 		let model = interner().get_or_intern(model);
 		let mut entry = some!(self.index.models.get_mut(&model.into()));
 		let field = some!(interner().get(field));
-		let fields = block_on(self.populate_field_names(&mut entry))?;
+		let fields = block_on(self.populate_field_names(&mut entry, &[]))?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
 	}
@@ -337,7 +337,7 @@ impl Backend {
 		let model = interner().get_or_intern(model);
 		let mut entry = some!(self.index.models.get_mut(&model.into()));
 		let field = some!(interner().get(name));
-		let fields = block_on(self.populate_field_names(&mut entry))?;
+		let fields = block_on(self.populate_field_names(&mut entry, &[]))?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(Hover {
 			range,

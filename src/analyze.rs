@@ -280,6 +280,8 @@ impl Backend {
 		// What transforms value types?
 		// 1. foo.bar;
 		//    foo: Model('t) => bar: Model('t).field('bar')
+		// 2. foo.mapped('field')
+		//    foo: Model('t) => foo.mapped('field'): Model('t).mapped('field')
 		let interner = interner();
 		let kind = normalize(&mut node).kind();
 		match kind {
@@ -325,7 +327,7 @@ impl Backend {
 						let ident = String::from_utf8_lossy(ident);
 						let ident = interner.get_or_intern(ident.as_ref());
 						let mut entry = self.index.models.get_mut(&model)?;
-						let fields = block_on(self.populate_field_names(&mut entry));
+						let fields = block_on(self.populate_field_names(&mut entry, &[]));
 						let field = fields.ok()?.get(&ident.into())?;
 						match field.kind {
 							FieldKind::Relational(model) => Some(Type::Model(interner.resolve(&model).into())),

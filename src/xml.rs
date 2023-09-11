@@ -175,7 +175,7 @@ impl Backend {
 				let model = some!(model_filter);
 				let model = some!(interner().get(model));
 				let mut entry = some!(self.index.models.get_mut(&model.into()));
-				let fields = self.populate_field_names(&mut entry).await?;
+				let fields = self.populate_field_names(&mut entry, &[]).await?;
 				let Some(Field {
 					kind: FieldKind::Relational(relation),
 					..

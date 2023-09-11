@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
@@ -86,7 +87,11 @@ impl LanguageServer for Backend {
 				hover_provider: Some(HoverProviderCapability::Simple(true)),
 				references_provider: Some(OneOf::Left(true)),
 				workspace_symbol_provider: Some(OneOf::Left(true)),
-				text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::INCREMENTAL)),
+				text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
+					change: Some(TextDocumentSyncKind::INCREMENTAL),
+					save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+					..Default::default()
+				})),
 				completion_provider: Some(CompletionOptions {
 					resolve_provider: Some(true),
 					trigger_characters: Some(vec!["\"".to_string(), "'".to_string(), ".".to_string()]),
@@ -278,18 +283,21 @@ impl LanguageServer for Backend {
 		let old_rope = rope.clone();
 		// Update the rope
 		// TODO: Refactor into method
+		// Per the spec (https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_didChange),
+		// deltas are applied SEQUENTIALLY so we don't have to do any extra processing.
 		for change in &params.content_changes {
 			if change.range.is_none() && change.range_length.is_none() {
 				*rope.value_mut() = ropey::Rope::from_str(&change.text);
 			} else {
 				let range = change.range.expect("LSP change event must have a range");
-				let Some(range) = lsp_range_to_char_range(range, rope.value().clone()) else {
-					continue;
-				};
+				let range =
+					lsp_range_to_char_range(range, rope.value().clone()).expect("did_change applying delta: no range");
 				let rope = rope.value_mut();
 				let start = range.start.0;
 				rope.remove(range.map_unit(|unit| unit.0));
-				rope.insert(start, &change.text);
+				if !change.text.is_empty() {
+					rope.insert(start, &change.text);
+				}
 			}
 		}
 		self.on_change(backend::TextDocumentItem {
@@ -304,8 +312,14 @@ impl LanguageServer for Backend {
 		.report(|| format_loc!("did_change failed"));
 	}
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
-		if let Some(text) = params.text {
-			debug!("did_save ignored:\n{text}");
+		let uri = params.text_document.uri;
+		debug!("did_save {}", uri.path());
+		if uri.path().ends_with(".py") {
+			let rope = self.document_map.get(uri.path()).unwrap();
+			let text = Cow::from(rope.slice(..));
+			self.update_models(&Text::Full(text.into_owned()), &uri, rope.value().clone())
+				.await
+				.report(|| format_loc!("update_models"));
 		}
 	}
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
@@ -359,7 +373,7 @@ impl LanguageServer for Backend {
 			match self.python_references(params, document.value().clone(), ast.value().clone()) {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
-					debug!("{report}");
+					error!("{report}");
 					Ok(None)
 				}
 			}
@@ -367,7 +381,7 @@ impl LanguageServer for Backend {
 			match self.xml_references(params, document.value().clone()) {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
-					debug!("{report}");
+					error!("{report}");
 					Ok(None)
 				}
 			}
@@ -437,7 +451,7 @@ impl LanguageServer for Backend {
 						break 'resolve;
 					};
 					if let Err(err) = entry.resolve_details().await {
-						dbg!(err);
+						error!("resolving details: {err}");
 					}
 					completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 						kind: MarkupKind::Markdown,
@@ -488,7 +502,7 @@ impl LanguageServer for Backend {
 			match self.python_hover(params, document.value().clone()).await {
 				Ok(ret) => Ok(ret),
 				Err(err) => {
-					debug!("{err}");
+					error!("{err}");
 					Ok(None)
 				}
 			}
@@ -533,7 +547,6 @@ impl LanguageServer for Backend {
 	async fn execute_command(&self, _: ExecuteCommandParams) -> Result<Option<Value>> {
 		Ok(None)
 	}
-	#[allow(deprecated)]
 	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
 		let query = &params.query;
 
@@ -541,6 +554,7 @@ impl LanguageServer for Backend {
 		let records_by_prefix = self.index.records.by_prefix.read().await;
 		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
 			self.index.models.get(key).into_iter().flat_map(|entry| {
+				#[allow(deprecated)]
 				entry.base.as_ref().map(|loc| SymbolInformation {
 					name: interner().resolve(entry.key()).to_string(),
 					kind: SymbolKind::CONSTANT,
@@ -553,6 +567,7 @@ impl LanguageServer for Backend {
 		});
 		let limit = self.symbols_limit.load(Relaxed);
 		fn to_symbol_information(record: &odoo_lsp::record::Record, interner: &Interner) -> SymbolInformation {
+			#[allow(deprecated)]
 			SymbolInformation {
 				name: record.qualified_id(interner),
 				kind: SymbolKind::VARIABLE,

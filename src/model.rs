@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use lasso::Spur;
+use log::debug;
 use miette::{diagnostic, IntoDiagnostic};
 use qp_trie::{wrapper::BString, Trie};
 use tokio::sync::RwLock;
@@ -98,26 +99,45 @@ impl Deref for ModelIndex {
 }
 
 impl ModelIndex {
-	pub async fn extend_models<I>(&self, path: Spur, interner: &Interner, items: I)
-	where
-		I: IntoIterator<Item = Model>,
-	{
+	pub async fn extend_models(&self, path: Spur, interner: &Interner, replace: bool, items: &[Model]) {
 		let mut by_prefix = self.by_prefix.write().await;
 		for item in items {
-			match item.type_ {
+			match &item.type_ {
 				ModelType::Base(base) => {
-					let name = interner.get_or_intern(&base).into();
-					by_prefix.insert_str(&base, name);
+					let name = interner.get_or_intern(base).into();
+					by_prefix.insert_str(base, name);
 					let mut entry = self.entry(name).or_default();
-					entry.base = Some(ModelLocation(
-						MinLoc {
-							path,
-							range: item.range,
-						},
-						item.byte_range,
-					));
+					if entry.base.is_none() || replace {
+						entry.base = Some(ModelLocation(
+							MinLoc {
+								path,
+								range: item.range,
+							},
+							item.byte_range.clone(),
+						));
+					} else {
+						debug!(
+							"Conflicting bases:\nfirst={}\n  new={}",
+							entry.base.as_ref().unwrap(),
+							ModelLocation(
+								MinLoc {
+									path,
+									range: item.range
+								},
+								item.byte_range.clone()
+							)
+						)
+					}
 				}
 				ModelType::Inherit(inherits) => {
+					if replace {
+						for inherit in inherits {
+							let Some(inherit) = interner.get(inherit) else { continue };
+							if let Some(mut entry) = self.get_mut(&inherit.into()) {
+								entry.descendants.retain(|loc| loc.0.path != path)
+							}
+						}
+					}
 					for inherit in inherits {
 						let inherit = interner.get_or_intern(inherit).into();
 						self.entry(inherit).or_default().descendants.push(ModelLocation(

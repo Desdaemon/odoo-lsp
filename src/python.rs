@@ -3,15 +3,15 @@ use crate::{Backend, Text};
 use std::borrow::Cow;
 use std::path::Path;
 
-use lasso::Key;
+use lasso::{Key, Spur};
 use log::{debug, error};
-use miette::{diagnostic, Context, IntoDiagnostic};
-use odoo_lsp::index::{interner, SymbolMap};
+use miette::{diagnostic, IntoDiagnostic};
+use odoo_lsp::index::{index_models, interner, SymbolMap};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use tree_sitter::{Node, Parser, QueryCursor, Tree};
 
-use odoo_lsp::model::{Field, FieldKind, FieldName, ModelEntry, ModelLocation};
+use odoo_lsp::model::{Field, FieldKind, FieldName, ModelEntry, ModelLocation, ModelType};
 use odoo_lsp::utils::*;
 use odoo_lsp::{format_loc, some};
 use ts_macros::query;
@@ -133,9 +133,39 @@ impl Backend {
 		let mut parser = Parser::new();
 		parser
 			.set_language(tree_sitter_python::language())
-			.into_diagnostic()
-			.with_context(|| "failed to init python parser")?;
-		self.update_ast(text, uri, rope, old_rope, parser)?;
+			.expect("bug: failed to init python parser");
+		self.update_ast(text, uri, rope.clone(), old_rope, parser)?;
+		// self.update_models(text, uri, rope).await?;
+		Ok(())
+	}
+	pub async fn update_models(&self, text: &Text, uri: &Url, rope: Rope) -> miette::Result<()> {
+		let mut parser = Parser::new();
+		parser
+			.set_language(tree_sitter_python::language())
+			.expect("bug: failed to init python parser");
+		let text = match text {
+			Text::Full(text) => Cow::from(text),
+			// TODO: Limit range of possible updates based on delta
+			Text::Delta(_) => Cow::from(rope.slice(..)),
+		};
+		let models = index_models(text.as_bytes()).await?;
+		let path = interner().get_or_intern(uri.path());
+		self.index.models.extend_models(path, interner(), true, &models).await;
+		for model in models {
+			match model.type_ {
+				ModelType::Base(model) => {
+					let model = interner().get(model).unwrap();
+					let mut model = self.index.models.get_mut(&model.into()).unwrap();
+					self.populate_field_names(&mut model, &[path]).await?;
+				}
+				ModelType::Inherit(inherits) => {
+					let Some(model) = inherits.first() else { continue };
+					let model = interner().get(model).unwrap();
+					let mut model = self.index.models.get_mut(&model.into()).unwrap();
+					self.populate_field_names(&mut model, &[path]).await?;
+				}
+			}
+		}
 		Ok(())
 	}
 	pub async fn python_completions(
@@ -327,8 +357,9 @@ impl Backend {
 	pub async fn populate_field_names<'model>(
 		&self,
 		entry: &'model mut ModelEntry,
+		locations_filter: &[Spur],
 	) -> miette::Result<&'model mut SymbolMap<FieldName, Field>> {
-		if entry.fields.is_some() {
+		if entry.fields.is_some() && locations_filter.is_empty() {
 			return Ok(entry.fields.as_mut().unwrap());
 		}
 		let mut out = SymbolMap::default();
@@ -336,6 +367,9 @@ impl Backend {
 		let query = ModelFields::query();
 		let mut tasks = tokio::task::JoinSet::<miette::Result<Vec<_>>>::new();
 		for ModelLocation(location, byte_range) in locations.cloned() {
+			if !locations_filter.is_empty() && !locations_filter.contains(&location.path) {
+				continue;
+			}
 			tasks.spawn(async move {
 				let mut fields = vec![];
 				let contents = tokio::fs::read(interner().resolve(&location.path))

@@ -8,6 +8,7 @@ class Bar(Model):
     _description = 'asd'
     barr = Boolean()
     bark = Char()
+    food = Many2one('quux')
 
 class Baz(models.Model):
     _inherit = 'bar'
@@ -21,7 +22,7 @@ class Moo(models.Model):
     _name = 'moo'
     _inherit = 'quux'
 
-    what = fields.Many2one(comodel_name='moo')
+    haha = fields.Many2one(comodel_name='moo')
     def foo(self):
-        self.env['bar'].bark
+        self.env['moo']
         request.render('generic_tax_report')
