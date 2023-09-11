@@ -238,8 +238,9 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 	Ok(Output::Xml { records })
 }
 
+// TODO: Match non-consecutive _name and _inherit decls
 query! {
-	ModelQuery(NAME, INHERIT, MODEL);
+	ModelQuery(MODEL, NAME);
 r#"
 ((class_definition
 	(argument_list [
@@ -248,18 +249,11 @@ r#"
 	])
 	(block
 		(expression_statement
-			(assignment
-				(identifier) @_inherit [
-					(string) @INHERIT
-					(list ((string) @INHERIT ","?)*)
-				])
-		)?
-		(expression_statement (assignment (identifier) @_name (string) @NAME))?
+			(assignment (identifier) @NAME))*
 	)) @MODEL
  (#eq? @_models "models")
  (#match? @_Model "^(Transient|Abstract)?Model$")
- (#eq? @_name "_name")
- (#eq? @_inherit "_inherit"))"#
+ (#match? @NAME "^_(name|inherit)$"))"#
 }
 
 async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
@@ -277,23 +271,61 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 	let query = ModelQuery::query();
 	let mut cursor = QueryCursor::new();
 
-	let mut out = vec![];
+	let mut models = vec![];
 	let rope = Rope::from_str(&String::from_utf8_lossy(&contents));
 	'match_: for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
 		let mut inherits = vec![];
 		let mut range = None;
 		let mut maybe_base = None;
 		for capture in match_.captures {
-			if capture.index == ModelQuery::NAME && maybe_base.is_none() {
-				let name = capture.node.byte_range().contract(1);
-				if name.is_empty() {
-					continue 'match_;
-				}
-				maybe_base = Some(String::from_utf8_lossy(&contents[name.clone()]));
-			} else if capture.index == ModelQuery::INHERIT {
-				let inherit = capture.node.byte_range().contract(1);
-				if !inherit.is_empty() {
-					inherits.push(ImStr::from(String::from_utf8_lossy(&contents[inherit]).as_ref()));
+			if capture.index == ModelQuery::NAME {
+				let name = &contents[capture.node.byte_range()];
+				match name {
+					b"_name" => {
+						if maybe_base.is_none() {
+							let Some(name_decl) = capture.node.next_named_sibling() else {
+								break 'match_;
+							};
+							if name_decl.kind() == "string" {
+								let name = name_decl.byte_range().contract(1);
+								if name.is_empty() {
+									continue 'match_;
+								}
+								maybe_base = Some(String::from_utf8_lossy(&contents[name]));
+							}
+						}
+					}
+					b"_inherit" => {
+						let Some(inherit_decl) = capture.node.next_named_sibling() else {
+							break 'match_;
+						};
+						match inherit_decl.kind() {
+							"string" => {
+								let inherit = inherit_decl.byte_range().contract(1);
+								if !inherit.is_empty() {
+									inherits.push(ImStr::from(String::from_utf8_lossy(&contents[inherit]).as_ref()));
+								}
+							}
+							"list" => {
+								for maybe_inherit_decl in inherit_decl.named_children(&mut inherit_decl.walk()) {
+									if maybe_inherit_decl.kind() == "string" {
+										let inherit = maybe_inherit_decl.byte_range().contract(1);
+										if !inherit.is_empty() {
+											inherits.push(ImStr::from(
+												String::from_utf8_lossy(&contents[inherit]).as_ref(),
+											));
+										}
+									}
+								}
+							}
+							_ => {
+								continue;
+							}
+						}
+					}
+					_ => {
+						continue;
+					}
 				}
 			} else if capture.index == ModelQuery::MODEL && range.is_none() {
 				range = Some(capture.node.byte_range());
@@ -314,7 +346,7 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 			}
 		}
 		match (inherits.is_empty(), maybe_base) {
-			(false, None) => out.push(Model {
+			(false, None) => models.push(Model {
 				type_: ModelType::Inherit(inherits),
 				range: lsp_range,
 				byte_range: range,
@@ -322,13 +354,13 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 			(true, None) => {}
 			(_, Some(base)) => {
 				if has_primary {
-					out.push(Model {
+					models.push(Model {
 						type_: ModelType::Inherit(inherits),
 						range: lsp_range,
 						byte_range: range,
 					});
 				} else {
-					out.push(Model {
+					models.push(Model {
 						type_: ModelType::Base(base.as_ref().into()),
 						range: lsp_range,
 						byte_range: range,
@@ -339,7 +371,7 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 	}
 
 	let path = interner().get_or_intern(path.to_string_lossy().as_ref());
-	Ok(Output::Models { path, models: out })
+	Ok(Output::Models { path, models })
 }
 
 #[cfg(test)]
@@ -369,16 +401,8 @@ class Bar(models.Model):
 		let query = ModelQuery::query();
 		let mut cursor = QueryCursor::new();
 		let expected: &[&[&str]] = &[
-			&[
-				"models",
-				"AbstractModel",
-				"_name",
-				"'foo'",
-				"_inherit",
-				"'foo'",
-				"'bar'",
-			],
-			&["models", "Model", "_name", "'bar'", "_inherit", "'baz'"],
+			&["models", "AbstractModel", "_name", "_inherit"],
+			&["models", "Model", "_name", "what", "_inherit"],
 		];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])
