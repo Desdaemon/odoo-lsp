@@ -46,7 +46,7 @@ r#"
                 	(attribute (identifier) @_fields (identifier))
                     (argument_list
                     	(keyword_argument (identifier) @_related (string) @MAPPED)?))))
-    ]))
+    ]?))
 (#eq? @_name "_name")
 (#eq? @_inherit "_inherit")
 (#eq? @_fields "fields")

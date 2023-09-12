@@ -11,8 +11,10 @@ class Bar(Model):
     food = Many2one('quux')
 
 class Baz(models.Model):
-    _inherit = 'bar'
-    foo = fields.Char()
+    _inherit = 'moo'
+
+    def what():
+        pass
 
 class Quux(models.Model):
     _name = 'quux'
@@ -22,7 +24,7 @@ class Moo(models.Model):
     _name = 'moo'
     _inherit = 'quux'
 
-    haha = fields.Many2one(comodel_name='moo')
+    hahar = fields.Many2one(comodel_name='moo')
     def foo(self):
-        self.env['moo']
+        self.env['moo'].hahar
         request.render('generic_tax_report')
