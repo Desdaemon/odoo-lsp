@@ -55,10 +55,7 @@ async function downloadLspBinary(context: ExtensionContext) {
 	const preferNightly = !!workspace.getConfiguration("odoo-lsp.binary").get("preferNightly");
 	const overrideVersion = workspace.getConfiguration("odoo-lsp.binary").get("overrideVersion");
 
-	// We follow nightly releases, so only download if today's build is not already downloaded.
-	// The format is nightly-YYYYMMDD
-	const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-	let release = overrideVersion || `nightly-${today}`;
+	let release = overrideVersion || 'nightly';
 	if (!preferNightly && !overrideVersion) {
 		release = context.extension.packageJSON._release || release;
 	}

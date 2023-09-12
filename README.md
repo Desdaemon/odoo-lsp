@@ -23,9 +23,10 @@ Nightly binaries are also available for major platforms, please check [Releases]
 
 ```bash
 # One-line
-VERSION="v0.1.2"
-VERSION="nightly-$(date +'%Y%m%d')" # today's nightly build
-wget https://github.com/Desdaemon/odoo-lsp/releases/download/$VERSION/odoo-lsp-x86_64-unknown-linux-musl.tgz -O - | tar -xzvf -
+curl -L https://github.com/Desdaemon/odoo-lsp/releases/download/nightly/odoo-lsp-x86_64-unknown-linux-musl.tgz | tar -xzvf -
+
+# Apple Silicon
+curl -L https://github.com/Desdaemon/odoo-lsp/releases/download/nightly/odoo-lsp-aarch64-apple-darwin.tgz | tar -xzvf -
 
 # With cargo-binstall
 cargo binstall odoo-lsp

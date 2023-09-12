@@ -5,7 +5,10 @@ on:
     inputs:
       release_name:
         type: string
-        description: Defaults to `nightly-YYYYMMDD`
+        description: Release name, defaults to `nightly`
+      tag_name:
+        type: string
+        description: Tag name, defaults to `nightly-YYYYMMDD`, or release_name if specified
       prerelease:
         type: boolean
         default: true
@@ -160,14 +163,14 @@ jobs:
             openssl dgst -sha256 -r "$file" | awk '{print $1}' > "${file}.sha256";
           done
       - name: Get current date
-        run: echo "TAG=${{ inputs.release_name || 'nightly-$(date +"%Y%m%d")' }}" >> "$GITHUB_ENV"
+        run: echo "TAG=${{ inputs.tag_name || inputs.release_name || 'nightly-$(date +"%Y%m%d")' }}" >> "$GITHUB_ENV"
       - name: Create tag
         run: git tag -f ${{ env.TAG }} && git push --tags
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
           files: odoo-lsp-*/odoo-lsp-*
-          name: ${{ env.TAG }}
+          name: ${{ inputs.release_name || 'nightly' }}
           tag_name: ${{ env.TAG }}
           generate_release_notes: true
           prerelease: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease == 'true' }}
