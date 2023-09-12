@@ -9,7 +9,7 @@ use xmlparser::{StrSpan, Token};
 
 use crate::index::interner;
 
-pub mod isolate;
+// pub mod isolate;
 
 /// A more economical version of [Location].
 #[derive(Clone, Debug)]

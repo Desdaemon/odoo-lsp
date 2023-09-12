@@ -18,7 +18,7 @@ use tower_lsp::{LanguageServer, LspService, Server};
 use odoo_lsp::config::Config;
 use odoo_lsp::index::{interner, Interner};
 use odoo_lsp::model::FieldKind;
-use odoo_lsp::utils::isolate::Isolate;
+// use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{format_loc, some, utils::*};
 
 mod analyze;
@@ -126,7 +126,7 @@ impl LanguageServer for Backend {
 			root_setup: _,
 			symbols_limit: _,
 			references_limit: _,
-			isolate: _,
+			// isolate: _,
 		} = self;
 		document_map.remove(path);
 		record_ranges.remove(path);
@@ -401,10 +401,8 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 		if ext == "xml" {
-			let completions = self.isolate.send_task(|send| {
-				Box::pin(async { _ = send.send(self.xml_completions(params, document.value().clone()).await) })
-			});
-			match completions.await.expect("isolate error") {
+			let completions = self.xml_completions(params, document.value().clone()).await;
+			match completions {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
 					self.client
@@ -418,15 +416,10 @@ impl LanguageServer for Backend {
 				debug!("Bug: did not build AST for {}", uri.path());
 				return Ok(None);
 			};
-			let completions = self.isolate.send_task(|send| {
-				Box::pin(async {
-					_ = send.send(
-						self.python_completions(params, ast.value().clone(), document.value().clone())
-							.await,
-					);
-				})
-			});
-			match completions.await.expect("isolate error") {
+			let completions = self
+				.python_completions(params, ast.value().clone(), document.value().clone())
+				.await;
+			match completions {
 				Ok(ret) => Ok(ret),
 				Err(err) => {
 					self.client
@@ -622,7 +615,7 @@ async fn main() {
 		ast_map: DashMap::new(),
 		symbols_limit: AtomicUsize::new(100),
 		references_limit: AtomicUsize::new(100),
-		isolate: Isolate::new(),
+		// isolate: Isolate::new(),
 	})
 	.finish();
 

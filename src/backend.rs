@@ -4,7 +4,6 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use dashmap::{DashMap, DashSet};
-use futures::executor::block_on;
 use globwalk::FileType;
 use lasso::{Key, Spur};
 use log::debug;
@@ -19,7 +18,7 @@ use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{interner, Index, Interner, ModuleName, RecordId, SymbolSet};
 use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName};
 use odoo_lsp::record::Record;
-use odoo_lsp::utils::isolate::Isolate;
+// use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{some, utils::*};
 
 pub struct Backend {
@@ -33,7 +32,7 @@ pub struct Backend {
 	pub root_setup: AtomicBool,
 	pub symbols_limit: AtomicUsize,
 	pub references_limit: AtomicUsize,
-	pub isolate: Isolate,
+	// pub isolate: Isolate,
 }
 
 #[derive(Debug, Default)]
@@ -325,19 +324,24 @@ impl Backend {
 			}),
 		}))
 	}
-	pub fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
+	pub async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model = interner().get_or_intern(model);
 		let mut entry = some!(self.index.models.get_mut(&model.into()));
 		let field = some!(interner().get(field));
-		let fields = block_on(self.populate_field_names(&mut entry, &[]))?;
+		let fields = self.populate_field_names(&mut entry, &[]).await?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
 	}
-	pub fn hover_field_name(&self, name: &str, model: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
+	pub async fn hover_field_name(
+		&self,
+		name: &str,
+		model: &str,
+		range: Option<Range>,
+	) -> miette::Result<Option<Hover>> {
 		let model = interner().get_or_intern(model);
 		let mut entry = some!(self.index.models.get_mut(&model.into()));
 		let field = some!(interner().get(name));
-		let fields = block_on(self.populate_field_names(&mut entry, &[]))?;
+		let fields = self.populate_field_names(&mut entry, &[]).await?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(Hover {
 			range,

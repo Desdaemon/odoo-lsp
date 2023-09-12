@@ -178,7 +178,6 @@ impl Backend {
 			error!(format_loc!("python_completions: invalid offset"));
 			return Ok(None);
 		};
-		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let Some(current_module) = self
 			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
@@ -190,67 +189,108 @@ impl Backend {
 		let bytes = rope.bytes().collect::<Vec<_>>();
 		let query = PyCompletions::query();
 		let mut items = vec![];
-		'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
-			let mut model_filter = None;
-			for capture in match_.captures {
-				if capture.index == PyCompletions::REQUEST {
-					model_filter = Some("ir.ui.view");
-				} else if capture.index == PyCompletions::XML_ID {
-					let range = capture.node.byte_range();
-					if range.contains(&offset) {
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
+		let mut early_return = None;
+		enum EarlyReturn {
+			XmlId,
+			Model,
+			Access(String),
+		}
+		{
+			let root = some!(top_level_stmt(ast.root_node(), offset));
+			'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
+				let mut model_filter = None;
+				for capture in match_.captures {
+					if capture.index == PyCompletions::REQUEST {
+						model_filter = Some("ir.ui.view");
+					} else if capture.index == PyCompletions::XML_ID {
+						let range = capture.node.byte_range();
+						if range.contains(&offset) {
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let relative_offset = range.start;
+							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+							// remove the quotes
+							let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
+							early_return = Some((
+								EarlyReturn::XmlId,
+								needle,
+								range,
+								rope.clone(),
+								model_filter,
+								*current_module,
+							));
 							break 'match_;
-						};
-						let relative_offset = range.start;
-						let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-						// remove the quotes
-						let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-						self.complete_xml_id(&needle, range, rope.clone(), model_filter, *current_module, &mut items)
-							.await?;
-						return Ok(Some(CompletionResponse::List(CompletionList {
-							is_incomplete: items.len() >= Self::LIMIT,
-							items,
-						})));
-					}
-				} else if capture.index == PyCompletions::MODEL {
-					let range = capture.node.byte_range();
-					if range.contains(&offset) || range.end == offset {
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
+						}
+					} else if capture.index == PyCompletions::MODEL {
+						let range = capture.node.byte_range();
+						if range.contains(&offset) || range.end == offset {
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let relative_offset = range.start;
+							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+							let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
+							early_return =
+								Some((EarlyReturn::Model, needle, range, rope.clone(), None, *current_module));
 							break 'match_;
-						};
-						let relative_offset = range.start;
-						let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-						let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-						self.complete_model(&needle, range, rope.clone(), &mut items).await?;
-						return Ok(Some(CompletionResponse::List(CompletionList {
-							is_incomplete: items.len() >= Self::LIMIT,
-							items,
-						})));
-					}
-				} else if capture.index == PyCompletions::ACCESS {
-					let range = capture.node.byte_range();
-					if range.contains(&offset) || range.end == offset {
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
+						}
+					} else if capture.index == PyCompletions::ACCESS {
+						let range = capture.node.byte_range();
+						if range.contains(&offset) || range.end == offset {
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let lhs = some!(capture.node.prev_named_sibling());
+							let model =
+								some!(self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), None, &bytes));
+							let model = interner().resolve(&model);
+							let needle = Cow::from(slice.byte_slice(..offset - range.start));
+							let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
+							early_return = Some((
+								EarlyReturn::Access(model.to_string()),
+								needle,
+								range,
+								rope.clone(),
+								None,
+								*current_module,
+							));
 							break 'match_;
-						};
-						let lhs = some!(capture.node.prev_named_sibling());
-						let model =
-							some!(self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), None, &bytes));
-						let model = interner().resolve(&model);
-						let needle = Cow::from(slice.byte_slice(..offset - range.start));
-						let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-						self.complete_field_name(&needle, range, model.to_string(), rope.clone(), &mut items)
-							.await?;
-						return Ok(Some(CompletionResponse::List(CompletionList {
-							is_incomplete: items.len() >= Self::LIMIT,
-							items,
-						})));
+						}
 					}
 				}
+				// if let Some((needle, range, rope, model_filter, current_module)) = early_return {
+				// }
 			}
+		}
+		match early_return {
+			Some((EarlyReturn::XmlId, needle, range, rope, model_filter, current_module)) => {
+				self.complete_xml_id(&needle, range, rope, model_filter, current_module, &mut items)
+					.await?;
+				return Ok(Some(CompletionResponse::List(CompletionList {
+					is_incomplete: items.len() >= Self::LIMIT,
+					items,
+				})));
+			}
+			Some((EarlyReturn::Model, needle, range, rope, _, _)) => {
+				self.complete_model(&needle, range, rope.clone(), &mut items).await?;
+				return Ok(Some(CompletionResponse::List(CompletionList {
+					is_incomplete: items.len() >= Self::LIMIT,
+					items,
+				})));
+			}
+			Some((EarlyReturn::Access(model), needle, range, rope, _, _)) => {
+				self.complete_field_name(&needle, range, model, rope.clone(), &mut items)
+					.await?;
+				return Ok(Some(CompletionResponse::List(CompletionList {
+					is_incomplete: items.len() >= Self::LIMIT,
+					items,
+				})));
+			}
+			None => {}
 		}
 		Ok(None)
 	}
@@ -264,47 +304,54 @@ impl Backend {
 		else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
-		let root = some!(top_level_stmt(ast.root_node(), offset));
-		let query = PyCompletions::query();
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		let mut cursor = tree_sitter::QueryCursor::new();
-		'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
-			for capture in match_.captures {
-				if capture.index == PyCompletions::XML_ID {
-					let range = capture.node.byte_range();
-					if range.contains(&offset) {
-						let range = range.contract(1);
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
+		let mut early_return = None;
+		{
+			let root = some!(top_level_stmt(ast.root_node(), offset));
+			let query = PyCompletions::query();
+			let mut cursor = tree_sitter::QueryCursor::new();
+			'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
+				for capture in match_.captures {
+					if capture.index == PyCompletions::XML_ID {
+						let range = capture.node.byte_range();
+						if range.contains(&offset) {
+							let range = range.contract(1);
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let slice = Cow::from(slice);
+							return self
+								.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
+						}
+					} else if capture.index == PyCompletions::MODEL {
+						let range = capture.node.byte_range();
+						if range.contains(&offset) {
+							let range = range.contract(1);
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let slice = Cow::from(slice);
+							return self.jump_def_model(&slice);
+						}
+					} else if capture.index == PyCompletions::ACCESS {
+						let range = capture.node.byte_range();
+						if range.contains(&offset) || range.end == offset {
+							let lhs = some!(capture.node.prev_named_sibling());
+							let lhs = lhs.byte_range().map_unit(ByteOffset);
+							let model = some!(self.model_of_range(ast.root_node(), lhs, None, &bytes));
+							let field = String::from_utf8_lossy(&bytes[range]);
+							let model = interner().resolve(&model);
+							early_return = Some((field, model));
 							break 'match_;
-						};
-						let slice = Cow::from(slice);
-						return self
-							.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
-					}
-				} else if capture.index == PyCompletions::MODEL {
-					let range = capture.node.byte_range();
-					if range.contains(&offset) {
-						let range = range.contract(1);
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
-							break 'match_;
-						};
-						let slice = Cow::from(slice);
-						return self.jump_def_model(&slice);
-					}
-				} else if capture.index == PyCompletions::ACCESS {
-					let range = capture.node.byte_range();
-					if range.contains(&offset) || range.end == offset {
-						let lhs = some!(capture.node.prev_named_sibling());
-						let lhs = lhs.byte_range().map_unit(ByteOffset);
-						let model = some!(self.model_of_range(ast.root_node(), lhs, None, &bytes));
-						let field = String::from_utf8_lossy(&bytes[range]);
-						let model = interner().resolve(&model);
-						return self.jump_def_field_name(&field, model);
+						}
 					}
 				}
 			}
+		}
+		if let Some((field, model)) = early_return {
+			return self.jump_def_field_name(&field, model).await;
 		}
 		Ok(None)
 	}
@@ -493,39 +540,49 @@ impl Backend {
 		else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
-		let root = some!(top_level_stmt(ast.root_node(), offset));
-		let query = PyCompletions::query();
+
 		let bytes = rope.bytes().collect::<Vec<_>>();
-		let mut cursor = tree_sitter::QueryCursor::new();
-		'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
-			for capture in match_.captures {
-				if capture.index == PyCompletions::MODEL {
-					let range = capture.node.byte_range();
-					if range.contains(&offset) {
-						let range = range.contract(1);
-						let lsp_range = ts_range_to_lsp_range(capture.node.range());
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
+		let mut early_return = None;
+		{
+			let root = some!(top_level_stmt(ast.root_node(), offset));
+			let query = PyCompletions::query();
+			let mut cursor = tree_sitter::QueryCursor::new();
+			'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
+				for capture in match_.captures {
+					if capture.index == PyCompletions::MODEL {
+						let range = capture.node.byte_range();
+						if range.contains(&offset) {
+							let range = range.contract(1);
+							let lsp_range = ts_range_to_lsp_range(capture.node.range());
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let slice = Cow::from(slice);
+							return self.hover_model(&slice, Some(lsp_range), false);
+						}
+					} else if capture.index == PyCompletions::ACCESS {
+						let range = capture.node.byte_range();
+						if range.contains(&offset) {
+							let lsp_range = ts_range_to_lsp_range(capture.node.range());
+							let lhs = some!(capture.node.prev_named_sibling());
+							let lhs = lhs.byte_range().map_unit(ByteOffset);
+							let model = some!(self.model_of_range(root, lhs, None, &bytes));
+							let field = String::from_utf8_lossy(&bytes[range]);
+							let model = interner().resolve(&model);
+							early_return = Some((field, model, lsp_range));
 							break 'match_;
-						};
-						let slice = Cow::from(slice);
-						return self.hover_model(&slice, Some(lsp_range), false);
-					}
-				} else if capture.index == PyCompletions::ACCESS {
-					let range = capture.node.byte_range();
-					if range.contains(&offset) {
-						let lsp_range = ts_range_to_lsp_range(capture.node.range());
-						let lhs = some!(capture.node.prev_named_sibling());
-						let lhs = lhs.byte_range().map_unit(ByteOffset);
-						let model = some!(self.model_of_range(root, lhs, None, &bytes));
-						let field = String::from_utf8_lossy(&bytes[range]);
-						let model = interner().resolve(&model);
-						return self.hover_field_name(&field, model, Some(lsp_range));
+						}
 					}
 				}
 			}
 		}
+		if let Some((field, model, lsp_range)) = early_return {
+			return self.hover_field_name(&field, model, Some(lsp_range)).await;
+		}
+
 		// No matches, assume arbitrary expression.
+		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
 		let lsp_range = ts_range_to_lsp_range(needle.range());
 		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), None, &bytes));
