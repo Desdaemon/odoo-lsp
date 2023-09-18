@@ -491,7 +491,7 @@ impl LanguageServer for Backend {
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let document = some!(self.document_map.get(uri.path()));
-		let (_, ext) = some!(uri.path().split_once('.'));
+		let (_, ext) = some!(uri.path().rsplit_once('.'));
 		if ext == "py" {
 			match self.python_hover(params, document.value().clone()).await {
 				Ok(ret) => Ok(ret),

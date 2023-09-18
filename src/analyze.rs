@@ -282,6 +282,7 @@ impl Backend {
 		//    foo: Model('t) => bar: Model('t).field('bar')
 		// 2. foo.mapped('field')
 		//    foo: Model('t) => foo.mapped('field'): Model('t).mapped('field')
+		debug!("type_of {}", String::from_utf8_lossy(&contents[node.byte_range()]));
 		let interner = interner();
 		let kind = normalize(&mut node).kind();
 		match kind {
