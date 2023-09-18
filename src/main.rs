@@ -90,6 +90,7 @@ impl LanguageServer for Backend {
 				text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
 					change: Some(TextDocumentSyncKind::INCREMENTAL),
 					save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+					open_close: Some(true),
 					..Default::default()
 				})),
 				completion_provider: Some(CompletionOptions {
