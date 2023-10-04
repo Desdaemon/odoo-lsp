@@ -1,3 +1,22 @@
+# [0.2.0](https://github.com/Desdaemon/odoo-lsp/compare/v0.1.2...v0.2.0) (2023-10-04)
+
+### Bug Fixes
+
+- broken queries ([ea4fca8](https://github.com/Desdaemon/odoo-lsp/commit/ea4fca88d33fdfe40a4491464d67d9e1f69549a8))
+- **ci:** make nightly releases linear ([44828b5](https://github.com/Desdaemon/odoo-lsp/commit/44828b5399eabd99e25d0c1af569f921c69918d8))
+- **ci:** run unit tests ([cbebeca](https://github.com/Desdaemon/odoo-lsp/commit/cbebecaeac881eef6224775fd25c411ac5403d2a))
+- edge case with completion query ([f3a4c60](https://github.com/Desdaemon/odoo-lsp/commit/f3a4c60827bc8e1beadfe2c2adf8b651b2bcafa1))
+- model indexing ([5b02082](https://github.com/Desdaemon/odoo-lsp/commit/5b02082079e6879d4c17cbe6a6a438ba4177684e))
+- open/close capabilities ([6b259f6](https://github.com/Desdaemon/odoo-lsp/commit/6b259f65afad502c3e9f1c4c1d817db6bf802451))
+- remove block_on and make all futures Send ([118664d](https://github.com/Desdaemon/odoo-lsp/commit/118664d0c6e8bb41f800f028c065a6cbcbf59f30))
+- wrong path splitting ([8444188](https://github.com/Desdaemon/odoo-lsp/commit/84441880a690da8a15fc14696da086c2d022764f))
+
+### Features
+
+- hover arbitrary expressions ([e39e649](https://github.com/Desdaemon/odoo-lsp/commit/e39e649b5d268d057d208a575060059b8a7aebbf))
+- resolve types of `super()` ([ef98f6b](https://github.com/Desdaemon/odoo-lsp/commit/ef98f6bb932c94c5427e69c883075d7e44a694ab))
+- update models on save ([30f1687](https://github.com/Desdaemon/odoo-lsp/commit/30f16873d5bbf1f5f1d44192890733bad00d4555))
+
 ## [0.1.2](https://github.com/Desdaemon/odoo-lsp/compare/v0.1.1...v0.1.2) (2023-09-07)
 
 ### Features
