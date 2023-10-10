@@ -277,7 +277,7 @@ impl Backend {
 		items.extend(matches);
 		Ok(())
 	}
-	pub fn jump_def_inherit_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
+	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
 		let mut value = Cow::from(cursor_value);
 		if !value.contains('.') {
 			'unscoped: {

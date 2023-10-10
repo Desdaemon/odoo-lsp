@@ -27,6 +27,7 @@ enum Tag {
 	Field,
 	Template,
 	Record,
+	Menuitem,
 }
 
 impl Backend {
@@ -42,54 +43,32 @@ impl Backend {
 		let Some(current_module) = self.index.module_of_path(Path::new(uri.path())) else {
 			return;
 		};
-		// let current_module = ImStr::from(current_module.as_str());
 		let mut record_prefix = self.index.records.by_prefix.write().await;
 		let path_uri = interner.get_or_intern(uri.path());
 		loop {
 			match reader.next() {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
 					let offset = CharOffset(span.start());
-					match local.as_str() {
-						"record" => {
-							let Ok(Some(record)) =
-								Record::from_reader(offset, *current_module, path_uri, &mut reader, rope.clone())
-							else {
-								continue;
-							};
-							let Some(range) = lsp_range_to_char_range(record.location.range, rope.clone()) else {
-								continue;
-							};
-							record_ranges.push(range);
-							self.index
-								.records
-								.insert(
-									interner.get_or_intern(record.qualified_id(interner)).into(),
-									record,
-									Some(&mut record_prefix),
-								)
-								.await;
-						}
-						"template" => {
-							let Ok(Some(template)) =
-								Record::template(offset, *current_module, path_uri, &mut reader, rope.clone())
-							else {
-								continue;
-							};
-							let Some(range) = lsp_range_to_char_range(template.location.range, rope.clone()) else {
-								continue;
-							};
-							record_ranges.push(range);
-							self.index
-								.records
-								.insert(
-									interner.get_or_intern(template.qualified_id(interner)).into(),
-									template,
-									Some(&mut record_prefix),
-								)
-								.await;
-						}
-						_ => {}
-					}
+					let Ok(Some(record)) = (match local.as_str() {
+						"record" => Record::from_reader(offset, *current_module, path_uri, &mut reader, rope.clone()),
+						"template" => Record::template(offset, *current_module, path_uri, &mut reader, rope.clone()),
+						"menuitem" => Record::menuitem(offset, *current_module, path_uri, &mut reader, rope.clone()),
+						_ => continue,
+					}) else {
+						continue;
+					};
+					let Some(range) = lsp_range_to_char_range(record.location.range, rope.clone()) else {
+						continue;
+					};
+					record_ranges.push(range);
+					self.index
+						.records
+						.insert(
+							interner.get_or_intern(record.qualified_id(interner)).into(),
+							record,
+							Some(&mut record_prefix),
+						)
+						.await;
 				}
 				None => break,
 				Some(Err(err)) => {
@@ -198,10 +177,8 @@ impl Backend {
 					.await?
 			}
 			RefKind::FieldName => {
-				if let Some(model) = model_filter {
-					self.complete_field_name(needle, replace_range, model, rope.clone(), &mut items)
-						.await?;
-				}
+				self.complete_field_name(needle, replace_range, some!(model_filter), rope.clone(), &mut items)
+					.await?
 			}
 			RefKind::Id => return Ok(None),
 		}
@@ -227,7 +204,7 @@ impl Backend {
 			return Ok(None);
 		};
 		match ref_kind {
-			Some(RefKind::Ref(_)) => self.jump_def_inherit_id(&cursor_value, uri),
+			Some(RefKind::Ref(_)) => self.jump_def_xml_id(&cursor_value, uri),
 			Some(RefKind::Model) => self.jump_def_model(&cursor_value),
 			Some(RefKind::FieldName) => {
 				let model = some!(model_filter);
@@ -288,6 +265,7 @@ fn gather_refs<'read>(
 					model_filter = Some("ir.ui.view".to_string());
 				}
 				"record" => tag = Some(Tag::Record),
+				"menuitem" => tag = Some(Tag::Menuitem),
 				_ => {}
 			},
 			Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
@@ -307,7 +285,7 @@ fn gather_refs<'read>(
 					&& local.as_str() == "inherit_id"
 					&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
 			{
-				let inherit_id = interner.get_or_intern("inherit_id");
+				let inherit_id = interner.get_or_intern_static("inherit_id");
 				cursor_value = Some(value);
 				ref_kind = Some(RefKind::Ref(inherit_id));
 			}
@@ -328,6 +306,28 @@ fn gather_refs<'read>(
 			{
 				cursor_value = Some(value);
 				ref_kind = Some(RefKind::Id);
+			}
+			Ok(Token::Attribute { local, value, .. })
+				if matches!(tag, Some(Tag::Menuitem))
+					&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
+			{
+				match local.as_str() {
+					"id" => {
+						cursor_value = Some(value);
+						ref_kind = Some(RefKind::Id);
+					}
+					"parent" => {
+						cursor_value = Some(value);
+						ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("parent_id")));
+						model_filter = Some("ir.ui.menu".to_string());
+					}
+					"action" => {
+						cursor_value = Some(value);
+						ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("action")));
+						model_filter = Some("ir.ui.menu".to_string());
+					}
+					_ => {}
+				}
 			}
 			Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
 			Err(_) => break,

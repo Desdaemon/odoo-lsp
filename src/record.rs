@@ -232,9 +232,64 @@ impl Record {
 		Ok(Some(Self {
 			id: some!(id),
 			deleted: false,
-			model: Some(interner().get_or_intern("ir.ui.view").into()),
+			model: Some(interner().get_or_intern_static("ir.ui.view").into()),
 			module,
 			inherit_id,
+			location: MinLoc { path, range },
+		}))
+	}
+	pub fn menuitem(
+		offset: CharOffset,
+		module: ModuleName,
+		path: Spur,
+		reader: &mut Tokenizer,
+		rope: Rope,
+	) -> miette::Result<Option<Self>> {
+		let mut id = None;
+		let mut end = None;
+		let start = char_to_position(offset, rope.clone())
+			.ok_or_else(|| diagnostic!("(menuitem) Failed to parse start location"))?;
+
+		loop {
+			match reader.next() {
+				Some(Ok(Token::Attribute { local, value, .. })) => match local.as_str() {
+					"id" => {
+						if let Some((_, xml_id)) = value.split_once('.') {
+							id = Some(xml_id.into());
+						} else {
+							id = Some(value.as_str().into());
+						}
+					}
+					_ => {}
+				},
+				Some(Ok(Token::ElementEnd { span, .. })) => {
+					end = Some(CharOffset(span.end()));
+					break;
+				}
+				None => break,
+				Some(Err(err)) => {
+					let pos = Position {
+						line: err.pos().row,
+						character: err.pos().col,
+					};
+					end = position_to_char(pos, rope.clone());
+					break;
+				}
+				_ => {}
+			}
+		}
+
+		let id = some!(id);
+		let end = end.ok_or_else(|| diagnostic!("Unbound range for menuitem"))?;
+		let end = char_to_position(end, rope).ok_or_else(|| diagnostic!("(menuitem) Failed to parse end location"))?;
+		let range = Range { start, end };
+
+		Ok(Some(Self {
+			id,
+			deleted: false,
+			model: Some(interner().get_or_intern_static("ir.ui.menu").into()),
+			module,
+			inherit_id: None,
 			location: MinLoc { path, range },
 		}))
 	}
