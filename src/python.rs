@@ -322,7 +322,7 @@ impl Backend {
 							};
 							let slice = Cow::from(slice);
 							return self
-								.jump_def_inherit_id(&slice, &params.text_document_position_params.text_document.uri);
+								.jump_def_xml_id(&slice, &params.text_document_position_params.text_document.uri);
 						}
 					} else if capture.index == PyCompletions::MODEL {
 						let range = capture.node.byte_range();

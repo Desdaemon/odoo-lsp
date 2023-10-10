@@ -203,8 +203,8 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 	let rope = Rope::from_str(&file);
 	loop {
 		match reader.next() {
-			Some(Ok(Token::ElementStart { local, span, .. })) => {
-				if local.as_str() == "record" {
+			Some(Ok(Token::ElementStart { local, span, .. })) => match local.as_str() {
+				"record" => {
 					let record = Record::from_reader(
 						CharOffset(span.start()),
 						module_name,
@@ -213,7 +213,8 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 						rope.clone(),
 					)?;
 					records.extend(record);
-				} else if local.as_str() == "template" {
+				}
+				"template" => {
 					let template = Record::template(
 						CharOffset(span.start()),
 						module_name,
@@ -222,10 +223,19 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 						rope.clone(),
 					)?;
 					records.extend(template);
-				} else if local.as_str() == "templates" {
-					// QWeb templates
 				}
-			}
+				"menuitem" => {
+					let menuitem = Record::menuitem(
+						CharOffset(span.start()),
+						module_name,
+						path_uri,
+						&mut reader,
+						rope.clone(),
+					)?;
+					records.extend(menuitem);
+				}
+				_ => {}
+			},
 			None => break,
 			Some(Err(err)) => {
 				debug!("error parsing {}:\n{err}", path.display());
