@@ -18,7 +18,6 @@ use tower_lsp::{LanguageServer, LspService, Server};
 use odoo_lsp::config::Config;
 use odoo_lsp::index::{interner, Interner};
 use odoo_lsp::model::FieldKind;
-// use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{format_loc, some, utils::*};
 
 mod analyze;
@@ -127,7 +126,6 @@ impl LanguageServer for Backend {
 			root_setup: _,
 			symbols_limit: _,
 			references_limit: _,
-			// isolate: _,
 		} = self;
 		document_map.remove(path);
 		record_ranges.remove(path);
@@ -165,10 +163,11 @@ impl LanguageServer for Backend {
 			match self.index.add_root(root.as_str(), progress.clone()).await {
 				Ok(Some(results)) => {
 					info!(
-						"{} | {} modules | {} records | {} models | {:.2}s",
+						"{} | {} modules | {} records | {} templates | {} models | {:.2}s",
 						root.as_str(),
 						results.module_count,
 						results.record_count,
+						results.template_count,
 						results.model_count,
 						results.elapsed.as_secs_f64()
 					);
@@ -327,7 +326,7 @@ impl LanguageServer for Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		debug!("goto_definition {}", uri.path());
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
-			debug!("Unsupported file {}", uri.path());
+			debug!("(goto_definition) unsupported {}", uri.path());
 			return Ok(None);
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
@@ -349,7 +348,7 @@ impl LanguageServer for Backend {
 				.ok()
 				.flatten();
 		} else {
-			debug!("Unsupported file {}", uri.path());
+			debug!("(goto_definition) unsupported {}", uri.path());
 			return Ok(None);
 		}
 
@@ -430,7 +429,7 @@ impl LanguageServer for Backend {
 				}
 			}
 		} else {
-			debug!("Unsupported file {}", uri.path());
+			debug!("(completion) unsupported {}", uri.path());
 			Ok(None)
 		}
 	}
@@ -501,7 +500,7 @@ impl LanguageServer for Backend {
 				}
 			}
 		} else {
-			debug!("Unsupported file {}", uri.path());
+			debug!("(hover) unsupported {}", uri.path());
 			Ok(None)
 		}
 	}
@@ -546,7 +545,7 @@ impl LanguageServer for Backend {
 
 		let models_by_prefix = self.index.models.by_prefix.read().await;
 		let records_by_prefix = self.index.records.by_prefix.read().await;
-		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
+		let models = models_by_prefix.iter_prefix_str(query).flat_map(|(_, key)| {
 			self.index.models.get(key).into_iter().flat_map(|entry| {
 				#[allow(deprecated)]
 				entry.base.as_ref().map(|loc| SymbolInformation {
@@ -574,18 +573,17 @@ impl LanguageServer for Backend {
 		let interner = &interner();
 		if let Some((module, xml_id_query)) = query.split_once('.') {
 			let module = some!(interner.get(module)).into();
-			let records = records_by_prefix
-				.iter_prefix(xml_id_query.as_bytes())
-				.flat_map(|(_, keys)| {
-					keys.keys().flat_map(|key| {
-						self.index.records.get(&key).and_then(|record| {
-							(record.module == module).then(|| to_symbol_information(&record, interner))
-						})
-					})
-				});
+			let records = records_by_prefix.iter_prefix_str(xml_id_query).flat_map(|(_, keys)| {
+				keys.keys().flat_map(|key| {
+					self.index
+						.records
+						.get(&key)
+						.and_then(|record| (record.module == module).then(|| to_symbol_information(&record, interner)))
+				})
+			});
 			Ok(Some(models.chain(records).take(limit).collect()))
 		} else {
-			let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, keys)| {
+			let records = records_by_prefix.iter_prefix_str(query).flat_map(|(_, keys)| {
 				keys.keys().flat_map(|key| {
 					self.index
 						.records
@@ -616,7 +614,6 @@ async fn main() {
 		ast_map: DashMap::new(),
 		symbols_limit: AtomicUsize::new(100),
 		references_limit: AtomicUsize::new(100),
-		// isolate: Isolate::new(),
 	})
 	.finish();
 

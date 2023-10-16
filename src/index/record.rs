@@ -66,7 +66,7 @@ impl RecordIndex {
 		}
 		self.inner.insert(qualified_id, record);
 	}
-	pub async fn extend_records(
+	pub async fn append(
 		&self,
 		prefix: Option<&mut RecordPrefixTrie>,
 		records: impl IntoIterator<Item = Record>,

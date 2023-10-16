@@ -9,7 +9,7 @@ use futures::FutureExt;
 use futures::{future::CatchUnwind, Future};
 use log::{error, warn};
 use tower::Service;
-use tower_lsp::jsonrpc::{Error, Id, Response};
+use tower_lsp::jsonrpc::{Error, ErrorCode, Id, Response};
 
 pub struct CatchPanic<S>(pub S);
 impl<S> Service<tower_lsp::jsonrpc::Request> for CatchPanic<S>
@@ -74,6 +74,11 @@ fn handle_panic_err(err: Box<dyn Any>) {
 	}
 }
 
+enum ServerErrors {
+	PreawaitPanic,
+	PostawaitPanic,
+}
+
 impl<S, E> Future for CatchPanicFuture<S>
 where
 	// TODO: Hardcoded for LspService, is there a more general bound?
@@ -87,15 +92,21 @@ where
 			KindProj::Panicked { panic_err } => {
 				let err = core::mem::replace(panic_err, Box::new(&()));
 				handle_panic_err(err);
-				let resp = (self_.id.clone()).map(|id| Response::from_error(id, Error::internal_error()));
-				Poll::Ready(Ok(resp))
+				let resp = Response::from_error(
+					self_.id.clone().unwrap_or_default(),
+					Error::new(ErrorCode::ServerError(ServerErrors::PreawaitPanic as _)),
+				);
+				Poll::Ready(Ok(Some(resp)))
 			}
 			KindProj::Future { future } => match ready!(future.poll(cx)) {
 				Ok(inner) => Poll::Ready(inner),
 				Err(panic_err) => {
 					handle_panic_err(panic_err);
-					let resp = (self_.id.clone()).map(|id| Response::from_error(id, Error::internal_error()));
-					Poll::Ready(Ok(resp))
+					let resp = Response::from_error(
+						self_.id.clone().unwrap_or_default(),
+						Error::new(ErrorCode::ServerError(ServerErrors::PostawaitPanic as _)),
+					);
+					Poll::Ready(Ok(Some(resp)))
 				}
 			},
 		}

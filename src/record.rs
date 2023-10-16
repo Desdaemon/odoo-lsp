@@ -49,8 +49,8 @@ impl Record {
 		// nested records are a thing apparently
 		let mut stack = 1;
 		let mut in_record = true;
-		let start =
-			char_to_position(offset, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse start location"))?;
+		let start = char_to_position(offset, rope.clone())
+			.ok_or_else(|| diagnostic!("fail(start): {}", interner().resolve(&path)))?;
 
 		loop {
 			match reader.next() {
@@ -109,7 +109,7 @@ impl Record {
 				})) if local.as_str() == "record" => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(CharOffset(span.end()));
+						end = Some(CharOffset(rope.byte_to_char(span.end())));
 						break;
 					}
 				}
@@ -120,16 +120,15 @@ impl Record {
 				})) if in_record => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(CharOffset(span.end()));
+						end = Some(CharOffset(rope.byte_to_char(span.end())));
 						break;
 					}
 				}
-				// None | Some(Err(_)) => break,
 				None => break,
 				Some(Err(err)) => {
 					let pos = Position {
-						line: err.pos().row,
-						character: err.pos().col,
+						line: err.pos().row - 1,
+						character: err.pos().col - 1,
 					};
 					end = position_to_char(pos, rope.clone());
 					break;
@@ -139,7 +138,8 @@ impl Record {
 		}
 		let id = some!(id);
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for record"))?;
-		let end = char_to_position(end, rope.clone()).ok_or_else(|| diagnostic!("Failed to parse end location"))?;
+		let end = char_to_position(end, rope.clone())
+			.ok_or_else(|| diagnostic!("fail(end): {}", interner().resolve(&path)))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {
@@ -159,7 +159,7 @@ impl Record {
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
 		let start = char_to_position(offset, rope.clone())
-			.ok_or_else(|| diagnostic!("(template) Failed to parse start location"))?;
+			.ok_or_else(|| diagnostic!("fail(start,template): {}", interner().resolve(&path)))?;
 		let mut id = None;
 		let mut inherit_id = None;
 		let mut end = None;
@@ -226,7 +226,8 @@ impl Record {
 			}
 		}
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for template"))?;
-		let end = char_to_position(end, rope).ok_or_else(|| diagnostic!("(template) Failed to parse end location"))?;
+		let end = char_to_position(end, rope)
+			.ok_or_else(|| diagnostic!("fail(end,template): {}", interner().resolve(&path)))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {
@@ -248,7 +249,7 @@ impl Record {
 		let mut id = None;
 		let mut end = None;
 		let start = char_to_position(offset, rope.clone())
-			.ok_or_else(|| diagnostic!("(menuitem) Failed to parse start location"))?;
+			.ok_or_else(|| diagnostic!("fail(start,menuitem): {}", interner().resolve(&path)))?;
 
 		loop {
 			match reader.next() {
@@ -281,7 +282,8 @@ impl Record {
 
 		let id = some!(id);
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for menuitem"))?;
-		let end = char_to_position(end, rope).ok_or_else(|| diagnostic!("(menuitem) Failed to parse end location"))?;
+		let end = char_to_position(end, rope)
+			.ok_or_else(|| diagnostic!("fail(end,menuitem): {}", interner().resolve(&path)))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {

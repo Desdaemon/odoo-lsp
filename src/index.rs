@@ -22,6 +22,10 @@ mod record;
 pub use record::{RecordId, SymbolMap, SymbolSet};
 mod symbol;
 pub use symbol::{interner, Symbol};
+mod template;
+pub use crate::template::{Template, TemplateName};
+
+use crate::template::{gather_templates, NewTemplate};
 
 pub type Interner = ThreadedRodeo;
 
@@ -30,6 +34,7 @@ pub struct Index {
 	pub roots: DashSet<ImStr>,
 	pub modules: DashSet<ModuleName>,
 	pub records: record::RecordIndex,
+	pub templates: template::TemplateIndex,
 	pub models: ModelIndex,
 }
 
@@ -38,14 +43,21 @@ pub type ModuleName = Symbol<Module>;
 pub enum Module {}
 
 enum Output {
-	Xml { records: Vec<Record> },
-	Models { path: Spur, models: Vec<Model> },
+	Xml {
+		records: Vec<Record>,
+		templates: Vec<NewTemplate>,
+	},
+	Models {
+		path: Spur,
+		models: Vec<Model>,
+	},
 }
 
 pub struct AddRootResults {
 	pub module_count: usize,
 	pub record_count: usize,
 	pub model_count: usize,
+	pub template_count: usize,
 	pub elapsed: Duration,
 }
 
@@ -134,27 +146,29 @@ impl Index {
 
 		let mut record_count = 0;
 		let mut model_count = 0;
+		let mut template_count = 0;
 		while let Some(outputs) = outputs.join_next().await {
-			let Ok(outputs) = outputs else {
-				debug!("join error");
-				continue;
-			};
 			let outputs = match outputs {
-				Ok(records) => records,
+				Ok(Ok(out)) => out,
+				Ok(Err(err)) => {
+					warn!("{}", err);
+					continue;
+				}
 				Err(err) => {
-					warn!("{err}");
+					debug!("{err}");
 					continue;
 				}
 			};
 			match outputs {
-				Output::Xml { records } => {
+				Output::Xml { records, templates } => {
 					record_count += records.len();
-					let mut prefix = self.records.by_prefix.write().await;
-					self.records.extend_records(Some(&mut prefix), records, interner).await;
+					self.records.append(None, records, interner).await;
+					template_count += templates.len();
+					self.templates.append(templates).await;
 				}
 				Output::Models { path, models } => {
 					model_count += models.len();
-					self.models.extend_models(path, interner, false, &models).await;
+					self.models.append(path, interner, false, &models).await;
 				}
 			}
 		}
@@ -162,6 +176,7 @@ impl Index {
 			module_count,
 			record_count,
 			model_count,
+			template_count,
 			elapsed: t0.elapsed(),
 		}))
 	}
@@ -200,6 +215,7 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 	let file = String::from_utf8_lossy(&file);
 	let mut reader = Tokenizer::from(file.as_ref());
 	let mut records = vec![];
+	let mut templates = vec![];
 	let rope = Rope::from_str(&file);
 	loop {
 		match reader.next() {
@@ -234,6 +250,9 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 					)?;
 					records.extend(menuitem);
 				}
+				"templates" => {
+					gather_templates(path_uri, &mut reader, rope.clone(), &mut templates)?;
+				}
 				_ => {}
 			},
 			None => break,
@@ -245,7 +264,7 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 		}
 	}
 
-	Ok(Output::Xml { records })
+	Ok(Output::Xml { records, templates })
 }
 
 // TODO: Match non-consecutive _name and _inherit decls

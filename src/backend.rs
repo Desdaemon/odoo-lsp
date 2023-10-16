@@ -277,6 +277,35 @@ impl Backend {
 		items.extend(matches);
 		Ok(())
 	}
+	pub async fn complete_template_name(
+		&self,
+		needle: &str,
+		range: core::ops::Range<CharOffset>,
+		rope: Rope,
+		items: &mut Vec<CompletionItem>,
+	) -> miette::Result<()> {
+		let range =
+			char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_template_name) range"))?;
+		let interner = interner();
+		let by_prefix = self.index.templates.by_prefix.read().await;
+		let matches = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, set)| {
+			set.keys().into_iter().flat_map(|key| {
+				let label = interner.resolve(&*key).to_string();
+				Some(CompletionItem {
+					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+						new_text: label.clone(),
+						insert: range,
+						replace: range,
+					})),
+					label,
+					kind: Some(CompletionItemKind::REFERENCE),
+					..Default::default()
+				})
+			})
+		});
+		items.extend(matches);
+		Ok(())
+	}
 	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
 		let mut value = Cow::from(cursor_value);
 		if !value.contains('.') {
@@ -331,6 +360,12 @@ impl Backend {
 		let fields = self.populate_field_names(&mut entry, &[]).await?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
+	}
+	pub fn jump_def_template_name(&self, name: &str) -> miette::Result<Option<Location>> {
+		let name = some!(interner().get(name));
+		let entry = some!(self.index.templates.get(&name.into()));
+		let location = some!(&entry.value().location);
+		Ok(Some(location.clone().into()))
 	}
 	pub async fn hover_field_name(
 		&self,
@@ -387,6 +422,16 @@ impl Backend {
 			.by_inherit_id(&inherit_id)
 			.map(|record| record.location.clone().into())
 			.take(limit);
+		Ok(Some(locations.collect()))
+	}
+	pub fn template_references(&self, name: &str) -> miette::Result<Option<Vec<Location>>> {
+		let name = some!(interner().get(name));
+		let entry = some!(self.index.templates.get(&name.into()));
+		let definition_location = entry.value().location.clone().map(Location::from);
+		let descendant_locations = (entry.value().descendants)
+			.iter()
+			.flat_map(|tpl| tpl.location.clone().map(Location::from));
+		let locations = definition_location.into_iter().chain(descendant_locations);
 		Ok(Some(locations.collect()))
 	}
 	pub fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>) -> String {

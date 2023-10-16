@@ -9,6 +9,7 @@ use log::debug;
 use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::index::interner;
 use odoo_lsp::model::{Field, FieldKind};
+use odoo_lsp::template::gather_templates;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token, Tokenizer};
@@ -21,6 +22,9 @@ enum RefKind {
 	Model,
 	Id,
 	FieldName,
+	TName,
+	TInherit,
+	TCall,
 }
 
 enum Tag {
@@ -49,26 +53,43 @@ impl Backend {
 			match reader.next() {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
 					let offset = CharOffset(span.start());
-					let Ok(Some(record)) = (match local.as_str() {
-						"record" => Record::from_reader(offset, *current_module, path_uri, &mut reader, rope.clone()),
-						"template" => Record::template(offset, *current_module, path_uri, &mut reader, rope.clone()),
-						"menuitem" => Record::menuitem(offset, *current_module, path_uri, &mut reader, rope.clone()),
-						_ => continue,
-					}) else {
-						continue;
-					};
-					let Some(range) = lsp_range_to_char_range(record.location.range, rope.clone()) else {
-						continue;
-					};
-					record_ranges.push(range);
-					self.index
-						.records
-						.insert(
-							interner.get_or_intern(record.qualified_id(interner)).into(),
-							record,
-							Some(&mut record_prefix),
-						)
-						.await;
+					if matches!(local.as_str(), "record" | "template" | "menuitem") {
+						let Ok(Some(record)) = (match local.as_str() {
+							"record" => {
+								Record::from_reader(offset, *current_module, path_uri, &mut reader, rope.clone())
+							}
+							"template" => {
+								Record::template(offset, *current_module, path_uri, &mut reader, rope.clone())
+							}
+							"menuitem" => {
+								Record::menuitem(offset, *current_module, path_uri, &mut reader, rope.clone())
+							}
+							_ => unreachable!(),
+						}) else {
+							continue;
+						};
+						let Some(range) = lsp_range_to_char_range(record.location.range, rope.clone()) else {
+							continue;
+						};
+						record_ranges.push(range);
+						self.index
+							.records
+							.insert(
+								interner.get_or_intern(record.qualified_id(interner)).into(),
+								record,
+								Some(&mut record_prefix),
+							)
+							.await;
+					} else if local.as_str() == "templates" {
+						let mut entries = vec![];
+						if let Err(err) = gather_templates(path_uri, &mut reader, rope.clone(), &mut entries) {
+							log::error!("(add_root_xml) {err}");
+							break;
+						}
+						record_ranges.extend(entries.into_iter().map(|entry| {
+							lsp_range_to_char_range(entry.template.location.unwrap().range, rope.clone()).unwrap()
+						}));
+					}
 				}
 				None => break,
 				Some(Err(err)) => {
@@ -80,7 +101,7 @@ impl Backend {
 						message: format!("could not parse XML:\n{err}"),
 						..Default::default()
 					});
-					// break;
+					break;
 				}
 				_ => {}
 			}
@@ -101,9 +122,9 @@ impl Backend {
 		let cursor = position_to_char(position, rope.clone()).ok_or_else(|| diagnostic!("cursor"))?;
 		let mut cursor_by_char = rope.try_byte_to_char(cursor.0).into_diagnostic()?;
 		let Ok(record) = ranges.value().binary_search_by(|range| {
-			if cursor < range.start {
+			if cursor_by_char < range.start.0 {
 				Ordering::Greater
-			} else if cursor > range.end {
+			} else if cursor_by_char > range.end.0 {
 				Ordering::Less
 			} else {
 				Ordering::Equal
@@ -114,6 +135,7 @@ impl Backend {
 			return Ok((slice, cursor_by_char, 0));
 		};
 		let record_range = &ranges.value()[record];
+		debug!("(record_slice) {:?} cursor={}", record_range, cursor_by_char);
 		let relative_offset = rope.try_byte_to_char(record_range.start.0).into_diagnostic()?;
 		cursor_by_char = cursor_by_char.saturating_sub(relative_offset);
 
@@ -180,7 +202,11 @@ impl Backend {
 				self.complete_field_name(needle, replace_range, some!(model_filter), rope.clone(), &mut items)
 					.await?
 			}
-			RefKind::Id => return Ok(None),
+			RefKind::TInherit | RefKind::TCall => {
+				self.complete_template_name(needle, replace_range, rope.clone(), &mut items)
+					.await?;
+			}
+			RefKind::Id | RefKind::TName => return Ok(None),
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
@@ -210,7 +236,8 @@ impl Backend {
 				let model = some!(model_filter);
 				self.jump_def_field_name(&cursor_value, &model).await
 			}
-			Some(RefKind::Id) | None => Ok(None),
+			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.jump_def_template_name(&cursor_value),
+			Some(RefKind::Id) | Some(RefKind::TName) | None => Ok(None),
 		}
 	}
 	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
@@ -236,6 +263,9 @@ impl Backend {
 			Some(RefKind::Ref(_)) | Some(RefKind::Id) => {
 				self.record_references(&cursor_value, current_module.as_deref())
 			}
+			Some(RefKind::TName) | Some(RefKind::TInherit) | Some(RefKind::TCall) => {
+				self.template_references(&cursor_value)
+			}
 			Some(RefKind::FieldName) | None => Ok(None),
 		}
 	}
@@ -245,6 +275,11 @@ struct XmlRefs<'a> {
 	cursor_value: Option<StrSpan<'a>>,
 	ref_kind: Option<RefKind>,
 	model_filter: Option<String>,
+}
+
+#[inline]
+fn contains_inclusive(range: core::ops::Range<usize>, value: usize) -> bool {
+	range.contains(&value) || range.end == value
 }
 
 fn gather_refs<'read>(
@@ -269,7 +304,7 @@ fn gather_refs<'read>(
 				_ => {}
 			},
 			Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
-				let value_in_range = value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char;
+				let value_in_range = contains_inclusive(value.range(), cursor_by_char);
 				if local.as_str() == "ref" && value_in_range {
 					cursor_value = Some(value);
 				} else if local.as_str() == "name" && value_in_range {
@@ -282,8 +317,8 @@ fn gather_refs<'read>(
 			}
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Template))
-					&& local.as_str() == "inherit_id"
-					&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
+					&& contains_inclusive(value.range(), cursor_by_char)
+					&& matches!(local.as_str(), "inherit_id" | "t-call") =>
 			{
 				let inherit_id = interner.get_or_intern_static("inherit_id");
 				cursor_value = Some(value);
@@ -292,7 +327,7 @@ fn gather_refs<'read>(
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>
 			{
-				if value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char {
+				if contains_inclusive(value.range(), cursor_by_char) {
 					cursor_value = Some(value);
 					ref_kind = Some(RefKind::Model);
 				} else {
@@ -301,15 +336,13 @@ fn gather_refs<'read>(
 			}
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Record | Tag::Template))
-					&& local.as_str() == "id"
-					&& value.range().contains(&cursor_by_char) =>
+					&& local == "id" && value.range().contains(&cursor_by_char) =>
 			{
 				cursor_value = Some(value);
 				ref_kind = Some(RefKind::Id);
 			}
 			Ok(Token::Attribute { local, value, .. })
-				if matches!(tag, Some(Tag::Menuitem))
-					&& (value.range().contains(&cursor_by_char) || value.range().end == cursor_by_char) =>
+				if matches!(tag, Some(Tag::Menuitem)) && contains_inclusive(value.range(), cursor_by_char) =>
 			{
 				match local.as_str() {
 					"id" => {
@@ -325,6 +358,24 @@ fn gather_refs<'read>(
 						cursor_value = Some(value);
 						ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("action")));
 						model_filter = Some("ir.ui.menu".to_string());
+					}
+					_ => {}
+				}
+			}
+			// leftover cases
+			Ok(Token::Attribute { local, value, .. }) if contains_inclusive(value.range(), cursor_by_char) => {
+				match local.as_str() {
+					"t-name" => {
+						cursor_value = Some(value);
+						ref_kind = Some(RefKind::TName);
+					}
+					"t-inherit" => {
+						cursor_value = Some(value);
+						ref_kind = Some(RefKind::TInherit);
+					}
+					"t-call" => {
+						cursor_value = Some(value);
+						ref_kind = Some(RefKind::TCall);
 					}
 					_ => {}
 				}

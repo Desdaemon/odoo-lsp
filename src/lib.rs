@@ -6,3 +6,4 @@ pub use str::ImStr;
 
 pub mod model;
 pub mod record;
+pub mod template;

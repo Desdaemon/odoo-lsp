@@ -64,13 +64,6 @@ pub fn char_range_to_lsp_range(range: std::ops::Range<CharOffset>, rope: Rope) -
 	Some(Range { start, end })
 }
 
-pub fn position_to_point(position: Position) -> tree_sitter::Point {
-	tree_sitter::Point {
-		row: position.line as usize,
-		column: position.character as usize,
-	}
-}
-
 pub fn offset_range_to_lsp_range(range: std::ops::Range<ByteOffset>, rope: Rope) -> Option<Range> {
 	let start = offset_to_position(range.start, rope.clone())?;
 	let end = offset_to_position(range.end, rope)?;

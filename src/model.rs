@@ -99,7 +99,7 @@ impl Deref for ModelIndex {
 }
 
 impl ModelIndex {
-	pub async fn extend_models(&self, path: Spur, interner: &Interner, replace: bool, items: &[Model]) {
+	pub async fn append(&self, path: Spur, interner: &Interner, replace: bool, items: &[Model]) {
 		let mut by_prefix = self.by_prefix.write().await;
 		for item in items {
 			match &item.type_ {

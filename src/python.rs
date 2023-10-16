@@ -150,7 +150,7 @@ impl Backend {
 		};
 		let models = index_models(text.as_bytes()).await?;
 		let path = interner().get_or_intern(uri.path());
-		self.index.models.extend_models(path, interner(), true, &models).await;
+		self.index.models.append(path, interner(), true, &models).await;
 		for model in models {
 			match model.type_ {
 				ModelType::Base(model) => {
