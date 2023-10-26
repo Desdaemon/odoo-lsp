@@ -64,7 +64,7 @@ pin_project_lite::pin_project! {
 	}
 }
 
-fn handle_panic_err(err: Box<dyn Any>) {
+fn handle_panic_err(err: &dyn Any) {
 	if let Some(msg) = err.downcast_ref::<String>() {
 		error!("{msg}");
 	} else if let Some(msg) = err.downcast_ref::<&str>() {
@@ -90,8 +90,7 @@ where
 		let self_ = self.project();
 		match self_.kind.project() {
 			KindProj::Panicked { panic_err } => {
-				let err = core::mem::replace(panic_err, Box::new(&()));
-				handle_panic_err(err);
+				handle_panic_err(panic_err);
 				let resp = Response::from_error(
 					self_.id.clone().unwrap_or_default(),
 					Error::new(ErrorCode::ServerError(ServerErrors::PreawaitPanic as _)),
@@ -101,7 +100,7 @@ where
 			KindProj::Future { future } => match ready!(future.poll(cx)) {
 				Ok(inner) => Poll::Ready(inner),
 				Err(panic_err) => {
-					handle_panic_err(panic_err);
+					handle_panic_err(panic_err.as_ref());
 					let resp = Response::from_error(
 						self_.id.clone().unwrap_or_default(),
 						Error::new(ErrorCode::ServerError(ServerErrors::PostawaitPanic as _)),

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 
 use proc_macro2::{Ident, TokenStream};
 use proc_macro2_diagnostics::SpanDiagnosticExt;
@@ -8,15 +8,15 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 /// Usage:
 /// ```rust,noplayground
 /// ts_macros::query! {
-/// 	MyQuery(FOO, BAR);
-/// 	r#"
+///     MyQuery(FOO, BAR);
+///     r#"
 /// (function_definition
 ///   (parameters . (string) @FOO)
 ///   (block
-/// 	(expression_statement
-/// 	  (call
-/// 		(_) @callee
-/// 		(parameters . (string) @BAR)))))"#
+///     (expression_statement
+///       (call
+///         (_) @callee
+///         (parameters . (string) @BAR)))))"#
 /// };
 /// ```
 ///
@@ -24,9 +24,9 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 /// ```rust,noplayground
 /// pub enum MyQuery {}
 /// impl MyQuery {
-/// 	pub const FOO: u32 = 0;
-/// 	pub const BAR: u32 = 2;
-/// 	pub fn query() -> &'static Query;
+///     pub const FOO: u32 = 0;
+///     pub const BAR: u32 = 2;
+///     pub fn query() -> &'static Query;
 /// }
 /// ```
 #[proc_macro]
@@ -74,8 +74,8 @@ impl QueryDefinition {
 				.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
 				.unwrap_or(query.len() - start);
 			let capture = &query[start..start + end];
-			if !captures.contains_key(&capture) {
-				captures.insert(capture, index);
+			if let Entry::Vacant(entry) = captures.entry(capture) {
+				entry.insert(index);
 				index += 1;
 			}
 			query = &query[start + end..];

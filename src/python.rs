@@ -148,7 +148,7 @@ impl Backend {
 			// TODO: Limit range of possible updates based on delta
 			Text::Delta(_) => Cow::from(rope.slice(..)),
 		};
-		let models = index_models(text.as_bytes()).await?;
+		let models = index_models(text.as_bytes())?;
 		let path = interner().get_or_intern(uri.path());
 		self.index.models.append(path, interner(), true, &models).await;
 		for model in models {

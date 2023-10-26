@@ -1,3 +1,5 @@
+#![warn(clippy::unused_async)]
+
 pub mod config;
 pub mod index;
 pub mod str;

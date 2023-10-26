@@ -292,11 +292,11 @@ async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
 		.with_context(|| format_loc!("Could not read {}", path.display()))?;
 
 	let path = interner().get_or_intern(path.to_string_lossy().as_ref());
-	let models = index_models(&contents).await?;
+	let models = index_models(&contents)?;
 	Ok(Output::Models { path, models })
 }
 
-pub async fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
+pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 	let mut parser = tree_sitter::Parser::new();
 	parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
 

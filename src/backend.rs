@@ -289,7 +289,7 @@ impl Backend {
 		let interner = interner();
 		let by_prefix = self.index.templates.by_prefix.read().await;
 		let matches = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, set)| {
-			set.keys().into_iter().flat_map(|key| {
+			set.keys().flat_map(|key| {
 				let label = interner.resolve(&*key).to_string();
 				Some(CompletionItem {
 					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
