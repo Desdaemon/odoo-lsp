@@ -277,11 +277,6 @@ struct XmlRefs<'a> {
 	model_filter: Option<String>,
 }
 
-#[inline]
-fn contains_inclusive(range: core::ops::Range<usize>, value: usize) -> bool {
-	range.contains(&value) || range.end == value
-}
-
 fn gather_refs<'read>(
 	cursor_by_char: usize,
 	reader: &mut Tokenizer<'read>,
@@ -304,7 +299,7 @@ fn gather_refs<'read>(
 				_ => {}
 			},
 			Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
-				let value_in_range = contains_inclusive(value.range(), cursor_by_char);
+				let value_in_range = value.range().contains_end(cursor_by_char);
 				if local.as_str() == "ref" && value_in_range {
 					cursor_value = Some(value);
 				} else if local.as_str() == "name" && value_in_range {
@@ -317,7 +312,7 @@ fn gather_refs<'read>(
 			}
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Template))
-					&& contains_inclusive(value.range(), cursor_by_char)
+					&& value.range().contains_end(cursor_by_char)
 					&& matches!(local.as_str(), "inherit_id" | "t-call") =>
 			{
 				let inherit_id = interner.get_or_intern_static("inherit_id");
@@ -327,7 +322,7 @@ fn gather_refs<'read>(
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>
 			{
-				if contains_inclusive(value.range(), cursor_by_char) {
+				if value.range().contains_end(cursor_by_char) {
 					cursor_value = Some(value);
 					ref_kind = Some(RefKind::Model);
 				} else {
@@ -342,7 +337,7 @@ fn gather_refs<'read>(
 				ref_kind = Some(RefKind::Id);
 			}
 			Ok(Token::Attribute { local, value, .. })
-				if matches!(tag, Some(Tag::Menuitem)) && contains_inclusive(value.range(), cursor_by_char) =>
+				if matches!(tag, Some(Tag::Menuitem)) && value.range().contains_end(cursor_by_char) =>
 			{
 				match local.as_str() {
 					"id" => {
@@ -363,7 +358,7 @@ fn gather_refs<'read>(
 				}
 			}
 			// leftover cases
-			Ok(Token::Attribute { local, value, .. }) if contains_inclusive(value.range(), cursor_by_char) => {
+			Ok(Token::Attribute { local, value, .. }) if value.range().contains_end(cursor_by_char) => {
 				match local.as_str() {
 					"t-name" => {
 						cursor_value = Some(value);

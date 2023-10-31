@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -15,7 +16,7 @@ use xmlparser::{Token, Tokenizer};
 
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
-use crate::utils::{offset_range_to_lsp_range, ByteOffset, CharOffset, RangeExt};
+use crate::utils::{ts_range_to_lsp_range, ByteOffset, CharOffset, RangeExt};
 use crate::{format_loc, ImStr};
 
 mod record;
@@ -267,7 +268,6 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 	Ok(Output::Xml { records, templates })
 }
 
-// TODO: Match non-consecutive _name and _inherit decls
 query! {
 	ModelQuery(MODEL, NAME);
 r#"
@@ -278,7 +278,7 @@ r#"
 	])
 	(block
 		(expression_statement
-			(assignment (identifier) @NAME))*
+			(assignment (identifier) @NAME))
 	)) @MODEL
  (#eq? @_models "models")
  (#match? @_Model "^(Transient|Abstract)?Model$")
@@ -306,55 +306,60 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 	let query = ModelQuery::query();
 	let mut cursor = QueryCursor::new();
 
-	let mut models = vec![];
-	let rope = Rope::from_str(&String::from_utf8_lossy(contents));
-	'match_: for match_ in cursor.matches(query, ast.root_node(), contents) {
-		let mut inherits = vec![];
-		let mut range = None;
-		let mut maybe_base = None;
-		for capture in match_.captures {
-			if capture.index == ModelQuery::NAME {
-				let name = &contents[capture.node.byte_range()];
-				match name {
-					b"_name" => {
-						if maybe_base.is_none() {
-							let Some(name_decl) = capture.node.next_named_sibling() else {
-								break 'match_;
-							};
-							if name_decl.kind() == "string" {
-								let name = name_decl.byte_range().contract(1);
-								if name.is_empty() {
-									continue 'match_;
-								}
-								maybe_base = Some(String::from_utf8_lossy(&contents[name]));
-							}
+	// let rope = Rope::from_str(&String::from_utf8_lossy(contents));
+	let mut models = HashMap::new();
+	struct NewModel<'a> {
+		range: tree_sitter::Range,
+		byte_range: core::ops::Range<usize>,
+		name: Option<&'a [u8]>,
+		inherits: Vec<&'a [u8]>,
+	}
+	for match_ in cursor.matches(query, ast.root_node(), contents) {
+		let model_node = match_
+			.nodes_for_capture_index(ModelQuery::MODEL)
+			.next()
+			.ok_or_else(|| diagnostic!("(index_models) model_node"))?;
+		let capture = match_
+			.nodes_for_capture_index(ModelQuery::NAME)
+			.next()
+			.ok_or_else(|| diagnostic!("(index_models) name"))?;
+		let model = models.entry(model_node.byte_range()).or_insert_with(|| NewModel {
+			name: None,
+			range: model_node.range(),
+			byte_range: model_node.byte_range(),
+			inherits: vec![],
+		});
+		match &contents[capture.byte_range()] {
+			b"_name" => {
+				let Some(name_decl) = capture.next_named_sibling() else {
+					continue;
+				};
+				if name_decl.kind() == "string" {
+					let name = name_decl.byte_range().contract(1);
+					if name.is_empty() {
+						continue;
+					}
+					model.name = Some(&contents[name]);
+				}
+			}
+			b"_inherit" => {
+				let Some(inherit_decl) = capture.next_named_sibling() else {
+					continue;
+				};
+				match inherit_decl.kind() {
+					"string" => {
+						let inherit = inherit_decl.byte_range().contract(1);
+						if !inherit.is_empty() {
+							model.inherits.push(&contents[inherit]);
 						}
 					}
-					b"_inherit" => {
-						let Some(inherit_decl) = capture.node.next_named_sibling() else {
-							break 'match_;
-						};
-						match inherit_decl.kind() {
-							"string" => {
-								let inherit = inherit_decl.byte_range().contract(1);
+					"list" => {
+						for maybe_inherit_decl in inherit_decl.named_children(&mut inherit_decl.walk()) {
+							if maybe_inherit_decl.kind() == "string" {
+								let inherit = maybe_inherit_decl.byte_range().contract(1);
 								if !inherit.is_empty() {
-									inherits.push(ImStr::from(String::from_utf8_lossy(&contents[inherit]).as_ref()));
+									model.inherits.push(&contents[inherit]);
 								}
-							}
-							"list" => {
-								for maybe_inherit_decl in inherit_decl.named_children(&mut inherit_decl.walk()) {
-									if maybe_inherit_decl.kind() == "string" {
-										let inherit = maybe_inherit_decl.byte_range().contract(1);
-										if !inherit.is_empty() {
-											inherits.push(ImStr::from(
-												String::from_utf8_lossy(&contents[inherit]).as_ref(),
-											));
-										}
-									}
-								}
-							}
-							_ => {
-								continue;
 							}
 						}
 					}
@@ -362,49 +367,54 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 						continue;
 					}
 				}
-			} else if capture.index == ModelQuery::MODEL && range.is_none() {
-				range = Some(capture.node.byte_range());
 			}
+			_ => {}
 		}
-		let Some(range) = range else { continue };
-		let range = range.map_unit(ByteOffset);
-		let lsp_range =
-			offset_range_to_lsp_range(range.clone(), rope.clone()).ok_or_else(|| diagnostic!("model out of bounds"))?;
+	}
+
+	let models = models.into_values().flat_map(|mut model| {
 		let mut has_primary = false;
-		if !inherits.is_empty() {
+		if !model.inherits.is_empty() {
 			// Rearranges the primary inherit to the first index
-			if let Some(maybe_base) = &maybe_base {
-				if let Some(position) = inherits.iter().position(|inherit| inherit == maybe_base) {
-					inherits.swap(position, 0);
+			if let Some(base) = &model.name {
+				if let Some(position) = model.inherits.iter().position(|inherit| inherit == base) {
+					model.inherits.swap(position, 0);
 					has_primary = true;
 				}
 			}
 		}
-		match (inherits.is_empty(), maybe_base) {
-			(false, None) => models.push(Model {
+		let inherits = model
+			.inherits
+			.into_iter()
+			.map(|inherit| ImStr::from(String::from_utf8_lossy(inherit).as_ref()))
+			.collect::<Vec<_>>();
+		let range = ts_range_to_lsp_range(model.range);
+		let byte_range = model.byte_range.map_unit(ByteOffset);
+		match (inherits.is_empty(), model.name) {
+			(false, None) => Some(Model {
+				range,
+				byte_range,
 				type_: ModelType::Inherit(inherits),
-				range: lsp_range,
-				byte_range: range,
 			}),
-			(true, None) => {}
+			(true, None) => None,
 			(_, Some(base)) => {
 				if has_primary {
-					models.push(Model {
+					Some(Model {
+						range,
+						byte_range,
 						type_: ModelType::Inherit(inherits),
-						range: lsp_range,
-						byte_range: range,
-					});
+					})
 				} else {
-					models.push(Model {
-						type_: ModelType::Base(base.as_ref().into()),
-						range: lsp_range,
-						byte_range: range,
+					Some(Model {
+						type_: ModelType::Base(ImStr::from(String::from_utf8_lossy(base).as_ref())),
+						range,
+						byte_range,
 					})
 				}
 			}
 		}
-	}
-	Ok(models)
+	});
+	Ok(models.collect())
 }
 
 #[cfg(test)]
@@ -435,8 +445,10 @@ class Bar(models.Model):
 		let query = ModelQuery::query();
 		let mut cursor = QueryCursor::new();
 		let expected: &[&[&str]] = &[
-			&["models", "AbstractModel", "_name", "_inherit"],
-			&["models", "Model", "_name", "what", "_inherit"],
+			&["models", "AbstractModel", "_name"],
+			&["models", "AbstractModel", "_inherit"],
+			&["models", "Model", "_name"],
+			&["models", "Model", "_inherit"],
 		];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])

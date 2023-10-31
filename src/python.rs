@@ -17,7 +17,7 @@ use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
 query! {
-	PyCompletions(REQUEST, XML_ID, /* MAPPED, */ NAME, MODEL, ACCESS);
+	PyCompletions(REQUEST, XML_ID, /* MAPPED, */ MODEL, ACCESS, PROP);
 r#"
 ((call [
 	(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
@@ -31,24 +31,16 @@ r#"
 (subscript [(identifier) @_env (attribute (_) (identifier) @_env)] (string) @MODEL)
 
 ((class_definition
-	(block [
-    	(expression_statement
-        	(assignment (identifier) @_inherit
-            	[(string) @MODEL
-                 (list ((string) @MODEL ","?)*)]))
-        (expression_statement
-        	(assignment (identifier) @_name (string) @NAME))
-    ]+ [
-    	(expression_statement
-        	(assignment
-            	(identifier)
-                (call
-                	(attribute (identifier) @_fields (identifier))
-                    (argument_list
-                    	(keyword_argument (identifier) @_related (string) @MAPPED)?))))
-    ]?))
-(#eq? @_name "_name")
-(#eq? @_inherit "_inherit")
+	(block
+		(expression_statement
+			(assignment
+				(identifier) @PROP
+				[(string) @MODEL
+				 (list ((string) @MODEL ","?)*)
+				 (call
+					(attribute (identifier) @_fields (identifier))
+					(argument_list
+						(keyword_argument (identifier) @_related (string) @MAPPED)?))]))))
 (#eq? @_fields "fields")
 (#eq? @_related "related"))
 
@@ -186,10 +178,11 @@ impl Backend {
 			return Ok(None);
 		};
 		let mut cursor = tree_sitter::QueryCursor::new();
-		let bytes = rope.bytes().collect::<Vec<_>>();
+		let contents = rope.bytes().collect::<Vec<_>>();
 		let query = PyCompletions::query();
 		let mut items = vec![];
 		let mut early_return = None;
+		// FIXME: This hack is necessary to drop !Send locals before await points.
 		enum EarlyReturn {
 			XmlId,
 			Model,
@@ -197,7 +190,7 @@ impl Backend {
 		}
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
-			'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
+			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				let mut model_filter = None;
 				for capture in match_.captures {
 					if capture.index == PyCompletions::REQUEST {
@@ -225,7 +218,12 @@ impl Backend {
 						}
 					} else if capture.index == PyCompletions::MODEL {
 						let range = capture.node.byte_range();
-						if range.contains(&offset) || range.end == offset {
+						let is_meta = match_
+							.nodes_for_capture_index(PyCompletions::PROP)
+							.next()
+							.map(|prop| matches!(&contents[prop.byte_range()], b"_inherit"))
+							.unwrap_or(true);
+						if is_meta && range.contains_end(offset) {
 							let Some(slice) = rope.get_byte_slice(range.clone()) else {
 								dbg!(&range);
 								break 'match_;
@@ -239,14 +237,18 @@ impl Backend {
 						}
 					} else if capture.index == PyCompletions::ACCESS {
 						let range = capture.node.byte_range();
-						if range.contains(&offset) || range.end == offset {
+						if range.contains_end(offset) {
 							let Some(slice) = rope.get_byte_slice(range.clone()) else {
 								dbg!(&range);
 								break 'match_;
 							};
 							let lhs = some!(capture.node.prev_named_sibling());
-							let model =
-								some!(self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), None, &bytes));
+							let model = some!(self.model_of_range(
+								root,
+								lhs.byte_range().map_unit(ByteOffset),
+								None,
+								&contents
+							));
 							let model = interner().resolve(&model);
 							let needle = Cow::from(slice.byte_slice(..offset - range.start));
 							let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
@@ -262,8 +264,6 @@ impl Backend {
 						}
 					}
 				}
-				// if let Some((needle, range, rope, model_filter, current_module)) = early_return {
-				// }
 			}
 		}
 		match early_return {
@@ -304,13 +304,13 @@ impl Backend {
 		else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
-		let bytes = rope.bytes().collect::<Vec<_>>();
+		let contents = rope.bytes().collect::<Vec<_>>();
 		let mut early_return = None;
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
 			let query = PyCompletions::query();
 			let mut cursor = tree_sitter::QueryCursor::new();
-			'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
+			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				for capture in match_.captures {
 					if capture.index == PyCompletions::XML_ID {
 						let range = capture.node.byte_range();
@@ -326,7 +326,12 @@ impl Backend {
 						}
 					} else if capture.index == PyCompletions::MODEL {
 						let range = capture.node.byte_range();
-						if range.contains(&offset) {
+						let is_meta = match_
+							.nodes_for_capture_index(PyCompletions::PROP)
+							.next()
+							.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
+							.unwrap_or(true);
+						if is_meta && range.contains(&offset) {
 							let range = range.contract(1);
 							let Some(slice) = rope.get_byte_slice(range.clone()) else {
 								dbg!(&range);
@@ -337,11 +342,11 @@ impl Backend {
 						}
 					} else if capture.index == PyCompletions::ACCESS {
 						let range = capture.node.byte_range();
-						if range.contains(&offset) || range.end == offset {
+						if range.contains_end(offset) {
 							let lhs = some!(capture.node.prev_named_sibling());
 							let lhs = lhs.byte_range().map_unit(ByteOffset);
-							let model = some!(self.model_of_range(ast.root_node(), lhs, None, &bytes));
-							let field = String::from_utf8_lossy(&bytes[range]);
+							let model = some!(self.model_of_range(ast.root_node(), lhs, None, &contents));
+							let field = String::from_utf8_lossy(&contents[range]);
 							let model = interner().resolve(&model);
 							early_return = Some((field, model));
 							break 'match_;
@@ -366,12 +371,12 @@ impl Backend {
 		};
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
-		let bytes = rope.bytes().collect::<Vec<_>>();
+		let contents = rope.bytes().collect::<Vec<_>>();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let current_module = self
 			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
-		'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
+		'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 			for capture in match_.captures {
 				if capture.index == PyCompletions::XML_ID {
 					let range = capture.node.byte_range();
@@ -384,9 +389,14 @@ impl Backend {
 						let slice = Cow::from(slice);
 						return self.record_references(&slice, current_module.as_deref());
 					}
-				} else if capture.index == PyCompletions::MODEL || capture.index == PyCompletions::NAME {
+				} else if capture.index == PyCompletions::MODEL {
 					let range = capture.node.byte_range();
-					if range.contains(&offset) {
+					let is_meta = match_
+						.nodes_for_capture_index(PyCompletions::PROP)
+						.next()
+						.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
+						.unwrap_or(true);
+					if is_meta && range.contains(&offset) {
 						let range = range.contract(1);
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
 							dbg!(&range);
@@ -446,6 +456,7 @@ impl Backend {
 							field = Some(capture.node);
 						} else if capture.index == ModelFields::TYPE {
 							type_ = Some(capture.node.byte_range());
+							// TODO: fields.Reference
 							is_relational = matches!(
 								&contents[capture.node.byte_range()],
 								b"One2many" | b"Many2one" | b"Many2many"
@@ -700,20 +711,13 @@ class Foo(models.AbstractModel):
 		let mut cursor = QueryCursor::new();
 		let expected: &[&[&str]] = &[
 			&["AbstractModel"],
+			&["_name", "'foo'"],
+			&["_inherit", "'inherit_foo'", "'inherit_bar'"],
 			&["Char"],
-			&[
-				"_name",
-				"'foo'",
-				"_inherit",
-				"'inherit_foo'",
-				"'inherit_bar'",
-				"fields",
-				"related",
-				"'related'",
-			],
+			&["foo", "fields", "related", "'related'"],
 			&["depends"],
 			&["Foo"],
-			&["_name", "'foo'", "_inherit", "'inherit_foo'", "'inherit_bar'", "fields"],
+			&["foo", "fields"],
 			&["depends"],
 		];
 		let actual = cursor
