@@ -162,6 +162,7 @@ impl TryFrom<&str> for Text {
 			slice.copy_from_slice(bytes);
 			return Ok(Text(TextRepr::Inline(bytes.len() as u8, buf)));
 		}
+		// TODO: Basic heuristics for determining cost/benefit ratio of compression
 		let mut enc = Encoder::new(Vec::new());
 		enc.write_all(bytes)?;
 		let data = enc.finish().into_result()?;

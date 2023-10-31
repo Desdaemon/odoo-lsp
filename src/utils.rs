@@ -1,5 +1,5 @@
+use core::ops::{Add, Sub};
 use std::fmt::Display;
-use std::ops::{Add, Sub};
 
 use lasso::Spur;
 use log::warn;
@@ -52,19 +52,19 @@ pub fn char_to_position(offset: CharOffset, rope: Rope) -> Option<Position> {
 	Some(Position::new(line as u32, (offset.0 - line_offset) as u32))
 }
 
-pub fn lsp_range_to_char_range(range: Range, rope: Rope) -> Option<std::ops::Range<CharOffset>> {
+pub fn lsp_range_to_char_range(range: Range, rope: Rope) -> Option<CharRange> {
 	let start = position_to_char(range.start, rope.clone())?;
 	let end = position_to_char(range.end, rope.clone())?;
 	Some(start..end)
 }
 
-pub fn char_range_to_lsp_range(range: std::ops::Range<CharOffset>, rope: Rope) -> Option<Range> {
+pub fn char_range_to_lsp_range(range: CharRange, rope: Rope) -> Option<Range> {
 	let start = char_to_position(range.start, rope.clone())?;
 	let end = char_to_position(range.end, rope)?;
 	Some(Range { start, end })
 }
 
-pub fn offset_range_to_lsp_range(range: std::ops::Range<ByteOffset>, rope: Rope) -> Option<Range> {
+pub fn offset_range_to_lsp_range(range: ByteRange, rope: Rope) -> Option<Range> {
 	let start = offset_to_position(range.start, rope.clone())?;
 	let end = offset_to_position(range.end, rope)?;
 	Some(Range { start, end })
@@ -139,18 +139,18 @@ impl Erase for CharRange {
 	}
 }
 
-impl<T> RangeExt for std::ops::Range<T> {
+impl<T> RangeExt for core::ops::Range<T> {
 	type Unit = T;
 
 	#[inline]
-	fn map_unit<F, V>(self, mut op: F) -> std::ops::Range<V>
+	fn map_unit<F, V>(self, mut op: F) -> core::ops::Range<V>
 	where
 		F: FnMut(Self::Unit) -> V,
 	{
 		op(self.start)..op(self.end)
 	}
 
-	fn contract(self, value: Self::Unit) -> std::ops::Range<Self::Unit>
+	fn contract(self, value: Self::Unit) -> core::ops::Range<Self::Unit>
 	where
 		Self: Sized,
 		Self::Unit: Add<Self::Unit, Output = Self::Unit> + Sub<Self::Unit, Output = Self::Unit> + Copy,

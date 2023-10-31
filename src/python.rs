@@ -446,6 +446,7 @@ impl Backend {
 							field = Some(capture.node);
 						} else if capture.index == ModelFields::TYPE {
 							type_ = Some(capture.node.byte_range());
+							// TODO: fields.Reference
 							is_relational = matches!(
 								&contents[capture.node.byte_range()],
 								b"One2many" | b"Many2one" | b"Many2many"
