@@ -219,6 +219,7 @@ impl Backend {
 		rope: Rope,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
+		debug!("complete_field_name needle={} model={}", needle, model);
 		let model_key = interner().get_or_intern(&model);
 		let Some(mut entry) = self.index.models.get_mut(&model_key.into()) else {
 			return Ok(());

@@ -6,7 +6,7 @@ use std::path::Path;
 use lasso::{Key, Spur};
 use log::{debug, error};
 use miette::{diagnostic, IntoDiagnostic};
-use odoo_lsp::index::{index_models, interner, SymbolMap};
+use odoo_lsp::index::{index_models, interner, Module, Symbol, SymbolMap};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use tree_sitter::{Node, Parser, QueryCursor, Tree};
@@ -17,7 +17,7 @@ use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
 query! {
-	PyCompletions(REQUEST, XML_ID, /* MAPPED, */ MODEL, ACCESS, PROP);
+	PyCompletions(REQUEST, XML_ID, MAPPED, MODEL, ACCESS, PROP);
 r#"
 ((call [
 	(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
@@ -28,11 +28,18 @@ r#"
 (#eq? @REQUEST "request")
 (#eq? @_render "render"))
 
-(subscript [(identifier) @_env (attribute (_) (identifier) @_env)] (string) @MODEL)
+(subscript
+	[(identifier) @_env (attribute (_) (identifier) @_env)] (string) @MODEL
+(#eq? @_env "env"))
 
 ((class_definition
 	(block
-		(expression_statement
+		[(decorated_definition
+			(decorator
+				(call
+					(attribute (identifier) @_api (identifier) @_mapped)
+					(argument_list (string) @MAPPED))))
+		 (expression_statement
 			(assignment
 				(identifier) @PROP
 				[(string) @MODEL
@@ -40,9 +47,11 @@ r#"
 				 (call
 					(attribute (identifier) @_fields (identifier))
 					(argument_list
-						(keyword_argument (identifier) @_related (string) @MAPPED)?))]))))
+						(keyword_argument (identifier) @_related (string) @MAPPED)?))]))]))
 (#eq? @_fields "fields")
-(#eq? @_related "related"))
+(#eq? @_related "related")
+(#eq? @_api "api")
+(#match? @_mapped "^(depends|constrains)$"))
 
 ((call [
 	(identifier) @_Field
@@ -111,7 +120,7 @@ fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
 fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 	module
 		.named_children(&mut module.walk())
-		.find(|child| child.byte_range().contains(&offset) || child.end_byte() == offset)
+		.find(|child| child.byte_range().contains_end(offset))
 }
 
 impl Backend {
@@ -127,7 +136,6 @@ impl Backend {
 			.set_language(tree_sitter_python::language())
 			.expect("bug: failed to init python parser");
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)?;
-		// self.update_models(text, uri, rope).await?;
 		Ok(())
 	}
 	pub async fn update_models(&self, text: &Text, uri: &Url, rope: Rope) -> miette::Result<()> {
@@ -182,11 +190,13 @@ impl Backend {
 		let query = PyCompletions::query();
 		let mut items = vec![];
 		let mut early_return = None;
+		let mut this_model = None;
 		// FIXME: This hack is necessary to drop !Send locals before await points.
-		enum EarlyReturn {
-			XmlId,
+		enum EarlyReturn<'a> {
+			XmlId(Option<&'a str>, Symbol<Module>),
 			Model,
 			Access(String),
+			Mapped(String),
 		}
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
@@ -207,23 +217,26 @@ impl Backend {
 							// remove the quotes
 							let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
 							early_return = Some((
-								EarlyReturn::XmlId,
+								EarlyReturn::XmlId(model_filter, *current_module),
 								needle,
 								range,
 								rope.clone(),
-								model_filter,
-								*current_module,
 							));
 							break 'match_;
 						}
 					} else if capture.index == PyCompletions::MODEL {
 						let range = capture.node.byte_range();
-						let is_meta = match_
+						let (is_inherit, is_name) = match_
 							.nodes_for_capture_index(PyCompletions::PROP)
 							.next()
-							.map(|prop| matches!(&contents[prop.byte_range()], b"_inherit"))
-							.unwrap_or(true);
-						if is_meta && range.contains_end(offset) {
+							.map(|prop| {
+								(
+									&contents[prop.byte_range()] == b"_inherit",
+									&contents[prop.byte_range()] == b"_name",
+								)
+							})
+							.unwrap_or((true, false));
+						if is_inherit && range.contains_end(offset) {
 							let Some(slice) = rope.get_byte_slice(range.clone()) else {
 								dbg!(&range);
 								break 'match_;
@@ -231,8 +244,52 @@ impl Backend {
 							let relative_offset = range.start;
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 							let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-							early_return =
-								Some((EarlyReturn::Model, needle, range, rope.clone(), None, *current_module));
+							early_return = Some((EarlyReturn::Model, needle, range, rope.clone()));
+							break 'match_;
+						} else if range.end < offset
+							&& (is_name
+							// _inherit = '..' qualifies as primary model name
+							|| (is_inherit && capture.node.parent()
+								.map(|parent| parent.kind() == "assignment")
+								.unwrap_or(false)))
+						{
+							this_model = Some(&contents[capture.node.byte_range().contract(1)]);
+							debug!(
+								"this_model={} range={:?} offset={} kind={}",
+								String::from_utf8_lossy(this_model.as_ref().unwrap()),
+								capture.node.byte_range(),
+								offset,
+								if is_name {
+									"name"
+								} else if is_inherit {
+									"inherit"
+								} else {
+									unreachable!()
+								}
+							);
+						}
+					} else if capture.index == PyCompletions::MAPPED {
+						let Some(this_model) = &this_model else {
+							debug!("this_model = None");
+							continue;
+						};
+						let range = capture.node.byte_range();
+						if range.contains_end(offset) {
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let relative_offset = range.start;
+							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+							let model = String::from_utf8_lossy(this_model);
+							early_return = Some((
+								EarlyReturn::Mapped(model.to_string()),
+								needle,
+								range
+									.contract(1)
+									.map_unit(|offset| CharOffset(rope.byte_to_char(offset))),
+								rope.clone(),
+							));
 							break 'match_;
 						}
 					} else if capture.index == PyCompletions::ACCESS {
@@ -252,14 +309,7 @@ impl Backend {
 							let model = interner().resolve(&model);
 							let needle = Cow::from(slice.byte_slice(..offset - range.start));
 							let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-							early_return = Some((
-								EarlyReturn::Access(model.to_string()),
-								needle,
-								range,
-								rope.clone(),
-								None,
-								*current_module,
-							));
+							early_return = Some((EarlyReturn::Access(model.to_string()), needle, range, rope.clone()));
 							break 'match_;
 						}
 					}
@@ -267,7 +317,7 @@ impl Backend {
 			}
 		}
 		match early_return {
-			Some((EarlyReturn::XmlId, needle, range, rope, model_filter, current_module)) => {
+			Some((EarlyReturn::XmlId(model_filter, current_module), needle, range, rope)) => {
 				self.complete_xml_id(&needle, range, rope, model_filter, current_module, &mut items)
 					.await?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
@@ -275,15 +325,47 @@ impl Backend {
 					items,
 				})));
 			}
-			Some((EarlyReturn::Model, needle, range, rope, _, _)) => {
+			Some((EarlyReturn::Model, needle, range, rope)) => {
 				self.complete_model(&needle, range, rope.clone(), &mut items).await?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
 					is_incomplete: items.len() >= Self::LIMIT,
 					items,
 				})));
 			}
-			Some((EarlyReturn::Access(model), needle, range, rope, _, _)) => {
+			Some((EarlyReturn::Access(model), needle, range, rope)) => {
 				self.complete_field_name(&needle, range, model, rope.clone(), &mut items)
+					.await?;
+				return Ok(Some(CompletionResponse::List(CompletionList {
+					is_incomplete: items.len() >= Self::LIMIT,
+					items,
+				})));
+			}
+			Some((EarlyReturn::Mapped(model), needle, mut range, rope)) => {
+				// range:  foo.bar.baz
+				// needle: foo.ba
+				let mut needle = needle.as_ref();
+				let model = some!(interner().get(&model));
+				let mut model = some!(self.index.models.get_mut(&model.into()));
+				while let Some((lhs, rhs)) = needle.split_once('.') {
+					debug!("mapped {}", needle);
+					// lhs: foo
+					// rhs: ba
+					needle = rhs;
+					let field = some!(interner().get(&lhs));
+					let fields = self.populate_field_names(&mut model, &[]).await?;
+					let field = some!(fields.get(&field.into()));
+					let FieldKind::Relational(rel) = field.kind else {
+						return Ok(None);
+					};
+					model = some!(self.index.models.get_mut(&rel.into()));
+					// old range: foo.bar.baz
+					// range:         bar.baz
+					let start = rope.char_to_byte(range.start.0) + lhs.len() + 1;
+					range = CharOffset(rope.byte_to_char(start))..range.end;
+				}
+				let model_name = interner().resolve(&model.key());
+				drop(model);
+				self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)
 					.await?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
 					is_incomplete: items.len() >= Self::LIMIT,
@@ -696,13 +778,14 @@ class Foo(models.AbstractModel):
 	_name = 'foo'
 	_inherit = ['inherit_foo', 'inherit_bar']
 	foo = fields.Char(related='related')
-	@api.depends('mapped')
+	@api.constrains('mapped', 'meh')
 	def foo(self):
 		pass
 	def bar(self):
 		pass
 	foo = fields.Foo()
 	@api.depends('mapped2')
+	@api.depends_context('uid')
 	def another(self):
 		pass
 "#;
@@ -715,10 +798,14 @@ class Foo(models.AbstractModel):
 			&["_inherit", "'inherit_foo'", "'inherit_bar'"],
 			&["Char"],
 			&["foo", "fields", "related", "'related'"],
-			&["depends"],
+			&["constrains"],
+			&["api", "constrains", "'mapped'"],
+			&["api", "constrains", "'meh'"],
 			&["Foo"],
 			&["foo", "fields"],
 			&["depends"],
+			&["api", "depends", "'mapped2'"],
+			&["depends_context"],
 		];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])
