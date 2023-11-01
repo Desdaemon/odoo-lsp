@@ -156,6 +156,9 @@ impl Backend {
 		current_module: ModuleName,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
+		if items.len() >= Self::LIMIT {
+			return Ok(());
+		}
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_xml_id) range"))?;
 		let by_prefix = self.index.records.by_prefix.read().await;
 		let model_filter = model_filter.and_then(|model| interner().get(model).map(ModelName::from));
@@ -197,7 +200,7 @@ impl Backend {
 					})
 				})
 			});
-			items.extend(completions.take(Self::LIMIT));
+			items.extend(completions.take(Self::LIMIT - items.len()));
 		} else {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.keys().flat_map(|key| {
@@ -207,7 +210,7 @@ impl Backend {
 					})
 				})
 			});
-			items.extend(completions.take(Self::LIMIT));
+			items.extend(completions.take(Self::LIMIT - items.len()));
 		}
 		Ok(())
 	}
@@ -220,6 +223,9 @@ impl Backend {
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
 		debug!("complete_field_name needle={} model={}", needle, model);
+		if items.len() >= Self::LIMIT {
+			return Ok(());
+		}
 		let model_key = interner().get_or_intern(&model);
 		let Some(mut entry) = self.index.models.get_mut(&model_key.into()) else {
 			return Ok(());
@@ -241,7 +247,7 @@ impl Backend {
 				..Default::default()
 			})
 		});
-		items.extend(completions);
+		items.extend(completions.take(Self::LIMIT - items.len()));
 		Ok(())
 	}
 	pub async fn complete_model(
@@ -251,6 +257,9 @@ impl Backend {
 		rope: Rope,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
+		if items.len() >= Self::LIMIT {
+			return Ok(());
+		}
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_model) range"))?;
 		let by_prefix = self.index.models.by_prefix.read().await;
 		let matches = by_prefix
@@ -275,7 +284,7 @@ impl Backend {
 					..Default::default()
 				}
 			});
-		items.extend(matches);
+		items.extend(matches.take(Self::LIMIT - items.len()));
 		Ok(())
 	}
 	pub async fn complete_template_name(
@@ -285,6 +294,9 @@ impl Backend {
 		rope: Rope,
 		items: &mut Vec<CompletionItem>,
 	) -> miette::Result<()> {
+		if items.len() >= Self::LIMIT {
+			return Ok(());
+		}
 		let range =
 			char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_template_name) range"))?;
 		let interner = interner();
@@ -304,7 +316,7 @@ impl Backend {
 				})
 			})
 		});
-		items.extend(matches);
+		items.extend(matches.take(Self::LIMIT - items.len()));
 		Ok(())
 	}
 	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
