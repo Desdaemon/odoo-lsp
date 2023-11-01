@@ -17,7 +17,7 @@ use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
 query! {
-	PyCompletions(REQUEST, XML_ID, MAPPED, MODEL, ACCESS, PROP);
+	PyCompletions(REQUEST, XML_ID, MAPPED, MAPPED_TARGET, MODEL, ACCESS, PROP);
 r#"
 ((call [
 	(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
@@ -51,7 +51,12 @@ r#"
 (#eq? @_fields "fields")
 (#eq? @_related "related")
 (#eq? @_api "api")
-(#match? @_mapped "^(depends|constrains)$"))
+(#match? @_mapped "^(depend|constrain)s$"))
+
+((call
+	(attribute (_) @MAPPED_TARGET (identifier) @_mapper)
+	(argument_list . (string) @MAPPED))
+(#match? @_mapper "^(mapp|filter|sort)ed$"))
 
 ((call [
 	(identifier) @_Field
@@ -226,6 +231,8 @@ impl Backend {
 						}
 					} else if capture.index == PyCompletions::MODEL {
 						let range = capture.node.byte_range();
+						// default true for is_inherit, to be checked later down that
+						// it only belongs to (assignment)
 						let (is_inherit, is_name) = match_
 							.nodes_for_capture_index(PyCompletions::PROP)
 							.next()
@@ -254,25 +261,8 @@ impl Backend {
 								.unwrap_or(false)))
 						{
 							this_model = Some(&contents[capture.node.byte_range().contract(1)]);
-							debug!(
-								"this_model={} range={:?} offset={} kind={}",
-								String::from_utf8_lossy(this_model.as_ref().unwrap()),
-								capture.node.byte_range(),
-								offset,
-								if is_name {
-									"name"
-								} else if is_inherit {
-									"inherit"
-								} else {
-									unreachable!()
-								}
-							);
 						}
 					} else if capture.index == PyCompletions::MAPPED {
-						let Some(this_model) = &this_model else {
-							debug!("this_model = None");
-							continue;
-						};
 						let range = capture.node.byte_range();
 						if range.contains_end(offset) {
 							let Some(slice) = rope.get_byte_slice(range.clone()) else {
@@ -281,9 +271,26 @@ impl Backend {
 							};
 							let relative_offset = range.start;
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-							let model = String::from_utf8_lossy(this_model);
+
+							let model;
+							if let Some(local_model) =
+								match_.nodes_for_capture_index(PyCompletions::MAPPED_TARGET).next()
+							{
+								let model_ = some!(self.model_of_range(
+									root,
+									local_model.byte_range().map_unit(ByteOffset),
+									None,
+									&contents
+								));
+								model = interner().resolve(&model_).to_string();
+							} else if let Some(this_model) = &this_model {
+								model = String::from_utf8_lossy(this_model).to_string();
+							} else {
+								break 'match_;
+							}
+
 							early_return = Some((
-								EarlyReturn::Mapped(model.to_string()),
+								EarlyReturn::Mapped(model),
 								needle,
 								range
 									.contract(1)
@@ -427,7 +434,7 @@ impl Backend {
 						if range.contains_end(offset) {
 							let lhs = some!(capture.node.prev_named_sibling());
 							let lhs = lhs.byte_range().map_unit(ByteOffset);
-							let model = some!(self.model_of_range(ast.root_node(), lhs, None, &contents));
+							let model = some!(self.model_of_range(root, lhs, None, &contents));
 							let field = String::from_utf8_lossy(&contents[range]);
 							let model = interner().resolve(&model);
 							early_return = Some((field, model));
@@ -780,7 +787,7 @@ class Foo(models.AbstractModel):
 	foo = fields.Char(related='related')
 	@api.constrains('mapped', 'meh')
 	def foo(self):
-		pass
+		what = self.sudo().mapped('ha.ha')
 	def bar(self):
 		pass
 	foo = fields.Foo()
@@ -801,6 +808,9 @@ class Foo(models.AbstractModel):
 			&["constrains"],
 			&["api", "constrains", "'mapped'"],
 			&["api", "constrains", "'meh'"],
+			&["sudo"],
+			&["mapped"],
+			&["self.sudo()", "mapped", "'ha.ha'"],
 			&["Foo"],
 			&["foo", "fields"],
 			&["depends"],
