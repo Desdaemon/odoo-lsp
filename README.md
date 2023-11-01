@@ -108,6 +108,17 @@ lsp.setup()
 
 A complete example can be found in [examples/init.lua](examples/init.lua).
 
+## Troubleshooting
+
+Run your editor with the `RUST_LOG` environment variable like below, e.g. for VSCode:
+
+```shell
+RUST_LOG=odoo_lsp=debug code ..
+```
+
+This will enable debug logs for the *LSP server* itself, which can be seen via your editor's logging mechanism.
+Please include these logs when opening an issue.
+
 ## Development
 
 1. `pnpm i`

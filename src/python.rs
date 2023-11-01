@@ -34,12 +34,7 @@ r#"
 
 ((class_definition
 	(block
-		[(decorated_definition
-			(decorator
-				(call
-					(attribute (identifier) @_api (identifier) @_mapped)
-					(argument_list (string) @MAPPED))))
-		 (expression_statement
+		(expression_statement
 			(assignment
 				(identifier) @PROP
 				[(string) @MODEL
@@ -47,16 +42,17 @@ r#"
 				 (call
 					(attribute (identifier) @_fields (identifier))
 					(argument_list
-						(keyword_argument (identifier) @_related (string) @MAPPED)?))]))]))
+						(keyword_argument (identifier) @_related (string) @MAPPED)?))]))))
 (#eq? @_fields "fields")
-(#eq? @_related "related")
-(#eq? @_api "api")
-(#match? @_mapped "^(depend|constrain)s$"))
+(#eq? @_related "related"))
 
 ((call
-	(attribute (_) @MAPPED_TARGET (identifier) @_mapper)
-	(argument_list . (string) @MAPPED))
-(#match? @_mapper "^(mapp|filter|sort)ed$"))
+	[(attribute (_) @MAPPED_TARGET (identifier) @_mapper)
+	 (attribute (identifier) @_api (identifier) @_depends)]
+	(argument_list (string) @MAPPED))
+(#match? @_mapper "^(mapp|filter|sort)ed$")
+(#eq? @_api "api")
+(#match? @_depends "^(depend|constrain)s$"))
 
 ((call [
 	(identifier) @_Field
