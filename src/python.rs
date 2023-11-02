@@ -17,7 +17,7 @@ use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
 query! {
-	PyCompletions(REQUEST, XML_ID, MAPPED, MAPPED_TARGET, MODEL, ACCESS, PROP);
+	PyCompletions(REQUEST, XML_ID, MAPPED, MAPPED_TARGET, DEPENDS, MODEL, ACCESS, PROP);
 r#"
 ((call [
 	(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
@@ -48,11 +48,11 @@ r#"
 
 ((call
 	[(attribute (_) @MAPPED_TARGET (identifier) @_mapper)
-	 (attribute (identifier) @_api (identifier) @_depends)]
+	 (attribute (identifier) @_api (identifier) @DEPENDS)]
 	(argument_list (string) @MAPPED))
 (#match? @_mapper "^(mapp|filter|sort)ed$")
 (#eq? @_api "api")
-(#match? @_depends "^(depend|constrain)s$"))
+(#match? @DEPENDS "^(depend|constrain)s$"))
 
 ((call [
 	(identifier) @_Field
@@ -197,7 +197,7 @@ impl Backend {
 			XmlId(Option<&'a str>, Symbol<Module>),
 			Model,
 			Access(String),
-			Mapped(String),
+			Mapped { model: String, constrains: bool },
 		}
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
@@ -269,6 +269,7 @@ impl Backend {
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 
 							let model;
+							let mut constrains = false;
 							if let Some(local_model) =
 								match_.nodes_for_capture_index(PyCompletions::MAPPED_TARGET).next()
 							{
@@ -281,12 +282,15 @@ impl Backend {
 								model = interner().resolve(&model_).to_string();
 							} else if let Some(this_model) = &this_model {
 								model = String::from_utf8_lossy(this_model).to_string();
+								if let Some(depends) = match_.nodes_for_capture_index(PyCompletions::DEPENDS).next() {
+									constrains = b"constrains" == &contents[depends.byte_range()];
+								}
 							} else {
 								break 'match_;
 							}
 
 							early_return = Some((
-								EarlyReturn::Mapped(model),
+								EarlyReturn::Mapped { model, constrains },
 								needle,
 								range
 									.contract(1)
@@ -343,29 +347,31 @@ impl Backend {
 					items: items.into_inner(),
 				})));
 			}
-			Some((EarlyReturn::Mapped(model), needle, mut range, rope)) => {
+			Some((EarlyReturn::Mapped { model, constrains }, needle, mut range, rope)) => {
 				// range:  foo.bar.baz
 				// needle: foo.ba
 				let mut needle = needle.as_ref();
 				let model = some!(interner().get(&model));
 				let mut model = some!(self.index.models.get_mut(&model.into()));
-				while let Some((lhs, rhs)) = needle.split_once('.') {
-					debug!("mapped {}", needle);
-					// lhs: foo
-					// rhs: ba
-					needle = rhs;
-					let model_name = interner().resolve(&model.key());
-					let fields = self.populate_field_names(&mut model, model_name, &[]).await?;
-					let field = some!(interner().get(&lhs));
-					let field = some!(fields.get(&field.into()));
-					let FieldKind::Relational(rel) = field.kind else {
-						return Ok(None);
-					};
-					model = some!(self.index.models.get_mut(&rel.into()));
-					// old range: foo.bar.baz
-					// range:         bar.baz
-					let start = rope.char_to_byte(range.start.0) + lhs.len() + 1;
-					range = CharOffset(rope.byte_to_char(start))..range.end;
+				if !constrains {
+					while let Some((lhs, rhs)) = needle.split_once('.') {
+						debug!("mapped {}", needle);
+						// lhs: foo
+						// rhs: ba
+						needle = rhs;
+						let model_name = interner().resolve(&model.key());
+						let fields = self.populate_field_names(&mut model, model_name, &[]).await?;
+						let field = some!(interner().get(&lhs));
+						let field = some!(fields.get(&field.into()));
+						let FieldKind::Relational(rel) = field.kind else {
+							return Ok(None);
+						};
+						model = some!(self.index.models.get_mut(&rel.into()));
+						// old range: foo.bar.baz
+						// range:         bar.baz
+						let start = rope.char_to_byte(range.start.0) + lhs.len() + 1;
+						range = CharOffset(rope.byte_to_char(start))..range.end;
+					}
 				}
 				let model_name = interner().resolve(&model.key());
 				drop(model);

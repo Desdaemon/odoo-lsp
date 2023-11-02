@@ -171,6 +171,7 @@ impl Backend {
 			// What creates local scope, but doesn't contribute to method scope?
 			// 1. For-statements: only within the block
 			// 2. List comprehension: only within the object
+			// 3. Lambdas
 			match normalize(&mut child).kind() {
 				"assignment" => {
 					let lhs = child.named_child(0)?;
@@ -263,6 +264,9 @@ impl Backend {
 		//    sudo, with_user, with_env, with_context, ..
 		// 4. [foo for foo in bar];
 		//    bar: 't => foo: 't
+		// 5. self.mapped(lambda rec: ..)
+		//    self: 't => rec: 't
+		//    mapped, filtered, ..
 
 		// What transforms value types?
 		// 1. foo.bar;
