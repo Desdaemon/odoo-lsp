@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::path::Path;
 
 use lasso::{Key, Spur};
-use log::{debug, error};
+use log::{debug, error, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::index::{index_models, interner, Module, Symbol, SymbolMap};
 use ropey::Rope;
@@ -155,15 +155,15 @@ impl Backend {
 		for model in models {
 			match model.type_ {
 				ModelType::Base(model) => {
-					let model = interner().get(model).unwrap();
-					let mut model = self.index.models.get_mut(&model.into()).unwrap();
-					self.populate_field_names(&mut model, &[path]).await?;
+					let model_key = interner().get(&model).unwrap();
+					let mut entry = self.index.models.try_get_mut(&model_key.into()).unwrap();
+					self.populate_field_names(&mut entry, &model, &[path]).await?;
 				}
 				ModelType::Inherit(inherits) => {
 					let Some(model) = inherits.first() else { continue };
-					let model = interner().get(model).unwrap();
-					let mut model = self.index.models.get_mut(&model.into()).unwrap();
-					self.populate_field_names(&mut model, &[path]).await?;
+					let model_key = interner().get(model).unwrap();
+					let mut entry = self.index.models.try_get_mut(&model_key.into()).unwrap();
+					self.populate_field_names(&mut entry, model, &[path]).await?;
 				}
 			}
 		}
@@ -189,7 +189,7 @@ impl Backend {
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let contents = rope.bytes().collect::<Vec<_>>();
 		let query = PyCompletions::query();
-		let mut items = vec![];
+		let mut items = MaxVec::new(Self::LIMIT);
 		let mut early_return = None;
 		let mut this_model = None;
 		// FIXME: This hack is necessary to drop !Send locals before await points.
@@ -324,23 +324,23 @@ impl Backend {
 				self.complete_xml_id(&needle, range, rope, model_filter, current_module, &mut items)
 					.await?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
-					is_incomplete: items.len() >= Self::LIMIT,
-					items,
+					is_incomplete: !items.has_space(),
+					items: items.into_inner(),
 				})));
 			}
 			Some((EarlyReturn::Model, needle, range, rope)) => {
 				self.complete_model(&needle, range, rope.clone(), &mut items).await?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
-					is_incomplete: items.len() >= Self::LIMIT,
-					items,
+					is_incomplete: !items.has_space(),
+					items: items.into_inner(),
 				})));
 			}
 			Some((EarlyReturn::Access(model), needle, range, rope)) => {
 				self.complete_field_name(&needle, range, model, rope.clone(), &mut items)
 					.await?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
-					is_incomplete: items.len() >= Self::LIMIT,
-					items,
+					is_incomplete: !items.has_space(),
+					items: items.into_inner(),
 				})));
 			}
 			Some((EarlyReturn::Mapped(model), needle, mut range, rope)) => {
@@ -354,8 +354,9 @@ impl Backend {
 					// lhs: foo
 					// rhs: ba
 					needle = rhs;
+					let model_name = interner().resolve(&model.key());
+					let fields = self.populate_field_names(&mut model, model_name, &[]).await?;
 					let field = some!(interner().get(&lhs));
-					let fields = self.populate_field_names(&mut model, &[]).await?;
 					let field = some!(fields.get(&field.into()));
 					let FieldKind::Relational(rel) = field.kind else {
 						return Ok(None);
@@ -371,8 +372,8 @@ impl Backend {
 				self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)
 					.await?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
-					is_incomplete: items.len() >= Self::LIMIT,
-					items,
+					is_incomplete: !items.has_space(),
+					items: items.into_inner(),
 				})));
 			}
 			None => {}
@@ -499,13 +500,15 @@ impl Backend {
 	pub async fn populate_field_names<'model>(
 		&self,
 		entry: &'model mut ModelEntry,
+		model_name: &str,
 		locations_filter: &[Spur],
 	) -> miette::Result<&'model mut SymbolMap<FieldName, Field>> {
 		if entry.fields.is_some() && locations_filter.is_empty() {
 			return Ok(entry.fields.as_mut().unwrap());
 		}
+		let t0 = std::time::Instant::now();
 		let mut out = SymbolMap::default();
-		let locations = entry.base.iter().chain(entry.descendants.iter());
+		let locations = entry.base.iter().chain(&entry.descendants);
 		let query = ModelFields::query();
 		let mut tasks = tokio::task::JoinSet::<miette::Result<Vec<_>>>::new();
 		for ModelLocation(location, byte_range) in locations.cloned() {
@@ -611,11 +614,11 @@ impl Backend {
 			let fields = match fields {
 				Ok(Ok(ret)) => ret,
 				Ok(Err(err)) => {
-					debug!("{err}");
+					warn!("{err}");
 					continue;
 				}
 				Err(err) => {
-					debug!("join error {err}");
+					warn!("join error {err}");
 					continue;
 				}
 			};
@@ -623,6 +626,12 @@ impl Backend {
 				out.insert_checked(key.into_usize() as u64, type_);
 			}
 		}
+		log::info!(
+			"[{}] Populated {} fields in {}ms",
+			model_name,
+			out.len(),
+			t0.elapsed().as_millis()
+		);
 		Ok(entry.fields.insert(out))
 	}
 

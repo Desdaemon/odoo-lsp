@@ -266,7 +266,7 @@ impl LanguageServer for Backend {
 		{
 			self.on_change(backend::TextDocumentItem {
 				uri: params.text_document.uri,
-				text: Text::Full(std::mem::take(text)),
+				text: Text::Full(core::mem::take(text)),
 				version: params.text_document.version,
 				language: None,
 				rope: None,

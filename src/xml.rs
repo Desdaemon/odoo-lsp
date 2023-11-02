@@ -159,7 +159,7 @@ impl Backend {
 			.module_of_path(Path::new(uri.path()))
 			.expect("must be in a module");
 
-		let mut items = vec![];
+		let mut items = MaxVec::new(Self::LIMIT);
 		let XmlRefs {
 			cursor_value,
 			ref_kind,
@@ -173,10 +173,10 @@ impl Backend {
 		let replace_range = value.range().map_unit(|unit| CharOffset(unit + relative_offset));
 		match record_field {
 			RefKind::Ref(relation) => {
-				let model = some!(model_filter);
-				let model = some!(interner().get(model));
+				let model_key = some!(model_filter);
+				let model = some!(interner().get(&model_key));
 				let mut entry = some!(self.index.models.get_mut(&model.into()));
-				let fields = self.populate_field_names(&mut entry, &[]).await?;
+				let fields = self.populate_field_names(&mut entry, &model_key, &[]).await?;
 				let Some(Field {
 					kind: FieldKind::Relational(relation),
 					..
@@ -210,8 +210,8 @@ impl Backend {
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
-			is_incomplete: items.len() >= Self::LIMIT,
-			items,
+			is_incomplete: !items.has_space(),
+			items: items.into_inner(),
 		})))
 	}
 	pub async fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {

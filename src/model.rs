@@ -1,6 +1,5 @@
 use std::fmt::Display;
 use std::ops::Deref;
-use std::sync::Arc;
 
 use dashmap::DashMap;
 use lasso::Spur;
@@ -33,7 +32,7 @@ pub enum ModelType {
 #[derive(Default)]
 pub struct ModelIndex {
 	inner: DashMap<ModelName, ModelEntry>,
-	pub by_prefix: Arc<RwLock<Trie<BString, ModelName>>>,
+	pub by_prefix: RwLock<Trie<BString, ModelName>>,
 }
 
 pub type ModelName = Symbol<ModelEntry>;

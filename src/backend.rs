@@ -18,7 +18,6 @@ use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{interner, Index, Interner, ModuleName, RecordId, SymbolSet};
 use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName};
 use odoo_lsp::record::Record;
-// use odoo_lsp::utils::isolate::Isolate;
 use odoo_lsp::{some, utils::*};
 
 pub struct Backend {
@@ -32,7 +31,6 @@ pub struct Backend {
 	pub root_setup: AtomicBool,
 	pub symbols_limit: AtomicUsize,
 	pub references_limit: AtomicUsize,
-	// pub isolate: Isolate,
 }
 
 #[derive(Debug, Default)]
@@ -154,9 +152,9 @@ impl Backend {
 		rope: Rope,
 		model_filter: Option<&str>,
 		current_module: ModuleName,
-		items: &mut Vec<CompletionItem>,
+		items: &mut MaxVec<CompletionItem>,
 	) -> miette::Result<()> {
-		if items.len() >= Self::LIMIT {
+		if !items.has_space() {
 			return Ok(());
 		}
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_xml_id) range"))?;
@@ -200,7 +198,7 @@ impl Backend {
 					})
 				})
 			});
-			items.extend(completions.take(Self::LIMIT - items.len()));
+			items.extend(completions);
 		} else {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.keys().flat_map(|key| {
@@ -210,7 +208,7 @@ impl Backend {
 					})
 				})
 			});
-			items.extend(completions.take(Self::LIMIT - items.len()));
+			items.extend(completions);
 		}
 		Ok(())
 	}
@@ -220,10 +218,10 @@ impl Backend {
 		range: std::ops::Range<CharOffset>,
 		model: String,
 		rope: Rope,
-		items: &mut Vec<CompletionItem>,
+		items: &mut MaxVec<CompletionItem>,
 	) -> miette::Result<()> {
 		debug!("complete_field_name needle={} model={}", needle, model);
-		if items.len() >= Self::LIMIT {
+		if !items.has_space() {
 			return Ok(());
 		}
 		let model_key = interner().get_or_intern(&model);
@@ -231,7 +229,7 @@ impl Backend {
 			return Ok(());
 		};
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
-		let fields = self.populate_field_names(&mut entry, &[]).await?;
+		let fields = self.populate_field_names(&mut entry, &model, &[]).await?;
 		let completions = fields.iter().flat_map(|(key, _)| {
 			let field_name = interner().resolve(&Spur::try_from_usize(*key as usize).unwrap());
 			field_name.contains(needle).then(|| CompletionItem {
@@ -247,7 +245,7 @@ impl Backend {
 				..Default::default()
 			})
 		});
-		items.extend(completions.take(Self::LIMIT - items.len()));
+		items.extend(completions);
 		Ok(())
 	}
 	pub async fn complete_model(
@@ -255,9 +253,9 @@ impl Backend {
 		needle: &str,
 		range: std::ops::Range<CharOffset>,
 		rope: Rope,
-		items: &mut Vec<CompletionItem>,
+		items: &mut MaxVec<CompletionItem>,
 	) -> miette::Result<()> {
-		if items.len() >= Self::LIMIT {
+		if !items.has_space() {
 			return Ok(());
 		}
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_model) range"))?;
@@ -284,7 +282,7 @@ impl Backend {
 					..Default::default()
 				}
 			});
-		items.extend(matches.take(Self::LIMIT - items.len()));
+		items.extend(matches);
 		Ok(())
 	}
 	pub async fn complete_template_name(
@@ -292,9 +290,9 @@ impl Backend {
 		needle: &str,
 		range: core::ops::Range<CharOffset>,
 		rope: Rope,
-		items: &mut Vec<CompletionItem>,
+		items: &mut MaxVec<CompletionItem>,
 	) -> miette::Result<()> {
-		if items.len() >= Self::LIMIT {
+		if !items.has_space() {
 			return Ok(());
 		}
 		let range =
@@ -316,7 +314,7 @@ impl Backend {
 				})
 			})
 		});
-		items.extend(matches.take(Self::LIMIT - items.len()));
+		items.extend(matches);
 		Ok(())
 	}
 	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
@@ -367,10 +365,10 @@ impl Backend {
 		}))
 	}
 	pub async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
-		let model = interner().get_or_intern(model);
-		let mut entry = some!(self.index.models.get_mut(&model.into()));
+		let model_key = interner().get_or_intern(model);
+		let mut entry = some!(self.index.models.get_mut(&model_key.into()));
 		let field = some!(interner().get(field));
-		let fields = self.populate_field_names(&mut entry, &[]).await?;
+		let fields = self.populate_field_names(&mut entry, model, &[]).await?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(field.location.clone().into()))
 	}
@@ -386,10 +384,10 @@ impl Backend {
 		model: &str,
 		range: Option<Range>,
 	) -> miette::Result<Option<Hover>> {
-		let model = interner().get_or_intern(model);
-		let mut entry = some!(self.index.models.get_mut(&model.into()));
+		let model_key = interner().get_or_intern(model);
+		let mut entry = some!(self.index.models.get_mut(&model_key.into()));
 		let field = some!(interner().get(name));
-		let fields = self.populate_field_names(&mut entry, &[]).await?;
+		let fields = self.populate_field_names(&mut entry, model, &[]).await?;
 		let field = some!(fields.get(&field.into()));
 		Ok(Some(Hover {
 			range,

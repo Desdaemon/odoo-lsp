@@ -195,3 +195,40 @@ macro_rules! format_loc {
 		format!($crate::format_loc!($tpl) $($tt)*)
 	};
 }
+
+#[derive(Default)]
+pub struct MaxVec<T>(Vec<T>);
+
+impl<T> MaxVec<T> {
+	pub fn new(limit: usize) -> Self {
+		MaxVec(Vec::with_capacity(limit))
+	}
+	#[inline]
+	fn remaining_space(&self) -> usize {
+		self.0.capacity().saturating_sub(self.0.len())
+	}
+	#[inline]
+	pub fn has_space(&self) -> bool {
+		self.remaining_space() > 0
+	}
+	pub fn extend(&mut self, items: impl Iterator<Item = T>) {
+		self.0.extend(items.take(self.remaining_space()));
+	}
+	pub fn push_checked(&mut self, item: T) {
+		if self.has_space() {
+			self.0.push(item);
+		}
+	}
+	#[inline]
+	pub fn into_inner(self) -> Vec<T> {
+		self.0
+	}
+}
+
+impl<T> std::ops::Deref for MaxVec<T> {
+	type Target = Vec<T>;
+	#[inline]
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}

@@ -1,5 +1,4 @@
 use std::ops::Deref;
-use std::sync::Arc;
 
 use dashmap::DashMap;
 use qp_trie::wrapper::BString;
@@ -12,7 +11,7 @@ use super::{interner, SymbolSet, Template, TemplateName};
 #[derive(Default)]
 pub struct TemplateIndex {
 	inner: DashMap<TemplateName, Template>,
-	pub by_prefix: Arc<RwLock<TemplatePrefixTrie>>,
+	pub by_prefix: RwLock<TemplatePrefixTrie>,
 }
 
 pub type TemplatePrefixTrie = qp_trie::Trie<BString, SymbolSet<Template>>;

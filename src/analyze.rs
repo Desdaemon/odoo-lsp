@@ -94,28 +94,19 @@ impl Scope {
 }
 
 query! {
-	FieldCompletion(NAME, INHERIT, SELF, SCOPE);
+	FieldCompletion(NAME, SELF, SCOPE);
 r#"
 ((class_definition
 	(block
-		[
-			 (expression_statement
-				(assignment (identifier) @_inherit [
-					(string) @INHERIT
-					(list ((string) @INHERIT ","?)*)
-				])
-			)
-			(expression_statement (assignment (identifier) @_name (string) @NAME))
-		]+
+		(expression_statement
+			(assignment (identifier) @_name (string) @NAME))
 		[
 			(decorated_definition
 				(function_definition
 					(parameters . (identifier) @SELF) (block) @SCOPE) .)
 			(function_definition (parameters . (identifier) @SELF) (block) @SCOPE)
-		])
-) @class
-(#eq? @_name "_name")
-(#eq? @_inherit "_inherit"))"#
+		])) @class
+(#match? @_name "^_(name|inherit)$"))"#
 }
 
 impl Backend {
@@ -136,19 +127,15 @@ impl Backend {
 		'scoping: for match_ in cursor.matches(query, node, contents) {
 			// @class
 			let class = match_.captures.first()?;
-			if !class.node.byte_range().contains(&range.end.0) && class.node.end_byte() != range.end.0 {
+			if !class.node.byte_range().contains_end(range.end.0) {
 				continue;
 			}
 			for capture in match_.captures {
 				if capture.index == FieldCompletion::NAME {
 					self_type = Some(capture.node);
-				} else if capture.index == FieldCompletion::INHERIT && self_type.is_none() {
-					// @inherit
-					self_type = Some(capture.node);
 				} else if capture.index == FieldCompletion::SELF {
 					self_param = Some(capture.node);
-				} else if capture.index == FieldCompletion::SCOPE
-					&& (capture.node.byte_range().contains(&range.end.0) || capture.node.end_byte() == range.end.0)
+				} else if capture.index == FieldCompletion::SCOPE && capture.node.byte_range().contains_end(range.end.0)
 				{
 					// @scope
 					fn_scope = Some(capture.node);
@@ -229,7 +216,7 @@ impl Backend {
 				}
 				_ => {}
 			}
-			if child.byte_range().contains(&range.end.0) || child.end_byte() == range.end.0 {
+			if child.byte_range().contains_end(range.end.0) {
 				target = Some(child);
 				break;
 			}
@@ -328,7 +315,7 @@ impl Backend {
 						let ident = String::from_utf8_lossy(ident);
 						let ident = interner.get_or_intern(ident.as_ref());
 						let mut entry = self.index.models.get_mut(&model)?;
-						let fields = block_on(self.populate_field_names(&mut entry, &[]));
+						let fields = block_on(self.populate_field_names(&mut entry, interner.resolve(&model), &[]));
 						let field = fields.ok()?.get(&ident.into())?;
 						match field.kind {
 							FieldKind::Relational(model) => Some(Type::Model(interner.resolve(&model).into())),
@@ -387,7 +374,8 @@ mod tests {
 		let contents = br#"
 class Foo(models.AbstractModel):
 	_name = 'foo'
-	_inherit = ['inherit_foo', 'inherit_bar']
+	_description = 'What?'
+	_inherit = 'inherit_foo'
 	foo = fields.Char(related='related')
 	@api.depends('mapped')
 	def foo(self):
@@ -407,7 +395,7 @@ class Foo(models.AbstractModel):
 		assert!(
 			matches!(
 				&actual[..],
-				[[_, _, T::NAME, _, T::INHERIT, T::INHERIT, T::SELF, T::SCOPE]]
+				[[_, _, T::NAME, T::SELF, T::SCOPE], [_, _, T::NAME, T::SELF, T::SCOPE]]
 			),
 			"{actual:?}"
 		)

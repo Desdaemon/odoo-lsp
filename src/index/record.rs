@@ -2,7 +2,6 @@ use std::{
 	hash::Hash,
 	marker::PhantomData,
 	ops::{Deref, DerefMut},
-	sync::Arc,
 };
 
 use dashmap::{mapref::one::Ref, DashMap};
@@ -20,7 +19,7 @@ pub struct RecordIndex {
 	inner: DashMap<RecordId, Record>,
 	by_model: DashMap<ModelName, SymbolSet<Record>>,
 	by_inherit_id: DashMap<RecordId, SymbolSet<Record>>,
-	pub by_prefix: Arc<RwLock<RecordPrefixTrie>>,
+	pub by_prefix: RwLock<RecordPrefixTrie>,
 }
 
 pub type RecordId = Symbol<Record>;
