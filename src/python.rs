@@ -251,9 +251,9 @@ impl Backend {
 							break 'match_;
 						} else if range.end < offset
 							&& (is_name
-							// _inherit = '..' qualifies as primary model name
+							// _inherit = '..' OR _inherit = ['..'] qualifies as primary model name
 							|| (is_inherit && capture.node.parent()
-								.map(|parent| parent.kind() == "assignment")
+								.map(|parent| parent.kind() == "assignment" || (parent.kind() == "list" && parent.named_child_count() == 1))
 								.unwrap_or(false)))
 						{
 							this_model = Some(&contents[capture.node.byte_range().contract(1)]);
