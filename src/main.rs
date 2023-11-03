@@ -278,8 +278,7 @@ impl LanguageServer for Backend {
 		}
 		let mut rope = self
 			.document_map
-			.try_get_mut(params.text_document.uri.path())
-			.expect(format_loc!("deadlock"))
+			.get_mut(params.text_document.uri.path())
 			.expect("Did not build a rope");
 		let old_rope = rope.clone();
 		// Update the rope

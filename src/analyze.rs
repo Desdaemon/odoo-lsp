@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashMap};
+use std::{borrow::Borrow, collections::HashMap, iter::FusedIterator};
 
 use futures::executor::block_on;
 use log::debug;
@@ -63,12 +63,10 @@ fn normalize<'r, 'n>(node: &'r mut Node<'n>) -> &'r mut Node<'n> {
 }
 
 impl Scope {
-	#[inline]
-	pub fn new(parent: Option<Scope>) -> Scope {
+	fn new(parent: Option<Scope>) -> Self {
 		Self {
-			variables: Default::default(),
 			parent: parent.map(Box::new),
-			super_: None,
+			..Default::default()
 		}
 	}
 	pub fn get(&self, key: impl Borrow<str>) -> Option<&Type> {
@@ -80,17 +78,16 @@ impl Scope {
 		}
 		impl_(self, key.borrow())
 	}
-	pub fn insert(&mut self, key: String, value: Type) -> bool {
-		if let Some(parent) = &mut self.parent {
-			if parent.insert(key.clone(), value.clone()) {
-				return true;
-			}
-		}
-		if self.variables.contains_key(&key) {
-			return false;
-		}
+	pub fn insert(&mut self, key: String, value: Type) {
 		self.variables.insert(key, value);
-		true
+	}
+	pub fn enter(&mut self) {
+		*self = Scope::new(Some(core::mem::take(self)));
+	}
+	pub fn exit(&mut self) {
+		if let Some(parent) = self.parent.take() {
+			*self = *parent;
+		}
 	}
 }
 
@@ -108,6 +105,65 @@ r#"
 			(function_definition (parameters . (identifier) @SELF) (block) @SCOPE)
 		])) @class
 (#match? @_name "^_(name|inherit)$"))"#
+}
+
+query! {
+	MappedCall(CALLEE, ITER);
+r#"
+((call
+	(attribute (_) @CALLEE (identifier) @_mapped)
+	(argument_list
+		[(lambda (lambda_parameters . (identifier) @ITER))
+		 (keyword_argument
+			(identifier) @_func
+			(lambda (lambda_parameters . (identifier) @ITER)))]))
+(#match? @_func "^(func|key)$")
+(#match? @_mapped "^(mapp|filter|sort)ed$"))"#
+}
+
+struct PreTravel<'a> {
+	depth: u32,
+	cursor: Option<tree_sitter::TreeCursor<'a>>,
+}
+
+impl<'node> PreTravel<'node> {
+	pub fn new(node: Node<'node>) -> Self {
+		Self {
+			depth: 0,
+			cursor: Some(node.walk()),
+		}
+	}
+}
+
+impl FusedIterator for PreTravel<'_> {}
+impl<'a> Iterator for PreTravel<'a> {
+	type Item = Node<'a>;
+	fn next(&mut self) -> Option<Self::Item> {
+		// copied from tree-sitter-traversal
+		let cursor = self.cursor.as_mut()?;
+
+		let node = cursor.node();
+		if cursor.goto_first_child() {
+			self.depth += 1;
+			return Some(node);
+		} else if cursor.goto_next_sibling() {
+			return Some(node);
+		}
+
+		loop {
+			if self.depth == 0 {
+				self.cursor = None;
+				break;
+			}
+			assert!(cursor.goto_parent());
+			self.depth -= 1;
+			if cursor.goto_next_sibling() {
+				break;
+			}
+		}
+
+		Some(node)
+	}
 }
 
 impl Backend {
@@ -155,6 +211,7 @@ impl Backend {
 		// 3. Parameters, e.g. self which always has a fixed type
 		// 4. Assignments (including walrus-assignment)
 		let mut scope = scope.unwrap_or_default();
+		let mut scope_ends = Vec::<usize>::new();
 		let self_type = match self_type {
 			Some(type_) => &contents[type_.byte_range().contract(1)],
 			None => &[],
@@ -164,91 +221,79 @@ impl Backend {
 			self_param.into_owned(),
 			Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
 		);
-		let mut cursor = node.walk();
-		let mut children = node.named_children(&mut cursor).peekable();
-		let mut stack = vec![];
-		let mut target = None;
-		while let Some(mut child) = children.next() {
-			// What creates local scope, but doesn't contribute to method scope?
-			// 1. For-statements: only within the block
-			// 2. List comprehension: only within the object
-			// 3. Lambdas
-			match normalize(&mut child).kind() {
-				"assignment" => {
-					let lhs = child.named_child(0)?;
-					let rhs = child.named_child(1)?;
+		let mut cursor = PreTravel::new(node);
+		while let Some(node) = cursor.next() {
+			if !node.is_named() {
+				continue;
+			};
+			if node.start_byte() > range.end.0 {
+				break;
+			}
+			if let Some(end) = scope_ends.last() {
+				if node.start_byte() > *end {
+					scope.exit();
+					scope_ends.pop();
+				}
+			}
+			match node.kind() {
+				"assignment" | "named_expression" => {
+					// (_ left right)
+					let lhs = node.named_child(0).unwrap();
 					if lhs.kind() == "identifier" {
-						let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
-						let type_ = self.type_of(rhs, &scope, contents)?;
-						scope.insert(lhs.into_owned(), type_);
+						let rhs = lhs.next_named_sibling().unwrap();
+						if let Some(type_) = self.type_of(rhs, &scope, contents) {
+							let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
+							scope.insert(lhs.into_owned(), type_);
+						}
 					}
 				}
 				"for_statement" => {
-					let iter = child.named_child(0)?;
-					let src = child.named_child(1)?;
-					if iter.kind() == "identifier" {
-						let type_ = self.type_of(src, &scope, contents)?;
-						if let Some(next) = children.peek().cloned() {
-							stack.push(next);
+					// (for_statement left right body)
+					scope.enter();
+					scope_ends.push(node.end_byte());
+					let lhs = node.named_child(0).unwrap();
+					if lhs.kind() == "identifier" {
+						let rhs = lhs.next_named_sibling().unwrap();
+						if let Some(type_) = self.type_of(rhs, &scope, contents) {
+							let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
+							scope.insert(lhs.into_owned(), type_);
 						}
-						drop(children);
-						// (for_statement (_) @iteratee (_) @src (block))
-						children = child.named_child(2)?.named_children(&mut cursor).peekable();
-						scope = Scope::new(Some(scope));
-						let iter = String::from_utf8_lossy(&contents[iter.byte_range()]);
-						scope.insert(iter.into_owned(), type_);
 					}
 				}
-				"list_comprehension" | "set_comprehension" | "dictionary_comprehension" => {
-					// (_ body: (_) (for_in_clause))
-					let clause = child.named_child(1)?;
-					let iter = clause.named_child(0)?;
-					let src = clause.named_child(1)?;
-					if iter.kind() == "identifier" {
-						let type_ = self.type_of(src, &scope, contents)?;
-						if let Some(next) = children.peek().cloned() {
-							stack.push(next);
+				"list_comprehension" | "set_comprehension" | "dictionary_comprehension" | "generator_expression"
+					if node.byte_range().contains(&range.end.0) =>
+				{
+					// (_ body (for_in_clause left right))
+					let for_in = node.named_child(1).unwrap();
+					let lhs = for_in.named_child(0).unwrap();
+					if lhs.kind() == "identifier" {
+						let rhs = lhs.next_named_sibling().unwrap();
+						if let Some(type_) = self.type_of(rhs, &scope, contents) {
+							let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
+							scope.insert(lhs.into_owned(), type_);
 						}
-						drop(children);
-						children = clause.named_children(&mut cursor).peekable();
-						scope = Scope::new(Some(scope));
-						let iter = String::from_utf8_lossy(&contents[iter.byte_range()]);
-						scope.insert(iter.into_owned(), type_);
+					}
+				}
+				"call" if node.byte_range().contains_end(range.end.0) => {
+					// model.{mapped,filtered,sorted,*}(lambda rec: ..)
+					let query = MappedCall::query();
+					let mut cursor = QueryCursor::new();
+					if let Some(mapped_call) = cursor.matches(query, node, contents).next() {
+						let callee = mapped_call.nodes_for_capture_index(MappedCall::CALLEE).next().unwrap();
+						if let Some(type_) = self.type_of(callee, &scope, contents) {
+							let iter = mapped_call.nodes_for_capture_index(MappedCall::ITER).next().unwrap();
+							let iter = String::from_utf8_lossy(&contents[iter.byte_range()]);
+							scope.insert(iter.into_owned(), type_);
+						}
 					}
 				}
 				_ => {}
 			}
-			if child.byte_range().contains_end(range.end.0) {
-				target = Some(child);
-				break;
-			}
-			if children.peek().is_none() {
-				if let Some(next) = stack.pop() {
-					drop(children);
-					children = next.named_children(&mut cursor).peekable();
-					scope = *scope.parent?;
-				}
-			}
 		}
-		// Phase 3: Determine type of cursor expression using recursive ascent
-		let mut descendant = Some(target?.descendant_for_byte_range(range.start.0, range.end.0)?);
-		while let Some(descendant_) = descendant {
-			match self.type_of(descendant_, &scope, contents) {
-				Some(Type::Model(model)) => {
-					return interner().get(model).map(Into::into);
-				}
-				Some(Type::Record(xml_id)) => {
-					// TODO: Refactor into method
-					let interner = interner();
-					let xml_id = interner.get(xml_id)?;
-					let record = self.index.records.get(&xml_id.into())?;
-					return record.model;
-				}
-				_ => {}
-			}
-			descendant = descendant_.parent();
-		}
-		None
+
+		let node_at_cursor = node.descendant_for_byte_range(range.start.0, range.end.0)?;
+		let type_at_cursor = self.type_of(node_at_cursor, &scope, contents)?;
+		self.resolve_type(&type_at_cursor, &scope)
 	}
 	fn type_of(&self, mut node: Node, scope: &Scope, contents: &[u8]) -> Option<Type> {
 		// What contributes to value types?
@@ -274,10 +319,18 @@ impl Backend {
 		//    foo: Model('t) => bar: Model('t).field('bar')
 		// 2. foo.mapped('field')
 		//    foo: Model('t) => foo.mapped('field'): Model('t).mapped('field')
-		debug!("type_of {}", String::from_utf8_lossy(&contents[node.byte_range()]));
+		// debug!("type_of {} range={:?}", node.kind(), node.byte_range());
+		if node.byte_range().len() <= 64 {
+			debug!(
+				"type_of {} '{}'",
+				node.kind(),
+				String::from_utf8_lossy(&contents[node.byte_range()])
+			);
+		} else {
+			debug!("type_of {} range={:?}", node.kind(), node.byte_range());
+		}
 		let interner = interner();
-		let kind = normalize(&mut node).kind();
-		match kind {
+		match normalize(&mut node).kind() {
 			"subscript" => {
 				let rhs = node.named_child(1)?;
 				let rhs_range = rhs.byte_range().contract(1);
@@ -361,6 +414,19 @@ impl Backend {
 					Type::Env | Type::Record(..) | Type::Model(..) => None,
 				}
 			}
+			_ => None,
+		}
+	}
+	fn resolve_type(&self, type_: &Type, scope: &Scope) -> Option<ModelName> {
+		match type_ {
+			Type::Model(model) => Some(interner().get(model)?.into()),
+			Type::Record(xml_id) => {
+				// TODO: Refactor into method
+				let xml_id = interner().get(xml_id)?;
+				let record = self.index.records.get(&xml_id.into())?;
+				record.model
+			}
+			Type::Super => self.resolve_type(scope.get(scope.super_.as_deref()?)?, scope),
 			_ => None,
 		}
 	}
