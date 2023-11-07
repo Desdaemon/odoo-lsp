@@ -1,3 +1,25 @@
+## [0.2.1](https://github.com/Desdaemon/odoo-lsp/compare/v0.2.0...v0.2.1) (2023-11-07)
+
+
+### Bug Fixes
+
+* actually limit num. of completion items ([4a0fafa](https://github.com/Desdaemon/odoo-lsp/commit/4a0fafa6880ff2b52017a276b261623f396f13b6))
+* allow _inherit = ['..'] as primary model name ([ff1878b](https://github.com/Desdaemon/odoo-lsp/commit/ff1878b670f5f2d7954beb0c14d958dc9de98b05))
+* allow matching dangling decorators ([ce34fc1](https://github.com/Desdaemon/odoo-lsp/commit/ce34fc1dcd49965aa12ec66b0a43b02a85724980))
+* **analyze:** api.constrains don't complete dotted ([0b55f35](https://github.com/Desdaemon/odoo-lsp/commit/0b55f352711537aad186fcf5c2430b541a0ffa63))
+* **analyze:** out-of-order meta fields ([326ace2](https://github.com/Desdaemon/odoo-lsp/commit/326ace25b828e818e82861edd654703e54497322))
+* **index:** out-of-order _name and _inherit ([54d7623](https://github.com/Desdaemon/odoo-lsp/commit/54d762384ff8deeaca5682eff38511fe6ee27950))
+
+
+### Features
+
+* mapped access (api.depends etc.) ([5c20257](https://github.com/Desdaemon/odoo-lsp/commit/5c2025742ffa83f2acb4a8e612f26a584ae1dae5))
+* Mapper functions (mapped, filtered etc.) ([d35008d](https://github.com/Desdaemon/odoo-lsp/commit/d35008d5dbcd10a11dd112dc02394b242db6265f))
+* menuitem ([2d51e8b](https://github.com/Desdaemon/odoo-lsp/commit/2d51e8bbe669ccec8c85dfbb41a9a06f6067b5aa))
+* qweb templates ([71dc1f0](https://github.com/Desdaemon/odoo-lsp/commit/71dc1f05d7794061e94fe2992bd3e95b4d526b4b))
+
+
+
 # [0.2.0](https://github.com/Desdaemon/odoo-lsp/compare/v0.1.2...v0.2.0) (2023-10-04)
 
 ### Bug Fixes
