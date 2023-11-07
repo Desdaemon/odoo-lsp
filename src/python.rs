@@ -54,6 +54,19 @@ r#"
 (#eq? @_api "api")
 (#match? @DEPENDS "^(depend|constrain)s$"))
 
+((call
+	(attribute (_) @MAPPED_TARGET (identifier) @_search)
+	(argument_list
+		[(list
+			[(tuple . (string) @MAPPED)
+			 (parenthesized_expression (string) @MAPPED)])
+		 (keyword_argument (identifier) @_domain
+			(list
+				[(tuple . (string) @MAPPED)
+			 	 (parenthesized_expression (string) @MAPPED)]))]))
+(#eq? @_domain "domain")
+(#match? @_search "^(search(_(read|count))?|read_group|filtered_domain)$"))
+
 ((call [
 	(identifier) @_Field
     (attribute (identifier) @_fields (identifier) @_Field)
