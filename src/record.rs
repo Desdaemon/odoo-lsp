@@ -15,7 +15,10 @@ macro_rules! some {
 	($opt:expr) => {
 		match $opt {
 			Some(it) => it,
-			None => return Ok(None),
+			None => {
+				log::trace!("{}", $crate::format_loc!("{}", concat!(stringify!($opt), " = None")));
+				return Ok(None);
+			}
 		}
 	};
 }

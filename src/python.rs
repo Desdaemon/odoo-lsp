@@ -379,6 +379,7 @@ impl Backend {
 						let FieldKind::Relational(rel) = field.kind else {
 							return Ok(None);
 						};
+						drop(model);
 						model = some!(self.index.models.get_mut(&rel.into()));
 						// old range: foo.bar.baz
 						// range:         bar.baz
