@@ -5,9 +5,10 @@ use log::debug;
 use tree_sitter::{Node, QueryCursor};
 
 use odoo_lsp::{
+	format_loc,
 	index::interner,
 	model::{FieldKind, ModelName},
-	utils::{ByteRange, Erase, RangeExt},
+	utils::{ByteRange, Erase, RangeExt, TryResultExt},
 	ImStr,
 };
 use ts_macros::query;
@@ -318,7 +319,7 @@ impl Backend {
 						};
 						let ident = String::from_utf8_lossy(ident);
 						let ident = interner.get_or_intern(ident.as_ref());
-						let mut entry = self.index.models.get_mut(&model)?;
+						let mut entry = self.index.models.try_get_mut(&model).expect(format_loc!("deadlock"))?;
 						let fields = block_on(self.populate_field_names(&mut entry, interner.resolve(&model), &[]));
 						let field = fields.ok()?.get(&ident.into())?;
 						match field.kind {

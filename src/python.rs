@@ -175,7 +175,12 @@ impl Backend {
 				ModelType::Inherit(inherits) => {
 					let Some(model) = inherits.first() else { continue };
 					let model_key = interner().get(model).unwrap();
-					let mut entry = self.index.models.try_get_mut(&model_key.into()).unwrap();
+					let mut entry = self
+						.index
+						.models
+						.try_get_mut(&model_key.into())
+						.expect(format_loc!("deadlock"))
+						.unwrap();
 					self.populate_field_names(&mut entry, model, &[path]).await?;
 				}
 			}
@@ -365,7 +370,11 @@ impl Backend {
 				// needle: foo.ba
 				let mut needle = needle.as_ref();
 				let model = some!(interner().get(&model));
-				let mut model = some!(self.index.models.get_mut(&model.into()));
+				let mut model = some!(self
+					.index
+					.models
+					.try_get_mut(&model.into())
+					.expect(format_loc!("deadlock")));
 				if !constrains {
 					while let Some((lhs, rhs)) = needle.split_once('.') {
 						debug!("mapped {}", needle);
@@ -380,7 +389,11 @@ impl Backend {
 							return Ok(None);
 						};
 						drop(model);
-						model = some!(self.index.models.get_mut(&rel.into()));
+						model = some!(self
+							.index
+							.models
+							.try_get_mut(&rel.into())
+							.expect(format_loc!("deadlock")));
 						// old range: foo.bar.baz
 						// range:         bar.baz
 						let start = rope.char_to_byte(range.start.0) + lhs.len() + 1;

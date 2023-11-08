@@ -8,20 +8,7 @@ use crate::index::{interner, ModuleName};
 use crate::model::ModelName;
 use crate::utils::MinLoc;
 use crate::utils::{char_to_position, position_to_char, CharOffset};
-use crate::ImStr;
-
-#[macro_export]
-macro_rules! some {
-	($opt:expr) => {
-		match $opt {
-			Some(it) => it,
-			None => {
-				log::trace!("{}", $crate::format_loc!("{}", concat!(stringify!($opt), " = None")));
-				return Ok(None);
-			}
-		}
-	};
-}
+use crate::{some, ImStr};
 
 #[derive(Debug)]
 pub struct Record {

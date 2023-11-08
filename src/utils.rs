@@ -1,6 +1,7 @@
 use core::ops::{Add, Sub};
 use std::fmt::Display;
 
+use dashmap::try_result::TryResult;
 use lasso::Spur;
 use log::warn;
 use ropey::Rope;
@@ -10,6 +11,19 @@ use xmlparser::{StrSpan, Token};
 use crate::index::interner;
 
 // pub mod isolate;
+
+#[macro_export]
+macro_rules! some {
+	($opt:expr) => {
+		match $opt {
+			Some(it) => it,
+			None => {
+				log::trace!("{}", $crate::format_loc!("{}", concat!(stringify!($opt), " = None")));
+				return Ok(None);
+			}
+		}
+	};
+}
 
 /// A more economical version of [Location].
 #[derive(Clone, Debug)]
@@ -230,5 +244,21 @@ impl<T> std::ops::Deref for MaxVec<T> {
 	#[inline]
 	fn deref(&self) -> &Self::Target {
 		&self.0
+	}
+}
+
+pub trait TryResultExt {
+	type Result: Sized;
+	fn expect(self, msg: &str) -> Option<Self::Result>;
+}
+
+impl<T: Sized> TryResultExt for TryResult<T> {
+	type Result = T;
+	fn expect(self, msg: &str) -> Option<Self::Result> {
+		match self {
+			TryResult::Present(item) => Some(item),
+			TryResult::Absent => None,
+			TryResult::Locked => panic!("{msg}"),
+		}
 	}
 }

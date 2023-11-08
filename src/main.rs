@@ -278,7 +278,8 @@ impl LanguageServer for Backend {
 		}
 		let mut rope = self
 			.document_map
-			.get_mut(params.text_document.uri.path())
+			.try_get_mut(params.text_document.uri.path())
+			.expect(format_loc!("deadlock"))
 			.expect("Did not build a rope");
 		let old_rope = rope.clone();
 		// Update the rope
@@ -440,7 +441,12 @@ impl LanguageServer for Backend {
 					let Some(model) = interner().get(&completion.label) else {
 						break 'resolve;
 					};
-					let Some(mut entry) = self.index.models.get_mut(&model.into()) else {
+					let Some(mut entry) = self
+						.index
+						.models
+						.try_get_mut(&model.into())
+						.expect(format_loc!("deadlock"))
+					else {
 						break 'resolve;
 					};
 					if let Err(err) = entry.resolve_details().await {

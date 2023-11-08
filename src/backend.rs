@@ -18,7 +18,7 @@ use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{interner, Index, Interner, ModuleName, RecordId, SymbolSet};
 use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName};
 use odoo_lsp::record::Record;
-use odoo_lsp::{some, utils::*};
+use odoo_lsp::{format_loc, some, utils::*};
 
 pub struct Backend {
 	pub client: Client,
@@ -92,7 +92,7 @@ impl Backend {
 		old_rope: Option<Rope>,
 		mut parser: Parser,
 	) -> miette::Result<()> {
-		let ast = self.ast_map.get_mut(uri.path());
+		let ast = self.ast_map.try_get_mut(uri.path()).expect(format_loc!("deadlock"));
 		let ast = match (text, ast) {
 			(Text::Full(full), _) => parser.parse(full, None),
 			(Text::Delta(delta), Some(mut ast)) => {
@@ -225,7 +225,12 @@ impl Backend {
 			return Ok(());
 		}
 		let model_key = interner().get_or_intern(&model);
-		let Some(mut entry) = self.index.models.get_mut(&model_key.into()) else {
+		let Some(mut entry) = self
+			.index
+			.models
+			.try_get_mut(&model_key.into())
+			.expect(format_loc!("deadlock"))
+		else {
 			return Ok(());
 		};
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
@@ -366,7 +371,11 @@ impl Backend {
 	}
 	pub async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model_key = interner().get_or_intern(model);
-		let mut entry = some!(self.index.models.get_mut(&model_key.into()));
+		let mut entry = some!(self
+			.index
+			.models
+			.try_get_mut(&model_key.into())
+			.expect(format_loc!("deadlock")));
 		let field = some!(interner().get(field));
 		let fields = self.populate_field_names(&mut entry, model, &[]).await?;
 		let field = some!(fields.get(&field.into()));
@@ -385,7 +394,11 @@ impl Backend {
 		range: Option<Range>,
 	) -> miette::Result<Option<Hover>> {
 		let model_key = interner().get_or_intern(model);
-		let mut entry = some!(self.index.models.get_mut(&model_key.into()));
+		let mut entry = some!(self
+			.index
+			.models
+			.try_get_mut(&model_key.into())
+			.expect(format_loc!("deadlock")));
 		let field = some!(interner().get(name));
 		let fields = self.populate_field_names(&mut entry, model, &[]).await?;
 		let field = some!(fields.get(&field.into()));

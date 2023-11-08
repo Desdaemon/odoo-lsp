@@ -13,8 +13,8 @@ use ts_macros::query;
 
 use crate::index::{interner, Interner, Symbol, SymbolMap};
 use crate::str::Text;
-use crate::utils::{ByteOffset, ByteRange, Erase, MinLoc};
-use crate::ImStr;
+use crate::utils::{ByteOffset, ByteRange, Erase, MinLoc, TryResultExt};
+use crate::{format_loc, ImStr};
 
 #[derive(Clone, Debug)]
 pub struct Model {
@@ -132,7 +132,7 @@ impl ModelIndex {
 					if replace {
 						for inherit in inherits {
 							let Some(inherit) = interner.get(inherit) else { continue };
-							if let Some(mut entry) = self.get_mut(&inherit.into()) {
+							if let Some(mut entry) = self.try_get_mut(&inherit.into()).expect(format_loc!("deadlock")) {
 								entry.descendants.retain(|loc| loc.0.path != path)
 							}
 						}
