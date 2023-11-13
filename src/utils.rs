@@ -8,9 +8,10 @@ use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token};
 
-use crate::index::interner;
+mod visitor;
+pub use visitor::PreTravel;
 
-// pub mod isolate;
+use crate::index::interner;
 
 #[macro_export]
 macro_rules! some {
@@ -130,7 +131,7 @@ pub trait RangeExt {
 	where
 		F: FnMut(Self::Unit) -> V;
 
-	fn contract(self, value: Self::Unit) -> std::ops::Range<Self::Unit>
+	fn shrink(self, value: Self::Unit) -> std::ops::Range<Self::Unit>
 	where
 		Self: Sized,
 		Self::Unit: Add<Self::Unit, Output = Self::Unit> + Sub<Self::Unit, Output = Self::Unit> + Copy;
@@ -168,7 +169,7 @@ impl<T> RangeExt for core::ops::Range<T> {
 		op(self.start)..op(self.end)
 	}
 
-	fn contract(self, value: Self::Unit) -> core::ops::Range<Self::Unit>
+	fn shrink(self, value: Self::Unit) -> core::ops::Range<Self::Unit>
 	where
 		Self: Sized,
 		Self::Unit: Add<Self::Unit, Output = Self::Unit> + Sub<Self::Unit, Output = Self::Unit> + Copy,

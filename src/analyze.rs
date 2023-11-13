@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashMap, iter::FusedIterator};
+use std::{borrow::Borrow, collections::HashMap};
 
 use futures::executor::block_on;
 use log::debug;
@@ -8,7 +8,7 @@ use odoo_lsp::{
 	format_loc,
 	index::interner,
 	model::{FieldKind, ModelName},
-	utils::{ByteRange, Erase, RangeExt, TryResultExt},
+	utils::{ByteRange, Erase, PreTravel, RangeExt, TryResultExt},
 	ImStr,
 };
 use ts_macros::query;
@@ -121,51 +121,6 @@ r#"
 (#match? @_mapped "^(mapp|filter|sort)ed$"))"#
 }
 
-struct PreTravel<'a> {
-	depth: u32,
-	cursor: Option<tree_sitter::TreeCursor<'a>>,
-}
-
-impl<'node> PreTravel<'node> {
-	pub fn new(node: Node<'node>) -> Self {
-		Self {
-			depth: 0,
-			cursor: Some(node.walk()),
-		}
-	}
-}
-
-impl FusedIterator for PreTravel<'_> {}
-impl<'a> Iterator for PreTravel<'a> {
-	type Item = Node<'a>;
-	fn next(&mut self) -> Option<Self::Item> {
-		// copied from tree-sitter-traversal
-		let cursor = self.cursor.as_mut()?;
-
-		let node = cursor.node();
-		if cursor.goto_first_child() {
-			self.depth += 1;
-			return Some(node);
-		} else if cursor.goto_next_sibling() {
-			return Some(node);
-		}
-
-		loop {
-			if self.depth == 0 {
-				self.cursor = None;
-				break;
-			}
-			assert!(cursor.goto_parent());
-			self.depth -= 1;
-			if cursor.goto_next_sibling() {
-				break;
-			}
-		}
-
-		Some(node)
-	}
-}
-
 impl Backend {
 	pub fn model_of_range(
 		&self,
@@ -213,7 +168,7 @@ impl Backend {
 		let mut scope = scope.unwrap_or_default();
 		let mut scope_ends = Vec::<usize>::new();
 		let self_type = match self_type {
-			Some(type_) => &contents[type_.byte_range().contract(1)],
+			Some(type_) => &contents[type_.byte_range().shrink(1)],
 			None => &[],
 		};
 		scope.super_ = Some(self_param.as_ref().into());
@@ -333,7 +288,7 @@ impl Backend {
 		match normalize(&mut node).kind() {
 			"subscript" => {
 				let rhs = node.named_child(1)?;
-				let rhs_range = rhs.byte_range().contract(1);
+				let rhs_range = rhs.byte_range().shrink(1);
 				if rhs.kind() != "string" {
 					return None;
 				}
@@ -403,7 +358,7 @@ impl Backend {
 						let xml_id = node.named_child(1)?.named_child(0)?;
 						matches!(xml_id.kind(), "string").then(|| {
 							Type::Record(
-								String::from_utf8_lossy(&contents[xml_id.byte_range().contract(1)])
+								String::from_utf8_lossy(&contents[xml_id.byte_range().shrink(1)])
 									.as_ref()
 									.into(),
 							)

@@ -2,7 +2,7 @@ use std::collections::{hash_map::Entry, HashMap};
 
 use proc_macro2::{Ident, TokenStream};
 use proc_macro2_diagnostics::SpanDiagnosticExt;
-use quote::quote_spanned;
+use quote::{quote, quote_spanned, ToTokens};
 use syn::{parse::Parse, punctuated::Punctuated, *};
 
 /// Usage:
@@ -32,7 +32,14 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 #[proc_macro]
 pub fn query(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
 	let def = syn::parse_macro_input!(tokens as QueryDefinition);
-	def.into_tokens().into()
+	def.into_tokens(TsLang::Python).into()
+}
+
+/// See [query] for usage info
+#[proc_macro]
+pub fn query_js(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
+	let def = syn::parse_macro_input!(tokens as QueryDefinition);
+	def.into_tokens(TsLang::Javascript).into()
 }
 
 struct QueryDefinition {
@@ -57,8 +64,22 @@ impl Parse for QueryDefinition {
 	}
 }
 
+enum TsLang {
+	Python,
+	Javascript,
+}
+
+impl ToTokens for TsLang {
+	fn to_tokens(&self, tokens: &mut TokenStream) {
+		match self {
+			Self::Python => tokens.extend(quote!(::tree_sitter_python::language())),
+			Self::Javascript => tokens.extend(quote!(::tree_sitter_javascript::language())),
+		}
+	}
+}
+
 impl QueryDefinition {
-	fn into_tokens(self) -> TokenStream {
+	fn into_tokens(self, language: TsLang) -> TokenStream {
 		let query = self.query.value();
 		let mut query = query.as_str();
 		let mut captures = HashMap::new();
@@ -100,7 +121,7 @@ impl QueryDefinition {
 					use ::std::sync::OnceLock as _OnceLock;
 					static QUERY: _OnceLock<::tree_sitter::Query> = _OnceLock::new();
 					QUERY.get_or_init(|| {
-						::tree_sitter::Query::new(::tree_sitter_python::language(), #query).unwrap()
+						::tree_sitter::Query::new(#language, #query).unwrap()
 					})
 				}
 			}

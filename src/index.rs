@@ -25,6 +25,9 @@ mod symbol;
 pub use symbol::{interner, Symbol};
 mod template;
 pub use crate::template::{Template, TemplateName};
+pub use template::TemplateIndex;
+mod component;
+pub use crate::component::{Component, ComponentName};
 
 use crate::template::{gather_templates, NewTemplate};
 
@@ -37,6 +40,7 @@ pub struct Index {
 	pub records: record::RecordIndex,
 	pub templates: template::TemplateIndex,
 	pub models: ModelIndex,
+	pub components: component::ComponentIndex,
 }
 
 pub type ModuleName = Symbol<Module>;
@@ -52,6 +56,7 @@ enum Output {
 		path: Spur,
 		models: Vec<Model>,
 	},
+	Components(HashMap<ComponentName, Component>),
 }
 
 pub struct AddRootResults {
@@ -59,6 +64,7 @@ pub struct AddRootResults {
 	pub record_count: usize,
 	pub model_count: usize,
 	pub template_count: usize,
+	pub component_count: usize,
 	pub elapsed: Duration,
 }
 
@@ -143,11 +149,23 @@ impl Index {
 				let path = py.path().to_path_buf();
 				outputs.spawn(add_root_py(path));
 			}
+			let scripts = globwalk::glob_builder(format!("{}/**/*.js", module_dir.display()))
+				.file_type(FileType::FILE | FileType::SYMLINK)
+				.follow_links(true)
+				.build()
+				.into_diagnostic()
+				.with_context(|| format_loc!("Could not glob into {:?}", module.path()))?;
+			for js in scripts {
+				let Ok(js) = js else { continue };
+				let path = js.path().to_path_buf();
+				outputs.spawn(component::add_root_js(path));
+			}
 		}
 
 		let mut record_count = 0;
 		let mut model_count = 0;
 		let mut template_count = 0;
+		let mut component_count = 0;
 		while let Some(outputs) = outputs.join_next().await {
 			let outputs = match outputs {
 				Ok(Ok(out)) => out,
@@ -171,6 +189,10 @@ impl Index {
 					model_count += models.len();
 					self.models.append(path, interner, false, &models).await;
 				}
+				Output::Components(components) => {
+					component_count += components.len();
+					self.components.extend(components);
+				}
 			}
 		}
 		Ok(Some(AddRootResults {
@@ -178,6 +200,7 @@ impl Index {
 			record_count,
 			model_count,
 			template_count,
+			component_count,
 			elapsed: t0.elapsed(),
 		}))
 	}
@@ -196,6 +219,7 @@ impl Index {
 			let module = path_.file_name()?.to_string_lossy();
 			// By this point, if this module hadn't been interned,
 			// it certainly is not a valid module name.
+			// TODO: One of the components might also be a valid module name
 			if let Some(module) = interner().get(module.as_ref()) {
 				if let Some(name) = self.modules.get(&ModuleName::from(module)) {
 					return Some(name);
@@ -335,7 +359,7 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 					continue;
 				};
 				if name_decl.kind() == "string" {
-					let name = name_decl.byte_range().contract(1);
+					let name = name_decl.byte_range().shrink(1);
 					if name.is_empty() {
 						continue;
 					}
@@ -348,7 +372,7 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 				};
 				match inherit_decl.kind() {
 					"string" => {
-						let inherit = inherit_decl.byte_range().contract(1);
+						let inherit = inherit_decl.byte_range().shrink(1);
 						if !inherit.is_empty() {
 							model.inherits.push(&contents[inherit]);
 						}
@@ -356,7 +380,7 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 					"list" => {
 						for maybe_inherit_decl in inherit_decl.named_children(&mut inherit_decl.walk()) {
 							if maybe_inherit_decl.kind() == "string" {
-								let inherit = maybe_inherit_decl.byte_range().contract(1);
+								let inherit = maybe_inherit_decl.byte_range().shrink(1);
 								if !inherit.is_empty() {
 									model.inherits.push(&contents[inherit]);
 								}

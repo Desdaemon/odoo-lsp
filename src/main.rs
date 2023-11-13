@@ -163,12 +163,13 @@ impl LanguageServer for Backend {
 			match self.index.add_root(root.as_str(), progress.clone()).await {
 				Ok(Some(results)) => {
 					info!(
-						"{} | {} modules | {} records | {} templates | {} models | {:.2}s",
+						"{} | {} modules | {} records | {} templates | {} models | {} components | {:.2}s",
 						root.as_str(),
 						results.module_count,
 						results.record_count,
 						results.template_count,
 						results.model_count,
+						results.component_count,
 						results.elapsed.as_secs_f64()
 					);
 				}

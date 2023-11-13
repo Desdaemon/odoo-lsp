@@ -234,7 +234,7 @@ impl Backend {
 							let relative_offset = range.start;
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 							// remove the quotes
-							let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
+							let range = range.shrink(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
 							early_return = Some((
 								EarlyReturn::XmlId(model_filter, *current_module),
 								needle,
@@ -264,7 +264,7 @@ impl Backend {
 							};
 							let relative_offset = range.start;
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-							let range = range.contract(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
+							let range = range.shrink(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
 							early_return = Some((EarlyReturn::Model, needle, range, rope.clone()));
 							break 'match_;
 						} else if range.end < offset
@@ -274,7 +274,7 @@ impl Backend {
 								.map(|parent| parent.kind() == "assignment" || (parent.kind() == "list" && parent.named_child_count() == 1))
 								.unwrap_or(false)))
 						{
-							this_model = Some(&contents[capture.node.byte_range().contract(1)]);
+							this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
 						}
 					} else if capture.index == PyCompletions::MAPPED {
 						let range = capture.node.byte_range();
@@ -310,9 +310,7 @@ impl Backend {
 							early_return = Some((
 								EarlyReturn::Mapped { model, constrains },
 								needle,
-								range
-									.contract(1)
-									.map_unit(|offset| CharOffset(rope.byte_to_char(offset))),
+								range.shrink(1).map_unit(|offset| CharOffset(rope.byte_to_char(offset))),
 								rope.clone(),
 							));
 							break 'match_;
@@ -434,7 +432,7 @@ impl Backend {
 					if capture.index == PyCompletions::XML_ID {
 						let range = capture.node.byte_range();
 						if range.contains(&offset) {
-							let range = range.contract(1);
+							let range = range.shrink(1);
 							let Some(slice) = rope.get_byte_slice(range.clone()) else {
 								dbg!(&range);
 								break 'match_;
@@ -451,7 +449,7 @@ impl Backend {
 							.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
 							.unwrap_or(true);
 						if is_meta && range.contains(&offset) {
-							let range = range.contract(1);
+							let range = range.shrink(1);
 							let Some(slice) = rope.get_byte_slice(range.clone()) else {
 								dbg!(&range);
 								break 'match_;
@@ -500,7 +498,7 @@ impl Backend {
 				if capture.index == PyCompletions::XML_ID {
 					let range = capture.node.byte_range();
 					if range.contains(&offset) {
-						let range = range.contract(1);
+						let range = range.shrink(1);
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
 							dbg!(&range);
 							break 'match_;
@@ -516,7 +514,7 @@ impl Backend {
 						.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
 						.unwrap_or(true);
 					if is_meta && range.contains(&offset) {
-						let range = range.contract(1);
+						let range = range.shrink(1);
 						let Some(slice) = rope.get_byte_slice(range.clone()) else {
 							dbg!(&range);
 							break 'match_;
@@ -584,7 +582,7 @@ impl Backend {
 							);
 						} else if capture.index == ModelFields::RELATION {
 							if is_relational {
-								relation = Some(capture.node.byte_range().contract(1));
+								relation = Some(capture.node.byte_range().shrink(1));
 							}
 						} else if capture.index == ModelFields::ARG {
 							match &contents[capture.node.byte_range()] {
@@ -596,7 +594,7 @@ impl Backend {
 							match kwarg {
 								Some(Kwargs::ComodelName) => {
 									if capture.node.kind() == "string" {
-										relation = Some(capture.node.byte_range().contract(1));
+										relation = Some(capture.node.byte_range().shrink(1));
 									}
 								}
 								Some(Kwargs::Help) => {
@@ -690,7 +688,7 @@ impl Backend {
 					if capture.index == PyCompletions::MODEL {
 						let range = capture.node.byte_range();
 						if range.contains(&offset) {
-							let range = range.contract(1);
+							let range = range.shrink(1);
 							let lsp_range = ts_range_to_lsp_range(capture.node.range());
 							let Some(slice) = rope.get_byte_slice(range.clone()) else {
 								dbg!(&range);
