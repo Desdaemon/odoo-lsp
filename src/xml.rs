@@ -118,7 +118,7 @@ impl Backend {
 		let ranges = self
 			.record_ranges
 			.get(uri.path())
-			.ok_or_else(|| diagnostic!("Did not build record ranges"))?;
+			.ok_or_else(|| diagnostic!("Did not build record ranges for {}", uri.path()))?;
 		let cursor = position_to_char(position, rope.clone()).ok_or_else(|| diagnostic!("cursor"))?;
 		let mut cursor_by_char = rope.try_byte_to_char(cursor.0).into_diagnostic()?;
 		let Ok(record) = ranges.value().binary_search_by(|range| {

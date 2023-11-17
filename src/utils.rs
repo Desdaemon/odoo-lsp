@@ -73,6 +73,12 @@ pub fn lsp_range_to_char_range(range: Range, rope: Rope) -> Option<CharRange> {
 	Some(start..end)
 }
 
+pub fn lsp_range_to_offset_range(range: Range, rope: Rope) -> Option<ByteRange> {
+	let start = position_to_offset(range.start, rope.clone())?;
+	let end = position_to_offset(range.end, rope.clone())?;
+	Some(start..end)
+}
+
 pub fn char_range_to_lsp_range(range: CharRange, rope: Rope) -> Option<Range> {
 	let start = char_to_position(range.start, rope.clone())?;
 	let end = char_to_position(range.end, rope)?;

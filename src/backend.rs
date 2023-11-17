@@ -71,12 +71,20 @@ impl Backend {
 			(None, Text::Full(full)) => ropey::Rope::from_str(full),
 			(None, Text::Delta(_)) => Err(diagnostic!("No rope and got delta"))?,
 		};
-		if matches!(split_uri, Some((_, "xml"))) || matches!(params.language, Some(Language::Xml)) {
-			self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
-				.await;
-		} else if matches!(split_uri, Some((_, "py"))) || matches!(params.language, Some(Language::Python)) {
-			self.on_change_python(&params.text, &params.uri, rope, params.old_rope)
-				.await?;
+		match (split_uri, params.language) {
+			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
+				self.on_change_python(&params.text, &params.uri, rope, params.old_rope)
+					.await?;
+			}
+			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
+				self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
+					.await;
+			}
+			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
+				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)
+					.await?;
+			}
+			_ => {}
 		}
 		self.client
 			.publish_diagnostics(params.uri, diagnostics, Some(params.version))
@@ -96,17 +104,15 @@ impl Backend {
 		let ast = match (text, ast) {
 			(Text::Full(full), _) => parser.parse(full, None),
 			(Text::Delta(delta), Some(mut ast)) => {
+				let old_rope = old_rope.ok_or_else(|| diagnostic!("delta requires old rope"))?;
 				for change in delta {
 					let range = change.range.ok_or_else(|| diagnostic!("delta without range"))?;
 					let start =
 						position_to_offset(range.start, rope.clone()).ok_or_else(|| diagnostic!("delta start"))?;
 					// The old rope is used to calculate the *old* range-end, because
 					// the diff may have caused it to fall out of the new rope's bounds.
-					let old_rope = old_rope
-						.as_ref()
-						.cloned()
-						.ok_or_else(|| diagnostic!("python diff requires pre-diff rope"))?;
-					let end = position_to_offset(range.end, old_rope).ok_or_else(|| diagnostic!("delta end"))?;
+					let end =
+						position_to_offset(range.end, old_rope.clone()).ok_or_else(|| diagnostic!("delta end"))?;
 					let len_new = change.text.len();
 					let len_new_bytes = change.text.as_bytes().len();
 					let start_position = tree_sitter::Point {
@@ -455,8 +461,20 @@ impl Backend {
 		let descendant_locations = (entry.value().descendants)
 			.iter()
 			.flat_map(|tpl| tpl.location.clone().map(Location::from));
-		let locations = definition_location.into_iter().chain(descendant_locations);
-		Ok(Some(locations.collect()))
+		let mut locations = definition_location
+			.into_iter()
+			.chain(descendant_locations)
+			.collect::<Vec<_>>();
+
+		if let Some(component) = self.index.components.by_template.get(&name.into()) {
+			let component = some!(self.index.components.get(&component));
+			if let Some(location) = component.location.as_ref() {
+				locations.push(location.clone().into());
+				let last = locations.swap_remove(0);
+				locations.push(last);
+			}
+		}
+		Ok(Some(locations))
 	}
 	pub fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>) -> String {
 		use std::fmt::Write;

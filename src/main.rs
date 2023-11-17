@@ -23,6 +23,7 @@ use odoo_lsp::{format_loc, some, utils::*};
 mod analyze;
 mod backend;
 mod catch_panic;
+mod js;
 mod python;
 mod xml;
 
@@ -200,19 +201,18 @@ impl LanguageServer for Backend {
 		}
 	}
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
-		let language;
+		// let language;
 		let language_id = params.text_document.language_id.as_str();
 		let split_uri = params.text_document.uri.path().rsplit_once('.');
-		if language_id == "python" || matches!(split_uri, Some((_, "py"))) {
-			language = Language::Python
-		} else if language_id == "javascript" || matches!(split_uri, Some((_, "js"))) {
-			language = Language::Javascript
-		} else if language_id == "xml" || matches!(split_uri, Some((_, "xml"))) {
-			language = Language::Xml
-		} else {
-			debug!("Could not determine language, or language not supported:\nlanguage_id={language_id} split_uri={split_uri:?}");
-			return;
-		}
+		let language = match (language_id, split_uri) {
+			("python", _) | (_, Some((_, "py"))) => Language::Python,
+			("javascript", _) | (_, Some((_, "js"))) => Language::Javascript,
+			("xml", _) | (_, Some((_, "xml"))) => Language::Xml,
+			_ => {
+				debug!("Could not determine language, or language not supported:\nlanguage_id={language_id} split_uri={split_uri:?}");
+				return;
+			}
+		};
 
 		let rope = Rope::from_str(&params.text_document.text);
 		self.document_map

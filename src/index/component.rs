@@ -12,7 +12,7 @@ use crate::component::{ComponentTemplate, PropDescriptor, PropType};
 use crate::format_loc;
 use crate::utils::{offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, MinLoc, RangeExt};
 
-use super::{interner, Component, ComponentName, Output};
+use super::{interner, Component, ComponentName, Output, TemplateName};
 
 // Three cases:
 // static props OR Foo.props: Component props
@@ -45,7 +45,7 @@ r#"
           value:
 	      (object
             [ (pair (property_identifier) @SUBCOMPONENT)
-              (shorthand_property_identifier) @SUBCOMPONENT])) ]))
+              (shorthand_property_identifier) @SUBCOMPONENT])) ]?))
   (#eq? @_props "props")
   (#eq? @_template "template")
   (#eq? @_xml "xml")
@@ -243,6 +243,7 @@ pub type ComponentPrefixTrie = qp_trie::Trie<BString, ComponentName>;
 #[derive(Default)]
 pub struct ComponentIndex {
 	inner: DashMap<ComponentName, Component>,
+	pub by_template: DashMap<TemplateName, ComponentName>,
 	pub by_prefix: RwLock<ComponentPrefixTrie>,
 }
 
@@ -267,6 +268,9 @@ impl ComponentIndex {
 		let interner = interner();
 		for (name, component) in components {
 			by_prefix.insert_str(interner.resolve(&name), name.clone());
+			if let Some(ComponentTemplate::Name(template_name)) = component.template.as_ref() {
+				self.by_template.insert(template_name.clone(), name.clone());
+			}
 			self.insert(name, component);
 		}
 	}
