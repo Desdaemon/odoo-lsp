@@ -35,7 +35,13 @@ enum Tag {
 }
 
 impl Backend {
-	pub async fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
+	pub async fn on_change_xml(
+		&self,
+		text: &Text,
+		uri: &Url,
+		rope: Rope,
+		diagnostics: &mut Vec<Diagnostic>,
+	) -> miette::Result<()> {
 		let interner = interner();
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
@@ -44,9 +50,10 @@ impl Backend {
 		};
 		let mut reader = Tokenizer::from(text.as_ref());
 		let mut record_ranges = vec![];
-		let Some(current_module) = self.index.module_of_path(Path::new(uri.path())) else {
-			return;
-		};
+		let current_module = self
+			.index
+			.module_of_path(Path::new(uri.path()))
+			.ok_or_else(|| diagnostic!("module_of_path for {} failed", uri.path()))?;
 		let mut record_prefix = self.index.records.by_prefix.write().await;
 		let path_uri = interner.get_or_intern(uri.path());
 		loop {
@@ -54,21 +61,18 @@ impl Backend {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
 					let offset = CharOffset(span.start());
 					if matches!(local.as_str(), "record" | "template" | "menuitem") {
-						let Ok(Some(record)) = (match local.as_str() {
+						let Some(record) = (match local.as_str() {
 							"record" => {
-								Record::from_reader(offset, *current_module, path_uri, &mut reader, rope.clone())
+								Record::from_reader(offset, current_module, path_uri, &mut reader, rope.clone())?
 							}
-							"template" => {
-								Record::template(offset, *current_module, path_uri, &mut reader, rope.clone())
-							}
-							"menuitem" => {
-								Record::menuitem(offset, *current_module, path_uri, &mut reader, rope.clone())
-							}
+							"template" => Record::template(offset, current_module, path_uri, &mut reader, rope.clone())?,
+							"menuitem" => Record::menuitem(offset, current_module, path_uri, &mut reader, rope.clone())?,
 							_ => unreachable!(),
 						}) else {
 							continue;
 						};
 						let Some(range) = lsp_range_to_char_range(record.location.range, rope.clone()) else {
+							log::debug!("(on_change_xml) no range for {}", record.id);
 							continue;
 						};
 						record_ranges.push(range);
@@ -82,10 +86,7 @@ impl Backend {
 							.await;
 					} else if local.as_str() == "templates" {
 						let mut entries = vec![];
-						if let Err(err) = gather_templates(path_uri, &mut reader, rope.clone(), &mut entries) {
-							log::error!("(add_root_xml) {err}");
-							break;
-						}
+						gather_templates(path_uri, &mut reader, rope.clone(), &mut entries)?;
 						record_ranges.extend(entries.into_iter().map(|entry| {
 							lsp_range_to_char_range(entry.template.location.unwrap().range, rope.clone()).unwrap()
 						}));
@@ -108,6 +109,7 @@ impl Backend {
 		}
 		self.record_ranges
 			.insert(uri.path().to_string(), record_ranges.into_boxed_slice());
+		Ok(())
 	}
 	fn record_slice<'rope>(
 		&self,
@@ -193,7 +195,7 @@ impl Backend {
 					replace_range,
 					rope.clone(),
 					Some(interner().resolve(relation)),
-					*current_module,
+					current_module,
 					&mut items,
 				)
 				.await?
@@ -264,9 +266,7 @@ impl Backend {
 				let model = some!(interner().get(cursor_value.as_str()));
 				self.model_references(&model.into())
 			}
-			Some(RefKind::Ref(_)) | Some(RefKind::Id) => {
-				self.record_references(&cursor_value, current_module.as_deref())
-			}
+			Some(RefKind::Ref(_)) | Some(RefKind::Id) => self.record_references(&cursor_value, current_module),
 			Some(RefKind::TName) | Some(RefKind::TInherit) | Some(RefKind::TCall) => {
 				self.template_references(&cursor_value)
 			}

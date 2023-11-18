@@ -144,6 +144,10 @@ impl<K> SymbolSet<K> {
 	pub fn insert(&mut self, key: Symbol<K>) -> bool {
 		self.0.insert_checked(key.into_usize() as u64, ())
 	}
+	#[inline]
+	pub fn contains_key(&self, key: Symbol<K>) -> bool {
+		self.0.contains_key(key.into_usize() as _)
+	}
 	// pub fn iter(&self) -> impl Iterator<Item = Symbol<K>> + '_ {
 	// 	self.0
 	// 		.iter()

@@ -38,7 +38,7 @@ pkg-fmt = "zip"
 [dependencies]
 env_logger = "0.10.0"
 ropey = "1.5.0"
-serde_json = "1.0.78"
+serde_json = "1.0.108"
 tokio = { version = "1.17.0", features = ["full"] }
 tower-lsp = { version = "0.20.0", features = ["proposed"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -60,6 +60,7 @@ phf = { version = "0.11.2", features = ["macros"] }
 ts-macros = { version = "0.1.0", path = "crates/ts-macros" }
 bitflags = "2.4.1"
 tree-sitter-javascript = "0.20.1"
+pathdiff = "0.2.1"
 
 
 [dev-dependencies]

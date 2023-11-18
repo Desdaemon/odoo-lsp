@@ -25,6 +25,12 @@
 	"publisher": "Desdaemon",
 	"main": "./dist/extension.js",
 	"contributes": {
+		"commands": [
+			{
+				"command": "odoo-lsp.tsconfig",
+				"title": "odoo-lsp: Generate TypeScript config"
+			}
+		],
 		"configuration": {
 			"type": "object",
 			"title": "odoo-lsp",

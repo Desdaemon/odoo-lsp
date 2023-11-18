@@ -52,6 +52,7 @@ pub enum Text {
 	Delta(Vec<TextDocumentContentChangeEvent>),
 }
 
+#[derive(Debug)]
 pub enum Language {
 	Python,
 	Xml,
@@ -78,13 +79,13 @@ impl Backend {
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
 				self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
-					.await;
+					.await?;
 			}
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
 				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)
 					.await?;
 			}
-			_ => {}
+			other => return Err(diagnostic!("Unhandled language: {other:?}")).into_diagnostic(),
 		}
 		self.client
 			.publish_diagnostics(params.uri, diagnostics, Some(params.version))
@@ -333,7 +334,7 @@ impl Backend {
 		if !value.contains('.') {
 			'unscoped: {
 				if let Some(module) = self.index.module_of_path(Path::new(uri.path())) {
-					value = format!("{}.{value}", interner().resolve(module.key())).into();
+					value = format!("{}.{value}", interner().resolve(&module)).into();
 					break 'unscoped;
 				}
 				debug!(
@@ -433,13 +434,13 @@ impl Backend {
 	pub fn record_references(
 		&self,
 		inherit_id: &str,
-		current_module: Option<&ModuleName>,
+		current_module: Option<ModuleName>,
 	) -> miette::Result<Option<Vec<Location>>> {
 		let interner = &interner();
 		let inherit_id = if inherit_id.contains('.') {
 			Cow::from(inherit_id)
 		} else if let Some(current_module) = current_module {
-			Cow::from(format!("{}.{}", interner.resolve(current_module), inherit_id))
+			Cow::from(format!("{}.{}", interner.resolve(&current_module), inherit_id))
 		} else {
 			debug!("No current module to resolve the XML ID {inherit_id}");
 			return Ok(None);
@@ -501,7 +502,7 @@ impl Backend {
 				let Some(module) = self.index.module_of_path(Path::new(interner().resolve(&loc.path))) else {
 					return Some(None);
 				};
-				if mods.insert(*module) {
+				if mods.insert(module) {
 					Some(Some(loc))
 				} else {
 					Some(None)

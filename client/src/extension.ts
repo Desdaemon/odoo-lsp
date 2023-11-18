@@ -6,7 +6,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import { ObjectEncodingOptions, existsSync } from "node:fs";
 import { exec, spawn, ExecOptions } from "node:child_process";
-import { workspace, window, ExtensionContext, ExtensionMode } from "vscode";
+import { workspace, window, ExtensionContext, commands, WorkspaceFolder } from "vscode";
 
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node";
 
@@ -180,7 +180,7 @@ async function openLink(url: string) {
 }
 
 export async function activate(context: ExtensionContext) {
-	const traceOutputChannel = window.createOutputChannel("Odoo LSP");
+	const traceOutputChannel = window.createOutputChannel("Odoo LSP Extension");
 	let command = process.env.SERVER_PATH || "odoo-lsp";
 	if (!(await which(command))) {
 		command = (await downloadLspBinary(context)) || command;
@@ -215,6 +215,31 @@ export async function activate(context: ExtensionContext) {
 		},
 		traceOutputChannel,
 	};
+
+	context.subscriptions.push(commands.registerCommand('odoo-lsp.tsconfig', async () => {
+		const activeWindow = window.activeTextEditor?.document.uri.fsPath;
+		let folder: WorkspaceFolder | undefined;
+		if (activeWindow) {
+			folder = workspace.workspaceFolders?.find(ws => activeWindow.includes(ws.uri.fsPath))
+		}
+
+		if (!folder) folder = await window.showWorkspaceFolderPick();
+		if (!folder) return;
+
+		const selection = await window.showOpenDialog({
+			canSelectFiles: false,
+			canSelectFolders: true,
+			canSelectMany: true,
+			title: 'Select addons roots',
+			defaultUri: folder.uri,
+		}) ?? [];
+
+		const paths = selection.map(sel => `--addons-path ${sel.fsPath}`).join(' ');
+		let {stdout} = await execAsync(`${command} tsconfig ${paths}`, { cwd: folder.uri.fsPath });
+
+		const doc = await workspace.openTextDocument({ language: 'json', content: stdout as string });
+		await window.showTextDocument(doc);
+	}));
 
 	client = new LanguageClient("odoo-lsp", "Odoo LSP", serverOptions, clientOptions);
 	await client.start();

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use dashmap::DashSet;
+use dashmap::DashMap;
 use globwalk::FileType;
 use lasso::{Spur, ThreadedRodeo};
 use log::{debug, warn};
@@ -35,8 +35,7 @@ pub type Interner = ThreadedRodeo;
 
 #[derive(Default)]
 pub struct Index {
-	pub roots: DashSet<ImStr>,
-	pub modules: DashSet<ModuleName>,
+	pub roots: DashMap<ImStr, SymbolSet<Module>>,
 	pub records: record::RecordIndex,
 	pub templates: template::TemplateIndex,
 	pub models: ModelIndex,
@@ -76,8 +75,9 @@ impl Index {
 		&self,
 		root: &str,
 		progress: Option<(&tower_lsp::Client, ProgressToken)>,
+		stop_at_modules: bool,
 	) -> miette::Result<Option<AddRootResults>> {
-		if !self.roots.insert(root.into()) {
+		if self.roots.contains_key(root) {
 			return Ok(None);
 		}
 
@@ -97,7 +97,6 @@ impl Index {
 			let module_dir = &module
 				.path()
 				.parent()
-				.map(Path::to_path_buf)
 				.ok_or_else(|| miette::diagnostic!("Unexpected empty path"))?;
 			let module_name = module_dir.file_name().unwrap().to_string_lossy().to_string();
 			if let Some((client, token)) = &progress {
@@ -112,8 +111,16 @@ impl Index {
 					.await;
 			}
 			let module_key = interner.get_or_intern(&module_name);
-			if !self.modules.insert(module_key.into()) {
+			if !self
+				.roots
+				.entry(root.into())
+				.or_default()
+				.insert(module_key.into())
+			{
 				debug!("duplicate module {module_name}");
+				continue;
+			}
+			if stop_at_modules {
 				continue;
 			}
 			let xmls = globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
@@ -213,20 +220,20 @@ impl Index {
 			}
 		}
 	}
-	pub fn module_of_path(&self, path: &Path) -> Option<dashmap::setref::one::Ref<ModuleName>> {
-		let mut path = Some(path);
-		while let Some(path_) = &path {
-			let module = path_.file_name()?.to_string_lossy();
-			// By this point, if this module hadn't been interned,
-			// it certainly is not a valid module name.
-			// TODO: One of the components might also be a valid module name
-			if let Some(module) = interner().get(module.as_ref()) {
-				if let Some(name) = self.modules.get(&ModuleName::from(module)) {
-					return Some(name);
+	pub fn module_of_path(&self, path: &Path) -> Option<ModuleName> {
+		debug!("module_of_path {}", path.display());
+		for entry in self.roots.iter() {
+			if let Ok(path) = path.strip_prefix(entry.key()) {
+				let Some(first) = path.components().next() else {
+					continue;
+				};
+				if let Some(module) = interner().get(&first.as_os_str().to_string_lossy()) {
+					let module = module.into();
+					return entry.value().contains_key(module).then_some(module);
 				}
 			}
-			path = path_.parent();
 		}
+
 		None
 	}
 }

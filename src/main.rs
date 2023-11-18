@@ -23,6 +23,7 @@ use odoo_lsp::{format_loc, some, utils::*};
 mod analyze;
 mod backend;
 mod catch_panic;
+mod cli;
 mod js;
 mod python;
 mod xml;
@@ -161,7 +162,7 @@ impl LanguageServer for Backend {
 		}
 
 		for root in self.roots.iter() {
-			match self.index.add_root(root.as_str(), progress.clone()).await {
+			match self.index.add_root(root.as_str(), progress.clone(), false).await {
 				Ok(Some(results)) => {
 					info!(
 						"{} | {} modules | {} records | {} templates | {} models | {} components | {:.2}s",
@@ -237,7 +238,7 @@ impl LanguageServer for Backend {
 					{
 						let file_path = path_.parent().expect("has parent").to_string_lossy();
 						self.index
-							.add_root(&file_path, None)
+							.add_root(dbg!(&file_path), None, false)
 							.await
 							.report(|| format_loc!("failed to add root {}", file_path));
 						break;
@@ -534,7 +535,7 @@ impl LanguageServer for Backend {
 			let file_path = added.uri.to_file_path().expect("not a file path");
 			let file_path = file_path.as_os_str().to_string_lossy();
 			self.index
-				.add_root(&file_path, None)
+				.add_root(&file_path, None, false)
 				.await
 				.report(|| format_loc!("(did_change_workspace_folders) failed to add root {}", file_path));
 		}
@@ -605,6 +606,17 @@ impl LanguageServer for Backend {
 #[tokio::main]
 async fn main() {
 	env_logger::init();
+
+	let args = std::env::args().collect::<Vec<_>>();
+	let args = args.iter().skip(1).map(String::as_str).collect::<Vec<_>>();
+	match cli::parse_args(&args[..]) {
+		cli::Command::Run => {}
+		cli::Command::TsConfig { addons_path, output } => {
+			return cli::tsconfig(&addons_path, output)
+				.await
+				.report(|| format_loc!("tsconfig failed"))
+		}
+	}
 
 	let stdin = tokio::io::stdin();
 	let stdout = tokio::io::stdout();

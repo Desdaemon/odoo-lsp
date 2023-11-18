@@ -236,7 +236,7 @@ impl Backend {
 							// remove the quotes
 							let range = range.shrink(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
 							early_return = Some((
-								EarlyReturn::XmlId(model_filter, *current_module),
+								EarlyReturn::XmlId(model_filter, current_module.into()),
 								needle,
 								range,
 								rope.clone(),
@@ -504,7 +504,7 @@ impl Backend {
 							break 'match_;
 						};
 						let slice = Cow::from(slice);
-						return self.record_references(&slice, current_module.as_deref());
+						return self.record_references(&slice, current_module);
 					}
 				} else if capture.index == PyCompletions::MODEL {
 					let range = capture.node.byte_range();
