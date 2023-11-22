@@ -22,8 +22,7 @@ r#"
 		(member_expression (identifier) @_odoo (property_identifier) @_define)
 		(arguments . (string) @NAME))))
 (#eq? @_odoo "odoo")
-(#eq? @_define "define"))
-	"#
+(#eq? @_define "define"))"#
 }
 
 pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> miette::Result<()> {
@@ -52,6 +51,11 @@ pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> mi
 			// find alias=..
 			if let Some(alias) = text.split(|c| *c == b' ').find(|token| token.starts_with(b"alias")) {
 				if let Some(alias) = alias.strip_prefix(b"alias=") {
+					let alias = alias
+						// the class of characters allowed for a module name, i.e. [\w.]
+						.split(|c| !matches!(*c, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'_'))
+						.next()
+						.unwrap_or(alias);
 					let alias = String::from_utf8_lossy(alias);
 					index.entry(file).or_default().push(alias.as_ref().into());
 				}
