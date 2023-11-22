@@ -1,8 +1,15 @@
-use std::{env::current_dir, fs::canonicalize, io::stdout, path::Path, process::exit};
+use std::{env::current_dir, fs::canonicalize, io::stdout, path::Path, process::exit, sync::Arc};
 
-use miette::{diagnostic, IntoDiagnostic};
-use odoo_lsp::index::{interner, Index};
+use globwalk::FileType;
+use log::{debug, warn};
+use miette::{diagnostic, Context, IntoDiagnostic};
+use odoo_lsp::{
+	format_loc,
+	index::{interner, Index},
+};
 use serde_json::Value;
+
+mod tsconfig;
 
 pub enum Command<'a> {
 	Run,
@@ -88,6 +95,11 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&Path>) -> miette::Re
 	let mut includes = vec![];
 	let mut type_roots = vec![];
 	let interner = interner();
+
+	let defines = Arc::new(tsconfig::DefineIndex::default());
+
+	let mut outputs = tokio::task::JoinSet::new();
+
 	for entry in &index.roots {
 		let root = pathdiff::diff_paths(Path::new(entry.key().as_str()), &pwd)
 			.ok_or_else(|| diagnostic!("Cannot diff {} to pwd", entry.key()))?;
@@ -108,7 +120,45 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&Path>) -> miette::Re
 						.to_string_lossy()
 						.into_owned()
 						.into(),
-				)
+				);
+		}
+		let scripts = globwalk::glob_builder(format!("{}/**/*.js", entry.key()))
+			.file_type(FileType::FILE | FileType::SYMLINK)
+			.follow_links(true)
+			.build()
+			.into_diagnostic()
+			.with_context(|| format_loc!("Could not glob into {:?}", entry.key()))?;
+		for js in scripts {
+			let Ok(js) = js else { continue };
+			let path = js.path().to_path_buf();
+			let path = pathdiff::diff_paths(&path, &pwd)
+				.ok_or_else(|| diagnostic!("Cannot diff {} to pwd", path.display()))?;
+			let defines = Arc::clone(&defines);
+			outputs.spawn(tsconfig::gather_defines(path, defines));
+		}
+	}
+
+	while let Some(res) = outputs.join_next().await {
+		match res {
+			Ok(Ok(())) => {}
+			Ok(Err(err)) => {
+				warn!("(tsconfig) {err}");
+			}
+			Err(err) => {
+				debug!("(tsconfig) join error: {err}")
+			}
+		}
+	}
+
+	for entry in defines.iter() {
+		let location = Value::String(interner.resolve(entry.key()).to_string());
+		for define in entry.value() {
+			ts_paths
+				.entry(define.to_string())
+				.or_insert_with(|| Value::Array(vec![]))
+				.as_array_mut()
+				.unwrap()
+				.push(location.clone())
 		}
 	}
 

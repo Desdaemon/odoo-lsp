@@ -5,7 +5,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use globwalk::FileType;
 use lasso::{Spur, ThreadedRodeo};
-use log::{debug, warn};
+use log::{debug, info, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::notification::Progress;
@@ -69,13 +69,15 @@ pub struct AddRootResults {
 
 impl Index {
 	pub fn mark_n_sweep(&self) {
-		self.records.retain(|_, record| !record.deleted)
+		let pre = self.records.len();
+		self.records.retain(|_, record| !record.deleted);
+		info!("(mark_n_sweep) deleted {} records", pre - self.records.len());
 	}
 	pub async fn add_root(
 		&self,
 		root: &str,
 		progress: Option<(&tower_lsp::Client, ProgressToken)>,
-		stop_at_modules: bool,
+		tsconfig: bool,
 	) -> miette::Result<Option<AddRootResults>> {
 		if self.roots.contains_key(root) {
 			return Ok(None);
@@ -111,16 +113,11 @@ impl Index {
 					.await;
 			}
 			let module_key = interner.get_or_intern(&module_name);
-			if !self
-				.roots
-				.entry(root.into())
-				.or_default()
-				.insert(module_key.into())
-			{
+			if !self.roots.entry(root.into()).or_default().insert(module_key.into()) {
 				debug!("duplicate module {module_name}");
 				continue;
 			}
-			if stop_at_modules {
+			if tsconfig {
 				continue;
 			}
 			let xmls = globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
