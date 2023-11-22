@@ -236,12 +236,15 @@ impl LanguageServer for Backend {
 						.await
 						.unwrap_or(false)
 					{
-						let file_path = path_.parent().expect("has parent").to_string_lossy();
-						self.index
-							.add_root(dbg!(&file_path), None, false)
-							.await
-							.report(|| format_loc!("failed to add root {}", file_path));
-						break;
+						if let Some(file_path) = path_.parent().expect("has parent").parent() {
+							// root/addon/__manifest__.py, so we want root instead of addon.
+							let file_path = file_path.to_string_lossy();
+							self.index
+								.add_root(&file_path, None, false)
+								.await
+								.report(|| format_loc!("failed to add root {}", file_path));
+							break;
+						}
 					}
 					path = path_.parent();
 				}

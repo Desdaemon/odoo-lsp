@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::path::Path;
 
 use lasso::{Spur, ThreadedRodeo};
-use log::debug;
+use log::{debug, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::index::interner;
 use odoo_lsp::model::{Field, FieldKind};
@@ -61,15 +61,25 @@ impl Backend {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
 					let offset = CharOffset(span.start());
 					if matches!(local.as_str(), "record" | "template" | "menuitem") {
-						let Some(record) = (match local.as_str() {
+						let record = match local.as_str() {
 							"record" => {
-								Record::from_reader(offset, current_module, path_uri, &mut reader, rope.clone())?
+								Record::from_reader(offset, current_module, path_uri, &mut reader, rope.clone())
 							}
-							"template" => Record::template(offset, current_module, path_uri, &mut reader, rope.clone())?,
-							"menuitem" => Record::menuitem(offset, current_module, path_uri, &mut reader, rope.clone())?,
+							"template" => Record::template(offset, current_module, path_uri, &mut reader, rope.clone()),
+							"menuitem" => Record::menuitem(offset, current_module, path_uri, &mut reader, rope.clone()),
 							_ => unreachable!(),
-						}) else {
-							continue;
+						};
+						let record = match record {
+							Ok(Some(rec)) => rec,
+							Ok(None) => continue,
+							Err(err) => {
+								warn!(
+									"{} could not be completely parsed: {}\n{err}",
+									local.as_str(),
+									uri.path()
+								);
+								continue;
+							}
 						};
 						let Some(range) = lsp_range_to_char_range(record.location.range, rope.clone()) else {
 							log::debug!("(on_change_xml) no range for {}", record.id);
@@ -86,7 +96,10 @@ impl Backend {
 							.await;
 					} else if local.as_str() == "templates" {
 						let mut entries = vec![];
-						gather_templates(path_uri, &mut reader, rope.clone(), &mut entries)?;
+						if let Err(err) = gather_templates(path_uri, &mut reader, rope.clone(), &mut entries) {
+							warn!("gather_templates failed: {err}");
+							continue;
+						}
 						record_ranges.extend(entries.into_iter().map(|entry| {
 							lsp_range_to_char_range(entry.template.location.unwrap().range, rope.clone()).unwrap()
 						}));

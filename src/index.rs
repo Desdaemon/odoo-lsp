@@ -218,15 +218,18 @@ impl Index {
 		}
 	}
 	pub fn module_of_path(&self, path: &Path) -> Option<ModuleName> {
-		debug!("module_of_path {}", path.display());
+		use std::path::Component;
 		for entry in self.roots.iter() {
 			if let Ok(path) = path.strip_prefix(entry.key()) {
-				let Some(first) = path.components().next() else {
-					continue;
-				};
-				if let Some(module) = interner().get(&first.as_os_str().to_string_lossy()) {
-					let module = module.into();
-					return entry.value().contains_key(module).then_some(module);
+				for component in path.components() {
+					if let Component::Normal(norm) = component {
+						if let Some(module) = interner().get(&norm.to_string_lossy()) {
+							let module = module.into();
+							if entry.value().contains_key(module) {
+								return Some(module);
+							}
+						}
+					}
 				}
 			}
 		}
