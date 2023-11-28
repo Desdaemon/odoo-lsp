@@ -1,17 +1,20 @@
 use crate::{Backend, Text};
 
 use std::borrow::Cow;
+use std::future::ready;
 use std::path::Path;
 
+use dashmap::mapref::one::RefMut;
 use lasso::{Key, Spur};
 use log::{debug, error, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::index::{index_models, interner, Module, Symbol, SymbolMap};
+use odoo_lsp::utils::future::FutureOr;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use tree_sitter::{Node, Parser, QueryCursor, Tree};
 
-use odoo_lsp::model::{Field, FieldKind, FieldName, ModelEntry, ModelLocation, ModelType};
+use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName, ModelType};
 use odoo_lsp::utils::*;
 use odoo_lsp::{format_loc, some};
 use ts_macros::query;
@@ -152,11 +155,7 @@ impl Backend {
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)?;
 		Ok(())
 	}
-	pub async fn update_models(&self, text: &Text, uri: &Url, rope: Rope) -> miette::Result<()> {
-		let mut parser = Parser::new();
-		parser
-			.set_language(tree_sitter_python::language())
-			.expect("bug: failed to init python parser");
+	pub async fn update_models(&self, text: Text, uri: &Url, rope: Rope) -> miette::Result<()> {
 		let text = match text {
 			Text::Full(text) => Cow::from(text),
 			// TODO: Limit range of possible updates based on delta
@@ -167,21 +166,24 @@ impl Backend {
 		self.index.models.append(path, interner(), true, &models).await;
 		for model in models {
 			match model.type_ {
-				ModelType::Base(model) => {
-					let model_key = interner().get(&model).unwrap();
+				ModelType::Base { name, ancestors } => {
+					let model_key = interner().get(&name).unwrap();
 					let mut entry = self.index.models.try_get_mut(&model_key.into()).unwrap();
-					self.populate_field_names(&mut entry, &model, &[path]).await?;
+					entry.ancestors = ancestors
+						.into_iter()
+						.map(|sym| interner().get_or_intern(&sym).into())
+						.collect();
+					drop(entry);
+					if let Some(fut) = self.populate_field_names(model_key.into(), &[path]) {
+						fut.await;
+					}
 				}
 				ModelType::Inherit(inherits) => {
 					let Some(model) = inherits.first() else { continue };
 					let model_key = interner().get(model).unwrap();
-					let mut entry = self
-						.index
-						.models
-						.try_get_mut(&model_key.into())
-						.expect(format_loc!("deadlock"))
-						.unwrap();
-					self.populate_field_names(&mut entry, model, &[path]).await?;
+					if let Some(fut) = self.populate_field_names(model_key.into(), &[path]) {
+						fut.await;
+					}
 				}
 			}
 		}
@@ -379,11 +381,10 @@ impl Backend {
 						// lhs: foo
 						// rhs: ba
 						needle = rhs;
-						let model_name = interner().resolve(&model.key());
-						let fields = self.populate_field_names(&mut model, model_name, &[]).await?;
+						let fields = some!(self.populate_field_names(model.key().clone().into(), &[])).await;
 						let field = some!(interner().get(&lhs));
-						let field = some!(fields.get(&field.into()));
-						let FieldKind::Relational(rel) = field.kind else {
+						let field = some!(fields.fields.as_ref()).get(&field.into());
+						let FieldKind::Relational(rel) = some!(field).kind else {
 							return Ok(None);
 						};
 						drop(model);
@@ -528,21 +529,23 @@ impl Backend {
 		}
 		Ok(None)
 	}
-	pub async fn populate_field_names<'model>(
-		&self,
-		entry: &'model mut ModelEntry,
-		model_name: &str,
-		locations_filter: &[Spur],
-	) -> miette::Result<&'model mut SymbolMap<FieldName, Field>> {
+	pub fn populate_field_names<'model>(
+		&'model self,
+		model: ModelName,
+		locations_filter: &'model [Spur],
+	) -> Option<FutureOr<RefMut<'model, ModelName, ModelEntry>>> {
+		let model_name = interner().resolve(&model);
+		let entry = self.index.models.try_get_mut(&model).expect(format_loc!("deadlock"))?;
 		if entry.fields.is_some() && locations_filter.is_empty() {
-			return Ok(entry.fields.as_mut().unwrap());
+			return Some(FutureOr::Ready(ready(entry)));
 		}
 		let t0 = std::time::Instant::now();
 		let mut out = SymbolMap::default();
-		let locations = entry.base.iter().chain(&entry.descendants);
+		let locations = entry.base.iter().chain(&entry.descendants).cloned().collect::<Vec<_>>();
+
 		let query = ModelFields::query();
 		let mut tasks = tokio::task::JoinSet::<miette::Result<Vec<_>>>::new();
-		for ModelLocation(location, byte_range) in locations.cloned() {
+		for ModelLocation(location, byte_range) in locations {
 			if !locations_filter.is_empty() && !locations_filter.contains(&location.path) {
 				continue;
 			}
@@ -641,29 +644,56 @@ impl Backend {
 				Ok(fields)
 			});
 		}
-		while let Some(fields) = tasks.join_next().await {
-			let fields = match fields {
-				Ok(Ok(ret)) => ret,
-				Ok(Err(err)) => {
-					warn!("{err}");
-					continue;
+		Some(FutureOr::Pending(Box::pin(async move {
+			let ancestors = entry.ancestors.iter().cloned().collect::<Vec<_>>();
+
+			// drop to prevent deadlock
+			drop(entry);
+
+			// recursively get or populate ancestors' fields
+			for ancestor in ancestors {
+				if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
+					let entry = entry.await;
+					if let Some(fields) = entry.fields.as_ref() {
+						// TODO: Implement copy-on-write to increase reuse
+						out.extend(fields.iter().map(|(key, val)| (key.clone(), val.clone())));
+					}
 				}
-				Err(err) => {
-					warn!("join error {err}");
-					continue;
-				}
-			};
-			for (key, type_) in fields {
-				out.insert_checked(key.into_usize() as u64, type_);
 			}
-		}
-		log::info!(
-			"[{}] Populated {} fields in {}ms",
-			model_name,
-			out.len(),
-			t0.elapsed().as_millis()
-		);
-		Ok(entry.fields.insert(out))
+
+			while let Some(fields) = tasks.join_next().await {
+				let fields = match fields {
+					Ok(Ok(ret)) => ret,
+					Ok(Err(err)) => {
+						warn!("{err}");
+						continue;
+					}
+					Err(err) => {
+						warn!("join error {err}");
+						continue;
+					}
+				};
+				for (key, type_) in fields {
+					out.insert_checked(key.into_usize() as u64, type_);
+				}
+			}
+
+			log::info!(
+				"[{}] Populated {} fields in {}ms",
+				model_name,
+				out.len(),
+				t0.elapsed().as_millis()
+			);
+
+			let mut entry = self
+				.index
+				.models
+				.try_get_mut(&model)
+				.expect(format_loc!("deadlock"))
+				.expect(format_loc!("no entry"));
+			entry.fields = Some(out);
+			entry
+		})))
 	}
 
 	pub async fn python_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {

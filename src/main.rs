@@ -322,7 +322,7 @@ impl LanguageServer for Backend {
 		if uri.path().ends_with(".py") {
 			let rope = self.document_map.get(uri.path()).unwrap();
 			let text = Cow::from(rope.slice(..));
-			self.update_models(&Text::Full(text.into_owned()), &uri, rope.value().clone())
+			self.update_models(Text::Full(text.into_owned()), &uri, rope.value().clone())
 				.await
 				.report(|| format_loc!("update_models"));
 		}

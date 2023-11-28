@@ -5,10 +5,9 @@ use log::debug;
 use tree_sitter::{Node, QueryCursor};
 
 use odoo_lsp::{
-	format_loc,
 	index::interner,
 	model::{FieldKind, ModelName},
-	utils::{ByteRange, Erase, PreTravel, RangeExt, TryResultExt},
+	utils::{ByteRange, Erase, PreTravel, RangeExt},
 	ImStr,
 };
 use ts_macros::query;
@@ -272,9 +271,6 @@ impl Backend {
 		// What transforms value types?
 		// 1. foo.bar;
 		//    foo: Model('t) => bar: Model('t).field('bar')
-		// 2. foo.mapped('field')
-		//    foo: Model('t) => foo.mapped('field'): Model('t).mapped('field')
-		// debug!("type_of {} range={:?}", node.kind(), node.byte_range());
 		if node.byte_range().len() <= 64 {
 			debug!(
 				"type_of {} '{}'",
@@ -327,9 +323,9 @@ impl Backend {
 						};
 						let ident = String::from_utf8_lossy(ident);
 						let ident = interner.get_or_intern(ident.as_ref());
-						let mut entry = self.index.models.try_get_mut(&model).expect(format_loc!("deadlock"))?;
-						let fields = block_on(self.populate_field_names(&mut entry, interner.resolve(&model), &[]));
-						let field = fields.ok()?.get(&ident.into())?;
+						let entry = self.populate_field_names(model, &[])?;
+						let entry = block_on(entry);
+						let field = entry.fields.as_ref()?.get(&ident.into())?;
 						match field.kind {
 							FieldKind::Relational(model) => Some(Type::Model(interner.resolve(&model).into())),
 							FieldKind::Value => None,

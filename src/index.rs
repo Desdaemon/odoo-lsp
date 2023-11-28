@@ -437,7 +437,10 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 					})
 				} else {
 					Some(Model {
-						type_: ModelType::Base(ImStr::from(String::from_utf8_lossy(base).as_ref())),
+						type_: ModelType::Base {
+							name: ImStr::from(String::from_utf8_lossy(base).as_ref()),
+							ancestors: inherits,
+						},
 						range,
 						byte_range,
 					})

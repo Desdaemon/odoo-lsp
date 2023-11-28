@@ -25,7 +25,7 @@ pub struct Model {
 
 #[derive(Clone, Debug)]
 pub enum ModelType {
-	Base(ImStr),
+	Base { name: ImStr, ancestors: Vec<ImStr> },
 	Inherit(Vec<ImStr>),
 }
 
@@ -41,6 +41,7 @@ pub type ModelName = Symbol<ModelEntry>;
 pub struct ModelEntry {
 	pub base: Option<ModelLocation>,
 	pub descendants: Vec<ModelLocation>,
+	pub ancestors: Vec<ModelName>,
 	pub fields: Option<SymbolMap<FieldName, Field>>,
 	pub docstring: Option<Text>,
 }
@@ -102,7 +103,7 @@ impl ModelIndex {
 		let mut by_prefix = self.by_prefix.write().await;
 		for item in items {
 			match &item.type_ {
-				ModelType::Base(base) => {
+				ModelType::Base { name: base, ancestors } => {
 					let name = interner.get_or_intern(base).into();
 					by_prefix.insert_str(base, name);
 					let mut entry = self.entry(name).or_default();
@@ -114,6 +115,10 @@ impl ModelIndex {
 							},
 							item.byte_range.clone(),
 						));
+						entry.ancestors = ancestors
+							.into_iter()
+							.map(|sym| interner.get_or_intern(&sym).into())
+							.collect();
 					} else {
 						debug!(
 							"Conflicting bases:\nfirst={}\n  new={}",
@@ -137,15 +142,19 @@ impl ModelIndex {
 							}
 						}
 					}
-					for inherit in inherits {
-						let inherit = interner.get_or_intern(inherit).into();
-						self.entry(inherit).or_default().descendants.push(ModelLocation(
+					if let Some((primary, ancestors)) = inherits.split_first() {
+						let inherit = interner.get_or_intern(primary).into();
+						let mut entry = self.entry(inherit).or_default();
+						entry.descendants.push(ModelLocation(
 							MinLoc {
 								path,
 								range: item.range,
 							},
 							item.byte_range.clone(),
 						));
+						entry
+							.ancestors
+							.extend(ancestors.iter().map(|sym| ModelName::from(interner.get_or_intern(sym))));
 					}
 				}
 			}

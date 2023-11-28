@@ -13,6 +13,8 @@ pub use visitor::PreTravel;
 
 use crate::index::interner;
 
+pub mod future;
+
 #[macro_export]
 macro_rules! some {
 	($opt:expr) => {

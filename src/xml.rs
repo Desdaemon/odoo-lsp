@@ -15,7 +15,7 @@ use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token, Tokenizer};
 
 use odoo_lsp::record::Record;
-use odoo_lsp::{format_loc, some, utils::*};
+use odoo_lsp::{some, utils::*};
 
 enum RefKind {
 	Ref(Spur),
@@ -190,12 +190,8 @@ impl Backend {
 			RefKind::Ref(relation) => {
 				let model_key = some!(model_filter);
 				let model = some!(interner().get(&model_key));
-				let mut entry = some!(self
-					.index
-					.models
-					.try_get_mut(&model.into())
-					.expect(format_loc!("deadlock")));
-				let fields = self.populate_field_names(&mut entry, &model_key, &[]).await?;
+				let fields = some!(self.populate_field_names(model.into(), &[])).await;
+				let fields = some!(fields.fields.as_ref());
 				let Some(Field {
 					kind: FieldKind::Relational(relation),
 					..

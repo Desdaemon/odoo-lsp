@@ -232,16 +232,15 @@ impl Backend {
 			return Ok(());
 		}
 		let model_key = interner().get_or_intern(&model);
-		let Some(mut entry) = self
-			.index
-			.models
-			.try_get_mut(&model_key.into())
-			.expect(format_loc!("deadlock"))
-		else {
+		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
+		let Some(entry) = self.populate_field_names(model_key.into(), &[]) else {
 			return Ok(());
 		};
-		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
-		let fields = self.populate_field_names(&mut entry, &model, &[]).await?;
+		let entry = entry.await;
+		let fields = entry
+			.fields
+			.as_ref()
+			.expect(format_loc!("(complete_field_name) no fields for {model}"));
 		let completions = fields.iter().flat_map(|(key, _)| {
 			let field_name = interner().resolve(&Spur::try_from_usize(*key as usize).unwrap());
 			field_name.contains(needle).then(|| CompletionItem {
@@ -378,15 +377,10 @@ impl Backend {
 	}
 	pub async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model_key = interner().get_or_intern(model);
-		let mut entry = some!(self
-			.index
-			.models
-			.try_get_mut(&model_key.into())
-			.expect(format_loc!("deadlock")));
 		let field = some!(interner().get(field));
-		let fields = self.populate_field_names(&mut entry, model, &[]).await?;
-		let field = some!(fields.get(&field.into()));
-		Ok(Some(field.location.clone().into()))
+		let entry = some!(self.populate_field_names(model_key.into(), &[])).await;
+		let field = some!(entry.fields.as_ref()).get(&field.into());
+		Ok(Some(some!(field).location.clone().into()))
 	}
 	pub fn jump_def_template_name(&self, name: &str) -> miette::Result<Option<Location>> {
 		let name = some!(interner().get(name));
@@ -401,19 +395,14 @@ impl Backend {
 		range: Option<Range>,
 	) -> miette::Result<Option<Hover>> {
 		let model_key = interner().get_or_intern(model);
-		let mut entry = some!(self
-			.index
-			.models
-			.try_get_mut(&model_key.into())
-			.expect(format_loc!("deadlock")));
 		let field = some!(interner().get(name));
-		let fields = self.populate_field_names(&mut entry, model, &[]).await?;
-		let field = some!(fields.get(&field.into()));
+		let fields = some!(self.populate_field_names(model_key.into(), &[])).await;
+		let field = some!(fields.fields.as_ref()).get(&field.into());
 		Ok(Some(Hover {
 			range,
 			contents: HoverContents::Markup(MarkupContent {
 				kind: MarkupKind::Markdown,
-				value: self.field_docstring(name, field, true),
+				value: self.field_docstring(name, some!(field), true),
 			}),
 		}))
 	}
