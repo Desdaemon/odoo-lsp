@@ -43,6 +43,7 @@ pub struct ModelEntry {
 	pub descendants: Vec<ModelLocation>,
 	pub ancestors: Vec<ModelName>,
 	pub fields: Option<SymbolMap<FieldName, Field>>,
+	pub fields_set: qp_trie::Trie<BString, ()>,
 	pub docstring: Option<Text>,
 }
 

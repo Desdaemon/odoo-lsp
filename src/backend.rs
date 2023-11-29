@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use dashmap::{DashMap, DashSet};
 use globwalk::FileType;
-use lasso::{Key, Spur};
 use log::debug;
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
@@ -237,25 +236,21 @@ impl Backend {
 			return Ok(());
 		};
 		let entry = entry.await;
-		let fields = entry
-			.fields
-			.as_ref()
-			.expect(format_loc!("(complete_field_name) no fields for {model}"));
-		let completions = fields.iter().flat_map(|(key, _)| {
-			let field_name = interner().resolve(&Spur::try_from_usize(*key as usize).unwrap());
-			field_name.contains(needle).then(|| CompletionItem {
+		let completions = entry
+			.fields_set
+			.iter_prefix_str(needle)
+			.map(|(field_name, _)| CompletionItem {
 				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-					new_text: field_name.to_string(),
+					new_text: field_name.as_str().to_string(),
 					insert: range,
 					replace: range,
 				})),
-				label: field_name.to_string(),
+				label: field_name.as_str().to_string(),
 				kind: Some(CompletionItemKind::FIELD),
 				// TODO: Make this type-safe
 				data: Some(Value::String(model.clone())),
 				..Default::default()
-			})
-		});
+			});
 		items.extend(completions);
 		Ok(())
 	}

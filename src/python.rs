@@ -529,7 +529,6 @@ impl Backend {
 			return Some(FutureOr::Ready(ready(entry)));
 		}
 		let t0 = std::time::Instant::now();
-		let mut out = SymbolMap::default();
 		let locations = entry.base.iter().chain(&entry.descendants).cloned().collect::<Vec<_>>();
 
 		let query = ModelFields::query();
@@ -635,6 +634,8 @@ impl Backend {
 		}
 		Some(FutureOr::Pending(Box::pin(async move {
 			let ancestors = entry.ancestors.iter().cloned().collect::<Vec<_>>();
+			let mut out = SymbolMap::default();
+			let mut fields_set = qp_trie::Trie::new();
 
 			// drop to prevent deadlock
 			drop(entry);
@@ -664,6 +665,7 @@ impl Backend {
 				};
 				for (key, type_) in fields {
 					out.insert_checked(key.into_usize() as u64, type_);
+					fields_set.insert_str(interner().resolve(&key), ());
 				}
 			}
 
@@ -681,6 +683,7 @@ impl Backend {
 				.expect(format_loc!("deadlock"))
 				.expect(format_loc!("no entry"));
 			entry.fields = Some(out);
+			entry.fields_set = fields_set;
 			entry
 		})))
 	}
