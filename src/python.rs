@@ -369,38 +369,27 @@ impl Backend {
 				// range:  foo.bar.baz
 				// needle: foo.ba
 				let mut needle = needle.as_ref();
-				let model = some!(interner().get(&model));
-				let mut model = some!(self
-					.index
-					.models
-					.try_get_mut(&model.into())
-					.expect(format_loc!("deadlock")));
+				let mut model = some!(interner().get(&model));
 				if !constrains {
 					while let Some((lhs, rhs)) = needle.split_once('.') {
 						debug!("mapped {}", needle);
 						// lhs: foo
 						// rhs: ba
 						needle = rhs;
-						let fields = some!(self.populate_field_names(model.key().clone().into(), &[])).await;
+						let fields = some!(self.populate_field_names(model.into(), &[])).await;
 						let field = some!(interner().get(&lhs));
 						let field = some!(fields.fields.as_ref()).get(&field.into());
 						let FieldKind::Relational(rel) = some!(field).kind else {
 							return Ok(None);
 						};
-						drop(model);
-						model = some!(self
-							.index
-							.models
-							.try_get_mut(&rel.into())
-							.expect(format_loc!("deadlock")));
+						model = rel;
 						// old range: foo.bar.baz
 						// range:         bar.baz
 						let start = rope.char_to_byte(range.start.0) + lhs.len() + 1;
 						range = CharOffset(rope.byte_to_char(start))..range.end;
 					}
 				}
-				let model_name = interner().resolve(&model.key());
-				drop(model);
+				let model_name = interner().resolve(&model);
 				self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)
 					.await?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
