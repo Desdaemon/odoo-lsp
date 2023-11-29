@@ -236,7 +236,7 @@ impl LanguageServer for Backend {
 						.await
 						.unwrap_or(false)
 					{
-						if let Some(file_path) = path_.parent().expect("has parent").parent() {
+						if let Some(file_path) = path_.parent() {
 							// root/addon/__manifest__.py, so we want root instead of addon.
 							let file_path = file_path.to_string_lossy();
 							self.index
