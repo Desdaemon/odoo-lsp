@@ -169,6 +169,13 @@ fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 		.find(|child| child.byte_range().contains_end(offset))
 }
 
+struct Mapped<'text> {
+	needle: Cow<'text, str>,
+	model: String,
+	single_field: bool,
+	range: CharRange,
+}
+
 impl Backend {
 	pub async fn on_change_python(
 		&self,
@@ -310,42 +317,27 @@ impl Backend {
 					} else if capture.index == PyCompletions::MAPPED {
 						let range = capture.node.byte_range();
 						if range.contains_end(offset) {
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
+							let Some(Mapped {
+								needle,
+								model,
+								single_field,
+								range,
+							}) = self.gather_mapped(
+								root,
+								match_,
+								offset,
+								range.clone(),
+								this_model,
+								&rope,
+								&contents[..],
+								true,
+							)
+							else {
 								break 'match_;
 							};
-							let relative_offset = range.start;
-							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 
-							let model;
-							if let Some(local_model) =
-								match_.nodes_for_capture_index(PyCompletions::MAPPED_TARGET).next()
-							{
-								let model_ = some!(self.model_of_range(
-									root,
-									local_model.byte_range().map_unit(ByteOffset),
-									None,
-									&contents
-								));
-								model = interner().resolve(&model_).to_string();
-							} else if let Some(this_model) = &this_model {
-								model = String::from_utf8_lossy(this_model).to_string();
-							} else {
-								break 'match_;
-							}
-
-							let mut single_field = false;
-							if let Some(depends) = match_.nodes_for_capture_index(PyCompletions::DEPENDS).next() {
-								single_field =
-									matches!(&contents[depends.byte_range()], b"write" | b"create" | b"constrains");
-							}
-
-							early_return = Some((
-								EarlyReturn::Mapped { model, single_field },
-								needle,
-								range.shrink(1).map_unit(|offset| CharOffset(rope.byte_to_char(offset))),
-								rope.clone(),
-							));
+							early_return =
+								Some((EarlyReturn::Mapped { model, single_field }, needle, range, rope.clone()));
 							break 'match_;
 						}
 					} else if capture.index == PyCompletions::ACCESS {
@@ -402,23 +394,10 @@ impl Backend {
 				let mut needle = needle.as_ref();
 				let mut model = some!(interner().get(&model));
 				if !single_field {
-					while let Some((lhs, rhs)) = needle.split_once('.') {
-						debug!("mapped {}", needle);
-						// lhs: foo
-						// rhs: ba
-						needle = rhs;
-						let fields = some!(self.populate_field_names(model.into(), &[])).await;
-						let field = some!(interner().get(&lhs));
-						let field = some!(fields.fields.as_ref()).get(&field.into());
-						let FieldKind::Relational(rel) = some!(field).kind else {
-							return Ok(None);
-						};
-						model = rel;
-						// old range: foo.bar.baz
-						// range:         bar.baz
-						let start = rope.char_to_byte(range.start.0) + lhs.len() + 1;
-						range = CharOffset(rope.byte_to_char(start))..range.end;
-					}
+					some!(
+						self.resolve_mapped(&mut model, &mut needle, &mut range, rope.clone())
+							.await
+					);
 				}
 				let model_name = interner().resolve(&model);
 				self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)
@@ -431,6 +410,89 @@ impl Backend {
 			None => {}
 		}
 		Ok(None)
+	}
+	/// In the context of `Model.create({'foo.bar.baz': ..})`, `for_replacing` changes the
+	/// meaning of `Mapped.needle` and `Mapped.range`:
+	/// - `needle`: if replacing, refers to a prefix of 'foo.bar.baz', otherwise 'foo.bar.baz' itself.
+	/// - `range`: if replacing, refers to the entire range of 'foo.bar.baz', otherwise the smallest substring of 'foo.bar.baz'
+	///            which contains the cursor AND no periods.
+	fn gather_mapped<'text>(
+		&self,
+		root: Node,
+		match_: tree_sitter::QueryMatch,
+		offset: usize,
+		mut range: core::ops::Range<usize>,
+		this_model: Option<&[u8]>,
+		rope: &'text Rope,
+		contents: &[u8],
+		for_replacing: bool,
+	) -> Option<Mapped<'text>> {
+		let needle = if for_replacing {
+			range = range.shrink(1);
+			Cow::from(rope.get_byte_slice(range.start + 1..offset)?)
+		} else {
+			let slice = Cow::from(rope.get_byte_slice(range.clone().shrink(1))?);
+			let relative_offset = range.start + 1;
+			let slice = &slice[offset - relative_offset..];
+			// How many characters until the next period or end-of-string?
+			let limit = slice.find('.').unwrap_or(slice.len());
+			range = relative_offset..offset + limit;
+			Cow::from(rope.get_byte_slice(range.clone())?)
+		};
+
+		let model;
+		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MAPPED_TARGET).next() {
+			let model_ = self.model_of_range(root, local_model.byte_range().map_unit(ByteOffset), None, &contents)?;
+			model = interner().resolve(&model_).to_string();
+		} else if let Some(this_model) = &this_model {
+			model = String::from_utf8_lossy(this_model).to_string();
+		} else {
+			return None;
+		}
+
+		let mut single_field = false;
+		if let Some(depends) = match_.nodes_for_capture_index(PyCompletions::DEPENDS).next() {
+			single_field = matches!(&contents[depends.byte_range()], b"write" | b"create" | b"constrains");
+		}
+
+		Some(Mapped {
+			needle,
+			model,
+			single_field,
+			range: range.map_unit(|unit| CharOffset(rope.byte_to_char(unit))),
+		})
+	}
+	/// For completing a `Model.write({'foo.bar.baz': ..})`:
+	/// - `model` is the key of `Model`
+	/// - `needle` is a left substring of 'foo.bar.baz'
+	/// - `range` spans the entire range of 'foo.bar.baz'
+	///
+	/// Returns None if resolution fails before `needle` is exhausted.
+	async fn resolve_mapped(
+		&self,
+		model: &mut Spur,
+		needle: &mut &str,
+		range: &mut CharRange,
+		rope: Rope,
+	) -> Option<()> {
+		while let Some((lhs, rhs)) = needle.split_once('.') {
+			debug!("mapped {}", needle);
+			// lhs: foo
+			// rhs: ba
+			*needle = rhs;
+			let fields = self.populate_field_names(model.clone().into(), &[])?.await;
+			let field = interner().get(&lhs)?;
+			let field = fields.fields.as_ref()?.get(&field.into());
+			let FieldKind::Relational(rel) = field?.kind else {
+				return None;
+			};
+			*model = rel;
+			// old range: foo.bar.baz
+			// range:         bar.baz
+			let start = rope.char_to_byte(range.start.0) + lhs.len() + 1;
+			*range = CharOffset(rope.byte_to_char(start))..range.end;
+		}
+		Some(())
 	}
 	pub async fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
 		let uri = &params.text_document_position_params.text_document.uri;
@@ -730,16 +792,35 @@ impl Backend {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
 
-		let bytes = rope.bytes().collect::<Vec<_>>();
+		let contents = rope.bytes().collect::<Vec<_>>();
+		enum EarlyReturn<'text> {
+			Access {
+				field: Cow<'text, str>,
+				model: ModelName,
+				lsp_range: Range,
+			},
+			Mapped(Mapped<'text>),
+		}
 		let mut early_return = None;
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
 			let query = PyCompletions::query();
 			let mut cursor = tree_sitter::QueryCursor::new();
-			'match_: for match_ in cursor.matches(query, root, &bytes[..]) {
+			let mut this_model = None;
+			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				for capture in match_.captures {
 					if capture.index == PyCompletions::MODEL {
 						let range = capture.node.byte_range();
+						let (is_inherit, is_name) = match_
+							.nodes_for_capture_index(PyCompletions::PROP)
+							.next()
+							.map(|prop| {
+								(
+									&contents[prop.byte_range()] == b"_inherit",
+									&contents[prop.byte_range()] == b"_name",
+								)
+							})
+							.unwrap_or((true, false));
 						if range.contains(&offset) {
 							let range = range.shrink(1);
 							let lsp_range = ts_range_to_lsp_range(capture.node.range());
@@ -749,6 +830,14 @@ impl Backend {
 							};
 							let slice = Cow::from(slice);
 							return self.hover_model(&slice, Some(lsp_range), false);
+						} else if range.end < offset
+							&& (is_name
+							// _inherit = '..' OR _inherit = ['..'] qualifies as primary model name
+							|| (is_inherit && capture.node.parent()
+								.map(|parent| parent.kind() == "assignment" || (parent.kind() == "list" && parent.named_child_count() == 1))
+								.unwrap_or(false)))
+						{
+							this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
 						}
 					} else if capture.index == PyCompletions::ACCESS {
 						let range = capture.node.byte_range();
@@ -756,25 +845,72 @@ impl Backend {
 							let lsp_range = ts_range_to_lsp_range(capture.node.range());
 							let lhs = some!(capture.node.prev_named_sibling());
 							let lhs = lhs.byte_range().map_unit(ByteOffset);
-							let model = some!(self.model_of_range(root, lhs, None, &bytes));
-							let field = String::from_utf8_lossy(&bytes[range]);
-							let model = interner().resolve(&model);
-							early_return = Some((field, model, lsp_range));
+							let model = some!(self.model_of_range(root, lhs, None, &contents));
+							let field = String::from_utf8_lossy(&contents[range]);
+							early_return = Some(EarlyReturn::Access {
+								field,
+								model,
+								lsp_range,
+							});
+							break 'match_;
+						}
+					} else if capture.index == PyCompletions::MAPPED {
+						let range = capture.node.byte_range();
+						if range.contains(&offset) {
+							early_return = self
+								.gather_mapped(
+									root,
+									match_,
+									offset,
+									range.clone(),
+									this_model,
+									&rope,
+									&contents[..],
+									false,
+								)
+								.map(EarlyReturn::Mapped);
 							break 'match_;
 						}
 					}
 				}
 			}
 		}
-		if let Some((field, model, lsp_range)) = early_return {
-			return self.hover_field_name(&field, model, Some(lsp_range)).await;
+		match early_return {
+			Some(EarlyReturn::Access {
+				field,
+				model,
+				lsp_range,
+			}) => {
+				let model = interner().resolve(&model);
+				return self.hover_field_name(&field, model, Some(lsp_range)).await;
+			}
+			Some(EarlyReturn::Mapped(Mapped {
+				needle,
+				model,
+				single_field,
+				mut range,
+			})) => {
+				let mut needle = needle.as_ref();
+				let mut model = interner().get_or_intern(&model);
+				if !single_field {
+					some!(
+						self.resolve_mapped(&mut model, &mut needle, &mut range, rope.clone())
+							.await
+					);
+				}
+				let model = interner().resolve(&model);
+				return self
+					.hover_field_name(needle, model, char_range_to_lsp_range(range, rope.clone()))
+					.await;
+			}
+			None => {}
 		}
 
 		// No matches, assume arbitrary expression.
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
 		let lsp_range = ts_range_to_lsp_range(needle.range());
-		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), None, &bytes));
+		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), None, &contents));
 		let model = interner().resolve(&model);
 		self.hover_model(model, Some(lsp_range), true)
 	}
