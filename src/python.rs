@@ -81,6 +81,35 @@ r#"
 (#match? @_Field "^(Many2one|One2many|Many2many)$")
 (#eq? @_comodel_name "comodel_name"))
 
+((call
+	(attribute (_) @MAPPED_TARGET (identifier) @DEPENDS)
+	(argument_list . [
+		(set (string) @MAPPED)
+		(dictionary [ 
+			(pair key: (string) @MAPPED)
+			(ERROR (string) @MAPPED)
+		])
+	]))
+(#eq? @DEPENDS "write"))
+
+((call
+	(attribute (_) @MAPPED_TARGET (identifier) @DEPENDS)
+	(argument_list . [
+		(set (string) @MAPPED)	
+		(dictionary [
+			(pair key: (string) @MAPPED)
+			(ERROR (string) @MAPPED)
+		])
+		(list [
+			(set (string) @MAPPED)
+			(dictionary [
+				(pair key: (string) @MAPPED)
+				(ERROR (string) @MAPPED)
+			])
+		])
+	]))
+(#eq? @DEPENDS "create"))
+
 (attribute (_) (identifier) @ACCESS)"#
 }
 
@@ -217,7 +246,7 @@ impl Backend {
 			XmlId(Option<&'a str>, Symbol<Module>),
 			Model,
 			Access(String),
-			Mapped { model: String, constrains: bool },
+			Mapped { model: String, single_field: bool },
 		}
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
@@ -289,7 +318,6 @@ impl Backend {
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 
 							let model;
-							let mut constrains = false;
 							if let Some(local_model) =
 								match_.nodes_for_capture_index(PyCompletions::MAPPED_TARGET).next()
 							{
@@ -302,15 +330,18 @@ impl Backend {
 								model = interner().resolve(&model_).to_string();
 							} else if let Some(this_model) = &this_model {
 								model = String::from_utf8_lossy(this_model).to_string();
-								if let Some(depends) = match_.nodes_for_capture_index(PyCompletions::DEPENDS).next() {
-									constrains = b"constrains" == &contents[depends.byte_range()];
-								}
 							} else {
 								break 'match_;
 							}
 
+							let mut single_field = false;
+							if let Some(depends) = match_.nodes_for_capture_index(PyCompletions::DEPENDS).next() {
+								single_field =
+									matches!(&contents[depends.byte_range()], b"write" | b"create" | b"constrains");
+							}
+
 							early_return = Some((
-								EarlyReturn::Mapped { model, constrains },
+								EarlyReturn::Mapped { model, single_field },
 								needle,
 								range.shrink(1).map_unit(|offset| CharOffset(rope.byte_to_char(offset))),
 								rope.clone(),
@@ -365,12 +396,12 @@ impl Backend {
 					items: items.into_inner(),
 				})));
 			}
-			Some((EarlyReturn::Mapped { model, constrains }, needle, mut range, rope)) => {
+			Some((EarlyReturn::Mapped { model, single_field }, needle, mut range, rope)) => {
 				// range:  foo.bar.baz
 				// needle: foo.ba
 				let mut needle = needle.as_ref();
 				let mut model = some!(interner().get(&model));
-				if !constrains {
+				if !single_field {
 					while let Some((lhs, rhs)) = needle.split_once('.') {
 						debug!("mapped {}", needle);
 						// lhs: foo
