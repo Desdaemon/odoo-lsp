@@ -3,7 +3,6 @@ use std::fmt::Display;
 
 use dashmap::try_result::TryResult;
 use lasso::Spur;
-use log::warn;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, Token};

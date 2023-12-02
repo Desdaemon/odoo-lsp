@@ -55,7 +55,7 @@ r#"
 	(argument_list (string) @MAPPED))
 (#match? @_mapper "^(mapp|filter|sort)ed$")
 (#eq? @_api "api")
-(#match? @DEPENDS "^(depend|constrain)s$"))
+(#match? @DEPENDS "^(depends|constrains|onchange)$"))
 
 ((call
 	(attribute (_) @MAPPED_TARGET (identifier) @_search)
@@ -289,13 +289,14 @@ impl Backend {
 							.nodes_for_capture_index(PyCompletions::PROP)
 							.next()
 							.map(|prop| {
+								dbg!(String::from_utf8_lossy(&contents[prop.byte_range()]));
 								(
 									&contents[prop.byte_range()] == b"_inherit",
 									&contents[prop.byte_range()] == b"_name",
 								)
 							})
 							.unwrap_or((true, false));
-						if is_inherit && range.contains_end(offset) {
+						if is_inherit && !is_name && range.contains_end(offset) {
 							let Some(slice) = rope.get_byte_slice(range.clone()) else {
 								dbg!(&range);
 								break 'match_;
@@ -452,7 +453,10 @@ impl Backend {
 
 		let mut single_field = false;
 		if let Some(depends) = match_.nodes_for_capture_index(PyCompletions::DEPENDS).next() {
-			single_field = matches!(&contents[depends.byte_range()], b"write" | b"create" | b"constrains");
+			single_field = matches!(
+				&contents[depends.byte_range()],
+				b"write" | b"create" | b"constrains" | b"onchange"
+			);
 		}
 
 		Some(Mapped {
