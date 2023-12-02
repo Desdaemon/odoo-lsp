@@ -1,3 +1,30 @@
+## [0.2.2](https://github.com/Desdaemon/odoo-lsp/compare/v0.2.1...v0.2.2) (2023-12-02)
+
+
+### Bug Fixes
+
+* deadlock when completing fields for self ([5cbf44c](https://github.com/Desdaemon/odoo-lsp/commit/5cbf44cd39e59e387cdff98b5275f37a2fc9156c))
+* deadlock when completing related= ([729ae55](https://github.com/Desdaemon/odoo-lsp/commit/729ae551ccf53ace79eaaab920f2744163a41626))
+* module detection from path ([265fa2f](https://github.com/Desdaemon/odoo-lsp/commit/265fa2fccf56479d76c000d8df48f8332fa8ff30))
+* properly parse module aliases ([82f25c1](https://github.com/Desdaemon/odoo-lsp/commit/82f25c1e85f05b5b87ea4c95a1bd40aa64c3f6e9))
+* revert root scanning mechanism ([1bee611](https://github.com/Desdaemon/odoo-lsp/commit/1bee611b44bf3315e2cd6b41fa985a8109d64a63))
+
+
+### Features
+
+* basic support for fields in domains ([a9fcbb5](https://github.com/Desdaemon/odoo-lsp/commit/a9fcbb5a1a0fdc77c3e8613eb2474cb8016e5fbc))
+* complete mixins' fields ([49f721e](https://github.com/Desdaemon/odoo-lsp/commit/49f721e61d36d66252af7cb7dd04243cb9e2b6c6))
+* completion for fields in write(), create() ([dd40f0b](https://github.com/Desdaemon/odoo-lsp/commit/dd40f0b426ff86d745b53a0751c979df5ebaeada))
+* component references for t-name, t-inherit ([1584003](https://github.com/Desdaemon/odoo-lsp/commit/1584003ca520e0f50c12171c0db00c494af85f74))
+* field hover for mapped access ([25ef8fe](https://github.com/Desdaemon/odoo-lsp/commit/25ef8fe69491e801b8c5f346a5277b893725c4dd))
+* generate tsconfig for legacy modules ([30dc1a1](https://github.com/Desdaemon/odoo-lsp/commit/30dc1a115b4964417963657e10efa38dea81ff67))
+* index owl components ([e849d7a](https://github.com/Desdaemon/odoo-lsp/commit/e849d7af83831ec16a275c43d8c34ed6c2901a57))
+* init command ([3871f1f](https://github.com/Desdaemon/odoo-lsp/commit/3871f1f7616b5fd82987c57bf95f12020f6b6d68))
+* optimize fields completion ([aeec586](https://github.com/Desdaemon/odoo-lsp/commit/aeec586b0ce5c9f99a8ea50ea5933acfca277b70))
+* tsconfig command ([1445da7](https://github.com/Desdaemon/odoo-lsp/commit/1445da75a5b0ecb83d57d02d531c276bf9c5b580))
+
+
+
 ## [0.2.1](https://github.com/Desdaemon/odoo-lsp/compare/v0.2.0...v0.2.1) (2023-11-07)
 
 
