@@ -1,20 +1,16 @@
 use crate::{Backend, Text};
 
 use std::borrow::Cow;
-use std::future::ready;
 use std::path::Path;
 
-use dashmap::mapref::one::RefMut;
-use lasso::{Key, Spur};
-use log::{debug, error, warn};
-use miette::{diagnostic, IntoDiagnostic};
-use odoo_lsp::index::{index_models, interner, Module, Symbol, SymbolMap};
-use odoo_lsp::utils::future::FutureOr;
+use log::{debug, error};
+use miette::diagnostic;
+use odoo_lsp::index::{index_models, interner, Module, Symbol};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
-use tree_sitter::{Node, Parser, QueryCursor, Tree};
+use tree_sitter::{Node, Parser, Tree};
 
-use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName, ModelType};
+use odoo_lsp::model::{ModelName, ModelType};
 use odoo_lsp::utils::*;
 use odoo_lsp::{format_loc, some};
 use ts_macros::query;
@@ -113,55 +109,6 @@ r#"
 (attribute (_) (identifier) @ACCESS)"#
 }
 
-query! {
-	ModelFields(FIELD, TYPE, RELATION, ARG, VALUE);
-r#"
-((class_definition
-	(block
-		(expression_statement
-			(assignment
-				(identifier) @FIELD
-				(call [
-					(identifier) @TYPE
-					(attribute (identifier) @_fields (identifier) @TYPE)
-				] (argument_list . (string)? @RELATION
-					((keyword_argument (identifier) @ARG (_) @VALUE) ","?)*))))))
-(#eq? @_fields "fields")
-(#match? @TYPE "^[A-Z]"))"#
-}
-
-/// `node` must be `[(string) (concatenated_string)]`
-fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
-	let mut cursor = node.walk();
-	match node.kind() {
-		"string" => {
-			let content = node
-				.children(&mut cursor)
-				.find_map(|child| (child.kind() == "string_content").then(|| &contents[child.byte_range()]));
-			String::from_utf8_lossy(content.unwrap_or(&[]))
-		}
-		"concatenated_string" => {
-			let mut content = vec![];
-			for string in node.children(&mut cursor) {
-				if string.kind() == "string" {
-					let mut cursor = string.walk();
-					let children = string.children(&mut cursor).find_map(|child| {
-						(child.kind() == "string_content").then(|| {
-							String::from_utf8_lossy(&contents[child.byte_range()])
-								.trim()
-								.replace("\\n", "  \n")
-								.replace("\\t", "\t")
-						})
-					});
-					content.extend(children);
-				}
-			}
-			Cow::from(content.join(" "))
-		}
-		_ => unreachable!(),
-	}
-}
-
 /// (module (_)*)
 fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 	module
@@ -210,14 +157,14 @@ impl Backend {
 						.map(|sym| interner().get_or_intern(&sym).into())
 						.collect();
 					drop(entry);
-					if let Some(fut) = self.populate_field_names(model_key.into(), &[path]) {
+					if let Some(fut) = self.index.models.populate_field_names(model_key.into(), &[path]) {
 						fut.await;
 					}
 				}
 				ModelType::Inherit(inherits) => {
 					let Some(model) = inherits.first() else { continue };
 					let model_key = interner().get(model).unwrap();
-					if let Some(fut) = self.populate_field_names(model_key.into(), &[path]) {
+					if let Some(fut) = self.index.models.populate_field_names(model_key.into(), &[path]) {
 						fut.await;
 					}
 				}
@@ -289,14 +236,13 @@ impl Backend {
 							.nodes_for_capture_index(PyCompletions::PROP)
 							.next()
 							.map(|prop| {
-								dbg!(String::from_utf8_lossy(&contents[prop.byte_range()]));
 								(
 									&contents[prop.byte_range()] == b"_inherit",
 									&contents[prop.byte_range()] == b"_name",
 								)
 							})
 							.unwrap_or((true, false));
-						if is_inherit && !is_name && range.contains_end(offset) {
+						if is_inherit && range.contains_end(offset) {
 							let Some(slice) = rope.get_byte_slice(range.clone()) else {
 								dbg!(&range);
 								break 'match_;
@@ -389,18 +335,22 @@ impl Backend {
 					items: items.into_inner(),
 				})));
 			}
-			Some((EarlyReturn::Mapped { model, single_field }, needle, mut range, rope)) => {
+			Some((EarlyReturn::Mapped { model, single_field }, needle, range, rope)) => {
 				// range:  foo.bar.baz
 				// needle: foo.ba
 				let mut needle = needle.as_ref();
 				let mut model = some!(interner().get(&model));
+				let mut range = range.map_unit(|unit| ByteOffset(rope.char_to_byte(unit.0)));
 				if !single_field {
 					some!(
-						self.resolve_mapped(&mut model, &mut needle, &mut range, rope.clone())
+						self.index
+							.models
+							.resolve_mapped(&mut model, &mut needle, Some(&mut range))
 							.await
 					);
 				}
 				let model_name = interner().resolve(&model);
+				let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit.0)));
 				self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)
 					.await?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
@@ -466,38 +416,6 @@ impl Backend {
 			range: range.map_unit(|unit| CharOffset(rope.byte_to_char(unit))),
 		})
 	}
-	/// For completing a `Model.write({'foo.bar.baz': ..})`:
-	/// - `model` is the key of `Model`
-	/// - `needle` is a left substring of 'foo.bar.baz'
-	/// - `range` spans the entire range of 'foo.bar.baz'
-	///
-	/// Returns None if resolution fails before `needle` is exhausted.
-	async fn resolve_mapped(
-		&self,
-		model: &mut Spur,
-		needle: &mut &str,
-		range: &mut CharRange,
-		rope: Rope,
-	) -> Option<()> {
-		while let Some((lhs, rhs)) = needle.split_once('.') {
-			debug!("mapped {}", needle);
-			// lhs: foo
-			// rhs: ba
-			*needle = rhs;
-			let fields = self.populate_field_names(model.clone().into(), &[])?.await;
-			let field = interner().get(&lhs)?;
-			let field = fields.fields.as_ref()?.get(&field.into());
-			let FieldKind::Relational(rel) = field?.kind else {
-				return None;
-			};
-			*model = rel;
-			// old range: foo.bar.baz
-			// range:         bar.baz
-			let start = rope.char_to_byte(range.start.0) + lhs.len() + 1;
-			*range = CharOffset(rope.byte_to_char(start))..range.end;
-		}
-		Some(())
-	}
 	pub async fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
@@ -509,11 +427,16 @@ impl Backend {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
 		let contents = rope.bytes().collect::<Vec<_>>();
+		enum EarlyReturn<'a> {
+			Access(Cow<'a, str>, &'a str),
+			Mapped(Mapped<'a>),
+		}
 		let mut early_return = None;
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
 			let query = PyCompletions::query();
 			let mut cursor = tree_sitter::QueryCursor::new();
+			let mut this_model = None;
 			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				for capture in match_.captures {
 					if capture.index == PyCompletions::XML_ID {
@@ -543,6 +466,13 @@ impl Backend {
 							};
 							let slice = Cow::from(slice);
 							return self.jump_def_model(&slice);
+						} else if range.end < offset &&
+							// _inherit = '..' OR _inherit = ['..'] qualifies as primary model name
+							(is_meta && capture.node.parent()
+								.map(|parent| parent.kind() == "assignment" || (parent.kind() == "list" && parent.named_child_count() == 1))
+								.unwrap_or(false))
+						{
+							this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
 						}
 					} else if capture.index == PyCompletions::ACCESS {
 						let range = capture.node.byte_range();
@@ -552,15 +482,46 @@ impl Backend {
 							let model = some!(self.model_of_range(root, lhs, None, &contents));
 							let field = String::from_utf8_lossy(&contents[range]);
 							let model = interner().resolve(&model);
-							early_return = Some((field, model));
+							early_return = Some(EarlyReturn::Access(field, model));
+							break 'match_;
+						}
+					} else if capture.index == PyCompletions::MAPPED {
+						let range = capture.node.byte_range();
+						if range.contains_end(offset) {
+							early_return = self
+								.gather_mapped(root, match_, offset, range.clone(), this_model, &rope, &contents, false)
+								.map(EarlyReturn::Mapped);
 							break 'match_;
 						}
 					}
 				}
 			}
 		}
-		if let Some((field, model)) = early_return {
-			return self.jump_def_field_name(&field, model).await;
+		match early_return {
+			Some(EarlyReturn::Access(field, model)) => {
+				return self.jump_def_field_name(&field, model).await;
+			}
+			Some(EarlyReturn::Mapped(Mapped {
+				needle,
+				model,
+				single_field,
+				range,
+			})) => {
+				let mut needle = needle.as_ref();
+				let mut model = interner().get_or_intern(&model);
+				let mut range = range.map_unit(|unit| ByteOffset(rope.char_to_byte(unit.0)));
+				if !single_field {
+					some!(
+						self.index
+							.models
+							.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+							.await
+					);
+				}
+				let model = interner().resolve(&model);
+				return self.jump_def_field_name(needle, model).await;
+			}
+			None => {}
 		}
 		Ok(None)
 	}
@@ -614,175 +575,6 @@ impl Backend {
 			}
 		}
 		Ok(None)
-	}
-	pub fn populate_field_names<'model>(
-		&'model self,
-		model: ModelName,
-		locations_filter: &'model [Spur],
-	) -> Option<FutureOr<RefMut<'model, ModelName, ModelEntry>>> {
-		let model_name = interner().resolve(&model);
-		let entry = self.index.models.try_get_mut(&model).expect(format_loc!("deadlock"))?;
-		if entry.fields.is_some() && locations_filter.is_empty() {
-			return Some(FutureOr::Ready(ready(entry)));
-		}
-		let t0 = std::time::Instant::now();
-		let locations = entry.base.iter().chain(&entry.descendants).cloned().collect::<Vec<_>>();
-
-		let query = ModelFields::query();
-		let mut tasks = tokio::task::JoinSet::<miette::Result<Vec<_>>>::new();
-		for ModelLocation(location, byte_range) in locations {
-			if !locations_filter.is_empty() && !locations_filter.contains(&location.path) {
-				continue;
-			}
-			tasks.spawn(async move {
-				let mut fields = vec![];
-				let contents = tokio::fs::read(interner().resolve(&location.path))
-					.await
-					.into_diagnostic()?;
-				let mut parser = Parser::new();
-				parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
-				let ast = parser
-					.parse(&contents, None)
-					.ok_or_else(|| diagnostic!("AST not built"))?;
-				let byte_range = byte_range.erase();
-				let mut cursor = QueryCursor::new();
-				cursor.set_byte_range(byte_range);
-				for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
-					let mut field = None;
-					let mut type_ = None;
-					let mut is_relational = false;
-					let mut relation = None;
-					let mut kwarg = None::<Kwargs>;
-					let mut help = None;
-					enum Kwargs {
-						ComodelName,
-						Help,
-					}
-					for capture in match_.captures {
-						if capture.index == ModelFields::FIELD {
-							field = Some(capture.node);
-						} else if capture.index == ModelFields::TYPE {
-							type_ = Some(capture.node.byte_range());
-							// TODO: fields.Reference
-							is_relational = matches!(
-								&contents[capture.node.byte_range()],
-								b"One2many" | b"Many2one" | b"Many2many"
-							);
-						} else if capture.index == ModelFields::RELATION {
-							if is_relational {
-								relation = Some(capture.node.byte_range().shrink(1));
-							}
-						} else if capture.index == ModelFields::ARG {
-							match &contents[capture.node.byte_range()] {
-								b"comodel_name" if is_relational => kwarg = Some(Kwargs::ComodelName),
-								b"help" => kwarg = Some(Kwargs::Help),
-								_ => kwarg = None,
-							}
-						} else if capture.index == ModelFields::VALUE {
-							match kwarg {
-								Some(Kwargs::ComodelName) => {
-									if capture.node.kind() == "string" {
-										relation = Some(capture.node.byte_range().shrink(1));
-									}
-								}
-								Some(Kwargs::Help) => {
-									if matches!(capture.node.kind(), "string" | "concatenated_string") {
-										help = Some(parse_help(&capture.node, &contents));
-									}
-								}
-								None => {}
-							}
-						}
-					}
-					if let (Some(field), Some(type_)) = (field, type_) {
-						let range = ts_range_to_lsp_range(field.range());
-						let field_str = String::from_utf8_lossy(&contents[field.byte_range()]);
-						let field = interner().get_or_intern(&field_str);
-						let type_ = String::from_utf8_lossy(&contents[type_]);
-						let kind = if let Some(relation) = relation {
-							let relation = String::from_utf8_lossy(&contents[relation]);
-							let relation = interner().get_or_intern(&relation);
-							FieldKind::Relational(relation)
-						} else if is_relational {
-							debug!("is_relational but no relation found: field={field_str} type={type_}");
-							continue;
-						} else {
-							FieldKind::Value
-						};
-						let type_ = interner().get_or_intern(&type_);
-						let location = MinLoc {
-							path: location.path,
-							range,
-						};
-						let help = help.map(|help| odoo_lsp::str::Text::try_from(help.as_ref()).unwrap());
-						fields.push((
-							field,
-							Field {
-								kind,
-								type_,
-								location,
-								help,
-							},
-						))
-					}
-				}
-				Ok(fields)
-			});
-		}
-		Some(FutureOr::Pending(Box::pin(async move {
-			let ancestors = entry.ancestors.iter().cloned().collect::<Vec<_>>();
-			let mut out = SymbolMap::default();
-			let mut fields_set = qp_trie::Trie::new();
-
-			// drop to prevent deadlock
-			drop(entry);
-
-			// recursively get or populate ancestors' fields
-			for ancestor in ancestors {
-				if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
-					let entry = entry.await;
-					if let Some(fields) = entry.fields.as_ref() {
-						// TODO: Implement copy-on-write to increase reuse
-						out.extend(fields.iter().map(|(key, val)| (key.clone(), val.clone())));
-					}
-				}
-			}
-
-			while let Some(fields) = tasks.join_next().await {
-				let fields = match fields {
-					Ok(Ok(ret)) => ret,
-					Ok(Err(err)) => {
-						warn!("{err}");
-						continue;
-					}
-					Err(err) => {
-						warn!("join error {err}");
-						continue;
-					}
-				};
-				for (key, type_) in fields {
-					out.insert_checked(key.into_usize() as u64, type_);
-					fields_set.insert_str(interner().resolve(&key), ());
-				}
-			}
-
-			log::info!(
-				"[{}] Populated {} fields in {}ms",
-				model_name,
-				out.len(),
-				t0.elapsed().as_millis()
-			);
-
-			let mut entry = self
-				.index
-				.models
-				.try_get_mut(&model)
-				.expect(format_loc!("deadlock"))
-				.expect(format_loc!("no entry"));
-			entry.fields = Some(out);
-			entry.fields_set = fields_set;
-			entry
-		})))
 	}
 
 	pub async fn python_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
@@ -892,19 +684,22 @@ impl Backend {
 				needle,
 				model,
 				single_field,
-				mut range,
+				range,
 			})) => {
 				let mut needle = needle.as_ref();
 				let mut model = interner().get_or_intern(&model);
+				let mut range = range.map_unit(|unit| ByteOffset(rope.char_to_byte(unit.0)));
 				if !single_field {
 					some!(
-						self.resolve_mapped(&mut model, &mut needle, &mut range, rope.clone())
+						self.index
+							.models
+							.resolve_mapped(&mut model, &mut needle, Some(&mut range))
 							.await
 					);
 				}
 				let model = interner().resolve(&model);
 				return self
-					.hover_field_name(needle, model, char_range_to_lsp_range(range, rope.clone()))
+					.hover_field_name(needle, model, offset_range_to_lsp_range(range, rope.clone()))
 					.await;
 			}
 			None => {}
@@ -923,7 +718,9 @@ impl Backend {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use odoo_lsp::model::ModelFields;
 	use pretty_assertions::assert_eq;
+	use tree_sitter::QueryCursor;
 
 	/// Tricky behavior here. The query syntax must match the trailing comma between
 	/// named arguments, and this test checks that. Furthermore, @help cannot be matched

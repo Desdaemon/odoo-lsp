@@ -132,6 +132,10 @@ impl<K, T> SymbolMap<K, T> {
 	pub fn get(&self, key: &Symbol<K>) -> Option<&T> {
 		self.0.get(key.into_usize() as u64)
 	}
+	#[inline]
+	pub fn get_mut(&mut self, key: &Symbol<K>) -> Option<&mut T> {
+		self.0.get_mut(key.into_usize() as u64)
+	}
 	pub fn keys(&self) -> impl Iterator<Item = Symbol<K>> + '_ {
 		self.0
 			.iter()

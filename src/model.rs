@@ -1,19 +1,23 @@
+use std::borrow::Cow;
 use std::fmt::Display;
+use std::future::ready;
 use std::ops::Deref;
 
+use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
-use lasso::Spur;
-use log::debug;
+use lasso::{Key, Spur};
+use log::{debug, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use qp_trie::{wrapper::BString, Trie};
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
-use tree_sitter::{Parser, QueryCursor};
+use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
 use crate::index::{interner, Interner, Symbol, SymbolMap};
 use crate::str::Text;
-use crate::utils::{ByteOffset, ByteRange, Erase, MinLoc, TryResultExt};
+use crate::utils::future::FutureOr;
+use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt};
 use crate::{format_loc, ImStr};
 
 #[derive(Clone, Debug)]
@@ -53,6 +57,7 @@ pub enum FieldName {}
 pub enum FieldKind {
 	Value,
 	Relational(Spur),
+	Related(ImStr),
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +102,23 @@ impl Deref for ModelIndex {
 	fn deref(&self) -> &Self::Target {
 		&self.inner
 	}
+}
+
+query! {
+	ModelFields(FIELD, TYPE, RELATION, ARG, VALUE);
+r#"
+((class_definition
+	(block
+		(expression_statement
+			(assignment
+				(identifier) @FIELD
+				(call [
+					(identifier) @TYPE
+					(attribute (identifier) @_fields (identifier) @TYPE)
+				] (argument_list . (string)? @RELATION
+					((keyword_argument (identifier) @ARG (_) @VALUE) ","?)*))))))
+(#eq? @_fields "fields")
+(#match? @TYPE "^[A-Z]"))"#
 }
 
 impl ModelIndex {
@@ -161,6 +183,248 @@ impl ModelIndex {
 			}
 		}
 	}
+	pub fn populate_field_names<'model>(
+		&'model self,
+		model: ModelName,
+		locations_filter: &'model [Spur],
+	) -> Option<FutureOr<RefMut<'model, ModelName, ModelEntry>>> {
+		let model_name = interner().resolve(&model);
+		let entry = self.try_get_mut(&model).expect(format_loc!("deadlock"))?;
+		if entry.fields.is_some() && locations_filter.is_empty() {
+			return Some(FutureOr::Ready(ready(entry)));
+		}
+		let t0 = std::time::Instant::now();
+		let locations = entry.base.iter().chain(&entry.descendants).cloned().collect::<Vec<_>>();
+
+		let query = ModelFields::query();
+		let mut tasks = tokio::task::JoinSet::<miette::Result<_>>::new();
+		for ModelLocation(location, byte_range) in locations {
+			if !locations_filter.is_empty() && !locations_filter.contains(&location.path) {
+				continue;
+			}
+			tasks.spawn(async move {
+				let mut fields = vec![];
+				let contents = tokio::fs::read(interner().resolve(&location.path))
+					.await
+					.into_diagnostic()?;
+				let mut parser = Parser::new();
+				parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
+				let ast = parser
+					.parse(&contents, None)
+					.ok_or_else(|| diagnostic!("AST not built"))?;
+				let byte_range = byte_range.erase();
+				let mut cursor = QueryCursor::new();
+				cursor.set_byte_range(byte_range);
+				for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
+					let mut field = None;
+					let mut type_ = None;
+					let mut is_relational = false;
+					let mut relation = None;
+					let mut kwarg = None::<Kwargs>;
+					let mut help = None;
+					let mut related = None;
+					enum Kwargs {
+						ComodelName,
+						Help,
+						Related,
+					}
+					for capture in match_.captures {
+						if capture.index == ModelFields::FIELD {
+							field = Some(capture.node);
+						} else if capture.index == ModelFields::TYPE {
+							type_ = Some(capture.node.byte_range());
+							// TODO: fields.Reference
+							is_relational = matches!(
+								&contents[capture.node.byte_range()],
+								b"One2many" | b"Many2one" | b"Many2many"
+							);
+						} else if capture.index == ModelFields::RELATION {
+							if is_relational {
+								relation = Some(capture.node.byte_range().shrink(1));
+							}
+						} else if capture.index == ModelFields::ARG {
+							match &contents[capture.node.byte_range()] {
+								b"comodel_name" if is_relational => kwarg = Some(Kwargs::ComodelName),
+								b"help" => kwarg = Some(Kwargs::Help),
+								b"related" => kwarg = Some(Kwargs::Related),
+								_ => kwarg = None,
+							}
+						} else if capture.index == ModelFields::VALUE {
+							match kwarg {
+								Some(Kwargs::ComodelName) => {
+									if capture.node.kind() == "string" {
+										relation = Some(capture.node.byte_range().shrink(1));
+									}
+								}
+								Some(Kwargs::Help) => {
+									if matches!(capture.node.kind(), "string" | "concatenated_string") {
+										help = Some(parse_help(&capture.node, &contents));
+									}
+								}
+								Some(Kwargs::Related) => {
+									if capture.node.kind() == "string" {
+										related = Some(capture.node.byte_range().shrink(1));
+									}
+								}
+								None => {}
+							}
+						}
+					}
+					if let (Some(field), Some(type_)) = (field, type_) {
+						let range = ts_range_to_lsp_range(field.range());
+						let field_str = String::from_utf8_lossy(&contents[field.byte_range()]);
+						let field = interner().get_or_intern(&field_str);
+						let type_ = String::from_utf8_lossy(&contents[type_]);
+						let location = MinLoc {
+							path: location.path,
+							range,
+						};
+						let help = help.map(|help| Text::try_from(help.as_ref()).unwrap());
+						let kind = if let Some(relation) = relation {
+							let relation = String::from_utf8_lossy(&contents[relation]);
+							let relation = interner().get_or_intern(&relation);
+							FieldKind::Relational(relation)
+						} else if let Some(related) = related {
+							FieldKind::Related(String::from_utf8_lossy(&contents[related]).as_ref().into())
+						} else {
+							if is_relational {
+								debug!("is_relational but no relation found: field={field_str} type={type_}");
+							}
+							FieldKind::Value
+						};
+						let type_ = interner().get_or_intern(&type_);
+						fields.push((
+							field,
+							Field {
+								kind,
+								type_,
+								location,
+								help,
+							},
+						))
+					}
+				}
+				Ok(fields)
+			});
+		}
+		Some(FutureOr::Pending(Box::pin(async move {
+			let ancestors = entry.ancestors.iter().cloned().collect::<Vec<_>>();
+			let mut out = SymbolMap::default();
+			let mut fields_set = qp_trie::Trie::new();
+
+			// drop to prevent deadlock
+			drop(entry);
+
+			// recursively get or populate ancestors' fields
+			for ancestor in ancestors {
+				if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
+					let entry = entry.await;
+					if let Some(fields) = entry.fields.as_ref() {
+						// TODO: Implement copy-on-write to increase reuse
+						out.extend(fields.iter().map(|(key, val)| (key.clone(), val.clone())));
+					}
+				}
+			}
+
+			while let Some(fields) = tasks.join_next().await {
+				let fields = match fields {
+					Ok(Ok(ret)) => ret,
+					Ok(Err(err)) => {
+						warn!("{err}");
+						continue;
+					}
+					Err(err) => {
+						warn!("join error {err}");
+						continue;
+					}
+				};
+				for (key, type_) in fields {
+					out.insert_checked(key.into_usize() as u64, type_);
+					fields_set.insert_str(interner().resolve(&key), ());
+				}
+			}
+
+			log::info!(
+				"[{}] Populated {} fields in {}ms",
+				model_name,
+				out.len(),
+				t0.elapsed().as_millis()
+			);
+			let mut entry = self
+				.try_get_mut(&model)
+				.expect(format_loc!("deadlock"))
+				.expect(format_loc!("no entry"));
+			entry.fields = Some(out);
+			entry.fields_set = fields_set;
+			entry
+		})))
+	}
+	/// For completing a `Model.write({'foo.bar.baz': ..})`:
+	/// - `model` is the key of `Model`
+	/// - `needle` is a left substring of 'foo.bar.baz'
+	/// - `range` spans the entire range of 'foo.bar.baz'
+	///
+	/// Returns None if resolution fails before `needle` is exhausted.
+	pub async fn resolve_mapped(
+		&self,
+		model: &mut Spur,
+		needle: &mut &str,
+		mut range: Option<&mut ByteRange>,
+	) -> Option<()> {
+		while let Some((lhs, rhs)) = needle.split_once('.') {
+			debug!("mapped {needle}");
+			// lhs: foo
+			// rhs: ba
+			*needle = rhs;
+			let fields = self.populate_field_names(model.clone().into(), &[])?.await;
+			let field = interner().get(&lhs)?;
+			let field = fields.fields.as_ref()?.get(&field.into());
+			let FieldKind::Relational(rel) = field?.kind else {
+				return None;
+			};
+			*model = rel;
+			// old range: foo.bar.baz
+			// range:         bar.baz
+			if let Some(range) = range.as_mut() {
+				let start = range.start.0 + lhs.len() + 1;
+				**range = ByteOffset(start)..range.end;
+			}
+		}
+		Some(())
+	}
+	pub async fn normalize_field_relation(&self, field: Symbol<FieldName>, model: Spur) -> Option<Spur> {
+		let model_entry = self.get(&model.into())?;
+		let field_entry = model_entry.fields.as_ref()?.get(&field)?;
+		let mut kind = field_entry.kind.clone();
+		let mut field_model = model.clone();
+		if let FieldKind::Related(related) = &field_entry.kind {
+			debug!(
+				"related={related} field={} model={}",
+				interner().resolve(&field),
+				interner().resolve(&model)
+			);
+			let related = related.clone();
+			let mut related = related.as_str();
+			drop(model_entry);
+			if self
+				.resolve_mapped(&mut field_model, &mut related, None)
+				.await
+				.is_some()
+			{
+				kind = FieldKind::Relational(field_model.into());
+				let mut model_entry = self.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
+				model_entry.fields.as_mut()?.get_mut(&field)?.kind = kind.clone();
+			} else {
+				warn!("(normalize_field_kind) failed to normalize {related}");
+			}
+		}
+
+		match kind {
+			FieldKind::Relational(rel) => Some(rel.clone()),
+			FieldKind::Value => None,
+			FieldKind::Related(_) => None,
+		}
+	}
 }
 
 query! {
@@ -198,5 +462,37 @@ impl ModelEntry {
 		}
 
 		Ok(())
+	}
+}
+
+/// `node` must be `[(string) (concatenated_string)]`
+fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
+	let mut cursor = node.walk();
+	match node.kind() {
+		"string" => {
+			let content = node
+				.children(&mut cursor)
+				.find_map(|child| (child.kind() == "string_content").then(|| &contents[child.byte_range()]));
+			String::from_utf8_lossy(content.unwrap_or(&[]))
+		}
+		"concatenated_string" => {
+			let mut content = vec![];
+			for string in node.children(&mut cursor) {
+				if string.kind() == "string" {
+					let mut cursor = string.walk();
+					let children = string.children(&mut cursor).find_map(|child| {
+						(child.kind() == "string_content").then(|| {
+							String::from_utf8_lossy(&contents[child.byte_range()])
+								.trim()
+								.replace("\\n", "  \n")
+								.replace("\\t", "\t")
+						})
+					});
+					content.extend(children);
+				}
+			}
+			Cow::from(content.join(" "))
+		}
+		_ => unreachable!(),
 	}
 }

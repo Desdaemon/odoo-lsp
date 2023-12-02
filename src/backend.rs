@@ -232,7 +232,7 @@ impl Backend {
 		}
 		let model_key = interner().get_or_intern(&model);
 		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
-		let Some(entry) = self.populate_field_names(model_key.into(), &[]) else {
+		let Some(entry) = self.index.models.populate_field_names(model_key.into(), &[]) else {
 			return Ok(());
 		};
 		let entry = entry.await;
@@ -373,7 +373,7 @@ impl Backend {
 	pub async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model_key = interner().get_or_intern(model);
 		let field = some!(interner().get(field));
-		let entry = some!(self.populate_field_names(model_key.into(), &[])).await;
+		let entry = some!(self.index.models.populate_field_names(model_key.into(), &[])).await;
 		let field = some!(entry.fields.as_ref()).get(&field.into());
 		Ok(Some(some!(field).location.clone().into()))
 	}
@@ -391,7 +391,7 @@ impl Backend {
 	) -> miette::Result<Option<Hover>> {
 		let model_key = interner().get_or_intern(model);
 		let field = some!(interner().get(name));
-		let fields = some!(self.populate_field_names(model_key.into(), &[])).await;
+		let fields = some!(self.index.models.populate_field_names(model_key.into(), &[])).await;
 		let field = some!(fields.fields.as_ref()).get(&field.into());
 		Ok(Some(Hover {
 			range,
@@ -526,7 +526,7 @@ impl Backend {
 		let type_ = interner().resolve(&field.type_);
 		if signature {
 			match &field.kind {
-				FieldKind::Value => {
+				FieldKind::Value | FieldKind::Related(_) => {
 					out = format!(concat!("```python\n", "{} = fields.{}(…)\n", "```\n\n"), name, type_)
 				}
 				FieldKind::Relational(relation) => {

@@ -17,7 +17,6 @@ use tower_lsp::{LanguageServer, LspService, Server};
 
 use odoo_lsp::config::Config;
 use odoo_lsp::index::{interner, Interner};
-use odoo_lsp::model::FieldKind;
 use odoo_lsp::{format_loc, some, utils::*};
 
 mod analyze;
@@ -462,7 +461,7 @@ impl LanguageServer for Backend {
 					}))
 				}
 				Some(CompletionItemKind::FIELD) => {
-					// NOTE: This was injected by complete().
+					// NOTE: This was injected by complete_field_name().
 					let Some(Value::String(value)) = &completion.data else {
 						break 'resolve;
 					};
@@ -473,22 +472,32 @@ impl LanguageServer for Backend {
 					let Some(model) = interner().get(value) else {
 						break 'resolve;
 					};
-					let Some(entry) = self.index.models.get(&model.into()) else {
+					let Some(mut entry) = self
+						.index
+						.models
+						.try_get_mut(&model.into())
+						.expect(format_loc!("deadlock"))
+					else {
 						break 'resolve;
 					};
-					let Some(fields) = &entry.fields else { break 'resolve };
-					if let Some(field) = fields.get(&field.into()) {
-						let type_ = interner().resolve(&field.type_);
-						completion.detail = match field.kind {
-							FieldKind::Value => Some(format!("{type_}(…)")),
-							FieldKind::Relational(relation) => {
+					let Some(fields) = &mut entry.fields else {
+						break 'resolve;
+					};
+					let field_entry = fields.get(&field.into()).cloned();
+					drop(entry);
+					if let Some(field_entry) = field_entry {
+						let type_ = interner().resolve(&field_entry.type_);
+						completion.detail = match self.index.models.normalize_field_relation(field.into(), model).await
+						{
+							None => Some(format!("{type_}(…)")),
+							Some(relation) => {
 								let relation = interner().resolve(&relation);
 								Some(format!("{type_}(\"{relation}\", …)"))
 							}
 						};
 						completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 							kind: MarkupKind::Markdown,
-							value: self.field_docstring(field_name, field, false),
+							value: self.field_docstring(field_name, &field_entry, false),
 						}))
 					}
 				}

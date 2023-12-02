@@ -6,7 +6,7 @@ use tree_sitter::{Node, QueryCursor};
 
 use odoo_lsp::{
 	index::interner,
-	model::{FieldKind, ModelName},
+	model::ModelName,
 	utils::{ByteRange, Erase, PreTravel, RangeExt},
 	ImStr,
 };
@@ -323,13 +323,10 @@ impl Backend {
 						};
 						let ident = String::from_utf8_lossy(ident);
 						let ident = interner.get_or_intern(ident.as_ref());
-						let entry = self.populate_field_names(model, &[])?;
-						let entry = block_on(entry);
-						let field = entry.fields.as_ref()?.get(&ident.into())?;
-						match field.kind {
-							FieldKind::Relational(model) => Some(Type::Model(interner.resolve(&model).into())),
-							FieldKind::Value => None,
-						}
+						block_on(self.index.models.populate_field_names(model, &[])?);
+						let relation =
+							block_on(self.index.models.normalize_field_relation(ident.into(), model.into()))?;
+						Some(Type::Model(interner.resolve(&relation).into()))
 					}
 					_ => None,
 				}

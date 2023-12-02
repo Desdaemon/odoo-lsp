@@ -35,6 +35,13 @@ impl<T> From<Spur> for Symbol<T> {
 	}
 }
 
+impl<T> From<Symbol<T>> for Spur {
+	#[inline]
+	fn from(value: Symbol<T>) -> Self {
+		value.inner
+	}
+}
+
 impl<T> Clone for Symbol<T> {
 	#[inline]
 	fn clone(&self) -> Self {
