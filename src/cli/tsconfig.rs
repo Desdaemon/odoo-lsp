@@ -12,10 +12,10 @@ use ts_macros::query_js;
 pub type DefineIndex = DashMap<Spur, Vec<ImStr>>;
 
 query_js! {
-	OdooDefines(NAME, PRAGMA);
+	OdooDefines(PRAGMA, NAME);
 r#"
 ((program . (comment) @PRAGMA)
-(#match? @PRAGMA "@odoo-module alias="))
+(#match? @PRAGMA "odoo-module alias="))
 
 ((program (expression_statement
 	(call_expression
@@ -41,11 +41,8 @@ pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> mi
 	for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
 		debug!("{} captures in {}", match_.captures.len(), interner().resolve(&file));
 		if let Some(name) = match_.nodes_for_capture_index(OdooDefines::NAME).next() {
-			let range = name.byte_range().shrink(1);
-			if !range.is_empty() {
-				let name = String::from_utf8_lossy(&contents[range]);
-				index.entry(file).or_default().push(name.as_ref().into());
-			}
+			let name = String::from_utf8_lossy(&contents[name.byte_range().shrink(1)]);
+			index.entry(file).or_default().push(name.as_ref().into());
 		} else if let Some(pragma) = match_.nodes_for_capture_index(OdooDefines::PRAGMA).next() {
 			let text = &contents[pragma.byte_range()];
 			// find alias=..

@@ -4,6 +4,7 @@ use globwalk::FileType;
 use log::{debug, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use odoo_lsp::{
+	config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig},
 	format_loc,
 	index::{interner, Index},
 };
@@ -11,19 +12,33 @@ use serde_json::Value;
 
 mod tsconfig;
 
-pub enum Command<'a> {
+#[derive(Default)]
+pub struct Args<'a> {
+	pub addons_path: Vec<&'a str>,
+	pub output: Option<&'a str>,
+	pub command: Command,
+}
+
+#[derive(Default)]
+pub enum Command {
+	#[default]
 	Run,
-	TsConfig {
-		addons_path: Vec<&'a str>,
-		output: Option<&'a Path>,
+	Init {
+		tsconfig: bool,
 	},
+	TsConfig,
 }
 
 const HELP: &str = "Language server for Odoo Python/JS/XML
 
 USAGE:
 	odoo-lsp
+		Runs the language server
+	odoo-lsp init --addons-path ..
+		Generate a config file for the server
+		Files named `.odoo_lsp` and `.odoo_lsp.json` are recognized
 	odoo-lsp tsconfig --addons-path ..
+		Generate a tsconfig.json file for TypeScript support
 
 OPTIONS:
 	-h, --help
@@ -31,20 +46,23 @@ OPTIONS:
 	-o, --out
 		Specify the path to store the output.
 	--addons-path PATH
-		[tsconfig only] Specifies the roots of the addons.
+		Specifies the roots of the addons.
 		Can be specified multiple times, or as a comma-separated list of paths.
+	--tsconfig
+		[init] Also generates a tsconfig.json file
 ";
 
-pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Command<'r> {
-	let mut out = Command::Run;
+pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
+	let mut out = Args::default();
 	loop {
 		match args {
 			["tsconfig", rest @ ..] => {
 				args = rest;
-				out = Command::TsConfig {
-					addons_path: Vec::new(),
-					output: None,
-				};
+				out.command = Command::TsConfig;
+			}
+			["init", rest @ ..] => {
+				args = rest;
+				out.command = Command::Init { tsconfig: false };
 			}
 			["-h" | "--help", ..] => {
 				eprintln!("{HELP}");
@@ -52,17 +70,16 @@ pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Command<'r> {
 			}
 			["--addons-path", path, rest @ ..] => {
 				args = rest;
-				if let Command::TsConfig { addons_path, .. } = &mut out {
-					addons_path.extend(path.split(","));
-				} else {
-					eprintln!("--addons-path is only supported by tsconfig.");
-					exit(1);
-				}
+				out.addons_path.extend(path.split(','));
 			}
 			["-o" | "--out", path, rest @ ..] => {
 				args = rest;
-				if let Command::TsConfig { output, .. } = &mut out {
-					*output = Some(Path::new(path));
+				out.output = Some(path);
+			}
+			["--tsconfig", rest @ ..] => {
+				args = rest;
+				if let Command::Init { tsconfig } = &mut out.command {
+					*tsconfig = true;
 				}
 			}
 			[] => break,
@@ -76,7 +93,7 @@ pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Command<'r> {
 	out
 }
 
-pub async fn tsconfig(addons_path: &[&str], output: Option<&Path>) -> miette::Result<()> {
+pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Result<()> {
 	let addons_path = addons_path
 		.iter()
 		.map(|path| canonicalize(path).into_diagnostic())
@@ -229,17 +246,43 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&Path>) -> miette::Re
 			"/**/*.markdown",
 			"/**/*.key",
 			"/**/*.ico"
-		  ]
+		]
 	}};
 
-	if let Some(output) = output {
+	let output = output.unwrap_or("tsconfig.json");
+	if output == "-" {
+		serde_json::to_writer_pretty(stdout(), &tsconfig).into_diagnostic()
+	} else {
 		let file = std::fs::OpenOptions::new()
 			.write(true)
-			.truncate(true)
+			.create(true)
 			.open(output)
 			.into_diagnostic()?;
-		serde_json::to_writer_pretty(file, &tsconfig).into_diagnostic()
+		serde_json::to_writer_pretty(file, &tsconfig).into_diagnostic()?;
+		eprintln!("TypeScript config file generated at {output}");
+		Ok(())
+	}
+}
+
+pub fn init(addons_path: &[&str], output: Option<&str>) -> miette::Result<()> {
+	let config = Config {
+		module: Some(ModuleConfig {
+			roots: Some(addons_path.iter().map(ToString::to_string).collect()),
+		}),
+		symbols: Some(SymbolsConfig { limit: Some(80) }),
+		references: Some(ReferencesConfig { limit: Some(80) }),
+	};
+	let output = output.unwrap_or(".odoo_lsp");
+	if output == "-" {
+		serde_json::to_writer_pretty(stdout(), &config).into_diagnostic()
 	} else {
-		serde_json::to_writer_pretty(stdout(), &tsconfig).into_diagnostic()
+		let file = std::fs::OpenOptions::new()
+			.write(true)
+			.create(true)
+			.open(output)
+			.into_diagnostic()?;
+		serde_json::to_writer_pretty(file, &config).into_diagnostic()?;
+		eprintln!("Config file generated at {output}");
+		Ok(())
 	}
 }

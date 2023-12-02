@@ -202,7 +202,7 @@ impl<T> Report for miette::Result<T> {
 	/// Consumes self and reports the results of a computation.
 	fn report<S: Display>(self, context: impl FnOnce() -> S) {
 		if let Err(err) = self {
-			warn!("{}:\n{err}", context());
+			eprintln!("{}:\n{err}", context());
 		}
 	}
 }

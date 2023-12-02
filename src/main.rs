@@ -612,12 +612,22 @@ async fn main() {
 
 	let args = std::env::args().collect::<Vec<_>>();
 	let args = args.iter().skip(1).map(String::as_str).collect::<Vec<_>>();
-	match cli::parse_args(&args[..]) {
+	let args = cli::parse_args(&args[..]);
+	match args.command {
 		cli::Command::Run => {}
-		cli::Command::TsConfig { addons_path, output } => {
-			return cli::tsconfig(&addons_path, output)
+		cli::Command::TsConfig => {
+			return cli::tsconfig(&args.addons_path, args.output)
 				.await
 				.report(|| format_loc!("tsconfig failed"))
+		}
+		cli::Command::Init { tsconfig } => {
+			cli::init(&args.addons_path, args.output).report(|| format_loc!("init failed"));
+			if tsconfig {
+				cli::tsconfig(&args.addons_path, None)
+					.await
+					.report(|| format_loc!("tsconfig failed"));
+			}
+			return;
 		}
 	}
 
