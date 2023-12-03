@@ -1,14 +1,14 @@
 use std::borrow::Cow;
 use std::fmt::Display;
-use std::future::ready;
 use std::ops::Deref;
 
 use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
 use lasso::{Key, Spur};
-use log::{debug, warn};
+use log::{debug, error, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use qp_trie::{wrapper::BString, Trie};
+use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
 use tree_sitter::{Node, Parser, QueryCursor};
@@ -16,7 +16,6 @@ use ts_macros::query;
 
 use crate::index::{interner, Interner, Symbol, SymbolMap};
 use crate::str::Text;
-use crate::utils::future::FutureOr;
 use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt};
 use crate::{format_loc, ImStr};
 
@@ -187,31 +186,32 @@ impl ModelIndex {
 		&'model self,
 		model: ModelName,
 		locations_filter: &'model [Spur],
-	) -> Option<FutureOr<RefMut<'model, ModelName, ModelEntry>>> {
+	) -> Option<RefMut<'model, ModelName, ModelEntry>> {
 		let model_name = interner().resolve(&model);
 		let entry = self.try_get_mut(&model).expect(format_loc!("deadlock"))?;
 		if entry.fields.is_some() && locations_filter.is_empty() {
-			return Some(FutureOr::Ready(ready(entry)));
+			return Some(entry);
 		}
 		let t0 = std::time::Instant::now();
 		let locations = entry.base.iter().chain(&entry.descendants).cloned().collect::<Vec<_>>();
 
 		let query = ModelFields::query();
-		let mut tasks = tokio::task::JoinSet::<miette::Result<_>>::new();
-		for ModelLocation(location, byte_range) in locations {
-			if !locations_filter.is_empty() && !locations_filter.contains(&location.path) {
-				continue;
-			}
-			tasks.spawn(async move {
+		let fields = locations
+			.into_par_iter()
+			.filter_map(|ModelLocation(location, byte_range)| {
+				if !locations_filter.is_empty() && !locations_filter.contains(&location.path) {
+					return None;
+				}
 				let mut fields = vec![];
-				let contents = tokio::fs::read(interner().resolve(&location.path))
-					.await
-					.into_diagnostic()?;
+				let fpath = interner().resolve(&location.path);
+				let contents = std::fs::read(fpath)
+					.map_err(|err| error!("Failed to read {fpath}:\n{err}"))
+					.ok()?;
 				let mut parser = Parser::new();
-				parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
-				let ast = parser
-					.parse(&contents, None)
-					.ok_or_else(|| diagnostic!("AST not built"))?;
+				parser
+					.set_language(tree_sitter_python::language())
+					.expect(format_loc!("Failed to set language"));
+				let ast = parser.parse(&contents, None)?;
 				let byte_range = byte_range.erase();
 				let mut cursor = QueryCursor::new();
 				cursor.set_byte_range(byte_range);
@@ -304,60 +304,46 @@ impl ModelIndex {
 						))
 					}
 				}
-				Ok(fields)
-			});
+				Some(fields)
+			})
+			.flatten_iter();
+
+		let ancestors = entry.ancestors.iter().cloned().collect::<Vec<_>>();
+		let mut out = SymbolMap::default();
+		let mut fields_set = qp_trie::Trie::new();
+
+		// drop to prevent deadlock
+		drop(entry);
+
+		// recursively get or populate ancestors' fields
+		for ancestor in ancestors {
+			if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
+				// let entry = entry.await;
+				if let Some(fields) = entry.fields.as_ref() {
+					// TODO: Implement copy-on-write to increase reuse
+					out.extend(fields.iter().map(|(key, val)| (key.clone(), val.clone())));
+				}
+			}
 		}
-		Some(FutureOr::Pending(Box::pin(async move {
-			let ancestors = entry.ancestors.iter().cloned().collect::<Vec<_>>();
-			let mut out = SymbolMap::default();
-			let mut fields_set = qp_trie::Trie::new();
 
-			// drop to prevent deadlock
-			drop(entry);
+		for (key, type_) in fields.collect::<Vec<_>>() {
+			out.insert_checked(key.into_usize() as u64, type_);
+			fields_set.insert_str(interner().resolve(&key), ());
+		}
 
-			// recursively get or populate ancestors' fields
-			for ancestor in ancestors {
-				if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
-					let entry = entry.await;
-					if let Some(fields) = entry.fields.as_ref() {
-						// TODO: Implement copy-on-write to increase reuse
-						out.extend(fields.iter().map(|(key, val)| (key.clone(), val.clone())));
-					}
-				}
-			}
-
-			while let Some(fields) = tasks.join_next().await {
-				let fields = match fields {
-					Ok(Ok(ret)) => ret,
-					Ok(Err(err)) => {
-						warn!("{err}");
-						continue;
-					}
-					Err(err) => {
-						warn!("join error {err}");
-						continue;
-					}
-				};
-				for (key, type_) in fields {
-					out.insert_checked(key.into_usize() as u64, type_);
-					fields_set.insert_str(interner().resolve(&key), ());
-				}
-			}
-
-			log::info!(
-				"[{}] Populated {} fields in {}ms",
-				model_name,
-				out.len(),
-				t0.elapsed().as_millis()
-			);
-			let mut entry = self
-				.try_get_mut(&model)
-				.expect(format_loc!("deadlock"))
-				.expect(format_loc!("no entry"));
-			entry.fields = Some(out);
-			entry.fields_set = fields_set;
-			entry
-		})))
+		log::info!(
+			"[{}] Populated {} fields in {}ms",
+			model_name,
+			out.len(),
+			t0.elapsed().as_millis()
+		);
+		let mut entry = self
+			.try_get_mut(&model)
+			.expect(format_loc!("deadlock"))
+			.expect(format_loc!("no entry"));
+		entry.fields = Some(out);
+		entry.fields_set = fields_set;
+		Some(entry)
 	}
 	/// For completing a `Model.write({'foo.bar.baz': ..})`:
 	/// - `model` is the key of `Model`
@@ -365,18 +351,13 @@ impl ModelIndex {
 	/// - `range` spans the entire range of 'foo.bar.baz'
 	///
 	/// Returns None if resolution fails before `needle` is exhausted.
-	pub async fn resolve_mapped(
-		&self,
-		model: &mut Spur,
-		needle: &mut &str,
-		mut range: Option<&mut ByteRange>,
-	) -> Option<()> {
+	pub fn resolve_mapped(&self, model: &mut Spur, needle: &mut &str, mut range: Option<&mut ByteRange>) -> Option<()> {
 		while let Some((lhs, rhs)) = needle.split_once('.') {
 			debug!("mapped {needle}");
 			// lhs: foo
 			// rhs: ba
 			*needle = rhs;
-			let fields = self.populate_field_names(model.clone().into(), &[])?.await;
+			let fields = self.populate_field_names(model.clone().into(), &[])?;
 			let field = interner().get(&lhs)?;
 			let field = fields.fields.as_ref()?.get(&field.into());
 			let FieldKind::Relational(rel) = field?.kind else {
@@ -392,7 +373,7 @@ impl ModelIndex {
 		}
 		Some(())
 	}
-	pub async fn normalize_field_relation(&self, field: Symbol<FieldName>, model: Spur) -> Option<Spur> {
+	pub fn normalize_field_relation(&self, field: Symbol<FieldName>, model: Spur) -> Option<Spur> {
 		let model_entry = self.get(&model.into())?;
 		let field_entry = model_entry.fields.as_ref()?.get(&field)?;
 		let mut kind = field_entry.kind.clone();
@@ -406,11 +387,7 @@ impl ModelIndex {
 			let related = related.clone();
 			let mut related = related.as_str();
 			drop(model_entry);
-			if self
-				.resolve_mapped(&mut field_model, &mut related, None)
-				.await
-				.is_some()
-			{
+			if self.resolve_mapped(&mut field_model, &mut related, None).is_some() {
 				kind = FieldKind::Relational(field_model.into());
 				let mut model_entry = self.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
 				model_entry.fields.as_mut()?.get_mut(&field)?.kind = kind.clone();

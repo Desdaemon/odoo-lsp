@@ -124,19 +124,12 @@ struct Mapped<'text> {
 }
 
 impl Backend {
-	pub async fn on_change_python(
-		&self,
-		text: &Text,
-		uri: &Url,
-		rope: Rope,
-		old_rope: Option<Rope>,
-	) -> miette::Result<()> {
+	pub fn on_change_python(&self, text: &Text, uri: &Url, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
 			.set_language(tree_sitter_python::language())
 			.expect("bug: failed to init python parser");
-		self.update_ast(text, uri, rope.clone(), old_rope, parser)?;
-		Ok(())
+		self.update_ast(text, uri, rope.clone(), old_rope, parser)
 	}
 	pub async fn update_models(&self, text: Text, uri: &Url, rope: Rope) -> miette::Result<()> {
 		let text = match text {
@@ -157,16 +150,12 @@ impl Backend {
 						.map(|sym| interner().get_or_intern(&sym).into())
 						.collect();
 					drop(entry);
-					if let Some(fut) = self.index.models.populate_field_names(model_key.into(), &[path]) {
-						fut.await;
-					}
+					self.index.models.populate_field_names(model_key.into(), &[path]);
 				}
 				ModelType::Inherit(inherits) => {
 					let Some(model) = inherits.first() else { continue };
 					let model_key = interner().get(model).unwrap();
-					if let Some(fut) = self.index.models.populate_field_names(model_key.into(), &[path]) {
-						fut.await;
-					}
+					self.index.models.populate_field_names(model_key.into(), &[path]);
 				}
 			}
 		}
@@ -190,7 +179,8 @@ impl Backend {
 			return Ok(None);
 		};
 		let mut cursor = tree_sitter::QueryCursor::new();
-		let contents = rope.bytes().collect::<Vec<_>>();
+		let contents = Cow::from(rope.clone());
+		let contents = contents.as_bytes();
 		let query = PyCompletions::query();
 		let mut items = MaxVec::new(Self::LIMIT);
 		let mut early_return = None;
@@ -342,12 +332,10 @@ impl Backend {
 				let mut model = some!(interner().get(&model));
 				let mut range = range.map_unit(|unit| ByteOffset(rope.char_to_byte(unit.0)));
 				if !single_field {
-					some!(
-						self.index
-							.models
-							.resolve_mapped(&mut model, &mut needle, Some(&mut range))
-							.await
-					);
+					some!(self
+						.index
+						.models
+						.resolve_mapped(&mut model, &mut needle, Some(&mut range)));
 				}
 				let model_name = interner().resolve(&model);
 				let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit.0)));
@@ -426,7 +414,8 @@ impl Backend {
 		else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
-		let contents = rope.bytes().collect::<Vec<_>>();
+		let contents = Cow::from(rope.clone());
+		let contents = contents.as_bytes();
 		enum EarlyReturn<'a> {
 			Access(Cow<'a, str>, &'a str),
 			Mapped(Mapped<'a>),
@@ -511,12 +500,10 @@ impl Backend {
 				let mut model = interner().get_or_intern(&model);
 				let mut range = range.map_unit(|unit| ByteOffset(rope.char_to_byte(unit.0)));
 				if !single_field {
-					some!(
-						self.index
-							.models
-							.resolve_mapped(&mut model, &mut needle, Some(&mut range))
-							.await
-					);
+					some!(self
+						.index
+						.models
+						.resolve_mapped(&mut model, &mut needle, Some(&mut range)));
 				}
 				let model = interner().resolve(&model);
 				return self.jump_def_field_name(needle, model).await;
@@ -525,18 +512,19 @@ impl Backend {
 		}
 		Ok(None)
 	}
-	pub fn python_references(
-		&self,
-		params: ReferenceParams,
-		rope: Rope,
-		ast: Tree,
-	) -> miette::Result<Option<Vec<Location>>> {
+	pub fn python_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope.clone()) else {
 			return Ok(None);
 		};
+		let uri = &params.text_document_position.text_document.uri;
+		let ast = self
+			.ast_map
+			.get(uri.path())
+			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
-		let contents = rope.bytes().collect::<Vec<_>>();
+		let contents = Cow::from(rope.clone());
+		let contents = contents.as_bytes();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let current_module = self
 			.index
@@ -588,7 +576,8 @@ impl Backend {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
 
-		let contents = rope.bytes().collect::<Vec<_>>();
+		let contents = Cow::from(rope.clone());
+		let contents = contents.as_bytes();
 		enum EarlyReturn<'text> {
 			Access {
 				field: Cow<'text, str>,
@@ -690,12 +679,10 @@ impl Backend {
 				let mut model = interner().get_or_intern(&model);
 				let mut range = range.map_unit(|unit| ByteOffset(rope.char_to_byte(unit.0)));
 				if !single_field {
-					some!(
-						self.index
-							.models
-							.resolve_mapped(&mut model, &mut needle, Some(&mut range))
-							.await
-					);
+					some!(self
+						.index
+						.models
+						.resolve_mapped(&mut model, &mut needle, Some(&mut range)));
 				}
 				let model = interner().resolve(&model);
 				return self

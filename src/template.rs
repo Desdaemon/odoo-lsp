@@ -1,11 +1,12 @@
 use lasso::Spur;
+use log::debug;
 use miette::diagnostic;
 use ropey::Rope;
 use tower_lsp::lsp_types::{Position, Range};
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
 use crate::index::{interner, Symbol};
-use crate::utils::{char_to_position, CharOffset, MinLoc};
+use crate::utils::{char_to_position, offset_to_position, ByteOffset, CharOffset, MinLoc};
 
 #[derive(Default, Debug)]
 pub struct Template {
@@ -29,6 +30,7 @@ pub fn gather_templates(
 	reader: &mut Tokenizer,
 	document: Rope,
 	templates: &mut Vec<NewTemplate>,
+	legacy: bool,
 ) -> miette::Result<()> {
 	let mut root_tag = None;
 	let mut tag_start = 0;
@@ -38,6 +40,7 @@ pub fn gather_templates(
 	let mut t_name = None;
 	let mut t_inherit = None;
 	let mut base = true;
+	let wrapper = if legacy { "template" } else { "templates" };
 
 	loop {
 		match reader.next() {
@@ -58,7 +61,7 @@ pub fn gather_templates(
 					ElementEnd::Close(_, tag_end) if matches!(root_tag, Some(tag) if tag == tag_end) => {
 						stack -= 1;
 					}
-					ElementEnd::Close(_, templates) if templates == "templates" => {
+					ElementEnd::Close(_, templates) if templates == wrapper => {
 						stack = 0;
 						templates_end = true;
 					}
@@ -81,9 +84,9 @@ pub fn gather_templates(
 						}
 					};
 					let name = interner().get_or_intern(name).into();
-					let start = char_to_position(CharOffset(tag_start), document.clone())
+					let start = offset_to_position(ByteOffset(tag_start), document.clone())
 						.ok_or_else(|| diagnostic!("qweb_templates start <- tag_start"))?;
-					let end = char_to_position(CharOffset(span.end()), document.clone())
+					let end = offset_to_position(ByteOffset(span.end()), document.clone())
 						.ok_or_else(|| diagnostic!("qweb_templates end <- span.end()"))?;
 					let range = Range { start, end };
 					templates.push(NewTemplate {
@@ -145,6 +148,8 @@ pub fn gather_templates(
 
 #[cfg(test)]
 mod tests {
+	use crate::utils::init_for_test;
+
 	use super::*;
 
 	#[test]
@@ -173,7 +178,14 @@ mod tests {
 		let rope = Rope::from_str(contents);
 		_ = reader.next();
 
-		gather_templates(interner().get_or_intern_static(""), &mut reader, rope, &mut templates).unwrap();
+		gather_templates(
+			interner().get_or_intern_static(""),
+			&mut reader,
+			rope,
+			&mut templates,
+			false,
+		)
+		.unwrap();
 
 		assert!(
 			matches!(
@@ -191,5 +203,40 @@ mod tests {
 		assert_eq!(interner().resolve(&templates[1].name), "second");
 		assert_eq!(interner().resolve(&templates[2].name), "first");
 		assert_eq!(interner().resolve(&templates[3].name), "primary_inherit");
+	}
+	#[test]
+	fn test_with_xml_decl() {
+		init_for_test();
+
+		let mut templates = vec![];
+		let contents = r#"<?xml version="1.0" encoding="UTF-8"?>
+<templates id="template" xml:space="preserve">
+
+    <t t-name="Draggable" owl="1">
+        <t t-slot="default"></t>
+    </t>
+
+</templates>
+
+		"#;
+		let mut reader = Tokenizer::from(contents);
+		let rope = Rope::from_str(contents);
+		_ = reader.next();
+		_ = reader.next();
+
+		gather_templates(
+			interner().get_or_intern_static(""),
+			&mut reader,
+			rope,
+			&mut templates,
+			false,
+		)
+		.unwrap();
+
+		assert!(
+			matches!(&templates[..], [NewTemplate { base: true, .. },]),
+			"{templates:#?}"
+		);
+		assert_eq!(interner().resolve(&templates[0].name), "Draggable");
 	}
 }

@@ -59,7 +59,7 @@ impl Backend {
 		loop {
 			match reader.next() {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
-					let offset = CharOffset(span.start());
+					let offset = ByteOffset(span.start());
 					if matches!(local.as_str(), "record" | "template" | "menuitem") {
 						let record = match local.as_str() {
 							"record" => {
@@ -71,7 +71,24 @@ impl Backend {
 						};
 						let record = match record {
 							Ok(Some(rec)) => rec,
-							Ok(None) => continue,
+							Ok(None) => {
+								if local.as_str() != "template" {
+									continue;
+								}
+								// legacy <templates /> container without id=
+								let mut entries = vec![];
+								if let Err(err) =
+									gather_templates(path_uri, &mut reader, rope.clone(), &mut entries, true)
+								{
+									warn!("gather_templates failed: {err}");
+									continue;
+								}
+								record_ranges.extend(entries.into_iter().map(|entry| {
+									lsp_range_to_char_range(entry.template.location.unwrap().range, rope.clone())
+										.unwrap()
+								}));
+								continue;
+							}
 							Err(err) => {
 								warn!(
 									"{} could not be completely parsed: {}\n{err}",
@@ -96,7 +113,7 @@ impl Backend {
 							.await;
 					} else if local.as_str() == "templates" {
 						let mut entries = vec![];
-						if let Err(err) = gather_templates(path_uri, &mut reader, rope.clone(), &mut entries) {
+						if let Err(err) = gather_templates(path_uri, &mut reader, rope.clone(), &mut entries, false) {
 							warn!("gather_templates failed: {err}");
 							continue;
 						}
@@ -150,7 +167,11 @@ impl Backend {
 			return Ok((slice, cursor_by_char, 0));
 		};
 		let record_range = &ranges.value()[record];
-		debug!("(record_slice) {:?} cursor={}", record_range, cursor_by_char);
+		debug!(
+			"(record_slice) found {:?}, cursor={}",
+			record_range.erase(),
+			cursor_by_char
+		);
 		let relative_offset = rope.try_byte_to_char(record_range.start.0).into_diagnostic()?;
 		cursor_by_char = cursor_by_char.saturating_sub(relative_offset);
 
@@ -190,7 +211,7 @@ impl Backend {
 			RefKind::Ref(relation) => {
 				let model_key = some!(model_filter);
 				let model = some!(interner().get(&model_key));
-				let fields = some!(self.index.models.populate_field_names(model.into(), &[])).await;
+				let fields = some!(self.index.models.populate_field_names(model.into(), &[]));
 				let fields = some!(fields.fields.as_ref());
 				let Some(Field {
 					kind: FieldKind::Relational(relation),
@@ -251,8 +272,10 @@ impl Backend {
 				let model = some!(model_filter);
 				self.jump_def_field_name(&cursor_value, &model).await
 			}
-			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.jump_def_template_name(&cursor_value),
-			Some(RefKind::Id) | Some(RefKind::TName) | None => Ok(None),
+			Some(RefKind::TInherit) | Some(RefKind::TName) | Some(RefKind::TCall) => {
+				self.jump_def_template_name(&cursor_value)
+			}
+			Some(RefKind::Id) | None => Ok(None),
 		}
 	}
 	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {

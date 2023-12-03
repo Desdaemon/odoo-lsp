@@ -16,7 +16,7 @@ use xmlparser::{Token, Tokenizer};
 
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
-use crate::utils::{ts_range_to_lsp_range, ByteOffset, CharOffset, RangeExt};
+use crate::utils::{ts_range_to_lsp_range, ByteOffset, RangeExt};
 use crate::{format_loc, ImStr};
 
 mod record;
@@ -28,6 +28,7 @@ pub use crate::template::{Template, TemplateName};
 pub use template::TemplateIndex;
 mod component;
 pub use crate::component::{Component, ComponentName};
+pub use component::ComponentQuery;
 
 use crate::template::{gather_templates, NewTemplate};
 
@@ -84,8 +85,9 @@ impl Index {
 		}
 
 		let t0 = tokio::time::Instant::now();
-		let modules = globwalk::glob_builder(format!("{root}/**/__manifest__.py"))
+		let manifests = globwalk::glob_builder(format!("{root}/**/__manifest__.py"))
 			.file_type(FileType::FILE | FileType::SYMLINK)
+			.follow_links(true)
 			.build()
 			.into_diagnostic()
 			.with_context(|| format!("Could not glob into {root}"))?;
@@ -93,10 +95,10 @@ impl Index {
 		let mut module_count = 0;
 		let mut outputs = tokio::task::JoinSet::new();
 		let interner = interner();
-		for module in modules {
+		for manifest in manifests {
 			module_count += 1;
-			let module = module.into_diagnostic()?;
-			let module_dir = &module
+			let manifest = manifest.into_diagnostic()?;
+			let module_dir = manifest
 				.path()
 				.parent()
 				.ok_or_else(|| miette::diagnostic!("Unexpected empty path"))?;
@@ -124,7 +126,7 @@ impl Index {
 				.follow_links(true)
 				.build()
 				.into_diagnostic()
-				.with_context(|| format_loc!("Could not glob into {:?}", module.path()))?;
+				.with_context(|| format_loc!("Could not glob into {:?}", manifest.path()))?;
 			for xml in xmls {
 				let xml = match xml {
 					Ok(entry) => entry,
@@ -140,7 +142,7 @@ impl Index {
 				.follow_links(true)
 				.build()
 				.into_diagnostic()
-				.with_context(|| format_loc!("Could not glob into {:?}", module.path()))?;
+				.with_context(|| format_loc!("Could not glob into {:?}", manifest.path()))?;
 			for py in pys {
 				let py = match py {
 					Ok(entry) => entry,
@@ -157,7 +159,7 @@ impl Index {
 				.follow_links(true)
 				.build()
 				.into_diagnostic()
-				.with_context(|| format_loc!("Could not glob into {:?}", module.path()))?;
+				.with_context(|| format_loc!("Could not glob into {:?}", manifest.path()))?;
 			for js in scripts {
 				let Ok(js) = js else { continue };
 				let path = js.path().to_path_buf();
@@ -177,7 +179,7 @@ impl Index {
 					continue;
 				}
 				Err(err) => {
-					debug!("{err}");
+					debug!("task failed: {err}");
 					continue;
 				}
 			};
@@ -253,7 +255,7 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 			Some(Ok(Token::ElementStart { local, span, .. })) => match local.as_str() {
 				"record" => {
 					let record = Record::from_reader(
-						CharOffset(span.start()),
+						ByteOffset(span.start()),
 						module_name,
 						path_uri,
 						&mut reader,
@@ -262,18 +264,21 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 					records.extend(record);
 				}
 				"template" => {
-					let template = Record::template(
-						CharOffset(span.start()),
+					if let Some(template) = Record::template(
+						ByteOffset(span.start()),
 						module_name,
 						path_uri,
 						&mut reader,
 						rope.clone(),
-					)?;
-					records.extend(template);
+					)? {
+						records.push(template);
+					} else {
+						gather_templates(path_uri, &mut reader, rope.clone(), &mut templates, true)?;
+					}
 				}
 				"menuitem" => {
 					let menuitem = Record::menuitem(
-						CharOffset(span.start()),
+						ByteOffset(span.start()),
 						module_name,
 						path_uri,
 						&mut reader,
@@ -282,7 +287,7 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 					records.extend(menuitem);
 				}
 				"templates" => {
-					gather_templates(path_uri, &mut reader, rope.clone(), &mut templates)?;
+					gather_templates(path_uri, &mut reader, rope.clone(), &mut templates, false)?;
 				}
 				_ => {}
 			},

@@ -73,16 +73,14 @@ impl Backend {
 		};
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
-				self.on_change_python(&params.text, &params.uri, rope, params.old_rope)
-					.await?;
+				self.on_change_python(&params.text, &params.uri, rope, params.old_rope)?;
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
 				self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
 					.await?;
 			}
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
-				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)
-					.await?;
+				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
 			}
 			other => return Err(diagnostic!("Unhandled language: {other:?}")).into_diagnostic(),
 		}
@@ -124,9 +122,8 @@ impl Backend {
 						column: range.end.character as usize,
 					};
 					// calculate new_end_position using rope
-					let start_char = rope.try_byte_to_char(start.0).into_diagnostic()?;
-					let new_end_offset = CharOffset(start_char + len_new);
-					let new_end_position = char_to_position(new_end_offset, rope.clone())
+					let new_end_offset = ByteOffset(start.0 + len_new);
+					let new_end_position = offset_to_position(new_end_offset, rope.clone())
 						.ok_or_else(|| diagnostic!("new_end_position"))?;
 					let new_end_position = tree_sitter::Point {
 						row: new_end_position.line as usize,
@@ -235,7 +232,6 @@ impl Backend {
 		let Some(entry) = self.index.models.populate_field_names(model_key.into(), &[]) else {
 			return Ok(());
 		};
-		let entry = entry.await;
 		let completions = entry
 			.fields_set
 			.iter_prefix_str(needle)
@@ -373,7 +369,7 @@ impl Backend {
 	pub async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model_key = interner().get_or_intern(model);
 		let field = some!(interner().get(field));
-		let entry = some!(self.index.models.populate_field_names(model_key.into(), &[])).await;
+		let entry = some!(self.index.models.populate_field_names(model_key.into(), &[]));
 		let field = some!(entry.fields.as_ref()).get(&field.into());
 		Ok(Some(some!(field).location.clone().into()))
 	}
@@ -391,7 +387,7 @@ impl Backend {
 	) -> miette::Result<Option<Hover>> {
 		let model_key = interner().get_or_intern(model);
 		let field = some!(interner().get(name));
-		let fields = some!(self.index.models.populate_field_names(model_key.into(), &[])).await;
+		let fields = some!(self.index.models.populate_field_names(model_key.into(), &[]));
 		let field = some!(fields.fields.as_ref()).get(&field.into());
 		Ok(Some(Hover {
 			range,

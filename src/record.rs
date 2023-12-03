@@ -6,8 +6,8 @@ use xmlparser::{ElementEnd, Token, Tokenizer};
 
 use crate::index::{interner, ModuleName};
 use crate::model::ModelName;
-use crate::utils::MinLoc;
-use crate::utils::{char_to_position, position_to_char, CharOffset};
+use crate::utils::{offset_to_position, position_to_offset};
+use crate::utils::{ByteOffset, MinLoc};
 use crate::{some, ImStr};
 
 #[derive(Debug)]
@@ -26,7 +26,7 @@ impl Record {
 		format!("{}.{}", interner.resolve(&self.module), self.id)
 	}
 	pub fn from_reader(
-		offset: CharOffset,
+		offset: ByteOffset,
 		module: ModuleName,
 		path: Spur,
 		reader: &mut Tokenizer,
@@ -39,7 +39,7 @@ impl Record {
 		// nested records are a thing apparently
 		let mut stack = 1;
 		let mut in_record = true;
-		let start = char_to_position(offset, rope.clone())
+		let start = offset_to_position(offset, rope.clone())
 			.ok_or_else(|| diagnostic!("fail(start): {}", interner().resolve(&path)))?;
 
 		loop {
@@ -99,7 +99,7 @@ impl Record {
 				})) if local.as_str() == "record" => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(CharOffset(rope.byte_to_char(span.end())));
+						end = Some(ByteOffset(span.end()));
 						break;
 					}
 				}
@@ -110,7 +110,7 @@ impl Record {
 				})) if in_record => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(CharOffset(rope.byte_to_char(span.end())));
+						end = Some(ByteOffset(span.end()));
 						break;
 					}
 				}
@@ -120,7 +120,7 @@ impl Record {
 						line: err.pos().row - 1,
 						character: err.pos().col - 1,
 					};
-					end = position_to_char(pos, rope.clone());
+					end = position_to_offset(pos, rope.clone());
 					break;
 				}
 				_ => {}
@@ -128,7 +128,7 @@ impl Record {
 		}
 		let id = some!(id);
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for record"))?;
-		let end = char_to_position(end, rope.clone())
+		let end = offset_to_position(end, rope.clone())
 			.ok_or_else(|| diagnostic!("fail(end): {}", interner().resolve(&path)))?;
 		let range = Range { start, end };
 
@@ -142,13 +142,13 @@ impl Record {
 		}))
 	}
 	pub fn template(
-		offset: CharOffset,
+		offset: ByteOffset,
 		module: ModuleName,
 		path: Spur,
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
-		let start = char_to_position(offset, rope.clone())
+		let start = offset_to_position(offset, rope.clone())
 			.ok_or_else(|| diagnostic!("fail(start,template): {}", interner().resolve(&path)))?;
 		let mut id = None;
 		let mut inherit_id = None;
@@ -182,9 +182,14 @@ impl Record {
 				})) if in_template => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(CharOffset(span.end()));
+						end = Some(ByteOffset(span.end()));
 						break;
 					}
+				}
+				Some(Ok(Token::ElementEnd {
+					end: ElementEnd::Open, ..
+				})) if in_template && stack == 1 && id.is_none() => {
+					return Ok(None);
 				}
 				Some(Ok(Token::ElementEnd {
 					end: ElementEnd::Close(_, local),
@@ -193,7 +198,7 @@ impl Record {
 				})) if local.as_str() == "template" => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(CharOffset(span.end()));
+						end = Some(ByteOffset(span.end()));
 						break;
 					}
 				}
@@ -206,17 +211,17 @@ impl Record {
 				None => break,
 				Some(Err(err)) => {
 					let pos = Position {
-						line: err.pos().row,
-						character: err.pos().col,
+						line: err.pos().row - 1,
+						character: err.pos().col - 1,
 					};
-					end = position_to_char(pos, rope.clone());
+					end = position_to_offset(pos, rope.clone());
 					break;
 				}
 				_ => {}
 			}
 		}
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for template"))?;
-		let end = char_to_position(end, rope)
+		let end = offset_to_position(end, rope)
 			.ok_or_else(|| diagnostic!("fail(end,template): {}", interner().resolve(&path)))?;
 		let range = Range { start, end };
 
@@ -230,7 +235,7 @@ impl Record {
 		}))
 	}
 	pub fn menuitem(
-		offset: CharOffset,
+		offset: ByteOffset,
 		module: ModuleName,
 		path: Spur,
 		reader: &mut Tokenizer,
@@ -238,7 +243,7 @@ impl Record {
 	) -> miette::Result<Option<Self>> {
 		let mut id = None;
 		let mut end = None;
-		let start = char_to_position(offset, rope.clone())
+		let start = offset_to_position(offset, rope.clone())
 			.ok_or_else(|| diagnostic!("fail(start,menuitem): {}", interner().resolve(&path)))?;
 
 		loop {
@@ -254,16 +259,16 @@ impl Record {
 					_ => {}
 				},
 				Some(Ok(Token::ElementEnd { span, .. })) => {
-					end = Some(CharOffset(span.end()));
+					end = Some(ByteOffset(span.end()));
 					break;
 				}
 				None => break,
 				Some(Err(err)) => {
 					let pos = Position {
-						line: err.pos().row,
-						character: err.pos().col,
+						line: err.pos().row - 1,
+						character: err.pos().col - 1,
 					};
-					end = position_to_char(pos, rope.clone());
+					end = position_to_offset(pos, rope.clone());
 					break;
 				}
 				_ => {}
@@ -272,7 +277,7 @@ impl Record {
 
 		let id = some!(id);
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for menuitem"))?;
-		let end = char_to_position(end, rope)
+		let end = offset_to_position(end, rope)
 			.ok_or_else(|| diagnostic!("fail(end,menuitem): {}", interner().resolve(&path)))?;
 		let range = Range { start, end };
 

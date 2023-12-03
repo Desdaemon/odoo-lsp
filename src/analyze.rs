@@ -1,6 +1,5 @@
 use std::{borrow::Borrow, collections::HashMap};
 
-use futures::executor::block_on;
 use log::debug;
 use tree_sitter::{Node, QueryCursor};
 
@@ -323,9 +322,8 @@ impl Backend {
 						};
 						let ident = String::from_utf8_lossy(ident);
 						let ident = interner.get_or_intern(ident.as_ref());
-						block_on(self.index.models.populate_field_names(model, &[])?);
-						let relation =
-							block_on(self.index.models.normalize_field_relation(ident.into(), model.into()))?;
+						self.index.models.populate_field_names(model, &[])?;
+						let relation = self.index.models.normalize_field_relation(ident.into(), model.into())?;
 						Some(Type::Model(interner.resolve(&relation).into()))
 					}
 					_ => None,

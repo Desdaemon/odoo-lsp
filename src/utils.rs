@@ -270,3 +270,8 @@ impl<T: Sized> TryResultExt for TryResult<T> {
 		}
 	}
 }
+
+#[cfg(test)]
+pub fn init_for_test() {
+	env_logger::builder().parse_filters("info,odoo_lsp=trace").init();
+}

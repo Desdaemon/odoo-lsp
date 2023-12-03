@@ -236,7 +236,6 @@ impl LanguageServer for Backend {
 						.unwrap_or(false)
 					{
 						if let Some(file_path) = path_.parent() {
-							// root/addon/__manifest__.py, so we want root instead of addon.
 							let file_path = file_path.to_string_lossy();
 							self.index
 								.add_root(&file_path, None, false)
@@ -330,32 +329,26 @@ impl LanguageServer for Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		debug!("goto_definition {}", uri.path());
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
-			debug!("(goto_definition) unsupported {}", uri.path());
+			debug!("(goto_definition) unsupported: {}", uri.path());
 			return Ok(None);
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
 			panic!("Bug: did not build a rope for {}", uri.path());
 		};
-		let location;
-		if ext == "xml" {
-			location = self
-				.xml_jump_def(params, document.value().clone())
-				.await
-				.map_err(|err| error!("Error retrieving references:\n{err}"))
-				.ok()
-				.flatten();
-		} else if ext == "py" {
-			location = self
-				.python_jump_def(params, document.value().clone())
-				.await
-				.map_err(|err| error!("Error retrieving references:\n{err}"))
-				.ok()
-				.flatten();
-		} else {
-			debug!("(goto_definition) unsupported {}", uri.path());
-			return Ok(None);
-		}
+		let location = match ext {
+			"xml" => self.xml_jump_def(params, document.value().clone()).await,
+			"py" => self.python_jump_def(params, document.value().clone()).await,
+			"js" => self.js_jump_def(params, document.value().clone()),
+			_ => {
+				debug!("(goto_definition) unsupported: {}", uri.path());
+				return Ok(None);
+			}
+		};
 
+		let location = location
+			.map_err(|err| error!("Error retrieving references:\n{err}"))
+			.ok()
+			.flatten();
 		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}
 	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -369,29 +362,14 @@ impl LanguageServer for Backend {
 			debug!("Bug: did not build a rope for {}", uri.path());
 			return Ok(None);
 		};
-		if ext == "py" {
-			let Some(ast) = self.ast_map.get(uri.path()) else {
-				debug!("Bug: did not build AST for {}", uri.path());
-				return Ok(None);
-			};
-			match self.python_references(params, document.value().clone(), ast.value().clone()) {
-				Ok(ret) => Ok(ret),
-				Err(report) => {
-					error!("{report}");
-					Ok(None)
-				}
-			}
-		} else if ext == "xml" {
-			match self.xml_references(params, document.value().clone()) {
-				Ok(ret) => Ok(ret),
-				Err(report) => {
-					error!("{report}");
-					Ok(None)
-				}
-			}
-		} else {
-			Ok(None)
-		}
+		let refs = match ext {
+			"py" => self.python_references(params, document.value().clone()),
+			"xml" => self.xml_references(params, document.value().clone()),
+			"js" => self.js_references(params, document.value().clone()),
+			_ => return Ok(None),
+		};
+
+		Ok(refs.map_err(|err| error!("{err}")).ok().flatten())
 	}
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
 		let uri = &params.text_document_position.text_document.uri;
@@ -487,8 +465,7 @@ impl LanguageServer for Backend {
 					drop(entry);
 					if let Some(field_entry) = field_entry {
 						let type_ = interner().resolve(&field_entry.type_);
-						completion.detail = match self.index.models.normalize_field_relation(field.into(), model).await
-						{
+						completion.detail = match self.index.models.normalize_field_relation(field.into(), model) {
 							None => Some(format!("{type_}(…)")),
 							Some(relation) => {
 								let relation = interner().resolve(&relation);
