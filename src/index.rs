@@ -115,7 +115,6 @@ impl Index {
 			let module_key = interner.get_or_intern(&module_name);
 			if !self.roots.entry(root.into()).or_default().insert(module_key.into()) {
 				debug!("duplicate module {module_name}");
-				continue;
 			}
 			if tsconfig {
 				continue;
