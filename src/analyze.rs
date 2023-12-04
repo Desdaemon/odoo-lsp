@@ -95,7 +95,7 @@ r#"
 ((class_definition
 	(block
 		(expression_statement
-			(assignment (identifier) @_name (string) @NAME))
+			(assignment (identifier) @_name (string) @NAME))?
 		[
 			(decorated_definition
 				(function_definition
