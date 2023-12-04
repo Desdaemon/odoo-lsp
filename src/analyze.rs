@@ -28,7 +28,9 @@ static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
 	b"with_user",
 	b"with_company",
 	b"with_env",
-	b"sudo"
+	b"sudo",
+	// TODO: Limit to Forms only
+	b"new",
 );
 
 /// The subset of types that may resolve to a model.
@@ -237,6 +239,47 @@ impl Backend {
 							let iter = mapped_call.nodes_for_capture_index(MappedCall::ITER).next().unwrap();
 							let iter = String::from_utf8_lossy(&contents[iter.byte_range()]);
 							scope.insert(iter.into_owned(), type_);
+						}
+					}
+				}
+				"with_statement" => {
+					// with Form(self.env['..']) as alias:
+					// TODO: Support more structures as needed
+					// (with_statement
+					// 	 (with_clause
+					//     (with_item
+					//       (as_pattern
+					//         (call (identifier) ..)
+					//         (as_pattern_target (identifier))))))
+					let as_pattern = node
+						.named_child(0)
+						.expect("with_clause")
+						.named_child(0)
+						.expect("with_item")
+						.named_child(0)
+						.expect("as_pattern");
+					if as_pattern.kind() == "as_pattern" {
+						let value = as_pattern.named_child(0).unwrap();
+						if let Some(target) = value.next_named_sibling() {
+							if target.kind() == "as_pattern_target" {
+								let alias = target.named_child(0).unwrap();
+								if alias.kind() == "identifier" && value.kind() == "call" {
+									let callee = value.named_child(0).expect("identifier");
+									// TODO: Remove this hardcoded case
+									if callee.kind() == "identifier" && b"Form" == &contents[callee.byte_range()] {
+										if let Some(first_arg) = value.named_child(1).unwrap().named_child(0) {
+											if let Some(type_) = self.type_of(first_arg, &scope, contents) {
+												let alias =
+													String::from_utf8_lossy(&contents[alias.byte_range()]).into_owned();
+												scope.insert(alias, type_);
+											}
+										}
+									} else if let Some(type_) = self.type_of(value, &scope, contents) {
+										let alias = String::from_utf8_lossy(&contents[alias.byte_range()]).into_owned();
+										scope.insert(alias, type_);
+									}
+								}
+							}
 						}
 					}
 				}
