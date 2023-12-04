@@ -298,9 +298,8 @@ impl Backend {
 				self.model_references(&model.into())
 			}
 			Some(RefKind::Ref(_)) | Some(RefKind::Id) => self.record_references(&cursor_value, current_module),
-			Some(RefKind::TName) | Some(RefKind::TInherit) | Some(RefKind::TCall) => {
-				self.template_references(&cursor_value)
-			}
+			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.template_references(&cursor_value, true),
+			Some(RefKind::TName) => self.template_references(&cursor_value, false),
 			Some(RefKind::FieldName) | None => Ok(None),
 		}
 	}

@@ -435,10 +435,14 @@ impl Backend {
 			.take(limit);
 		Ok(Some(locations.collect()))
 	}
-	pub fn template_references(&self, name: &str) -> miette::Result<Option<Vec<Location>>> {
+	pub fn template_references(&self, name: &str, include_definition: bool) -> miette::Result<Option<Vec<Location>>> {
 		let name = some!(interner().get(name));
 		let entry = some!(self.index.templates.get(&name.into()));
-		let definition_location = entry.value().location.clone().map(Location::from);
+		let definition_location = if include_definition {
+			entry.value().location.clone().map(Location::from)
+		} else {
+			None
+		};
 		let descendant_locations = (entry.value().descendants)
 			.iter()
 			.flat_map(|tpl| tpl.location.clone().map(Location::from));
