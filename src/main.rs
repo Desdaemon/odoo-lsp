@@ -296,10 +296,9 @@ impl LanguageServer for Backend {
 				let range =
 					lsp_range_to_char_range(range, rope.value().clone()).expect("did_change applying delta: no range");
 				let rope = rope.value_mut();
-				let start = range.start.0;
-				rope.remove(range.map_unit(|unit| unit.0));
+				rope.remove(range.erase());
 				if !change.text.is_empty() {
-					rope.insert(start, &change.text);
+					rope.insert(range.start.0, &change.text);
 				}
 			}
 		}
@@ -496,7 +495,7 @@ impl LanguageServer for Backend {
 				}
 			}
 		} else {
-			debug!("(hover) unsupported {}", uri.path());
+			debug!("(hover) unsupported: {}", uri.path());
 			Ok(None)
 		}
 	}

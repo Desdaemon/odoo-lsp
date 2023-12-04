@@ -120,7 +120,7 @@ struct Mapped<'text> {
 	needle: Cow<'text, str>,
 	model: String,
 	single_field: bool,
-	range: CharRange,
+	range: ByteRange,
 }
 
 impl Backend {
@@ -208,12 +208,11 @@ impl Backend {
 							};
 							let relative_offset = range.start;
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-							// remove the quotes
-							let range = range.shrink(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
 							early_return = Some((
 								EarlyReturn::XmlId(model_filter, current_module.into()),
 								needle,
-								range,
+								// remove the quotes
+								range.shrink(1).map_unit(ByteOffset),
 								rope.clone(),
 							));
 							break 'match_;
@@ -239,8 +238,12 @@ impl Backend {
 							};
 							let relative_offset = range.start;
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-							let range = range.shrink(1).map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-							early_return = Some((EarlyReturn::Model, needle, range, rope.clone()));
+							early_return = Some((
+								EarlyReturn::Model,
+								needle,
+								range.shrink(1).map_unit(ByteOffset),
+								rope.clone(),
+							));
 							break 'match_;
 						} else if range.end < offset
 							&& (is_name
@@ -293,8 +296,12 @@ impl Backend {
 							));
 							let model = interner().resolve(&model);
 							let needle = Cow::from(slice.byte_slice(..offset - range.start));
-							let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit)));
-							early_return = Some((EarlyReturn::Access(model.to_string()), needle, range, rope.clone()));
+							early_return = Some((
+								EarlyReturn::Access(model.to_string()),
+								needle,
+								range.map_unit(ByteOffset),
+								rope.clone(),
+							));
 							break 'match_;
 						}
 					}
@@ -338,7 +345,6 @@ impl Backend {
 						.resolve_mapped(&mut model, &mut needle, Some(&mut range)));
 				}
 				let model_name = interner().resolve(&model);
-				let range = range.map_unit(|unit| CharOffset(rope.byte_to_char(unit.0)));
 				self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)
 					.await?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
@@ -401,7 +407,7 @@ impl Backend {
 			needle,
 			model,
 			single_field,
-			range: range.map_unit(|unit| CharOffset(rope.byte_to_char(unit))),
+			range: range.map_unit(ByteOffset),
 		})
 	}
 	pub async fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {

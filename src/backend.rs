@@ -22,7 +22,7 @@ use odoo_lsp::{format_loc, some, utils::*};
 pub struct Backend {
 	pub client: Client,
 	pub document_map: DashMap<String, Rope>,
-	pub record_ranges: DashMap<String, Box<[std::ops::Range<CharOffset>]>>,
+	pub record_ranges: DashMap<String, Box<[ByteRange]>>,
 	pub ast_map: DashMap<String, Tree>,
 	pub index: Index,
 	pub roots: DashSet<String>,
@@ -151,7 +151,7 @@ impl Backend {
 	pub async fn complete_xml_id(
 		&self,
 		needle: &str,
-		range: std::ops::Range<CharOffset>,
+		range: ByteRange,
 		rope: Rope,
 		model_filter: Option<&str>,
 		current_module: ModuleName,
@@ -160,7 +160,7 @@ impl Backend {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_xml_id) range"))?;
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_xml_id) range"))?;
 		let by_prefix = self.index.records.by_prefix.read().await;
 		let model_filter = model_filter.and_then(|model| interner().get(model).map(ModelName::from));
 		fn to_completion_items(
@@ -218,7 +218,7 @@ impl Backend {
 	pub async fn complete_field_name(
 		&self,
 		needle: &str,
-		range: std::ops::Range<CharOffset>,
+		range: ByteRange,
 		model: String,
 		rope: Rope,
 		items: &mut MaxVec<CompletionItem>,
@@ -228,7 +228,7 @@ impl Backend {
 			return Ok(());
 		}
 		let model_key = interner().get_or_intern(&model);
-		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
 		let Some(entry) = self.index.models.populate_field_names(model_key.into(), &[]) else {
 			return Ok(());
 		};
@@ -253,14 +253,14 @@ impl Backend {
 	pub async fn complete_model(
 		&self,
 		needle: &str,
-		range: std::ops::Range<CharOffset>,
+		range: ByteRange,
 		rope: Rope,
 		items: &mut MaxVec<CompletionItem>,
 	) -> miette::Result<()> {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let range = char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_model) range"))?;
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_model) range"))?;
 		let by_prefix = self.index.models.by_prefix.read().await;
 		let matches = by_prefix
 			.iter_prefix(needle.as_bytes())
@@ -290,7 +290,7 @@ impl Backend {
 	pub async fn complete_template_name(
 		&self,
 		needle: &str,
-		range: core::ops::Range<CharOffset>,
+		range: ByteRange,
 		rope: Rope,
 		items: &mut MaxVec<CompletionItem>,
 	) -> miette::Result<()> {
@@ -298,7 +298,7 @@ impl Backend {
 			return Ok(());
 		}
 		let range =
-			char_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_template_name) range"))?;
+			offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_template_name) range"))?;
 		let interner = interner();
 		let by_prefix = self.index.templates.by_prefix.read().await;
 		let matches = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, set)| {

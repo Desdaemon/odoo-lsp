@@ -51,21 +51,14 @@ pub fn offset_to_position(offset: ByteOffset, rope: Rope) -> Option<Position> {
 }
 
 pub fn position_to_offset(position: Position, rope: Rope) -> Option<ByteOffset> {
-	let CharOffset(offset) = position_to_char(position, rope.clone())?;
-	let byte_offset = rope.try_char_to_byte(offset).ok()?;
+	let CharOffset(char_offset) = position_to_char(position, rope.clone())?;
+	let byte_offset = rope.try_char_to_byte(char_offset).ok()?;
 	Some(ByteOffset(byte_offset))
 }
 
-pub fn position_to_char(position: Position, rope: Rope) -> Option<CharOffset> {
+fn position_to_char(position: Position, rope: Rope) -> Option<CharOffset> {
 	let line_offset_in_char = rope.try_line_to_char(position.line as usize).ok()?;
-	let line_end = line_offset_in_char + position.character as usize;
-	Some(CharOffset(line_end))
-}
-
-pub fn char_to_position(offset: CharOffset, rope: Rope) -> Option<Position> {
-	let line = rope.try_char_to_line(offset.0).ok()?;
-	let line_offset = rope.try_line_to_char(line).ok()?;
-	Some(Position::new(line as u32, (offset.0 - line_offset) as u32))
+	Some(CharOffset(line_offset_in_char + position.character as usize))
 }
 
 pub fn lsp_range_to_char_range(range: Range, rope: Rope) -> Option<CharRange> {
@@ -80,11 +73,11 @@ pub fn lsp_range_to_offset_range(range: Range, rope: Rope) -> Option<ByteRange> 
 	Some(start..end)
 }
 
-pub fn char_range_to_lsp_range(range: CharRange, rope: Rope) -> Option<Range> {
-	let start = char_to_position(range.start, rope.clone())?;
-	let end = char_to_position(range.end, rope)?;
-	Some(Range { start, end })
-}
+// pub fn char_range_to_lsp_range(range: CharRange, rope: Rope) -> Option<Range> {
+// 	let start = char_to_position(range.start, rope.clone())?;
+// 	let end = char_to_position(range.end, rope)?;
+// 	Some(Range { start, end })
+// }
 
 pub fn offset_range_to_lsp_range(range: ByteRange, rope: Rope) -> Option<Range> {
 	let start = offset_to_position(range.start, rope.clone())?;
@@ -158,6 +151,7 @@ impl Erase for ByteRange {
 		self.clone().map_unit(|unit| unit.0)
 	}
 }
+
 impl Erase for CharRange {
 	#[inline]
 	fn erase(&self) -> core::ops::Range<usize> {

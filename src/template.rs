@@ -1,12 +1,11 @@
 use lasso::Spur;
-use log::debug;
 use miette::diagnostic;
 use ropey::Rope;
 use tower_lsp::lsp_types::{Position, Range};
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
 use crate::index::{interner, Symbol};
-use crate::utils::{char_to_position, offset_to_position, ByteOffset, CharOffset, MinLoc};
+use crate::utils::{offset_to_position, ByteOffset, MinLoc};
 
 #[derive(Default, Debug)]
 pub struct Template {
@@ -123,7 +122,7 @@ pub fn gather_templates(
 				let name_candidate = if base { t_name } else { t_inherit };
 				let Some(name) = name_candidate else { break };
 				let name = interner().get_or_intern(name).into();
-				let start = char_to_position(CharOffset(tag_start), document.clone())
+				let start = offset_to_position(ByteOffset(tag_start), document.clone())
 					.ok_or_else(|| diagnostic!("qweb_templates start <- tag_start"))?;
 				let end = Position {
 					line: err.pos().row,

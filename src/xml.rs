@@ -6,7 +6,7 @@ use std::path::Path;
 
 use lasso::{Spur, ThreadedRodeo};
 use log::{debug, warn};
-use miette::{diagnostic, IntoDiagnostic};
+use miette::diagnostic;
 use odoo_lsp::index::interner;
 use odoo_lsp::model::{Field, FieldKind};
 use odoo_lsp::template::gather_templates;
@@ -84,7 +84,7 @@ impl Backend {
 									continue;
 								}
 								record_ranges.extend(entries.into_iter().map(|entry| {
-									lsp_range_to_char_range(entry.template.location.unwrap().range, rope.clone())
+									lsp_range_to_offset_range(entry.template.location.unwrap().range, rope.clone())
 										.unwrap()
 								}));
 								continue;
@@ -98,7 +98,7 @@ impl Backend {
 								continue;
 							}
 						};
-						let Some(range) = lsp_range_to_char_range(record.location.range, rope.clone()) else {
+						let Some(range) = lsp_range_to_offset_range(record.location.range, rope.clone()) else {
 							log::debug!("(on_change_xml) no range for {}", record.id);
 							continue;
 						};
@@ -118,7 +118,7 @@ impl Backend {
 							continue;
 						}
 						record_ranges.extend(entries.into_iter().map(|entry| {
-							lsp_range_to_char_range(entry.template.location.unwrap().range, rope.clone()).unwrap()
+							lsp_range_to_offset_range(entry.template.location.unwrap().range, rope.clone()).unwrap()
 						}));
 					}
 				}
@@ -146,17 +146,16 @@ impl Backend {
 		rope: &'rope Rope,
 		uri: &Url,
 		position: Position,
-	) -> miette::Result<(Cow<'rope, str>, usize, usize)> {
+	) -> miette::Result<(Cow<'rope, str>, ByteOffset, usize)> {
 		let ranges = self
 			.record_ranges
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build record ranges for {}", uri.path()))?;
-		let cursor = position_to_char(position, rope.clone()).ok_or_else(|| diagnostic!("cursor"))?;
-		let mut cursor_by_char = rope.try_byte_to_char(cursor.0).into_diagnostic()?;
+		let mut cursor_by_char = position_to_offset(position, rope.clone()).ok_or_else(|| diagnostic!("cursor"))?;
 		let Ok(record) = ranges.value().binary_search_by(|range| {
-			if cursor_by_char < range.start.0 {
+			if cursor_by_char < range.start {
 				Ordering::Greater
-			} else if cursor_by_char > range.end.0 {
+			} else if cursor_by_char > range.end {
 				Ordering::Less
 			} else {
 				Ordering::Equal
@@ -168,12 +167,12 @@ impl Backend {
 		};
 		let record_range = &ranges.value()[record];
 		debug!(
-			"(record_slice) found {:?}, cursor={}",
+			"(record_slice) found {:?}, cursor={:?}",
 			record_range.erase(),
 			cursor_by_char
 		);
-		let relative_offset = rope.try_byte_to_char(record_range.start.0).into_diagnostic()?;
-		cursor_by_char = cursor_by_char.saturating_sub(relative_offset);
+		let relative_offset = record_range.start.0;
+		cursor_by_char.0 = cursor_by_char.0.saturating_sub(relative_offset);
 
 		let slice = rope.byte_slice(record_range.clone().map_unit(|unit| unit.0));
 		let slice = Cow::from(slice);
@@ -201,12 +200,12 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			..
-		} = gather_refs(cursor_by_char, &mut reader, interner())?;
+		} = gather_refs(cursor_by_char.0, &mut reader, interner())?;
 		let (Some(value), Some(record_field)) = (cursor_value, ref_kind) else {
 			return Ok(None);
 		};
-		let needle = &value.as_str()[..cursor_by_char - value.range().start];
-		let replace_range = value.range().map_unit(|unit| CharOffset(unit + relative_offset));
+		let needle = &value.as_str()[..cursor_by_char.0 - value.range().start];
+		let replace_range = value.range().map_unit(|unit| ByteOffset(unit + relative_offset));
 		match record_field {
 			RefKind::Ref(relation) => {
 				let model_key = some!(model_filter);
@@ -260,7 +259,7 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			..
-		} = gather_refs(cursor_by_char, &mut reader, interner())?;
+		} = gather_refs(cursor_by_char.0, &mut reader, interner())?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -285,7 +284,7 @@ impl Backend {
 		let mut reader = Tokenizer::from(&slice[..]);
 		let XmlRefs {
 			cursor_value, ref_kind, ..
-		} = gather_refs(cursor_by_char, &mut reader, interner())?;
+		} = gather_refs(cursor_by_char.0, &mut reader, interner())?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
