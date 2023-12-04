@@ -14,6 +14,9 @@ use crate::index::interner;
 
 pub mod future;
 
+mod usage;
+pub use usage::{Usage, UsageInfo};
+
 #[macro_export]
 macro_rules! some {
 	($opt:expr) => {
@@ -44,9 +47,9 @@ impl From<MinLoc> for Location {
 }
 
 pub fn offset_to_position(offset: ByteOffset, rope: Rope) -> Option<Position> {
-	let line = rope.try_byte_to_line(offset.0).ok()?;
+	let line = rope.try_byte_to_line(offset.0 as usize).ok()?;
 	let first_char_of_line = rope.try_line_to_char(line).ok()?;
-	let column = offset.0 - first_char_of_line;
+	let column = offset.0 as usize - first_char_of_line;
 	Some(Position::new(line as u32, column as u32))
 }
 
@@ -120,6 +123,13 @@ pub fn token_span<'r, 't>(token: &'r Token<'t>) -> &'r StrSpan<'t> {
 pub struct ByteOffset(pub usize);
 pub type ByteRange = core::ops::Range<ByteOffset>;
 
+impl From<usize> for ByteOffset {
+	#[inline]
+	fn from(value: usize) -> Self {
+		ByteOffset(value as _)
+	}
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct CharOffset(pub usize);
@@ -148,7 +158,7 @@ pub trait Erase {
 impl Erase for ByteRange {
 	#[inline]
 	fn erase(&self) -> core::ops::Range<usize> {
-		self.clone().map_unit(|unit| unit.0)
+		self.clone().map_unit(|unit| unit.0 as usize)
 	}
 }
 

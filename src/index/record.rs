@@ -1,3 +1,4 @@
+use crate::utils::Usage;
 use std::{
 	hash::Hash,
 	marker::PhantomData,
@@ -5,6 +6,7 @@ use std::{
 };
 
 use dashmap::{mapref::one::Ref, DashMap};
+use futures::executor::block_on;
 use intmap::IntMap;
 use lasso::{Key, Spur, ThreadedRodeo};
 use qp_trie::wrapper::BString;
@@ -157,4 +159,21 @@ impl<K> SymbolSet<K> {
 	// 		.iter()
 	// 		.map(|(key, _)| Spur::try_from_usize(*key as usize).unwrap().into())
 	// }
+}
+
+impl RecordIndex {
+	pub(super) fn statistics(&self) -> serde_json::Value {
+		let Self {
+			inner,
+			by_model,
+			by_inherit_id,
+			by_prefix,
+		} = self;
+		serde_json::json! {{
+			"entries": inner.usage(),
+			"by_model": by_model.usage(),
+			"by_inherit_id": by_inherit_id.usage(),
+			"by_prefix": block_on(by_prefix.read()).usage(),
+		}}
+	}
 }

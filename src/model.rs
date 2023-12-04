@@ -4,6 +4,7 @@ use std::ops::Deref;
 
 use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
+use futures::executor::block_on;
 use lasso::{Key, Spur};
 use log::{debug, error, warn};
 use miette::{diagnostic, IntoDiagnostic};
@@ -16,7 +17,7 @@ use ts_macros::query;
 
 use crate::index::{interner, Interner, Symbol, SymbolMap};
 use crate::str::Text;
-use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt};
+use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt, Usage};
 use crate::{format_loc, ImStr};
 
 #[derive(Clone, Debug)]
@@ -68,7 +69,7 @@ pub struct Field {
 }
 
 #[derive(Clone)]
-pub struct ModelLocation(pub MinLoc, pub std::ops::Range<ByteOffset>);
+pub struct ModelLocation(pub MinLoc, pub ByteRange);
 
 impl Display for ModelLocation {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -401,6 +402,13 @@ impl ModelIndex {
 			FieldKind::Value => None,
 			FieldKind::Related(_) => None,
 		}
+	}
+	pub(crate) fn statistics(&self) -> serde_json::Value {
+		let Self { inner, by_prefix } = self;
+		serde_json::json! {{
+			"entries": inner.usage(),
+			"by_prefix": block_on(by_prefix.read()).usage(),
+		}}
 	}
 }
 

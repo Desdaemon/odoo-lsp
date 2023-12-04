@@ -2,6 +2,7 @@ use std::ops::DerefMut;
 use std::{collections::HashMap, path::PathBuf};
 
 use dashmap::DashMap;
+use futures::executor::block_on;
 use miette::{diagnostic, Context, IntoDiagnostic};
 use qp_trie::wrapper::BString;
 use tokio::sync::RwLock;
@@ -10,7 +11,7 @@ use ts_macros::query_js;
 
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
 use crate::format_loc;
-use crate::utils::{offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, MinLoc, RangeExt};
+use crate::utils::{offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, MinLoc, RangeExt, Usage};
 
 use super::{interner, Component, ComponentName, Output, TemplateName};
 
@@ -273,5 +274,17 @@ impl ComponentIndex {
 			}
 			self.insert(name, component);
 		}
+	}
+	pub(super) fn statistics(&self) -> serde_json::Value {
+		let Self {
+			inner,
+			by_template,
+			by_prefix,
+		} = self;
+		serde_json::json! {{
+			"entries": inner.usage(),
+			"by_template": by_template.usage(),
+			"by_prefix": block_on(by_prefix.read()).usage(),
+		}}
 	}
 }

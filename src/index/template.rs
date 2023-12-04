@@ -1,10 +1,11 @@
 use std::ops::Deref;
 
 use dashmap::DashMap;
+use futures::executor::block_on;
 use qp_trie::wrapper::BString;
 use tokio::sync::RwLock;
 
-use crate::template::NewTemplate;
+use crate::{template::NewTemplate, utils::Usage};
 
 use super::{interner, SymbolSet, Template, TemplateName};
 
@@ -45,5 +46,12 @@ impl TemplateIndex {
 				.or_insert_with(SymbolSet::default)
 				.insert(entry.name);
 		}
+	}
+	pub(super) fn statistics(&self) -> serde_json::Value {
+		let Self { inner, by_prefix } = self;
+		serde_json::json! {{
+			"entries": inner.usage(),
+			"by_prefix": block_on(by_prefix.read()).usage(),
+		}}
 	}
 }

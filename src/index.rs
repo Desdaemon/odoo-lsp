@@ -16,7 +16,7 @@ use xmlparser::{Token, Tokenizer};
 
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
-use crate::utils::{ts_range_to_lsp_range, ByteOffset, RangeExt};
+use crate::utils::{ts_range_to_lsp_range, ByteOffset, RangeExt, Usage};
 use crate::{format_loc, ImStr};
 
 mod record;
@@ -453,6 +453,27 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 		}
 	});
 	Ok(models.collect())
+}
+
+impl Index {
+	pub fn statistics(&self) -> serde_json::Value {
+		let Self {
+			roots,
+			records,
+			templates,
+			models,
+			components,
+		} = self;
+		let mut modules = roots.usage();
+		modules.0 = roots.iter().map(|entry| entry.value().len()).sum::<usize>();
+		serde_json::json! {{
+			"modules": modules,
+			"records": records.statistics(),
+			"templates": templates.statistics(),
+			"models": models.statistics(),
+			"components": components.statistics(),
+		}}
+	}
 }
 
 #[cfg(test)]

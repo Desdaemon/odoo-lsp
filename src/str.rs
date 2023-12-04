@@ -6,6 +6,8 @@ use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::utils::{Usage, UsageInfo};
+
 /// Immutable, [String]-sized clone-friendly string.
 #[derive(Clone)]
 pub struct ImStr(Repr);
@@ -191,6 +193,16 @@ impl Text {
 				let str = unsafe { String::from_utf8_unchecked(buf) };
 				Cow::Owned(str)
 			}
+		}
+	}
+}
+
+impl Usage for Text {
+	fn usage(&self) -> UsageInfo {
+		match &self.0 {
+			TextRepr::Inline(_, _) => UsageInfo(0, 0),
+			TextRepr::Arc(arc) => UsageInfo(0, arc.as_bytes().len()),
+			TextRepr::Compressed(_, arc) => UsageInfo(0, arc.len()),
 		}
 	}
 }

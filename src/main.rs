@@ -631,6 +631,7 @@ async fn main() {
 		symbols_limit: AtomicUsize::new(100),
 		references_limit: AtomicUsize::new(100),
 	})
+	.custom_method("odoo-lsp/statistics", Backend::statistics)
 	.finish();
 
 	let service = ServiceBuilder::new().layer_fn(CatchPanic).service(service);

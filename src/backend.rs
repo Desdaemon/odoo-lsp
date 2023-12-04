@@ -582,4 +582,32 @@ impl Backend {
 		}
 		self.root_setup.store(true, Relaxed);
 	}
+	pub async fn statistics(&self) -> tower_lsp::jsonrpc::Result<Value> {
+		let Self {
+			client: _,
+			document_map,
+			record_ranges,
+			ast_map,
+			index,
+			roots: _,
+			capabilities: _,
+			root_setup: _,
+			symbols_limit: _,
+			references_limit: _,
+		} = self;
+		let interner = interner();
+		let symbols_len = interner.len();
+		let symbols_usage = interner.current_memory_usage();
+		Ok(serde_json::json! {{
+			"debug": cfg!(debug_assertions),
+			"documents": document_map.usage(),
+			"records": record_ranges.usage(),
+			"ast": ast_map.usage(),
+			"index": index.statistics(),
+			"intern": {
+				"len": symbols_len,
+				"bytes": symbols_usage,
+			}
+		}})
+	}
 }

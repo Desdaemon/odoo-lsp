@@ -29,6 +29,10 @@
 			{
 				"command": "odoo-lsp.tsconfig",
 				"title": "odoo-lsp: Generate TypeScript config"
+			},
+			{
+				"command": "odoo-lsp.statistics",
+				"title": "odoo-lsp: Generate memory usage report"
 			}
 		],
 		"configuration": {
