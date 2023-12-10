@@ -12,6 +12,7 @@ repository = "https://github.com/Desdaemon/odoo-lsp"
 proc-macro = true
 
 [dependencies]
+heck = "0.4.1"
 proc-macro2 = "1.0.66"
 proc-macro2-diagnostics = "0.10.1"
 quote = "1.0.33"

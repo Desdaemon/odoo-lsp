@@ -3,12 +3,13 @@ use crate::{Backend, Text};
 use std::borrow::Cow;
 use std::path::Path;
 
+use lasso::Key;
 use log::{debug, error};
 use miette::diagnostic;
 use odoo_lsp::index::{index_models, interner, Module, Symbol};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
-use tree_sitter::{Node, Parser, Tree};
+use tree_sitter::{Node, Parser, QueryCursor, Tree};
 
 use odoo_lsp::model::{ModelName, ModelType};
 use odoo_lsp::utils::*;
@@ -16,7 +17,7 @@ use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
 query! {
-	PyCompletions(REQUEST, XML_ID, MAPPED, MAPPED_TARGET, DEPENDS, MODEL, ACCESS, PROP);
+	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, Model, Access, Prop);
 r#"
 ((call [
 	(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
@@ -124,12 +125,21 @@ struct Mapped<'text> {
 }
 
 impl Backend {
-	pub fn on_change_python(&self, text: &Text, uri: &Url, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
+	pub fn on_change_python(
+		&self,
+		text: &Text,
+		uri: &Url,
+		rope: Rope,
+		old_rope: Option<Rope>,
+		diagnostics: &mut Vec<Diagnostic>,
+	) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
 			.set_language(tree_sitter_python::language())
 			.expect("bug: failed to init python parser");
-		self.update_ast(text, uri, rope.clone(), old_rope, parser)
+		self.update_ast(text, uri, rope.clone(), old_rope, parser)?;
+		self.diagnose_python(uri, rope, diagnostics);
+		Ok(())
 	}
 	pub async fn update_models(&self, text: Text, uri: &Url, rope: Rope) -> miette::Result<()> {
 		let text = match text {
@@ -197,113 +207,123 @@ impl Backend {
 			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				let mut model_filter = None;
 				for capture in match_.captures {
-					if capture.index == PyCompletions::REQUEST {
-						model_filter = Some("ir.ui.view");
-					} else if capture.index == PyCompletions::XML_ID {
-						let range = capture.node.byte_range();
-						if range.contains(&offset) {
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
-								break 'match_;
-							};
-							let relative_offset = range.start;
-							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-							early_return = Some((
-								EarlyReturn::XmlId(model_filter, current_module.into()),
-								needle,
-								// remove the quotes
-								range.shrink(1).map_unit(ByteOffset),
-								rope.clone(),
-							));
-							break 'match_;
+					match PyCompletions::from(capture.index) {
+						Some(PyCompletions::Request) => {
+							model_filter = Some("ir.ui.view");
 						}
-					} else if capture.index == PyCompletions::MODEL {
-						let range = capture.node.byte_range();
-						// default true for is_inherit, to be checked later down that
-						// it only belongs to (assignment)
-						let (is_inherit, is_name) = match_
-							.nodes_for_capture_index(PyCompletions::PROP)
-							.next()
-							.map(|prop| {
-								(
-									&contents[prop.byte_range()] == b"_inherit",
-									&contents[prop.byte_range()] == b"_name",
-								)
-							})
-							.unwrap_or((true, false));
-						if is_inherit && range.contains_end(offset) {
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
+						Some(PyCompletions::XmlId) => {
+							let range = capture.node.byte_range();
+							if range.contains(&offset) {
+								let Some(slice) = rope.get_byte_slice(range.clone()) else {
+									dbg!(&range);
+									break 'match_;
+								};
+								let relative_offset = range.start;
+								let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+								early_return = Some((
+									EarlyReturn::XmlId(model_filter, current_module.into()),
+									needle,
+									// remove the quotes
+									range.shrink(1).map_unit(ByteOffset),
+									rope.clone(),
+								));
 								break 'match_;
-							};
-							let relative_offset = range.start;
-							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-							early_return = Some((
-								EarlyReturn::Model,
-								needle,
-								range.shrink(1).map_unit(ByteOffset),
-								rope.clone(),
-							));
-							break 'match_;
-						} else if range.end < offset
-							&& (is_name
+							}
+						}
+						Some(PyCompletions::Model) => {
+							let range = capture.node.byte_range();
+							// default true for is_inherit, to be checked later down that
+							// it only belongs to (assignment)
+							let (is_inherit, is_name) = match_
+								.nodes_for_capture_index(PyCompletions::Prop as _)
+								.next()
+								.map(|prop| {
+									(
+										&contents[prop.byte_range()] == b"_inherit",
+										&contents[prop.byte_range()] == b"_name",
+									)
+								})
+								.unwrap_or((true, false));
+							if is_inherit && range.contains_end(offset) {
+								let Some(slice) = rope.get_byte_slice(range.clone()) else {
+									dbg!(&range);
+									break 'match_;
+								};
+								let relative_offset = range.start;
+								let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+								early_return = Some((
+									EarlyReturn::Model,
+									needle,
+									range.shrink(1).map_unit(ByteOffset),
+									rope.clone(),
+								));
+								break 'match_;
+							} else if range.end < offset
+								&& (is_name
 							// _inherit = '..' OR _inherit = ['..'] qualifies as primary model name
 							|| (is_inherit && capture.node.parent()
 								.map(|parent| parent.kind() == "assignment" || (parent.kind() == "list" && parent.named_child_count() == 1))
 								.unwrap_or(false)))
-						{
-							this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+							{
+								this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+							}
 						}
-					} else if capture.index == PyCompletions::MAPPED {
-						let range = capture.node.byte_range();
-						if range.contains_end(offset) {
-							let Some(Mapped {
-								needle,
-								model,
-								single_field,
-								range,
-							}) = self.gather_mapped(
-								root,
-								match_,
-								offset,
-								range.clone(),
-								this_model,
-								&rope,
-								&contents[..],
-								true,
-							)
-							else {
-								break 'match_;
-							};
+						Some(PyCompletions::Mapped) => {
+							let range = capture.node.byte_range();
+							if range.contains_end(offset) {
+								let Some(Mapped {
+									needle,
+									model,
+									single_field,
+									range,
+								}) = self.gather_mapped(
+									root,
+									&match_,
+									Some(offset),
+									range.clone(),
+									this_model,
+									&rope,
+									&contents[..],
+									true,
+								)
+								else {
+									break 'match_;
+								};
 
-							early_return =
-								Some((EarlyReturn::Mapped { model, single_field }, needle, range, rope.clone()));
-							break 'match_;
-						}
-					} else if capture.index == PyCompletions::ACCESS {
-						let range = capture.node.byte_range();
-						if range.contains_end(offset) {
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
+								early_return =
+									Some((EarlyReturn::Mapped { model, single_field }, needle, range, rope.clone()));
 								break 'match_;
-							};
-							let lhs = some!(capture.node.prev_named_sibling());
-							let model = some!(self.model_of_range(
-								root,
-								lhs.byte_range().map_unit(ByteOffset),
-								None,
-								&contents
-							));
-							let model = interner().resolve(&model);
-							let needle = Cow::from(slice.byte_slice(..offset - range.start));
-							early_return = Some((
-								EarlyReturn::Access(model.to_string()),
-								needle,
-								range.map_unit(ByteOffset),
-								rope.clone(),
-							));
-							break 'match_;
+							}
 						}
+						Some(PyCompletions::Access) => {
+							let range = capture.node.byte_range();
+							if range.contains_end(offset) {
+								let Some(slice) = rope.get_byte_slice(range.clone()) else {
+									dbg!(&range);
+									break 'match_;
+								};
+								let lhs = some!(capture.node.prev_named_sibling());
+								let model = some!(self.model_of_range(
+									root,
+									lhs.byte_range().map_unit(ByteOffset),
+									None,
+									&contents
+								));
+								let model = interner().resolve(&model);
+								let needle = Cow::from(slice.byte_slice(..offset - range.start));
+								early_return = Some((
+									EarlyReturn::Access(model.to_string()),
+									needle,
+									range.map_unit(ByteOffset),
+									rope.clone(),
+								));
+								break 'match_;
+							}
+						}
+						Some(PyCompletions::Depends)
+						| Some(PyCompletions::MappedTarget)
+						| Some(PyCompletions::Prop)
+						| None => {}
 					}
 				}
 			}
@@ -356,16 +376,29 @@ impl Backend {
 		}
 		Ok(None)
 	}
-	/// In the context of `Model.create({'foo.bar.baz': ..})`, `for_replacing` changes the
-	/// meaning of `Mapped.needle` and `Mapped.range`:
-	/// - `needle`: if replacing, refers to a prefix of 'foo.bar.baz', otherwise 'foo.bar.baz' itself.
-	/// - `range`: if replacing, refers to the entire range of 'foo.bar.baz', otherwise the smallest substring of 'foo.bar.baz'
-	///            which contains the cursor AND no periods.
+	/// Gathers common information regarding a mapped access aka dot access.
+	/// Only makes sense in [`PyCompletions`] queries.
+	///
+	/// Replacing:
+	///
+	/// 	"foo.bar.baz"
+	///           ^cursor
+	///      ----------- range
+	///      ------ needle
+	///
+	/// Not replacing:
+	///
+	/// 	"foo.bar.baz"
+	///           ^cursor
+	///      ------- range
+	///      ------- needle
+	///
+	/// padding
 	fn gather_mapped<'text>(
 		&self,
 		root: Node,
-		match_: tree_sitter::QueryMatch,
-		offset: usize,
+		match_: &tree_sitter::QueryMatch,
+		offset: Option<usize>,
 		mut range: core::ops::Range<usize>,
 		this_model: Option<&[u8]>,
 		rope: &'text Rope,
@@ -374,19 +407,21 @@ impl Backend {
 	) -> Option<Mapped<'text>> {
 		let needle = if for_replacing {
 			range = range.shrink(1);
+			let offset = offset.unwrap_or(range.end);
 			Cow::from(rope.get_byte_slice(range.start..offset)?)
 		} else {
 			let slice = Cow::from(rope.get_byte_slice(range.clone().shrink(1))?);
-			let relative_offset = range.start + 1;
-			let slice = &slice[offset - relative_offset..];
+			let relative_start = range.start + 1;
+			let offset = offset.unwrap_or((range.end - 1).max(relative_start));
+			let slice_till_end = &slice[offset - relative_start..];
 			// How many characters until the next period or end-of-string?
-			let limit = slice.find('.').unwrap_or(slice.len());
-			range = relative_offset..offset + limit;
+			let limit = slice_till_end.find('.').unwrap_or(slice_till_end.len());
+			range = relative_start..offset + limit;
 			Cow::from(rope.get_byte_slice(range.clone())?)
 		};
 
 		let model;
-		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MAPPED_TARGET).next() {
+		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next() {
 			let model_ = self.model_of_range(root, local_model.byte_range().map_unit(ByteOffset), None, &contents)?;
 			model = interner().resolve(&model_).to_string();
 		} else if let Some(this_model) = &this_model {
@@ -396,7 +431,7 @@ impl Backend {
 		}
 
 		let mut single_field = false;
-		if let Some(depends) = match_.nodes_for_capture_index(PyCompletions::DEPENDS).next() {
+		if let Some(depends) = match_.nodes_for_capture_index(PyCompletions::Depends as _).next() {
 			single_field = matches!(
 				&contents[depends.byte_range()],
 				b"write" | b"create" | b"constrains" | b"onchange"
@@ -434,60 +469,79 @@ impl Backend {
 			let mut this_model = None;
 			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				for capture in match_.captures {
-					if capture.index == PyCompletions::XML_ID {
-						let range = capture.node.byte_range();
-						if range.contains(&offset) {
-							let range = range.shrink(1);
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
-								break 'match_;
-							};
-							let slice = Cow::from(slice);
-							return self
-								.jump_def_xml_id(&slice, &params.text_document_position_params.text_document.uri);
+					match PyCompletions::from(capture.index) {
+						Some(PyCompletions::XmlId) => {
+							let range = capture.node.byte_range();
+							if range.contains(&offset) {
+								let range = range.shrink(1);
+								let Some(slice) = rope.get_byte_slice(range.clone()) else {
+									dbg!(&range);
+									break 'match_;
+								};
+								let slice = Cow::from(slice);
+								return self
+									.jump_def_xml_id(&slice, &params.text_document_position_params.text_document.uri);
+							}
 						}
-					} else if capture.index == PyCompletions::MODEL {
-						let range = capture.node.byte_range();
-						let is_meta = match_
-							.nodes_for_capture_index(PyCompletions::PROP)
-							.next()
-							.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
-							.unwrap_or(true);
-						if is_meta && range.contains(&offset) {
-							let range = range.shrink(1);
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
-								break 'match_;
-							};
-							let slice = Cow::from(slice);
-							return self.jump_def_model(&slice);
-						} else if range.end < offset &&
+						Some(PyCompletions::Model) => {
+							let range = capture.node.byte_range();
+							let is_meta = match_
+								.nodes_for_capture_index(PyCompletions::Prop as _)
+								.next()
+								.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
+								.unwrap_or(true);
+							if is_meta && range.contains(&offset) {
+								let range = range.shrink(1);
+								let Some(slice) = rope.get_byte_slice(range.clone()) else {
+									dbg!(&range);
+									break 'match_;
+								};
+								let slice = Cow::from(slice);
+								return self.jump_def_model(&slice);
+							} else if range.end < offset &&
 							// _inherit = '..' OR _inherit = ['..'] qualifies as primary model name
 							(is_meta && capture.node.parent()
 								.map(|parent| parent.kind() == "assignment" || (parent.kind() == "list" && parent.named_child_count() == 1))
 								.unwrap_or(false))
-						{
-							this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+							{
+								this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+							}
 						}
-					} else if capture.index == PyCompletions::ACCESS {
-						let range = capture.node.byte_range();
-						if range.contains_end(offset) {
-							let lhs = some!(capture.node.prev_named_sibling());
-							let lhs = lhs.byte_range().map_unit(ByteOffset);
-							let model = some!(self.model_of_range(root, lhs, None, &contents));
-							let field = String::from_utf8_lossy(&contents[range]);
-							let model = interner().resolve(&model);
-							early_return = Some(EarlyReturn::Access(field, model));
-							break 'match_;
+						Some(PyCompletions::Access) => {
+							let range = capture.node.byte_range();
+							if range.contains_end(offset) {
+								let lhs = some!(capture.node.prev_named_sibling());
+								let lhs = lhs.byte_range().map_unit(ByteOffset);
+								let model = some!(self.model_of_range(root, lhs, None, &contents));
+								let field = String::from_utf8_lossy(&contents[range]);
+								let model = interner().resolve(&model);
+								early_return = Some(EarlyReturn::Access(field, model));
+								break 'match_;
+							}
 						}
-					} else if capture.index == PyCompletions::MAPPED {
-						let range = capture.node.byte_range();
-						if range.contains_end(offset) {
-							early_return = self
-								.gather_mapped(root, match_, offset, range.clone(), this_model, &rope, &contents, false)
-								.map(EarlyReturn::Mapped);
-							break 'match_;
+						Some(PyCompletions::Mapped) => {
+							let range = capture.node.byte_range();
+							if range.contains_end(offset) {
+								early_return = self
+									.gather_mapped(
+										root,
+										&match_,
+										Some(offset),
+										range.clone(),
+										this_model,
+										&rope,
+										&contents,
+										false,
+									)
+									.map(EarlyReturn::Mapped);
+								break 'match_;
+							}
 						}
+						Some(PyCompletions::Request)
+						| Some(PyCompletions::MappedTarget)
+						| Some(PyCompletions::Depends)
+						| Some(PyCompletions::Prop)
+						| None => {}
 					}
 				}
 			}
@@ -537,34 +591,44 @@ impl Backend {
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
 		'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 			for capture in match_.captures {
-				if capture.index == PyCompletions::XML_ID {
-					let range = capture.node.byte_range();
-					if range.contains(&offset) {
-						let range = range.shrink(1);
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
-							break 'match_;
-						};
-						let slice = Cow::from(slice);
-						return self.record_references(&slice, current_module);
+				match PyCompletions::from(capture.index) {
+					Some(PyCompletions::XmlId) => {
+						let range = capture.node.byte_range();
+						if range.contains(&offset) {
+							let range = range.shrink(1);
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let slice = Cow::from(slice);
+							return self.record_references(&slice, current_module);
+						}
 					}
-				} else if capture.index == PyCompletions::MODEL {
-					let range = capture.node.byte_range();
-					let is_meta = match_
-						.nodes_for_capture_index(PyCompletions::PROP)
-						.next()
-						.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
-						.unwrap_or(true);
-					if is_meta && range.contains(&offset) {
-						let range = range.shrink(1);
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
-							break 'match_;
-						};
-						let slice = Cow::from(slice);
-						let slice = some!(interner().get(slice));
-						return self.model_references(&slice.into());
+					Some(PyCompletions::Model) => {
+						let range = capture.node.byte_range();
+						let is_meta = match_
+							.nodes_for_capture_index(PyCompletions::Prop as _)
+							.next()
+							.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
+							.unwrap_or(true);
+						if is_meta && range.contains(&offset) {
+							let range = range.shrink(1);
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let slice = Cow::from(slice);
+							let slice = some!(interner().get(slice));
+							return self.model_references(&slice.into());
+						}
 					}
+					Some(PyCompletions::Request)
+					| Some(PyCompletions::Mapped)
+					| Some(PyCompletions::MappedTarget)
+					| Some(PyCompletions::Depends)
+					| Some(PyCompletions::Access)
+					| Some(PyCompletions::Prop)
+					| None => {}
 				}
 			}
 		}
@@ -600,68 +664,78 @@ impl Backend {
 			let mut this_model = None;
 			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				for capture in match_.captures {
-					if capture.index == PyCompletions::MODEL {
-						let range = capture.node.byte_range();
-						let (is_inherit, is_name) = match_
-							.nodes_for_capture_index(PyCompletions::PROP)
-							.next()
-							.map(|prop| {
-								(
-									&contents[prop.byte_range()] == b"_inherit",
-									&contents[prop.byte_range()] == b"_name",
-								)
-							})
-							.unwrap_or((true, false));
-						if range.contains(&offset) {
-							let range = range.shrink(1);
-							let lsp_range = ts_range_to_lsp_range(capture.node.range());
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
-								break 'match_;
-							};
-							let slice = Cow::from(slice);
-							return self.hover_model(&slice, Some(lsp_range), false);
-						} else if range.end < offset
-							&& (is_name
+					match PyCompletions::from(capture.index) {
+						Some(PyCompletions::Model) => {
+							let range = capture.node.byte_range();
+							let (is_inherit, is_name) = match_
+								.nodes_for_capture_index(PyCompletions::Prop as _)
+								.next()
+								.map(|prop| {
+									(
+										&contents[prop.byte_range()] == b"_inherit",
+										&contents[prop.byte_range()] == b"_name",
+									)
+								})
+								.unwrap_or((true, false));
+							if range.contains(&offset) {
+								let range = range.shrink(1);
+								let lsp_range = ts_range_to_lsp_range(capture.node.range());
+								let Some(slice) = rope.get_byte_slice(range.clone()) else {
+									dbg!(&range);
+									break 'match_;
+								};
+								let slice = Cow::from(slice);
+								return self.hover_model(&slice, Some(lsp_range), false);
+							} else if range.end < offset
+								&& (is_name
 							// _inherit = '..' OR _inherit = ['..'] qualifies as primary model name
 							|| (is_inherit && capture.node.parent()
 								.map(|parent| parent.kind() == "assignment" || (parent.kind() == "list" && parent.named_child_count() == 1))
 								.unwrap_or(false)))
-						{
-							this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+							{
+								this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+							}
 						}
-					} else if capture.index == PyCompletions::ACCESS {
-						let range = capture.node.byte_range();
-						if range.contains(&offset) {
-							let lsp_range = ts_range_to_lsp_range(capture.node.range());
-							let lhs = some!(capture.node.prev_named_sibling());
-							let lhs = lhs.byte_range().map_unit(ByteOffset);
-							let model = some!(self.model_of_range(root, lhs, None, &contents));
-							let field = String::from_utf8_lossy(&contents[range]);
-							early_return = Some(EarlyReturn::Access {
-								field,
-								model,
-								lsp_range,
-							});
-							break 'match_;
+						Some(PyCompletions::Access) => {
+							let range = capture.node.byte_range();
+							if range.contains(&offset) {
+								let lsp_range = ts_range_to_lsp_range(capture.node.range());
+								let lhs = some!(capture.node.prev_named_sibling());
+								let lhs = lhs.byte_range().map_unit(ByteOffset);
+								let model = some!(self.model_of_range(root, lhs, None, &contents));
+								let field = String::from_utf8_lossy(&contents[range]);
+								early_return = Some(EarlyReturn::Access {
+									field,
+									model,
+									lsp_range,
+								});
+								break 'match_;
+							}
 						}
-					} else if capture.index == PyCompletions::MAPPED {
-						let range = capture.node.byte_range();
-						if range.contains(&offset) {
-							early_return = self
-								.gather_mapped(
-									root,
-									match_,
-									offset,
-									range.clone(),
-									this_model,
-									&rope,
-									&contents[..],
-									false,
-								)
-								.map(EarlyReturn::Mapped);
-							break 'match_;
+						Some(PyCompletions::Mapped) => {
+							let range = capture.node.byte_range();
+							if range.contains(&offset) {
+								early_return = self
+									.gather_mapped(
+										root,
+										&match_,
+										Some(offset),
+										range.clone(),
+										this_model,
+										&rope,
+										&contents[..],
+										false,
+									)
+									.map(EarlyReturn::Mapped);
+								break 'match_;
+							}
 						}
+						Some(PyCompletions::Request)
+						| Some(PyCompletions::XmlId)
+						| Some(PyCompletions::MappedTarget)
+						| Some(PyCompletions::Depends)
+						| Some(PyCompletions::Prop)
+						| None => {}
 					}
 				}
 			}
@@ -705,6 +779,122 @@ impl Backend {
 		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), None, &contents));
 		let model = interner().resolve(&model);
 		self.hover_model(model, Some(lsp_range), true)
+	}
+	pub fn diagnose_python(&self, url: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
+		let path = url.path();
+		let ast = self
+			.ast_map
+			.get(path)
+			.expect(format_loc!("Did not build AST for {path}"));
+		let contents = Cow::from(rope.clone());
+		let contents = contents.as_bytes();
+		let query = PyCompletions::query();
+		let root = ast.root_node();
+		let mut cursor = QueryCursor::new();
+		let mut this_model = None;
+		for match_ in cursor.matches(query, root, &contents[..]) {
+			for capture in match_.captures {
+				match PyCompletions::from(capture.index) {
+					Some(PyCompletions::XmlId) => {
+						let xml_id = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
+						let xml_id_key = interner().get(&xml_id);
+						let mut id_found = false;
+						if let Some(id) = xml_id_key {
+							id_found = self.index.records.contains_key(&id.into());
+						}
+						if !id_found {
+							diagnostics.push(Diagnostic {
+								range: ts_range_to_lsp_range(capture.node.range()),
+								message: format!("No XML record with ID `{xml_id}` found"),
+								severity: Some(DiagnosticSeverity::WARNING),
+								..Default::default()
+							})
+						}
+					}
+					Some(PyCompletions::Model) => {
+						let (is_name, is_inherit) = match_
+							.nodes_for_capture_index(PyCompletions::Prop as _)
+							.next()
+							.map(|prop| {
+								(
+									b"_name" == &contents[prop.byte_range()],
+									b"_inherit" == &contents[prop.byte_range()],
+								)
+							})
+							.unwrap_or((false, false));
+						if is_name
+							|| is_inherit
+								&& capture
+									.node
+									.parent()
+									.map(|parent| {
+										parent.kind() == "assignment"
+											|| parent.kind() == "list" && parent.named_child_count() == 1
+									})
+									.unwrap_or(false)
+						{
+							this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+						}
+					}
+					Some(PyCompletions::Mapped) => {
+						let Some(Mapped {
+							needle,
+							model,
+							single_field,
+							mut range,
+						}) = self.gather_mapped(
+							root,
+							&match_,
+							None,
+							capture.node.byte_range(),
+							this_model,
+							&rope,
+							contents,
+							false,
+						)
+						else {
+							continue;
+						};
+						let mut model = interner().get_or_intern(&model);
+						let mut needle = needle.as_ref();
+						if !single_field {
+							self.index
+								.models
+								.resolve_mapped(&mut model, &mut needle, Some(&mut range));
+						}
+						if needle.is_empty() {
+							// Nothing to compare yet, keep going.
+							continue;
+						}
+						let mut has_field_or_unresolved = false;
+						if let (Some(model), Some(field)) =
+							(self.index.models.get(&model.into()), interner().get(needle))
+						{
+							if let Some(fields) = model.fields.as_ref() {
+								has_field_or_unresolved = fields.contains_key(field.into_usize() as _);
+							} else {
+								has_field_or_unresolved = true;
+							}
+						}
+
+						if !has_field_or_unresolved {
+							diagnostics.push(Diagnostic {
+								range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
+								severity: Some(DiagnosticSeverity::WARNING),
+								message: format!("Model `{}` has no field `{needle}`", interner().resolve(&model)),
+								..Default::default()
+							});
+						}
+					}
+					Some(PyCompletions::Request)
+					| Some(PyCompletions::MappedTarget)
+					| Some(PyCompletions::Depends)
+					| Some(PyCompletions::Access)
+					| Some(PyCompletions::Prop)
+					| None => {}
+				}
+			}
+		}
 	}
 }
 

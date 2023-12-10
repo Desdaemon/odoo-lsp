@@ -20,7 +20,7 @@ use super::{interner, Component, ComponentName, Output, TemplateName};
 // static template OR Foo.template: Component template (XML name or inline decl)
 // static components OR Foo.components: Component subcomponents
 query_js! {
-	ComponentQuery(NAME, PROP, PARENT, TEMPLATE_NAME, TEMPLATE_INLINE, SUBCOMPONENT);
+	ComponentQuery(Name, Prop, Parent, TemplateName, TemplateInline, Subcomponent);
 r#"
 ((class_declaration
     (identifier) @NAME
@@ -117,7 +117,7 @@ pub(super) async fn add_root_js(path: PathBuf) -> miette::Result<Output> {
 
 	for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
 		let first = match_.captures.first().unwrap();
-		debug_assert_eq!(first.index, ComponentQuery::NAME);
+		debug_assert_eq!(first.index, ComponentQuery::Name as u32);
 
 		let name = String::from_utf8_lossy(&contents[first.node.byte_range()]);
 		let name = interner().get_or_intern(&name);
@@ -131,43 +131,50 @@ pub(super) async fn add_root_js(path: PathBuf) -> miette::Result<Output> {
 
 		for capture in &match_.captures[1..] {
 			use intmap::Entry;
-			if capture.index == ComponentQuery::PROP {
-				let mut range = capture.node.byte_range();
-				if capture.node.kind() == "string" {
-					range = range.shrink(1);
+			match ComponentQuery::from(capture.index) {
+				Some(ComponentQuery::Prop) => {
+					let mut range = capture.node.byte_range();
+					if capture.node.kind() == "string" {
+						range = range.shrink(1);
+					}
+					let prop = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+					let prop = interner().get_or_intern(prop).into_inner().get();
+					let entry = match component.props.entry(prop as _) {
+						Entry::Occupied(entry) => entry.into_mut(),
+						Entry::Vacant(entry) => entry.insert(PropDescriptor {
+							type_: Default::default(),
+							location: MinLoc {
+								path: path_uri,
+								range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
+							},
+						}),
+					};
+					if let Some(descriptor) = capture.node.next_named_sibling() {
+						entry.type_ = parse_prop_type(descriptor, &contents, Some(entry.type_));
+					}
 				}
-				let prop = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
-				let prop = interner().get_or_intern(prop).into_inner().get();
-				let entry = match component.props.entry(prop as _) {
-					Entry::Occupied(entry) => entry.into_mut(),
-					Entry::Vacant(entry) => entry.insert(PropDescriptor {
-						type_: Default::default(),
-						location: MinLoc {
-							path: path_uri,
-							range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
-						},
-					}),
-				};
-				if let Some(descriptor) = capture.node.next_named_sibling() {
-					entry.type_ = parse_prop_type(descriptor, &contents, Some(entry.type_));
+				Some(ComponentQuery::Parent) => {
+					let parent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+					let parent = interner().get_or_intern(parent);
+					component.ancestors.push(parent.into());
 				}
-			} else if capture.index == ComponentQuery::PARENT {
-				let parent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
-				let parent = interner().get_or_intern(parent);
-				component.ancestors.push(parent.into());
-			} else if capture.index == ComponentQuery::TEMPLATE_NAME {
-				let name = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
-				let name = interner().get_or_intern(&name);
-				component.template = Some(ComponentTemplate::Name(name.into()));
-			} else if capture.index == ComponentQuery::TEMPLATE_INLINE {
-				let range = capture.node.byte_range().shrink(1).map_unit(ByteOffset);
-				component.template = Some(ComponentTemplate::Inline(
-					offset_range_to_lsp_range(range, rope.clone()).unwrap(),
-				));
-			} else if capture.index == ComponentQuery::SUBCOMPONENT {
-				let subcomponent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
-				let subcomponent = interner().get_or_intern(&subcomponent);
-				component.subcomponents.push(subcomponent.into());
+				Some(ComponentQuery::TemplateName) => {
+					let name = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
+					let name = interner().get_or_intern(&name);
+					component.template = Some(ComponentTemplate::Name(name.into()));
+				}
+				Some(ComponentQuery::TemplateInline) => {
+					let range = capture.node.byte_range().shrink(1).map_unit(ByteOffset);
+					component.template = Some(ComponentTemplate::Inline(
+						offset_range_to_lsp_range(range, rope.clone()).unwrap(),
+					));
+				}
+				Some(ComponentQuery::Subcomponent) => {
+					let subcomponent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+					let subcomponent = interner().get_or_intern(&subcomponent);
+					component.subcomponents.push(subcomponent.into());
+				}
+				Some(ComponentQuery::Name) | None => {}
 			}
 		}
 	}

@@ -92,7 +92,8 @@ impl Scope {
 }
 
 query! {
-	FieldCompletion(NAME, SELF, SCOPE);
+	#[derive(Debug)]
+	FieldCompletion(Name, SelfParam, Scope);
 r#"
 ((class_definition
 	(block
@@ -101,14 +102,14 @@ r#"
 		[
 			(decorated_definition
 				(function_definition
-					(parameters . (identifier) @SELF) (block) @SCOPE) .)
-			(function_definition (parameters . (identifier) @SELF) (block) @SCOPE)
+					(parameters . (identifier) @SELF_PARAM) (block) @SCOPE) .)
+			(function_definition (parameters . (identifier) @SELF_PARAM) (block) @SCOPE)
 		])) @class
 (#match? @_name "^_(name|inherit)$"))"#
 }
 
 query! {
-	MappedCall(CALLEE, ITER);
+	MappedCall(Callee, Iter);
 r#"
 ((call
 	(attribute (_) @CALLEE (identifier) @_mapped)
@@ -143,15 +144,18 @@ impl Backend {
 				continue;
 			}
 			for capture in match_.captures {
-				if capture.index == FieldCompletion::NAME {
-					self_type = Some(capture.node);
-				} else if capture.index == FieldCompletion::SELF {
-					self_param = Some(capture.node);
-				} else if capture.index == FieldCompletion::SCOPE && capture.node.byte_range().contains_end(range.end.0)
-				{
-					// @scope
-					fn_scope = Some(capture.node);
-					break 'scoping;
+				match FieldCompletion::from(capture.index) {
+					Some(FieldCompletion::Name) => {
+						self_type = Some(capture.node);
+					}
+					Some(FieldCompletion::SelfParam) => {
+						self_param = Some(capture.node);
+					}
+					Some(FieldCompletion::Scope) if capture.node.byte_range().contains_end(range.end.0) => {
+						fn_scope = Some(capture.node);
+						break 'scoping;
+					}
+					Some(FieldCompletion::Scope) | None => {}
 				}
 			}
 		}
@@ -234,9 +238,15 @@ impl Backend {
 					let query = MappedCall::query();
 					let mut cursor = QueryCursor::new();
 					if let Some(mapped_call) = cursor.matches(query, node, contents).next() {
-						let callee = mapped_call.nodes_for_capture_index(MappedCall::CALLEE).next().unwrap();
+						let callee = mapped_call
+							.nodes_for_capture_index(MappedCall::Callee as _)
+							.next()
+							.unwrap();
 						if let Some(type_) = self.type_of(callee, &scope, contents) {
-							let iter = mapped_call.nodes_for_capture_index(MappedCall::ITER).next().unwrap();
+							let iter = mapped_call
+								.nodes_for_capture_index(MappedCall::Iter as _)
+								.next()
+								.unwrap();
 							let iter = String::from_utf8_lossy(&contents[iter.byte_range()]);
 							scope.insert(iter.into_owned(), type_);
 						}
@@ -447,7 +457,13 @@ class Foo(models.AbstractModel):
 		// let expected: &[&[u32]] = &[];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])
-			.map(|match_| match_.captures.iter().map(|capture| capture.index).collect::<Vec<_>>())
+			.map(|match_| {
+				match_
+					.captures
+					.iter()
+					.map(|capture| FieldCompletion::from(capture.index))
+					.collect::<Vec<_>>()
+			})
 			.collect::<Vec<_>>();
 		// Allow nested patterns
 		let actual = actual.iter().map(Vec::as_slice).collect::<Vec<_>>();
@@ -455,7 +471,10 @@ class Foo(models.AbstractModel):
 		assert!(
 			matches!(
 				&actual[..],
-				[[_, _, T::NAME, T::SELF, T::SCOPE], [_, _, T::NAME, T::SELF, T::SCOPE]]
+				[
+					[None, None, Some(T::Name), Some(T::SelfParam), Some(T::Scope)],
+					[None, None, Some(T::Name), Some(T::SelfParam), Some(T::Scope)]
+				]
 			),
 			"{actual:?}"
 		)

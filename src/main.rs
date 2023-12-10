@@ -131,6 +131,10 @@ impl LanguageServer for Backend {
 		document_map.remove(path);
 		record_ranges.remove(path);
 		ast_map.remove(path);
+
+		self.client
+			.publish_diagnostics(params.text_document.uri, vec![], None)
+			.await;
 	}
 	async fn initialized(&self, _: InitializedParams) {
 		debug!("initialized");

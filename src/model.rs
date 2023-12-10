@@ -105,7 +105,7 @@ impl Deref for ModelIndex {
 }
 
 query! {
-	ModelFields(FIELD, TYPE, RELATION, ARG, VALUE);
+	ModelFields(Field, Type, Relation, Arg, Value);
 r#"
 ((class_definition
 	(block
@@ -230,28 +230,30 @@ impl ModelIndex {
 						Related,
 					}
 					for capture in match_.captures {
-						if capture.index == ModelFields::FIELD {
-							field = Some(capture.node);
-						} else if capture.index == ModelFields::TYPE {
-							type_ = Some(capture.node.byte_range());
-							// TODO: fields.Reference
-							is_relational = matches!(
-								&contents[capture.node.byte_range()],
-								b"One2many" | b"Many2one" | b"Many2many"
-							);
-						} else if capture.index == ModelFields::RELATION {
-							if is_relational {
-								relation = Some(capture.node.byte_range().shrink(1));
+						match ModelFields::from(capture.index) {
+							Some(ModelFields::Field) => {
+								field = Some(capture.node);
 							}
-						} else if capture.index == ModelFields::ARG {
-							match &contents[capture.node.byte_range()] {
+							Some(ModelFields::Type) => {
+								type_ = Some(capture.node.byte_range());
+								// TODO: fields.Reference
+								is_relational = matches!(
+									&contents[capture.node.byte_range()],
+									b"One2many" | b"Many2one" | b"Many2many"
+								);
+							}
+							Some(ModelFields::Relation) => {
+								if is_relational {
+									relation = Some(capture.node.byte_range().shrink(1));
+								}
+							}
+							Some(ModelFields::Arg) => match &contents[capture.node.byte_range()] {
 								b"comodel_name" if is_relational => kwarg = Some(Kwargs::ComodelName),
 								b"help" => kwarg = Some(Kwargs::Help),
 								b"related" => kwarg = Some(Kwargs::Related),
 								_ => kwarg = None,
-							}
-						} else if capture.index == ModelFields::VALUE {
-							match kwarg {
+							},
+							Some(ModelFields::Value) => match kwarg {
 								Some(Kwargs::ComodelName) => {
 									if capture.node.kind() == "string" {
 										relation = Some(capture.node.byte_range().shrink(1));
@@ -268,7 +270,8 @@ impl ModelIndex {
 									}
 								}
 								None => {}
-							}
+							},
+							None => {}
 						}
 					}
 					if let (Some(field), Some(type_)) = (field, type_) {
@@ -319,7 +322,6 @@ impl ModelIndex {
 		// recursively get or populate ancestors' fields
 		for ancestor in ancestors {
 			if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
-				// let entry = entry.await;
 				if let Some(fields) = entry.fields.as_ref() {
 					// TODO: Implement copy-on-write to increase reuse
 					out.extend(fields.iter().map(|(key, val)| (key.clone(), val.clone())));
@@ -354,17 +356,22 @@ impl ModelIndex {
 	/// Returns None if resolution fails before `needle` is exhausted.
 	pub fn resolve_mapped(&self, model: &mut Spur, needle: &mut &str, mut range: Option<&mut ByteRange>) -> Option<()> {
 		while let Some((lhs, rhs)) = needle.split_once('.') {
-			debug!("mapped {needle}");
+			debug!("mapped `{needle}`");
 			// lhs: foo
 			// rhs: ba
-			*needle = rhs;
 			let fields = self.populate_field_names(model.clone().into(), &[])?;
-			let field = interner().get(&lhs)?;
-			let field = fields.fields.as_ref()?.get(&field.into());
-			let FieldKind::Relational(rel) = field?.kind else {
+			let field = interner().get(&lhs);
+			let field = field.and_then(|field| fields.fields.as_ref()?.get(&field.into()));
+			let Some(FieldKind::Relational(rel)) = field.as_ref().map(|f| &f.kind) else {
+				*needle = lhs;
+				if let Some(range) = range.as_mut() {
+					let end = range.start.0 + lhs.len();
+					**range = range.start..ByteOffset(end);
+				}
 				return None;
 			};
-			*model = rel;
+			*needle = rhs;
+			*model = rel.clone();
 			// old range: foo.bar.baz
 			// range:         bar.baz
 			if let Some(range) = range.as_mut() {
@@ -413,7 +420,7 @@ impl ModelIndex {
 }
 
 query! {
-	ModelHelp(DOCSTRING);
+	ModelHelp(Docstring);
 r#"
 (class_definition
   (block .

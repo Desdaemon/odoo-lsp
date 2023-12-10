@@ -304,7 +304,7 @@ async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<
 }
 
 query! {
-	ModelQuery(MODEL, NAME);
+	ModelQuery(Model, Name);
 r#"
 ((class_definition
 	(argument_list [
@@ -351,11 +351,11 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 	}
 	for match_ in cursor.matches(query, ast.root_node(), contents) {
 		let model_node = match_
-			.nodes_for_capture_index(ModelQuery::MODEL)
+			.nodes_for_capture_index(ModelQuery::Model as _)
 			.next()
 			.ok_or_else(|| diagnostic!("(index_models) model_node"))?;
 		let capture = match_
-			.nodes_for_capture_index(ModelQuery::NAME)
+			.nodes_for_capture_index(ModelQuery::Name as _)
 			.next()
 			.ok_or_else(|| diagnostic!("(index_models) name"))?;
 		let model = models.entry(model_node.byte_range()).or_insert_with(|| NewModel {

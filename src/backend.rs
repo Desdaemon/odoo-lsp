@@ -73,7 +73,7 @@ impl Backend {
 		};
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
-				self.on_change_python(&params.text, &params.uri, rope, params.old_rope)?;
+				self.on_change_python(&params.text, &params.uri, rope, params.old_rope, &mut diagnostics)?;
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
 				self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)

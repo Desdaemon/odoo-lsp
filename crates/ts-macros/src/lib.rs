@@ -1,6 +1,10 @@
-use std::collections::{hash_map::Entry, HashMap};
+use std::{
+	borrow::Cow,
+	collections::{hash_map::Entry, HashMap},
+};
 
-use proc_macro2::{Ident, TokenStream};
+use heck::ToUpperCamelCase;
+use proc_macro2::{Ident, Literal, TokenStream};
 use proc_macro2_diagnostics::SpanDiagnosticExt;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{parse::Parse, punctuated::Punctuated, *};
@@ -8,7 +12,7 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 /// Usage:
 /// ```rust,noplayground
 /// ts_macros::query! {
-///     MyQuery(FOO, BAR);
+///     MyQuery(Foo, Bar);
 ///     r#"
 /// (function_definition
 ///   (parameters . (string) @FOO)
@@ -22,11 +26,13 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 ///
 /// Generates:
 /// ```rust,noplayground
-/// pub enum MyQuery {}
+/// pub enum MyQuery {
+/// 	Foo = 0,
+/// 	Bar = 2,
+/// }
 /// impl MyQuery {
-///     pub const FOO: u32 = 0;
-///     pub const BAR: u32 = 2;
 ///     pub fn query() -> &'static Query;
+/// 	pub fn from(raw: u32) -> Option<Self>;
 /// }
 /// ```
 #[proc_macro]
@@ -43,6 +49,7 @@ pub fn query_js(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 struct QueryDefinition {
+	meta: Vec<TokenStream>,
 	name: syn::Ident,
 	captures: Punctuated<Ident, Token![,]>,
 	query: syn::LitStr,
@@ -50,14 +57,22 @@ struct QueryDefinition {
 
 impl Parse for QueryDefinition {
 	fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+		let mut meta = vec![];
+		while input.peek(Token![#]) {
+			input.parse::<Token![#]>()?;
+			let content;
+			bracketed!(content in input);
+			meta.push(content.parse()?);
+		}
 		let name = input.parse()?;
 		let contents;
 		parenthesized!(contents in input);
 		let captures = Punctuated::parse_terminated(&contents)?;
-		_ = input.parse::<Token![;]>();
+		input.parse::<Token![;]>()?;
 		let template = input.parse()?;
 		Ok(Self {
 			name,
+			meta,
 			captures,
 			query: template,
 		})
@@ -85,6 +100,7 @@ impl QueryDefinition {
 		let mut captures = HashMap::new();
 		let mut diagnostics = Vec::new();
 		let mut index = 0u32;
+		// TODO: Skip symbols inside quotes
 		while let Some(mut start) = query.find('@') {
 			start += 1;
 			if start >= query.len() {
@@ -95,28 +111,47 @@ impl QueryDefinition {
 				.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
 				.unwrap_or(query.len() - start);
 			let capture = &query[start..start + end];
-			if let Entry::Vacant(entry) = captures.entry(capture) {
+			let key = if capture.starts_with('_') {
+				Cow::from(capture)
+			} else {
+				Cow::from(capture.to_upper_camel_case())
+			};
+			if let Entry::Vacant(entry) = captures.entry(key.into_owned()) {
 				entry.insert(index);
 				index += 1;
 			}
 			query = &query[start + end..];
 		}
-		let mut consts = vec![];
+		let mut cases = vec![];
+		let mut variants = vec![];
 		for capture in self.captures.iter() {
-			if let Some(index) = captures.get(&capture.to_string().as_ref()) {
-				let index = *index;
-				consts.push(quote_spanned!(capture.span()=> pub const #capture: u32 = #index;))
+			if let Some(index) = captures.get(capture.to_string().as_str()) {
+				let index = Literal::usize_unsuffixed(*index as _);
+				cases.push(quote_spanned!(capture.span() => #index => Some(Self::#capture),));
+				variants.push(quote_spanned!(capture.span()=> #capture = #index,));
 			} else {
 				diagnostics.push(capture.span().error(format!("No capture '{capture}' found in query")));
 			}
 		}
 		let name = self.name;
 		let query = self.query;
+		let meta = self.meta;
 		let diagnostics = diagnostics.into_iter().map(|diag| diag.emit_as_item_tokens());
 		quote_spanned!(name.span()=>
-			pub enum #name {}
+			#(#[#meta])*
+			pub enum #name {
+				#(#variants)*
+			}
+
+			#[automatically_derived]
 			impl #name {
-				#(#consts)*
+				#[inline]
+				pub fn from(raw: u32) -> Option<Self> {
+					match raw {
+						#(#cases)*
+						_ => None,
+					}
+				}
 				pub fn query() -> &'static ::tree_sitter::Query {
 					use ::std::sync::OnceLock as _OnceLock;
 					static QUERY: _OnceLock<::tree_sitter::Query> = _OnceLock::new();

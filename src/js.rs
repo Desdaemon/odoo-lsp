@@ -38,7 +38,7 @@ impl Backend {
 		for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
-				if capture.index == ComponentQuery::TEMPLATE_NAME && range.contains(&offset) {
+				if capture.index == ComponentQuery::TemplateName as u32 && range.contains(&offset) {
 					let key = some!(interner().get(&String::from_utf8_lossy(&contents[range.shrink(1)])));
 					return Ok(some!(self.index.templates.get(&key.into()))
 						.location
@@ -66,7 +66,7 @@ impl Backend {
 		for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
-				if capture.index == ComponentQuery::TEMPLATE_NAME && range.contains(&offset) {
+				if capture.index == ComponentQuery::TemplateName as u32 && range.contains(&offset) {
 					let key = String::from_utf8_lossy(&contents[range.shrink(1)]);
 					let key = some!(interner().get(&key));
 					let template = some!(self.index.templates.get(&key.into()));
