@@ -12,8 +12,6 @@ pub use visitor::PreTravel;
 
 use crate::index::interner;
 
-pub mod future;
-
 mod usage;
 pub use usage::{Usage, UsageInfo};
 
