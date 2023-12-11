@@ -317,7 +317,7 @@ r#"
 	)) @MODEL
  (#eq? @_models "models")
  (#match? @_Model "^(Transient|Abstract)?Model$")
- (#match? @NAME "^_(name|inherit)$"))"#
+ (#match? @NAME "^_(name|inherits?)$"))"#
 }
 
 async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
@@ -341,7 +341,6 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 	let query = ModelQuery::query();
 	let mut cursor = QueryCursor::new();
 
-	// let rope = Rope::from_str(&String::from_utf8_lossy(contents));
 	let mut models = HashMap::new();
 	struct NewModel<'a> {
 		range: tree_sitter::Range,
@@ -400,6 +399,23 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 					}
 					_ => {
 						continue;
+					}
+				}
+			}
+			b"_inherits" => {
+				let Some(inherit_dict) = capture.next_named_sibling() else {
+					continue;
+				};
+				if inherit_dict.kind() != "dictionary" {
+					continue;
+				}
+				for pair in inherit_dict.named_children(&mut inherit_dict.walk()) {
+					if pair.kind() != "pair" {
+						continue;
+					}
+					let key = pair.named_child(0).expect("key");
+					if key.kind() == "string" {
+						model.inherits.push(&contents[key.byte_range().shrink(1)]);
 					}
 				}
 			}
