@@ -79,6 +79,15 @@ impl LanguageServer for Backend {
 			self.capabilities.dynamic_config.store(true, Relaxed);
 		}
 
+		if let Some(TextDocumentClientCapabilities {
+			diagnostic: Some(diagnostics),
+			..
+		}) = params.capabilities.text_document
+		{
+			dbg!(diagnostics);
+			self.capabilities.pull_diagnostics.store(true, Relaxed);
+		}
+
 		Ok(InitializeResult {
 			server_info: None,
 			offset_encoding: None,
@@ -87,6 +96,7 @@ impl LanguageServer for Backend {
 				hover_provider: Some(HoverProviderCapability::Simple(true)),
 				references_provider: Some(OneOf::Left(true)),
 				workspace_symbol_provider: Some(OneOf::Left(true)),
+				diagnostic_provider: Some(DiagnosticServerCapabilities::Options(Default::default())),
 				text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
 					change: Some(TextDocumentSyncKind::INCREMENTAL),
 					save: Some(TextDocumentSyncSaveOptions::Supported(true)),
@@ -131,10 +141,6 @@ impl LanguageServer for Backend {
 		document_map.remove(path);
 		record_ranges.remove(path);
 		ast_map.remove(path);
-
-		self.client
-			.publish_diagnostics(params.text_document.uri, vec![], None)
-			.await;
 	}
 	async fn initialized(&self, _: InitializedParams) {
 		debug!("initialized");
@@ -193,6 +199,8 @@ impl LanguageServer for Backend {
 			})
 			.await;
 
+		_ = self.client.workspace_diagnostic_refresh().await;
+
 		if self.capabilities.dynamic_config.load(Relaxed) {
 			_ = self
 				.client
@@ -230,6 +238,9 @@ impl LanguageServer for Backend {
 			// outside of root?
 			debug!("oob: {}", params.text_document.uri.path());
 			'oob: {
+				if !self.root_setup.load(Relaxed) {
+					break 'oob;
+				}
 				let Ok(path) = params.text_document.uri.to_file_path() else {
 					break 'oob;
 				};
@@ -592,6 +603,22 @@ impl LanguageServer for Backend {
 			});
 			Ok(Some(models.chain(records).take(limit).collect()))
 		}
+	}
+	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
+		let path = params.text_document.uri.path();
+		debug!("(diagnostics) {path}");
+		let mut items = vec![];
+		if let Some((_, "py")) = path.rsplit_once('.') {
+			if let Some(document) = self.document_map.get(path) {
+				self.diagnose_python(&params.text_document.uri, document.value().clone(), &mut items);
+			}
+		}
+		Ok(DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
+			RelatedFullDocumentDiagnosticReport {
+				related_documents: None,
+				full_document_diagnostic_report: FullDocumentDiagnosticReport { result_id: None, items },
+			},
+		)))
 	}
 }
 

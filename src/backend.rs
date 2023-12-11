@@ -35,6 +35,8 @@ pub struct Backend {
 #[derive(Debug, Default)]
 pub struct Capabilities {
 	pub dynamic_config: AtomicBool,
+	/// Whether the client is expected to explicitly request for diagnostics.
+	pub pull_diagnostics: AtomicBool,
 }
 
 pub struct TextDocumentItem {
@@ -65,7 +67,6 @@ impl Backend {
 
 	pub async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
 		let split_uri = params.uri.path().rsplit_once('.');
-		let mut diagnostics = vec![];
 		let rope = match (params.rope, &params.text) {
 			(Some(rope), _) => rope,
 			(None, Text::Full(full)) => ropey::Rope::from_str(full),
@@ -73,20 +74,16 @@ impl Backend {
 		};
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
-				self.on_change_python(&params.text, &params.uri, rope, params.old_rope, &mut diagnostics)?;
+				self.on_change_python(&params.text, &params.uri, rope, params.old_rope)?;
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
-				self.on_change_xml(&params.text, &params.uri, rope, &mut diagnostics)
-					.await?;
+				self.on_change_xml(&params.text, &params.uri, rope).await?;
 			}
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
 				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
 			}
 			other => return Err(diagnostic!("Unhandled language: {other:?}")).into_diagnostic(),
 		}
-		self.client
-			.publish_diagnostics(params.uri, diagnostics, Some(params.version))
-			.await;
 
 		Ok(())
 	}

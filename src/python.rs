@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::path::Path;
 
 use lasso::Key;
-use log::{debug, error};
+use log::{debug, error, warn};
 use miette::diagnostic;
 use odoo_lsp::index::{index_models, interner, Module, Symbol};
 use ropey::Rope;
@@ -125,20 +125,12 @@ struct Mapped<'text> {
 }
 
 impl Backend {
-	pub fn on_change_python(
-		&self,
-		text: &Text,
-		uri: &Url,
-		rope: Rope,
-		old_rope: Option<Rope>,
-		diagnostics: &mut Vec<Diagnostic>,
-	) -> miette::Result<()> {
+	pub fn on_change_python(&self, text: &Text, uri: &Url, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
 			.set_language(tree_sitter_python::language())
 			.expect("bug: failed to init python parser");
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)?;
-		self.diagnose_python(uri, rope, diagnostics);
 		Ok(())
 	}
 	pub async fn update_models(&self, text: Text, uri: &Url, rope: Rope) -> miette::Result<()> {
@@ -413,6 +405,12 @@ impl Backend {
 			let slice = Cow::from(rope.get_byte_slice(range.clone().shrink(1))?);
 			let relative_start = range.start + 1;
 			let offset = offset.unwrap_or((range.end - 1).max(relative_start));
+			assert!(
+				offset >= relative_start,
+				"offset={} cannot be less than relative_start={}",
+				offset,
+				relative_start
+			);
 			let slice_till_end = &slice[offset - relative_start..];
 			// How many characters until the next period or end-of-string?
 			let limit = slice_till_end.find('.').unwrap_or(slice_till_end.len());
@@ -782,10 +780,10 @@ impl Backend {
 	}
 	pub fn diagnose_python(&self, url: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
 		let path = url.path();
-		let ast = self
-			.ast_map
-			.get(path)
-			.expect(format_loc!("Did not build AST for {path}"));
+		let Some(ast) = self.ast_map.get(path) else {
+			warn!("Did not build AST for {path}");
+			return;
+		};
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
 		let query = PyCompletions::query();

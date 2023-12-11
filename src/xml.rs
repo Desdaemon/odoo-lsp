@@ -35,13 +35,7 @@ enum Tag {
 }
 
 impl Backend {
-	pub async fn on_change_xml(
-		&self,
-		text: &Text,
-		uri: &Url,
-		rope: Rope,
-		diagnostics: &mut Vec<Diagnostic>,
-	) -> miette::Result<()> {
+	pub async fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope) -> miette::Result<()> {
 		let interner = interner();
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
@@ -124,14 +118,7 @@ impl Backend {
 				}
 				None => break,
 				Some(Err(err)) => {
-					let pos = err.pos();
-					let pos = Position::new(pos.row - 1, pos.col - 1);
-					diagnostics.push(Diagnostic {
-						severity: Some(DiagnosticSeverity::WARNING),
-						range: Range::new(pos, pos),
-						message: format!("could not parse XML:\n{err}"),
-						..Default::default()
-					});
+					debug!("error parsing xml:\n{err}");
 					break;
 				}
 				_ => {}
