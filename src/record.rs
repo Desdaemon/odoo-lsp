@@ -120,7 +120,7 @@ impl Record {
 						line: err.pos().row - 1,
 						character: err.pos().col - 1,
 					};
-					end = position_to_offset(pos, rope.clone());
+					end = position_to_offset(pos, &rope);
 					break;
 				}
 				_ => {}
@@ -214,7 +214,7 @@ impl Record {
 						line: err.pos().row - 1,
 						character: err.pos().col - 1,
 					};
-					end = position_to_offset(pos, rope.clone());
+					end = position_to_offset(pos, &rope);
 					break;
 				}
 				_ => {}
@@ -268,7 +268,7 @@ impl Record {
 						line: err.pos().row - 1,
 						character: err.pos().col - 1,
 					};
-					end = position_to_offset(pos, rope.clone());
+					end = position_to_offset(pos, &rope);
 					break;
 				}
 				_ => {}

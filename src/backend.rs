@@ -21,13 +21,13 @@ use odoo_lsp::{format_loc, some, utils::*};
 
 pub struct Backend {
 	pub client: Client,
-	pub document_map: DashMap<String, Rope>,
+	pub document_map: DashMap<String, Document>,
 	pub record_ranges: DashMap<String, Box<[ByteRange]>>,
 	pub ast_map: DashMap<String, Tree>,
 	pub index: Index,
 	pub roots: DashSet<String>,
 	pub capabilities: Capabilities,
-	pub root_setup: AtomicBool,
+	pub root_setup: CondVar,
 	pub symbols_limit: AtomicUsize,
 	pub references_limit: AtomicUsize,
 }
@@ -44,7 +44,6 @@ pub struct TextDocumentItem {
 	pub text: Text,
 	pub version: i32,
 	pub language: Option<Language>,
-	pub rope: Option<Rope>,
 	pub old_rope: Option<Rope>,
 	pub open: bool,
 }
@@ -61,31 +60,62 @@ pub enum Language {
 	Javascript,
 }
 
+pub struct Document {
+	pub rope: Rope,
+	/// Might be outdated.
+	pub diagnostics_cache: Vec<Diagnostic>,
+	/// The current range of unsynced changes.
+	pub damage_zone: Option<ByteRange>,
+}
+
+impl Document {
+	pub fn new(rope: Rope) -> Self {
+		Self {
+			rope,
+			diagnostics_cache: vec![],
+			damage_zone: None,
+		}
+	}
+}
+
 impl Backend {
 	pub const LIMIT: usize = 80;
+
 	/// Maximum number of descendants to show in docstring.
 	const INHERITS_LIMIT: usize = 3;
-	pub const LINE_LIMIT: usize = 1500;
+
+	/// Maximum file line count to process diagnostics each on_change
+	pub const DIAGNOSTICS_LINE_LIMIT: usize = 1200;
 
 	pub async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
 		let split_uri = params.uri.path().rsplit_once('.');
-		let mut diagnostics = vec![];
-		let rope = match (params.rope, &params.text) {
-			(Some(rope), _) => rope,
-			(None, Text::Full(full)) => ropey::Rope::from_str(full),
-			(None, Text::Delta(_)) => Err(diagnostic!("No rope and got delta"))?,
-		};
+		let mut document = self
+			.document_map
+			.try_get_mut(params.uri.path())
+			.expect(format_loc!("deadlock"))
+			.expect(format_loc!("(on_change) did not build document"));
+		match &params.text {
+			Text::Full(full) => document.rope = ropey::Rope::from_str(&full),
+			Text::Delta(_) => {}
+		}
+		let rope = document.rope.clone();
+		let eager_diagnostics = self.eager_diagnostics(params.open, &rope);
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
 				self.on_change_python(&params.text, &params.uri, rope.clone(), params.old_rope)?;
-				if !self.capabilities.pull_diagnostics.load(Relaxed)
-					&& (params.open || rope.len_lines() < Self::LINE_LIMIT)
-				{
-					self.diagnose_python(&params.uri, rope.clone(), &mut diagnostics);
+				if eager_diagnostics {
+					self.diagnose_python(
+						&params.uri,
+						&rope,
+						params.text.damage_zone(&rope, None),
+						&mut document.diagnostics_cache,
+					);
+				} else {
+					document.damage_zone = params.text.damage_zone(&rope, document.damage_zone.take());
 				}
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
-				self.on_change_xml(&params.text, &params.uri, rope).await?;
+				self.on_change_xml(&params.text, &params.uri, &rope).await?;
 			}
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
 				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
@@ -93,13 +123,17 @@ impl Backend {
 			other => return Err(diagnostic!("Unhandled language: {other:?}")).into_diagnostic(),
 		}
 
-		if !diagnostics.is_empty() {
+		if eager_diagnostics {
 			self.client
-				.publish_diagnostics(params.uri, diagnostics, Some(params.version))
+				.publish_diagnostics(params.uri, document.diagnostics_cache.clone(), Some(params.version))
 				.await;
 		}
 
 		Ok(())
+	}
+	/// Whether diagnostics should be processed/pushed with each `on_change`.
+	pub fn eager_diagnostics(&self, open: bool, rope: &Rope) -> bool {
+		!self.capabilities.pull_diagnostics.load(Relaxed) && (open || rope.len_lines() < Self::DIAGNOSTICS_LINE_LIMIT)
 	}
 	pub fn update_ast(
 		&self,
@@ -116,12 +150,10 @@ impl Backend {
 				let old_rope = old_rope.ok_or_else(|| diagnostic!("delta requires old rope"))?;
 				for change in delta {
 					let range = change.range.ok_or_else(|| diagnostic!("delta without range"))?;
-					let start =
-						position_to_offset(range.start, rope.clone()).ok_or_else(|| diagnostic!("delta start"))?;
+					let start = position_to_offset(range.start, &rope).ok_or_else(|| diagnostic!("delta start"))?;
 					// The old rope is used to calculate the *old* range-end, because
 					// the diff may have caused it to fall out of the new rope's bounds.
-					let end =
-						position_to_offset(range.end, old_rope.clone()).ok_or_else(|| diagnostic!("delta end"))?;
+					let end = position_to_offset(range.end, &old_rope).ok_or_else(|| diagnostic!("delta end"))?;
 					let len_new = change.text.len();
 					let start_position = tree_sitter::Point {
 						row: range.start.line as usize,
@@ -174,18 +206,18 @@ impl Backend {
 		let by_prefix = self.index.records.by_prefix.read().await;
 		let model_filter = model_filter.and_then(|model| interner().get(model).map(ModelName::from));
 		fn to_completion_items(
-			entry: &Record,
+			record: &Record,
 			current_module: ModuleName,
 			range: Range,
 			scoped: bool,
 			interner: &Interner,
 		) -> CompletionItem {
-			let label = if entry.module == current_module && !scoped {
-				entry.id.to_string()
+			let label = if record.module == current_module && !scoped {
+				record.id.to_string()
 			} else {
-				entry.qualified_id(interner)
+				record.qualified_id(interner)
 			};
-			let model = entry.model.as_ref().map(|model| interner.resolve(model).to_string());
+			let model = record.model.as_ref().map(|model| interner.resolve(model).to_string());
 			CompletionItem {
 				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 					new_text: label.clone(),
@@ -205,9 +237,9 @@ impl Backend {
 			};
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.keys().flat_map(|key| {
-					self.index.records.get(&key).and_then(|entry| {
-						(entry.module == module && (model_filter.is_none() || entry.model == model_filter))
-							.then(|| to_completion_items(&entry, current_module, range, true, interner))
+					self.index.records.get(&key).and_then(|record| {
+						(record.module == module && (model_filter.is_none() || record.model == model_filter))
+							.then(|| to_completion_items(&record, current_module, range, true, interner))
 					})
 				})
 			});
@@ -215,9 +247,9 @@ impl Backend {
 		} else {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.keys().flat_map(|key| {
-					self.index.records.get(&key).and_then(|entry| {
-						(model_filter.is_none() || entry.model == model_filter)
-							.then(|| to_completion_items(&entry, current_module, range, false, interner))
+					self.index.records.get(&key).and_then(|record| {
+						(model_filter.is_none() || record.model == model_filter)
+							.then(|| to_completion_items(&record, current_module, range, false, interner))
 					})
 				})
 			});
@@ -239,10 +271,10 @@ impl Backend {
 		}
 		let model_key = interner().get_or_intern(&model);
 		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
-		let Some(entry) = self.index.models.populate_field_names(model_key.into(), &[]) else {
+		let Some(model_entry) = self.index.models.populate_field_names(model_key.into(), &[]) else {
 			return Ok(());
 		};
-		let completions = entry
+		let completions = model_entry
 			.fields_set
 			.iter_prefix_str(needle)
 			.map(|(field_name, _)| CompletionItem {
@@ -275,9 +307,9 @@ impl Backend {
 		let matches = by_prefix
 			.iter_prefix(needle.as_bytes())
 			.flat_map(|(_, key)| self.index.models.get(key))
-			.map(|entry| {
-				let label = interner().resolve(entry.key()).to_string();
-				let module = entry.base.as_ref().and_then(|base| {
+			.map(|model| {
+				let label = interner().resolve(model.key()).to_string();
+				let module = model.base.as_ref().and_then(|base| {
 					let loc = interner().resolve(&base.0.path);
 					let module = self.index.module_of_path(Path::new(loc))?;
 					Some(interner().resolve(&module).to_string())
@@ -311,8 +343,8 @@ impl Backend {
 			offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_template_name) range"))?;
 		let interner = interner();
 		let by_prefix = self.index.templates.by_prefix.read().await;
-		let matches = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, set)| {
-			set.keys().flat_map(|key| {
+		let matches = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, templates)| {
+			templates.keys().flat_map(|key| {
 				let label = interner.resolve(&*key).to_string();
 				Some(CompletionItem {
 					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
@@ -346,16 +378,11 @@ impl Backend {
 			}
 		}
 		let record_id = some!(interner().get(value));
-		return Ok((self.index.records.get(&record_id.into())).map(|entry| entry.location.clone().into()));
+		return Ok((self.index.records.get(&record_id.into())).map(|record| record.location.clone().into()));
 	}
 	pub fn jump_def_model(&self, model: &str) -> miette::Result<Option<Location>> {
 		let model = some!(interner().get(model));
-		match self
-			.index
-			.models
-			.get(&model.into())
-			.and_then(|entry| entry.base.as_ref().cloned())
-		{
+		match (self.index.models.get(&model.into())).and_then(|model| model.base.as_ref().cloned()) {
 			Some(ModelLocation(base, _)) => Ok(Some(base.into())),
 			None => Ok(None),
 		}
@@ -447,13 +474,13 @@ impl Backend {
 	}
 	pub fn template_references(&self, name: &str, include_definition: bool) -> miette::Result<Option<Vec<Location>>> {
 		let name = some!(interner().get(name));
-		let entry = some!(self.index.templates.get(&name.into()));
+		let template = some!(self.index.templates.get(&name.into()));
 		let definition_location = if include_definition {
-			entry.value().location.clone().map(Location::from)
+			template.value().location.clone().map(Location::from)
 		} else {
 			None
 		};
-		let descendant_locations = (entry.value().descendants)
+		let descendant_locations = (template.value().descendants)
 			.iter()
 			.flat_map(|tpl| tpl.location.clone().map(Location::from));
 		let mut locations = definition_location
@@ -590,7 +617,7 @@ impl Backend {
 				self.roots.insert(root_display.to_string());
 			}
 		}
-		self.root_setup.store(true, Relaxed);
+		// self.added_roots_root.store(true, Relaxed);
 	}
 	pub async fn statistics(&self) -> tower_lsp::jsonrpc::Result<Value> {
 		let Self {
@@ -619,5 +646,39 @@ impl Backend {
 				"bytes": symbols_usage,
 			}
 		}})
+	}
+}
+
+impl Text {
+	/// Returns None if not a delta, the resulting range is empty, or if conversion of any range fails.
+	fn damage_zone(&self, rope: &Rope, seed: Option<ByteRange>) -> Option<ByteRange> {
+		let deltas = match self {
+			Self::Full(_) => return None,
+			Self::Delta(deltas) => deltas,
+		};
+		let mut out = seed.unwrap_or_default().erase();
+		for delta in deltas {
+			let Some(range) = delta.range else {
+				out = Default::default();
+				continue;
+			};
+			let range = lsp_range_to_offset_range(range, rope)?;
+			out = out.start.min(range.start.0)..out.end.max(range.end.0);
+		}
+		(!out.is_empty()).then(|| out.map_unit(ByteOffset))
+	}
+}
+
+impl Usage for Document {
+	fn usage(&self) -> UsageInfo {
+		let Self {
+			rope,
+			diagnostics_cache,
+			damage_zone: _,
+		} = self;
+		let mut usage = core::mem::size_of::<Self>();
+		usage += rope.usage().1;
+		usage += diagnostics_cache.usage().1;
+		UsageInfo(0, usage)
 	}
 }

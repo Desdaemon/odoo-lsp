@@ -35,7 +35,7 @@ enum Tag {
 }
 
 impl Backend {
-	pub async fn on_change_xml(&self, text: &Text, uri: &Url, rope: Rope) -> miette::Result<()> {
+	pub async fn on_change_xml(&self, text: &Text, uri: &Url, rope: &Rope) -> miette::Result<()> {
 		let interner = interner();
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
@@ -78,8 +78,7 @@ impl Backend {
 									continue;
 								}
 								record_ranges.extend(entries.into_iter().map(|entry| {
-									lsp_range_to_offset_range(entry.template.location.unwrap().range, rope.clone())
-										.unwrap()
+									lsp_range_to_offset_range(entry.template.location.unwrap().range, &rope).unwrap()
 								}));
 								continue;
 							}
@@ -92,7 +91,7 @@ impl Backend {
 								continue;
 							}
 						};
-						let Some(range) = lsp_range_to_offset_range(record.location.range, rope.clone()) else {
+						let Some(range) = lsp_range_to_offset_range(record.location.range, &rope) else {
 							log::debug!("(on_change_xml) no range for {}", record.id);
 							continue;
 						};
@@ -112,7 +111,7 @@ impl Backend {
 							continue;
 						}
 						record_ranges.extend(entries.into_iter().map(|entry| {
-							lsp_range_to_offset_range(entry.template.location.unwrap().range, rope.clone()).unwrap()
+							lsp_range_to_offset_range(entry.template.location.unwrap().range, &rope).unwrap()
 						}));
 					}
 				}
@@ -138,7 +137,7 @@ impl Backend {
 			.record_ranges
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build record ranges for {}", uri.path()))?;
-		let mut cursor_by_char = position_to_offset(position, rope.clone()).ok_or_else(|| diagnostic!("cursor"))?;
+		let mut cursor_by_char = position_to_offset(position, rope).ok_or_else(|| diagnostic!("cursor"))?;
 		let Ok(record) = ranges.value().binary_search_by(|range| {
 			if cursor_by_char < range.start {
 				Ordering::Greater

@@ -21,14 +21,13 @@ impl Backend {
 			.expect("bug: failed to init js parser");
 		self.update_ast(text, uri, rope, old_rope, parser)
 	}
-	pub fn js_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
+	pub fn js_jump_def(&self, params: GotoDefinitionParams, rope: &Rope) -> miette::Result<Option<Location>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, rope.clone())
-		else {
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
 		let contents = Cow::from(rope.clone());
@@ -50,13 +49,13 @@ impl Backend {
 
 		Ok(None)
 	}
-	pub fn js_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
+	pub fn js_references(&self, params: ReferenceParams, rope: &Rope) -> miette::Result<Option<Vec<Location>>> {
 		let uri = &params.text_document_position.text_document.uri;
 		let ast = self
 			.ast_map
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope.clone()) else {
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope) else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
 		let contents = Cow::from(rope.clone());

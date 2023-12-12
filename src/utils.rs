@@ -1,5 +1,5 @@
 use core::ops::{Add, Sub};
-use std::fmt::Display;
+use std::{fmt::Display, sync::atomic::AtomicBool};
 
 use dashmap::try_result::TryResult;
 use lasso::Spur;
@@ -52,34 +52,28 @@ pub fn offset_to_position(offset: ByteOffset, rope: Rope) -> Option<Position> {
 	Some(Position::new(line as u32, column as u32))
 }
 
-pub fn position_to_offset(position: Position, rope: Rope) -> Option<ByteOffset> {
-	let CharOffset(char_offset) = position_to_char(position, rope.clone())?;
+pub fn position_to_offset(position: Position, rope: &Rope) -> Option<ByteOffset> {
+	let CharOffset(char_offset) = position_to_char(position, rope)?;
 	let byte_offset = rope.try_char_to_byte(char_offset).ok()?;
 	Some(ByteOffset(byte_offset))
 }
 
-fn position_to_char(position: Position, rope: Rope) -> Option<CharOffset> {
+fn position_to_char(position: Position, rope: &Rope) -> Option<CharOffset> {
 	let line_offset_in_char = rope.try_line_to_char(position.line as usize).ok()?;
 	Some(CharOffset(line_offset_in_char + position.character as usize))
 }
 
-pub fn lsp_range_to_char_range(range: Range, rope: Rope) -> Option<CharRange> {
-	let start = position_to_char(range.start, rope.clone())?;
-	let end = position_to_char(range.end, rope.clone())?;
+pub fn lsp_range_to_char_range(range: Range, rope: &Rope) -> Option<CharRange> {
+	let start = position_to_char(range.start, rope)?;
+	let end = position_to_char(range.end, rope)?;
 	Some(start..end)
 }
 
-pub fn lsp_range_to_offset_range(range: Range, rope: Rope) -> Option<ByteRange> {
-	let start = position_to_offset(range.start, rope.clone())?;
-	let end = position_to_offset(range.end, rope.clone())?;
+pub fn lsp_range_to_offset_range(range: Range, rope: &Rope) -> Option<ByteRange> {
+	let start = position_to_offset(range.start, rope)?;
+	let end = position_to_offset(range.end, rope)?;
 	Some(start..end)
 }
-
-// pub fn char_range_to_lsp_range(range: CharRange, rope: Rope) -> Option<Range> {
-// 	let start = char_to_position(range.start, rope.clone())?;
-// 	let end = char_to_position(range.end, rope)?;
-// 	Some(Range { start, end })
-// }
 
 pub fn offset_range_to_lsp_range(range: ByteRange, rope: Rope) -> Option<Range> {
 	let start = offset_to_position(range.start, rope.clone())?;
@@ -117,7 +111,7 @@ pub fn token_span<'r, 't>(token: &'r Token<'t>) -> &'r StrSpan<'t> {
 	}
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct ByteOffset(pub usize);
 pub type ByteRange = core::ops::Range<ByteOffset>;
@@ -277,4 +271,25 @@ impl<T: Sized> TryResultExt for TryResult<T> {
 #[cfg(test)]
 pub fn init_for_test() {
 	env_logger::builder().parse_filters("info,odoo_lsp=trace").init();
+}
+
+#[derive(Default)]
+pub struct CondVar {
+	should_wait: AtomicBool,
+	notifier: tokio::sync::Notify,
+}
+
+impl CondVar {
+	pub fn block_waiters(&self) {
+		self.should_wait.store(true, std::sync::atomic::Ordering::Relaxed);
+	}
+	pub async fn wait(&self) {
+		if self.should_wait.load(std::sync::atomic::Ordering::Relaxed) {
+			self.notifier.notified().await;
+		}
+	}
+	pub fn release_waiters(&self) {
+		self.notifier.notify_waiters();
+		self.should_wait.store(false, std::sync::atomic::Ordering::Relaxed);
+	}
 }

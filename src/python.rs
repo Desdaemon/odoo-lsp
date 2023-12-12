@@ -6,7 +6,7 @@ use std::path::Path;
 
 use dashmap::try_result::TryResult;
 use lasso::Key;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use miette::diagnostic;
 use odoo_lsp::index::{index_models, interner, Module, Symbol};
 use ropey::Rope;
@@ -170,7 +170,7 @@ impl Backend {
 		ast: Tree,
 		rope: Rope,
 	) -> miette::Result<Option<CompletionResponse>> {
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope.clone()) else {
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, &rope) else {
 			error!(format_loc!("python_completions: invalid offset"));
 			return Ok(None);
 		};
@@ -437,8 +437,7 @@ impl Backend {
 			.ast_map
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, rope.clone())
-		else {
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
 		let contents = Cow::from(rope.clone());
@@ -553,7 +552,7 @@ impl Backend {
 		Ok(None)
 	}
 	pub fn python_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope.clone()) else {
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, &rope) else {
 			return Ok(None);
 		};
 		let uri = &params.text_document_position.text_document.uri;
@@ -621,8 +620,7 @@ impl Backend {
 			.ast_map
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, rope.clone())
-		else {
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
 
@@ -743,7 +741,13 @@ impl Backend {
 		let model = interner().resolve(&model);
 		self.hover_model(model, Some(lsp_range), true)
 	}
-	pub fn diagnose_python(&self, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
+	pub fn diagnose_python(
+		&self,
+		uri: &Url,
+		rope: &Rope,
+		damage_zone: Option<ByteRange>,
+		diagnostics: &mut Vec<Diagnostic>,
+	) {
 		let path = uri.path();
 		let Some(ast) = self.ast_map.get(path) else {
 			warn!("Did not build AST for {path}");
@@ -752,7 +756,20 @@ impl Backend {
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
 		let query = PyCompletions::query();
-		let root = ast.root_node();
+		let mut root = ast.root_node();
+		if let Some(zone) = damage_zone.as_ref() {
+			root = top_level_stmt(root, zone.end.0).unwrap_or(root);
+			diagnostics.retain(|diag| {
+				let range = lsp_range_to_offset_range(diag.range.clone(), &rope).unwrap();
+				!zone.contains(&range.start)
+			});
+		}
+		let in_active_root = |offset: usize| {
+			damage_zone
+				.as_ref()
+				.map(|zone| zone.contains_end(ByteOffset(offset)))
+				.unwrap_or(true)
+		};
 		let top_level_ranges = root
 			.named_children(&mut root.walk())
 			.map(|node| node.byte_range())
@@ -763,6 +780,9 @@ impl Backend {
 			for capture in match_.captures {
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::XmlId) => {
+						if !in_active_root(capture.node.start_byte()) {
+							continue;
+						}
 						let xml_id = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
 						let xml_id_key = interner().get(&xml_id);
 						let mut id_found = false;
@@ -795,6 +815,9 @@ impl Backend {
 						this_model.tag_model(capture.node, &match_, top_level_ranges[idx].clone(), contents);
 					}
 					Some(PyCompletions::Mapped) => {
+						if !in_active_root(capture.node.start_byte()) {
+							continue;
+						}
 						let Some(Mapped {
 							needle,
 							model,

@@ -27,7 +27,7 @@ mod js;
 mod python;
 mod xml;
 
-use backend::{Backend, Language, Text};
+use backend::{Backend, Document, Language, Text};
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
@@ -161,15 +161,14 @@ impl LanguageServer for Backend {
 			.await;
 		let progress = Some((&self.client, token.clone()));
 
-		if !self.root_setup.load(Relaxed) {
-			for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
-				let Ok(file_path) = workspace.uri.to_file_path() else {
-					continue;
-				};
-				self.roots.insert(file_path.to_string_lossy().to_string());
-			}
+		for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
+			let Ok(file_path) = workspace.uri.to_file_path() else {
+				continue;
+			};
+			self.roots.insert(file_path.to_string_lossy().to_string());
 		}
 
+		self.root_setup.block_waiters();
 		for root in self.roots.iter() {
 			match self.index.add_root(root.as_str(), progress.clone(), false).await {
 				Ok(Some(results)) => {
@@ -199,7 +198,7 @@ impl LanguageServer for Backend {
 			})
 			.await;
 
-		_ = self.client.workspace_diagnostic_refresh().await;
+		self.root_setup.release_waiters();
 
 		if self.capabilities.dynamic_config.load(Relaxed) {
 			_ = self
@@ -213,6 +212,7 @@ impl LanguageServer for Backend {
 		}
 	}
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
+		self.root_setup.wait().await;
 		// let language;
 		let language_id = params.text_document.language_id.as_str();
 		let split_uri = params.text_document.uri.path().rsplit_once('.');
@@ -228,7 +228,7 @@ impl LanguageServer for Backend {
 
 		let rope = Rope::from_str(&params.text_document.text);
 		self.document_map
-			.insert(params.text_document.uri.path().to_string(), rope.clone());
+			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()));
 
 		if self
 			.index
@@ -238,9 +238,6 @@ impl LanguageServer for Backend {
 			// outside of root?
 			debug!("oob: {}", params.text_document.uri.path());
 			'oob: {
-				if !self.root_setup.load(Relaxed) {
-					break 'oob;
-				}
 				let Ok(path) = params.text_document.uri.to_file_path() else {
 					break 'oob;
 				};
@@ -269,7 +266,6 @@ impl LanguageServer for Backend {
 			text: Text::Full(params.text_document.text),
 			version: params.text_document.version,
 			language: Some(language),
-			rope: Some(rope),
 			old_rope: None,
 			open: true,
 		})
@@ -277,6 +273,7 @@ impl LanguageServer for Backend {
 		.report(|| format_loc!("did_open failed"))
 	}
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
+		self.root_setup.wait().await;
 		if let [TextDocumentContentChangeEvent {
 			range: None,
 			range_length: None,
@@ -288,7 +285,6 @@ impl LanguageServer for Backend {
 				text: Text::Full(core::mem::take(text)),
 				version: params.text_document.version,
 				language: None,
-				rope: None,
 				old_rope: None,
 				open: false,
 			})
@@ -296,35 +292,35 @@ impl LanguageServer for Backend {
 			.report(|| format_loc!("did_change failed"));
 			return;
 		}
-		let mut rope = self
+		let mut document = self
 			.document_map
 			.get_mut(params.text_document.uri.path())
-			.expect("Did not build a rope");
-		let old_rope = rope.clone();
+			.expect("Did not build a document");
+		let old_rope = document.rope.clone();
 		// Update the rope
 		// TODO: Refactor into method
 		// Per the spec (https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_didChange),
 		// deltas are applied SEQUENTIALLY so we don't have to do any extra processing.
 		for change in &params.content_changes {
 			if change.range.is_none() && change.range_length.is_none() {
-				*rope.value_mut() = ropey::Rope::from_str(&change.text);
+				document.value_mut().rope = ropey::Rope::from_str(&change.text);
 			} else {
 				let range = change.range.expect("LSP change event must have a range");
 				let range =
-					lsp_range_to_char_range(range, rope.value().clone()).expect("did_change applying delta: no range");
-				let rope = rope.value_mut();
+					lsp_range_to_char_range(range, &document.rope).expect("did_change applying delta: no range");
+				let rope = &mut document.value_mut().rope;
 				rope.remove(range.erase());
 				if !change.text.is_empty() {
 					rope.insert(range.start.0, &change.text);
 				}
 			}
 		}
+		drop(document);
 		self.on_change(backend::TextDocumentItem {
 			uri: params.text_document.uri,
 			text: Text::Delta(params.content_changes),
 			version: params.text_document.version,
 			language: None,
-			rope: Some(rope.value().clone()),
 			old_rope: Some(old_rope),
 			open: false,
 		})
@@ -332,18 +328,30 @@ impl LanguageServer for Backend {
 		.report(|| format_loc!("did_change failed"));
 	}
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
+		self.root_setup.wait().await;
 		let uri = params.text_document.uri;
 		debug!("did_save {}", uri.path());
 		if uri.path().ends_with(".py") {
-			let rope = self.document_map.get(uri.path()).unwrap();
+			let rope = &self.document_map.get(uri.path()).unwrap().rope;
 			let text = Cow::from(rope.slice(..));
-			self.update_models(Text::Full(text.into_owned()), &uri, rope.value().clone())
+			self.update_models(Text::Full(text.into_owned()), &uri, rope.clone())
 				.await
 				.report(|| format_loc!("update_models"));
 			if !self.capabilities.pull_diagnostics.load(Relaxed) {
-				let mut diagnostics = vec![];
-				self.diagnose_python(&uri, rope.value().clone(), &mut diagnostics);
-				self.client.publish_diagnostics(uri, diagnostics, None).await;
+				let mut document = self
+					.document_map
+					.try_get_mut(uri.path())
+					.expect(format_loc!("deadlock"))
+					.unwrap();
+				self.diagnose_python(
+					&uri,
+					&rope,
+					document.damage_zone.take(),
+					&mut document.diagnostics_cache,
+				);
+				self.client
+					.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
+					.await;
 			}
 		}
 	}
@@ -355,12 +363,12 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
-			panic!("Bug: did not build a rope for {}", uri.path());
+			panic!("Bug: did not build a document for {}", uri.path());
 		};
 		let location = match ext {
-			"xml" => self.xml_jump_def(params, document.value().clone()).await,
-			"py" => self.python_jump_def(params, document.value().clone()).await,
-			"js" => self.js_jump_def(params, document.value().clone()),
+			"xml" => self.xml_jump_def(params, document.rope.clone()).await,
+			"py" => self.python_jump_def(params, document.rope.clone()).await,
+			"js" => self.js_jump_def(params, &document.rope),
 			_ => {
 				debug!("(goto_definition) unsupported: {}", uri.path());
 				return Ok(None);
@@ -381,13 +389,13 @@ impl LanguageServer for Backend {
 			return Ok(None); // hit a directory, super unlikely
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
-			debug!("Bug: did not build a rope for {}", uri.path());
+			debug!("Bug: did not build a document for {}", uri.path());
 			return Ok(None);
 		};
 		let refs = match ext {
-			"py" => self.python_references(params, document.value().clone()),
-			"xml" => self.xml_references(params, document.value().clone()),
-			"js" => self.js_references(params, document.value().clone()),
+			"py" => self.python_references(params, document.rope.clone()),
+			"xml" => self.xml_references(params, document.rope.clone()),
+			"js" => self.js_references(params, &document.rope),
 			_ => return Ok(None),
 		};
 
@@ -401,11 +409,11 @@ impl LanguageServer for Backend {
 			return Ok(None); // hit a directory, super unlikely
 		};
 		let Some(document) = self.document_map.get(uri.path()) else {
-			debug!("Bug: did not build a rope for {}", uri.path());
+			debug!("Bug: did not build a document for {}", uri.path());
 			return Ok(None);
 		};
 		if ext == "xml" {
-			let completions = self.xml_completions(params, document.value().clone()).await;
+			let completions = self.xml_completions(params, document.rope.clone()).await;
 			match completions {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
@@ -421,7 +429,7 @@ impl LanguageServer for Backend {
 				return Ok(None);
 			};
 			let completions = self
-				.python_completions(params, ast.value().clone(), document.value().clone())
+				.python_completions(params, ast.value().clone(), document.rope.clone())
 				.await;
 			match completions {
 				Ok(ret) => Ok(ret),
@@ -510,7 +518,7 @@ impl LanguageServer for Backend {
 		let document = some!(self.document_map.get(uri.path()));
 		let (_, ext) = some!(uri.path().rsplit_once('.'));
 		if ext == "py" {
-			match self.python_hover(params, document.value().clone()).await {
+			match self.python_hover(params, document.rope.clone()).await {
 				Ok(ret) => Ok(ret),
 				Err(err) => {
 					error!("{err}");
@@ -615,16 +623,27 @@ impl LanguageServer for Backend {
 	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
 		let path = params.text_document.uri.path();
 		debug!("(diagnostics) {path}");
-		let mut items = vec![];
+		let mut diagnostics = vec![];
 		if let Some((_, "py")) = path.rsplit_once('.') {
-			if let Some(document) = self.document_map.get(path) {
-				self.diagnose_python(&params.text_document.uri, document.value().clone(), &mut items);
+			if let Some(mut document) = self.document_map.try_get_mut(path).expect(format_loc!("deadlock")) {
+				let damage_zone = document.damage_zone.take();
+				let rope = &document.rope.clone();
+				self.diagnose_python(
+					&params.text_document.uri,
+					rope,
+					damage_zone,
+					&mut document.diagnostics_cache,
+				);
+				diagnostics = document.diagnostics_cache.clone();
 			}
 		}
 		Ok(DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
 			RelatedFullDocumentDiagnosticReport {
 				related_documents: None,
-				full_document_diagnostic_report: FullDocumentDiagnosticReport { result_id: None, items },
+				full_document_diagnostic_report: FullDocumentDiagnosticReport {
+					result_id: None,
+					items: diagnostics,
+				},
 			},
 		)))
 	}

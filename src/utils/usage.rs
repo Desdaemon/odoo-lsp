@@ -301,3 +301,9 @@ impl Usage for ComponentTemplate {
 		UsageInfo(0, core::mem::size_of::<Self>())
 	}
 }
+
+impl Usage for tower_lsp::lsp_types::Diagnostic {
+	fn usage(&self) -> UsageInfo {
+		UsageInfo(0, core::mem::size_of::<Self>())
+	}
+}
