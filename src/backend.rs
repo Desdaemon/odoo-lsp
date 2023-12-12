@@ -77,14 +77,12 @@ impl Backend {
 		};
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
-				self.on_change_python(
-					&params.text,
-					&params.uri,
-					rope,
-					params.old_rope,
-					&mut diagnostics,
-					params.open,
-				)?;
+				self.on_change_python(&params.text, &params.uri, rope.clone(), params.old_rope)?;
+				if !self.capabilities.pull_diagnostics.load(Relaxed)
+					&& (params.open || rope.len_lines() < Self::LINE_LIMIT)
+				{
+					self.diagnose_python(&params.uri, rope.clone(), &mut diagnostics);
+				}
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
 				self.on_change_xml(&params.text, &params.uri, rope).await?;
@@ -125,7 +123,6 @@ impl Backend {
 					let end =
 						position_to_offset(range.end, old_rope.clone()).ok_or_else(|| diagnostic!("delta end"))?;
 					let len_new = change.text.len();
-					let len_new_bytes = change.text.as_bytes().len();
 					let start_position = tree_sitter::Point {
 						row: range.start.line as usize,
 						column: range.start.character as usize,
@@ -146,7 +143,7 @@ impl Backend {
 					ast.edit(&tree_sitter::InputEdit {
 						start_byte: start.0,
 						old_end_byte: end.0,
-						new_end_byte: start.0 + len_new_bytes,
+						new_end_byte: start.0 + len_new,
 						start_position,
 						old_end_position,
 						new_end_position,

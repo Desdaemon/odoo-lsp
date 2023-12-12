@@ -1,16 +1,17 @@
 use crate::{Backend, Text};
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::path::Path;
-use std::sync::atomic::Ordering::Relaxed;
 
+use dashmap::try_result::TryResult;
 use lasso::Key;
 use log::{debug, error, warn};
 use miette::diagnostic;
 use odoo_lsp::index::{index_models, interner, Module, Symbol};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
-use tree_sitter::{Node, Parser, QueryCursor, Tree};
+use tree_sitter::{Node, Parser, QueryCursor, QueryMatch, Tree};
 
 use odoo_lsp::model::{ModelName, ModelType};
 use odoo_lsp::utils::*;
@@ -126,24 +127,12 @@ struct Mapped<'text> {
 }
 
 impl Backend {
-	pub fn on_change_python(
-		&self,
-		text: &Text,
-		uri: &Url,
-		rope: Rope,
-		old_rope: Option<Rope>,
-		diagnostics: &mut Vec<Diagnostic>,
-		open: bool,
-	) -> miette::Result<()> {
+	pub fn on_change_python(&self, text: &Text, uri: &Url, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
 			.set_language(tree_sitter_python::language())
 			.expect("bug: failed to init python parser");
-		self.update_ast(text, uri, rope.clone(), old_rope, parser)?;
-		if !self.capabilities.pull_diagnostics.load(Relaxed) && (open || rope.len_lines() < Self::LINE_LIMIT) {
-			self.diagnose_python(uri, rope.clone(), diagnostics);
-		}
-		Ok(())
+		self.update_ast(text, uri, rope.clone(), old_rope, parser)
 	}
 	pub async fn update_models(&self, text: Text, uri: &Url, rope: Rope) -> miette::Result<()> {
 		let text = match text {
@@ -198,7 +187,7 @@ impl Backend {
 		let query = PyCompletions::query();
 		let mut items = MaxVec::new(Self::LIMIT);
 		let mut early_return = None;
-		let mut this_model = None;
+		let mut this_model = ThisModel::default();
 		// FIXME: This hack is necessary to drop !Send locals before await points.
 		enum EarlyReturn<'a> {
 			XmlId(Option<&'a str>, Symbol<Module>),
@@ -236,18 +225,12 @@ impl Backend {
 						}
 						Some(PyCompletions::Model) => {
 							let range = capture.node.byte_range();
-							// default true for is_inherit, to be checked later down that
-							// it only belongs to (assignment)
-							let (is_inherit, is_name) = match_
+							// to be checked later down that it only belongs to (assignment)
+							let is_inherit = match_
 								.nodes_for_capture_index(PyCompletions::Prop as _)
 								.next()
-								.map(|prop| {
-									(
-										&contents[prop.byte_range()] == b"_inherit",
-										&contents[prop.byte_range()] == b"_name",
-									)
-								})
-								.unwrap_or((true, false));
+								.map(|prop| &contents[prop.byte_range()] == b"_inherit")
+								.unwrap_or(true);
 							if is_inherit && range.contains_end(offset) {
 								let Some(slice) = rope.get_byte_slice(range.clone()) else {
 									dbg!(&range);
@@ -262,14 +245,8 @@ impl Backend {
 									rope.clone(),
 								));
 								break 'match_;
-							} else if range.end < offset
-								&& (is_name
-							// _inherit = '..' OR _inherit = ['..'] qualifies as primary model name
-							|| (is_inherit && capture.node.parent()
-								.map(|parent| parent.kind() == "assignment" || (parent.kind() == "list" && parent.named_child_count() == 1))
-								.unwrap_or(false)))
-							{
-								this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+							} else if range.end < offset {
+								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
 						}
 						Some(PyCompletions::Mapped) => {
@@ -285,7 +262,7 @@ impl Backend {
 									&match_,
 									Some(offset),
 									range.clone(),
-									this_model,
+									this_model.inner,
 									&rope,
 									&contents[..],
 									true,
@@ -356,12 +333,11 @@ impl Backend {
 					items: items.into_inner(),
 				})));
 			}
-			Some((EarlyReturn::Mapped { model, single_field }, needle, range, rope)) => {
+			Some((EarlyReturn::Mapped { model, single_field }, needle, mut range, rope)) => {
 				// range:  foo.bar.baz
 				// needle: foo.ba
 				let mut needle = needle.as_ref();
 				let mut model = some!(interner().get(&model));
-				let mut range = range.map_unit(|unit| ByteOffset(rope.char_to_byte(unit.0)));
 				if !single_field {
 					some!(self
 						.index
@@ -476,7 +452,7 @@ impl Backend {
 			let root = some!(top_level_stmt(ast.root_node(), offset));
 			let query = PyCompletions::query();
 			let mut cursor = tree_sitter::QueryCursor::new();
-			let mut this_model = None;
+			let mut this_model = ThisModel::default();
 			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				for capture in match_.captures {
 					match PyCompletions::from(capture.index) {
@@ -508,13 +484,8 @@ impl Backend {
 								};
 								let slice = Cow::from(slice);
 								return self.jump_def_model(&slice);
-							} else if range.end < offset &&
-							// _inherit = '..' OR _inherit = ['..'] qualifies as primary model name
-							(is_meta && capture.node.parent()
-								.map(|parent| parent.kind() == "assignment" || (parent.kind() == "list" && parent.named_child_count() == 1))
-								.unwrap_or(false))
-							{
-								this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+							} else if range.end < offset {
+								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
 						}
 						Some(PyCompletions::Access) => {
@@ -538,7 +509,7 @@ impl Backend {
 										&match_,
 										Some(offset),
 										range.clone(),
-										this_model,
+										this_model.inner,
 										&rope,
 										&contents,
 										false,
@@ -564,11 +535,10 @@ impl Backend {
 				needle,
 				model,
 				single_field,
-				range,
+				mut range,
 			})) => {
 				let mut needle = needle.as_ref();
 				let mut model = interner().get_or_intern(&model);
-				let mut range = range.map_unit(|unit| ByteOffset(rope.char_to_byte(unit.0)));
 				if !single_field {
 					some!(self
 						.index
@@ -671,22 +641,12 @@ impl Backend {
 			let root = some!(top_level_stmt(ast.root_node(), offset));
 			let query = PyCompletions::query();
 			let mut cursor = tree_sitter::QueryCursor::new();
-			let mut this_model = None;
+			let mut this_model = ThisModel::default();
 			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				for capture in match_.captures {
 					match PyCompletions::from(capture.index) {
 						Some(PyCompletions::Model) => {
 							let range = capture.node.byte_range();
-							let (is_inherit, is_name) = match_
-								.nodes_for_capture_index(PyCompletions::Prop as _)
-								.next()
-								.map(|prop| {
-									(
-										&contents[prop.byte_range()] == b"_inherit",
-										&contents[prop.byte_range()] == b"_name",
-									)
-								})
-								.unwrap_or((true, false));
 							if range.contains(&offset) {
 								let range = range.shrink(1);
 								let lsp_range = ts_range_to_lsp_range(capture.node.range());
@@ -696,14 +656,8 @@ impl Backend {
 								};
 								let slice = Cow::from(slice);
 								return self.hover_model(&slice, Some(lsp_range), false);
-							} else if range.end < offset
-								&& (is_name
-							// _inherit = '..' OR _inherit = ['..'] qualifies as primary model name
-							|| (is_inherit && capture.node.parent()
-								.map(|parent| parent.kind() == "assignment" || (parent.kind() == "list" && parent.named_child_count() == 1))
-								.unwrap_or(false)))
-							{
-								this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+							} else if range.end < offset {
+								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
 						}
 						Some(PyCompletions::Access) => {
@@ -731,7 +685,7 @@ impl Backend {
 										&match_,
 										Some(offset),
 										range.clone(),
-										this_model,
+										this_model.inner,
 										&rope,
 										&contents[..],
 										false,
@@ -763,11 +717,10 @@ impl Backend {
 				needle,
 				model,
 				single_field,
-				range,
+				mut range,
 			})) => {
 				let mut needle = needle.as_ref();
 				let mut model = interner().get_or_intern(&model);
-				let mut range = range.map_unit(|unit| ByteOffset(rope.char_to_byte(unit.0)));
 				if !single_field {
 					some!(self
 						.index
@@ -790,8 +743,8 @@ impl Backend {
 		let model = interner().resolve(&model);
 		self.hover_model(model, Some(lsp_range), true)
 	}
-	pub fn diagnose_python(&self, url: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
-		let path = url.path();
+	pub fn diagnose_python(&self, uri: &Url, rope: Rope, diagnostics: &mut Vec<Diagnostic>) {
+		let path = uri.path();
 		let Some(ast) = self.ast_map.get(path) else {
 			warn!("Did not build AST for {path}");
 			return;
@@ -800,8 +753,12 @@ impl Backend {
 		let contents = contents.as_bytes();
 		let query = PyCompletions::query();
 		let root = ast.root_node();
+		let top_level_ranges = root
+			.named_children(&mut root.walk())
+			.map(|node| node.byte_range())
+			.collect::<Vec<_>>();
 		let mut cursor = QueryCursor::new();
-		let mut this_model = None;
+		let mut this_model = ThisModel::default();
 		for match_ in cursor.matches(query, root, &contents[..]) {
 			for capture in match_.captures {
 				match PyCompletions::from(capture.index) {
@@ -822,29 +779,20 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::Model) => {
-						let (is_name, is_inherit) = match_
-							.nodes_for_capture_index(PyCompletions::Prop as _)
-							.next()
-							.map(|prop| {
-								(
-									b"_name" == &contents[prop.byte_range()],
-									b"_inherit" == &contents[prop.byte_range()],
-								)
-							})
-							.unwrap_or((false, false));
-						if is_name
-							|| is_inherit
-								&& capture
-									.node
-									.parent()
-									.map(|parent| {
-										parent.kind() == "assignment"
-											|| parent.kind() == "list" && parent.named_child_count() == 1
-									})
-									.unwrap_or(false)
-						{
-							this_model = Some(&contents[capture.node.byte_range().shrink(1)]);
-						}
+						let Ok(idx) = top_level_ranges.binary_search_by(|range| {
+							let needle = capture.node.end_byte();
+							if needle < range.start {
+								Ordering::Greater
+							} else if needle > range.end {
+								Ordering::Less
+							} else {
+								Ordering::Equal
+							}
+						}) else {
+							debug!("(diagnose_python) binary search for top-level range failed");
+							continue;
+						};
+						this_model.tag_model(capture.node, &match_, top_level_ranges[idx].clone(), contents);
 					}
 					Some(PyCompletions::Mapped) => {
 						let Some(Mapped {
@@ -857,7 +805,7 @@ impl Backend {
 							&match_,
 							None,
 							capture.node.byte_range(),
-							this_model,
+							this_model.inner,
 							&rope,
 							contents,
 							false,
@@ -896,13 +844,99 @@ impl Backend {
 							});
 						}
 					}
+					Some(PyCompletions::Access) => {
+						if let Some(gp) = capture.node.parent().expect("attribute").parent() {
+							if gp.kind() == "call" {
+								// TODO: Index methods
+								continue;
+							}
+						}
+						let prop = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+						static MODEL_BUILTINS: phf::Set<&str> = phf::phf_set!("env", "id", "ids");
+						if prop.starts_with('_') || MODEL_BUILTINS.contains(&prop) {
+							continue;
+						}
+						let obj = capture.node.prev_named_sibling().expect("obj");
+						let Some(model) =
+							self.model_of_range(root, obj.byte_range().map_unit(ByteOffset), None, &contents[..])
+						else {
+							continue;
+						};
+						let TryResult::Present(entry) = self.index.models.try_get(&model) else {
+							continue;
+						};
+						let Some(fields) = entry.fields.as_ref() else { continue };
+						let prop_key = interner().get(&prop);
+						if !prop_key
+							.map(|key| fields.contains_key(key.into_usize() as _))
+							.unwrap_or(false)
+						{
+							diagnostics.push(Diagnostic {
+								range: ts_range_to_lsp_range(capture.node.range()),
+								severity: Some(DiagnosticSeverity::WARNING),
+								message: format!("Model `{}` has no field `{prop}`", interner().resolve(&model)),
+								..Default::default()
+							});
+						}
+					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
-					| Some(PyCompletions::Access)
 					| Some(PyCompletions::Prop)
 					| None => {}
 				}
+			}
+		}
+	}
+}
+
+#[derive(Default, Clone)]
+struct ThisModel<'a> {
+	inner: Option<&'a [u8]>,
+	source: ThisModelKind,
+	top_level_range: core::ops::Range<usize>,
+}
+
+#[derive(Default, Clone, Copy)]
+enum ThisModelKind {
+	Primary,
+	#[default]
+	Inherited,
+}
+
+impl<'this> ThisModel<'this> {
+	/// Call this on captures of index [`PyCompletions::Model`].
+	fn tag_model(
+		&mut self,
+		model: Node,
+		match_: &QueryMatch,
+		top_level_range: core::ops::Range<usize>,
+		contents: &'this [u8],
+	) {
+		debug_assert_eq!(model.kind(), "string");
+		let (is_name, mut is_inherit) = match_
+			.nodes_for_capture_index(PyCompletions::Prop as _)
+			.next()
+			.map(|prop| {
+				let prop = &contents[prop.byte_range()];
+				(prop == b"_name", prop == b"_inherit")
+			})
+			.unwrap_or((false, false));
+		let top_level_changed = top_level_range != self.top_level_range;
+		// If still in same class AND _name already declared, skip.
+		is_inherit = is_inherit && (top_level_changed || matches!(self.source, ThisModelKind::Inherited));
+		if is_inherit {
+			let parent = model.parent().expect(format_loc!("(tag_model) parent"));
+			// _inherit = '..' OR _inherit = ['..']
+			is_inherit = parent.kind() == "assignment" || parent.kind() == "list" && parent.named_child_count() == 1;
+		}
+		if is_inherit || is_name && top_level_changed {
+			self.inner = Some(&contents[model.byte_range().shrink(1)]);
+			self.top_level_range = top_level_range;
+			if is_name {
+				self.source = ThisModelKind::Primary;
+			} else if is_inherit {
+				self.source = ThisModelKind::Inherited;
 			}
 		}
 	}

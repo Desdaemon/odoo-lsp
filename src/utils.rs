@@ -46,8 +46,9 @@ impl From<MinLoc> for Location {
 
 pub fn offset_to_position(offset: ByteOffset, rope: Rope) -> Option<Position> {
 	let line = rope.try_byte_to_line(offset.0 as usize).ok()?;
-	let first_char_of_line = rope.try_line_to_char(line).ok()?;
-	let column = offset.0 as usize - first_char_of_line;
+	let line_start_char = rope.try_line_to_char(line).ok()?;
+	let char_offset = rope.try_byte_to_char(offset.0).ok()?;
+	let column = char_offset - line_start_char;
 	Some(Position::new(line as u32, column as u32))
 }
 

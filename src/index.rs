@@ -16,7 +16,7 @@ use xmlparser::{Token, Tokenizer};
 
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
-use crate::utils::{ts_range_to_lsp_range, ByteOffset, RangeExt, Usage};
+use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, RangeExt, Usage};
 use crate::{format_loc, ImStr};
 
 mod record;
@@ -344,7 +344,7 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 	let mut models = HashMap::new();
 	struct NewModel<'a> {
 		range: tree_sitter::Range,
-		byte_range: core::ops::Range<usize>,
+		byte_range: ByteRange,
 		name: Option<&'a [u8]>,
 		inherits: Vec<&'a [u8]>,
 	}
@@ -360,7 +360,7 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 		let model = models.entry(model_node.byte_range()).or_insert_with(|| NewModel {
 			name: None,
 			range: model_node.range(),
-			byte_range: model_node.byte_range(),
+			byte_range: model_node.byte_range().map_unit(ByteOffset),
 			inherits: vec![],
 		});
 		match &contents[capture.byte_range()] {
@@ -440,7 +440,7 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 			.map(|inherit| ImStr::from(String::from_utf8_lossy(inherit).as_ref()))
 			.collect::<Vec<_>>();
 		let range = ts_range_to_lsp_range(model.range);
-		let byte_range = model.byte_range.map_unit(ByteOffset);
+		let byte_range = model.byte_range;
 		match (inherits.is_empty(), model.name) {
 			(false, None) => Some(Model {
 				range,
