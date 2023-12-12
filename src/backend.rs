@@ -46,6 +46,7 @@ pub struct TextDocumentItem {
 	pub language: Option<Language>,
 	pub rope: Option<Rope>,
 	pub old_rope: Option<Rope>,
+	pub open: bool,
 }
 
 pub enum Text {
@@ -64,9 +65,11 @@ impl Backend {
 	pub const LIMIT: usize = 80;
 	/// Maximum number of descendants to show in docstring.
 	const INHERITS_LIMIT: usize = 3;
+	pub const LINE_LIMIT: usize = 1500;
 
 	pub async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
 		let split_uri = params.uri.path().rsplit_once('.');
+		let mut diagnostics = vec![];
 		let rope = match (params.rope, &params.text) {
 			(Some(rope), _) => rope,
 			(None, Text::Full(full)) => ropey::Rope::from_str(full),
@@ -74,7 +77,14 @@ impl Backend {
 		};
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
-				self.on_change_python(&params.text, &params.uri, rope, params.old_rope)?;
+				self.on_change_python(
+					&params.text,
+					&params.uri,
+					rope,
+					params.old_rope,
+					&mut diagnostics,
+					params.open,
+				)?;
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
 				self.on_change_xml(&params.text, &params.uri, rope).await?;
@@ -83,6 +93,12 @@ impl Backend {
 				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
 			}
 			other => return Err(diagnostic!("Unhandled language: {other:?}")).into_diagnostic(),
+		}
+
+		if !diagnostics.is_empty() {
+			self.client
+				.publish_diagnostics(params.uri, diagnostics, Some(params.version))
+				.await;
 		}
 
 		Ok(())

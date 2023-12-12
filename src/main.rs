@@ -271,6 +271,7 @@ impl LanguageServer for Backend {
 			language: Some(language),
 			rope: Some(rope),
 			old_rope: None,
+			open: true,
 		})
 		.await
 		.report(|| format_loc!("did_open failed"))
@@ -289,6 +290,7 @@ impl LanguageServer for Backend {
 				language: None,
 				rope: None,
 				old_rope: None,
+				open: false,
 			})
 			.await
 			.report(|| format_loc!("did_change failed"));
@@ -324,6 +326,7 @@ impl LanguageServer for Backend {
 			language: None,
 			rope: Some(rope.value().clone()),
 			old_rope: Some(old_rope),
+			open: false,
 		})
 		.await
 		.report(|| format_loc!("did_change failed"));
@@ -337,6 +340,11 @@ impl LanguageServer for Backend {
 			self.update_models(Text::Full(text.into_owned()), &uri, rope.value().clone())
 				.await
 				.report(|| format_loc!("update_models"));
+			if !self.capabilities.pull_diagnostics.load(Relaxed) {
+				let mut diagnostics = vec![];
+				self.diagnose_python(&uri, rope.value().clone(), &mut diagnostics);
+				self.client.publish_diagnostics(uri, diagnostics, None).await;
+			}
 		}
 	}
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {

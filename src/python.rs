@@ -2,6 +2,7 @@ use crate::{Backend, Text};
 
 use std::borrow::Cow;
 use std::path::Path;
+use std::sync::atomic::Ordering::Relaxed;
 
 use lasso::Key;
 use log::{debug, error, warn};
@@ -125,12 +126,23 @@ struct Mapped<'text> {
 }
 
 impl Backend {
-	pub fn on_change_python(&self, text: &Text, uri: &Url, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
+	pub fn on_change_python(
+		&self,
+		text: &Text,
+		uri: &Url,
+		rope: Rope,
+		old_rope: Option<Rope>,
+		diagnostics: &mut Vec<Diagnostic>,
+		open: bool,
+	) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
 			.set_language(tree_sitter_python::language())
 			.expect("bug: failed to init python parser");
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)?;
+		if !self.capabilities.pull_diagnostics.load(Relaxed) && (open || rope.len_lines() < Self::LINE_LIMIT) {
+			self.diagnose_python(uri, rope.clone(), diagnostics);
+		}
 		Ok(())
 	}
 	pub async fn update_models(&self, text: Text, uri: &Url, rope: Rope) -> miette::Result<()> {
