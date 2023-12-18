@@ -875,7 +875,8 @@ impl Backend {
 							}
 						}
 						let prop = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
-						static MODEL_BUILTINS: phf::Set<&str> = phf::phf_set!("env", "id", "ids");
+						static MODEL_BUILTINS: phf::Set<&str> =
+							phf::phf_set!("env", "id", "ids", "display_name", "create_date", "write_date");
 						if prop.starts_with('_') || MODEL_BUILTINS.contains(&prop) {
 							continue;
 						}
