@@ -153,8 +153,6 @@ impl Backend {
 							.into_iter()
 							.map(|sym| ModelName::from(interner().get_or_intern(&sym))),
 					);
-					entry.ancestors.sort_unstable();
-					entry.ancestors.dedup();
 					drop(entry);
 					self.index.models.populate_field_names(model_key.into(), &[path]);
 				}

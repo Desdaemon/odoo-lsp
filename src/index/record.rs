@@ -154,11 +154,30 @@ impl<K> SymbolSet<K> {
 	pub fn contains_key(&self, key: Symbol<K>) -> bool {
 		self.0.contains_key(key.into_usize() as _)
 	}
-	// pub fn iter(&self) -> impl Iterator<Item = Symbol<K>> + '_ {
-	// 	self.0
-	// 		.iter()
-	// 		.map(|(key, _)| Spur::try_from_usize(*key as usize).unwrap().into())
-	// }
+	pub fn iter(&self) -> Iter<impl Iterator<Item = (&u64, &())>, K> {
+		Iter(self.0.iter(), PhantomData)
+	}
+	pub fn extend<I>(&mut self, items: I)
+	where
+		I: IntoIterator<Item = Symbol<K>>,
+	{
+		self.0
+			.extend(items.into_iter().map(|key| (key.into_usize() as u64, ())));
+	}
+}
+
+pub struct Iter<'a, I, T>(I, PhantomData<&'a T>);
+
+impl<'iter, T, I> Iterator for Iter<'iter, I, T>
+where
+	I: Iterator<Item = (&'iter u64, &'iter ())>,
+{
+	type Item = Symbol<T>;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		let (next, ()) = self.0.next()?;
+		Some(Symbol::from(Spur::try_from_usize(*next as _).unwrap()))
+	}
 }
 
 impl RecordIndex {

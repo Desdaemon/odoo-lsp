@@ -15,7 +15,7 @@ use tower_lsp::lsp_types::Range;
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
-use crate::index::{interner, Interner, Symbol, SymbolMap};
+use crate::index::{interner, Interner, Symbol, SymbolMap, SymbolSet};
 use crate::str::Text;
 use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt, Usage};
 use crate::{format_loc, ImStr};
@@ -45,7 +45,7 @@ pub type ModelName = Symbol<ModelEntry>;
 pub struct ModelEntry {
 	pub base: Option<ModelLocation>,
 	pub descendants: Vec<ModelLocation>,
-	pub ancestors: Vec<ModelName>,
+	pub ancestors: SymbolSet<ModelEntry>,
 	pub fields: Option<SymbolMap<FieldName, Field>>,
 	pub fields_set: qp_trie::Trie<BString, ()>,
 	pub docstring: Option<Text>,
@@ -138,10 +138,11 @@ impl ModelIndex {
 							},
 							item.byte_range.clone(),
 						));
-						entry.ancestors = ancestors
-							.into_iter()
-							.map(|sym| interner.get_or_intern(&sym).into())
-							.collect();
+						entry.ancestors.extend(
+							ancestors
+								.into_iter()
+								.map(|sym| ModelName::from(interner.get_or_intern(&sym))),
+						);
 					} else {
 						debug!(
 							"Conflicting bases:\nfirst={}\n  new={}",
@@ -178,8 +179,6 @@ impl ModelIndex {
 						entry
 							.ancestors
 							.extend(ancestors.iter().map(|sym| ModelName::from(interner.get_or_intern(sym))));
-						entry.ancestors.sort_unstable();
-						entry.ancestors.dedup();
 					}
 				}
 			}
@@ -314,7 +313,7 @@ impl ModelIndex {
 			})
 			.flatten_iter();
 
-		let ancestors = entry.ancestors.iter().cloned().collect::<Vec<_>>();
+		let ancestors = entry.ancestors.iter().collect::<Vec<_>>();
 		let mut out = entry.fields.take().unwrap_or_default();
 		let mut fields_set = core::mem::take(&mut entry.fields_set);
 
