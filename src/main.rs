@@ -465,7 +465,7 @@ impl LanguageServer for Backend {
 					}
 					completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 						kind: MarkupKind::Markdown,
-						value: self.model_docstring(&entry, None),
+						value: self.model_docstring(&entry, None, None),
 					}))
 				}
 				Some(CompletionItemKind::FIELD) => {

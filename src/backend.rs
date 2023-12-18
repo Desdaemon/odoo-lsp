@@ -392,6 +392,7 @@ impl Backend {
 		model_str_key: &str,
 		range: Option<Range>,
 		definition: bool,
+		identifier: Option<&str>,
 	) -> miette::Result<Option<Hover>> {
 		let model_key = some!(interner().get(model_str_key));
 		let model = some!(self.index.models.get(&model_key.into()));
@@ -399,7 +400,7 @@ impl Backend {
 			range,
 			contents: HoverContents::Markup(MarkupContent {
 				kind: MarkupKind::Markdown,
-				value: self.model_docstring(&model, definition.then_some(model_str_key)),
+				value: self.model_docstring(&model, definition.then_some(model_str_key), identifier),
 			}),
 		}))
 	}
@@ -498,15 +499,19 @@ impl Backend {
 		}
 		Ok(Some(locations))
 	}
-	pub fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>) -> String {
+	pub fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>, identifier: Option<&str>) -> String {
 		use std::fmt::Write;
 		let mut out = String::new();
 		if let Some(name) = model_name {
-			_ = writeln!(
-				&mut out,
-				concat!("```python\n", "models.Model[\"{}\"]\n", "```  "),
-				name
-			)
+			if let Some(ident) = identifier {
+				_ = writeln!(
+					&mut out,
+					concat!("```python\n", "{}: Model[\"{}\"]\n", "```  "),
+					ident, name
+				)
+			} else {
+				_ = writeln!(&mut out, concat!("```python\n", "Model[\"{}\"]\n", "```  "), name)
+			}
 		}
 
 		if let Some(base) = &model.base {

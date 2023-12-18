@@ -653,7 +653,7 @@ impl Backend {
 									break 'match_;
 								};
 								let slice = Cow::from(slice);
-								return self.hover_model(&slice, Some(lsp_range), false);
+								return self.hover_model(&slice, Some(lsp_range), false, None);
 							} else if range.end < offset {
 								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
@@ -739,7 +739,9 @@ impl Backend {
 		let lsp_range = ts_range_to_lsp_range(needle.range());
 		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), None, &contents));
 		let model = interner().resolve(&model);
-		self.hover_model(model, Some(lsp_range), true)
+		let identifier =
+			(needle.kind() == "identifier").then(|| String::from_utf8_lossy(&contents[needle.byte_range()]));
+		self.hover_model(model, Some(lsp_range), true, identifier.as_deref())
 	}
 	pub fn diagnose_python(
 		&self,
