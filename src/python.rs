@@ -882,7 +882,9 @@ impl Backend {
 						if prop.starts_with('_') || MODEL_BUILTINS.contains(&prop) {
 							continue;
 						}
-						let obj = capture.node.prev_named_sibling().expect("obj");
+						let Some(obj) = capture.node.prev_named_sibling() else {
+							continue;
+						};
 						let Some(model) =
 							self.model_of_range(root, obj.byte_range().map_unit(ByteOffset), None, &contents[..])
 						else {

@@ -84,7 +84,6 @@ impl LanguageServer for Backend {
 			..
 		}) = params.capabilities.text_document
 		{
-			dbg!(diagnostics);
 			self.capabilities.pull_diagnostics.store(true, Relaxed);
 		}
 
