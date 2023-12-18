@@ -98,7 +98,7 @@ r#"
 }
 
 pub(super) async fn add_root_js(path: PathBuf) -> miette::Result<Output> {
-	let path_uri = interner().get_or_intern(path.to_string_lossy().as_ref());
+	let path_key = interner().get_or_intern(path.to_string_lossy().as_ref());
 	let contents = tokio::fs::read(&path)
 		.await
 		.into_diagnostic()
@@ -124,7 +124,7 @@ pub(super) async fn add_root_js(path: PathBuf) -> miette::Result<Output> {
 		let component = components.entry(name.into()).or_default();
 		if component.location.is_none() {
 			component.location = Some(MinLoc {
-				path: path_uri,
+				path: path_key,
 				range: ts_range_to_lsp_range(first.node.range()),
 			});
 		}
@@ -144,7 +144,7 @@ pub(super) async fn add_root_js(path: PathBuf) -> miette::Result<Output> {
 						Entry::Vacant(entry) => entry.insert(PropDescriptor {
 							type_: Default::default(),
 							location: MinLoc {
-								path: path_uri,
+								path: path_key,
 								range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
 							},
 						}),

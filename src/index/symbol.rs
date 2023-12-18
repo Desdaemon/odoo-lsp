@@ -58,6 +58,20 @@ impl<T> PartialEq for Symbol<T> {
 	}
 }
 
+impl<T> PartialOrd for Symbol<T> {
+	#[inline]
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+		self.inner.partial_cmp(&other.inner)
+	}
+}
+
+impl<T> Ord for Symbol<T> {
+	#[inline]
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+		self.inner.cmp(&other.inner)
+	}
+}
+
 impl<T> Hash for Symbol<T> {
 	#[inline]
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {

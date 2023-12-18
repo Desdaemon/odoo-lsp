@@ -6,7 +6,7 @@ use std::path::Path;
 
 use dashmap::try_result::TryResult;
 use lasso::Key;
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use miette::diagnostic;
 use odoo_lsp::index::{index_models, interner, Module, Symbol};
 use ropey::Rope;
@@ -148,10 +148,13 @@ impl Backend {
 				ModelType::Base { name, ancestors } => {
 					let model_key = interner().get(&name).unwrap();
 					let mut entry = self.index.models.try_get_mut(&model_key.into()).unwrap();
-					entry.ancestors = ancestors
-						.into_iter()
-						.map(|sym| interner().get_or_intern(&sym).into())
-						.collect();
+					entry.ancestors.extend(
+						ancestors
+							.into_iter()
+							.map(|sym| ModelName::from(interner().get_or_intern(&sym))),
+					);
+					entry.ancestors.sort_unstable();
+					entry.ancestors.dedup();
 					drop(entry);
 					self.index.models.populate_field_names(model_key.into(), &[path]);
 				}

@@ -178,6 +178,8 @@ impl ModelIndex {
 						entry
 							.ancestors
 							.extend(ancestors.iter().map(|sym| ModelName::from(interner.get_or_intern(sym))));
+						entry.ancestors.sort_unstable();
+						entry.ancestors.dedup();
 					}
 				}
 			}
@@ -189,7 +191,7 @@ impl ModelIndex {
 		locations_filter: &'model [Spur],
 	) -> Option<RefMut<'model, ModelName, ModelEntry>> {
 		let model_name = interner().resolve(&model);
-		let entry = self.try_get_mut(&model).expect(format_loc!("deadlock"))?;
+		let mut entry = self.try_get_mut(&model).expect(format_loc!("deadlock"))?;
 		if entry.fields.is_some() && locations_filter.is_empty() {
 			return Some(entry);
 		}
@@ -313,8 +315,8 @@ impl ModelIndex {
 			.flatten_iter();
 
 		let ancestors = entry.ancestors.iter().cloned().collect::<Vec<_>>();
-		let mut out = SymbolMap::default();
-		let mut fields_set = qp_trie::Trie::new();
+		let mut out = entry.fields.take().unwrap_or_default();
+		let mut fields_set = core::mem::take(&mut entry.fields_set);
 
 		// drop to prevent deadlock
 		drop(entry);
@@ -340,10 +342,7 @@ impl ModelIndex {
 			out.len(),
 			t0.elapsed().as_millis()
 		);
-		let mut entry = self
-			.try_get_mut(&model)
-			.expect(format_loc!("deadlock"))
-			.expect(format_loc!("no entry"));
+		let mut entry = self.try_get_mut(&model).expect(format_loc!("deadlock")).unwrap();
 		entry.fields = Some(out);
 		entry.fields_set = fields_set;
 		Some(entry)

@@ -331,27 +331,21 @@ impl LanguageServer for Backend {
 		let uri = params.text_document.uri;
 		debug!("did_save {}", uri.path());
 		if uri.path().ends_with(".py") {
-			let rope = &self.document_map.get(uri.path()).unwrap().rope;
+			let mut document = self
+				.document_map
+				.try_get_mut(uri.path())
+				.expect(format_loc!("deadlock"))
+				.expect(format_loc!("(did_save) Did not build document"));
+			let zone = document.damage_zone.take();
+			let rope = &document.rope;
 			let text = Cow::from(rope.slice(..));
 			self.update_models(Text::Full(text.into_owned()), &uri, rope.clone())
 				.await
 				.report(|| format_loc!("update_models"));
-			if !self.capabilities.pull_diagnostics.load(Relaxed) {
-				let mut document = self
-					.document_map
-					.try_get_mut(uri.path())
-					.expect(format_loc!("deadlock"))
-					.unwrap();
-				self.diagnose_python(
-					&uri,
-					&rope,
-					document.damage_zone.take(),
-					&mut document.diagnostics_cache,
-				);
-				self.client
-					.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
-					.await;
-			}
+			self.diagnose_python(&uri, &document.rope.clone(), zone, &mut document.diagnostics_cache);
+			self.client
+				.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
+				.await;
 		}
 	}
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
