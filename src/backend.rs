@@ -95,8 +95,13 @@ impl Backend {
 			.expect(format_loc!("deadlock"))
 			.expect(format_loc!("(on_change) did not build document"));
 		match &params.text {
-			Text::Full(full) => document.rope = ropey::Rope::from_str(&full),
-			Text::Delta(_) => {}
+			Text::Full(full) => {
+				document.rope = ropey::Rope::from_str(&full);
+				document.damage_zone = None;
+			}
+			Text::Delta(_) => {
+				// Rope updates are handled by did_change
+			}
 		}
 		let rope = document.rope.clone();
 		let eager_diagnostics = self.eager_diagnostics(params.open, &rope);

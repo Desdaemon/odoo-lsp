@@ -146,6 +146,10 @@ pub trait RangeExt {
 
 pub trait Erase {
 	fn erase(&self) -> core::ops::Range<usize>;
+	fn intersects(&self, other: core::ops::Range<usize>) -> bool {
+		let this = self.erase();
+		this.end >= other.start || this.start < other.end
+	}
 }
 
 impl Erase for ByteRange {

@@ -767,12 +767,8 @@ impl Backend {
 				!zone.contains(&range.start)
 			});
 		}
-		let in_active_root = |offset: usize| {
-			damage_zone
-				.as_ref()
-				.map(|zone| zone.contains_end(ByteOffset(offset)))
-				.unwrap_or(true)
-		};
+		let in_active_root =
+			|range: core::ops::Range<usize>| damage_zone.as_ref().map(|zone| zone.intersects(range)).unwrap_or(true);
 		let top_level_ranges = root
 			.named_children(&mut root.walk())
 			.map(|node| node.byte_range())
@@ -783,7 +779,7 @@ impl Backend {
 			for capture in match_.captures {
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::XmlId) => {
-						if !in_active_root(capture.node.start_byte()) {
+						if !in_active_root(capture.node.byte_range()) {
 							continue;
 						}
 						let xml_id = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
@@ -818,7 +814,7 @@ impl Backend {
 						this_model.tag_model(capture.node, &match_, top_level_ranges[idx].clone(), contents);
 					}
 					Some(PyCompletions::Mapped) => {
-						if !in_active_root(capture.node.start_byte()) {
+						if !in_active_root(capture.node.byte_range()) {
 							continue;
 						}
 						let Some(Mapped {
@@ -871,6 +867,9 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::Access) => {
+						if !in_active_root(capture.node.byte_range()) {
+							continue;
+						}
 						if let Some(gp) = capture.node.parent().expect("attribute").parent() {
 							if gp.kind() == "call" {
 								// TODO: Index methods
