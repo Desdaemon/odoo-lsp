@@ -364,15 +364,15 @@ impl Backend {
 	///
 	/// 	"foo.bar.baz"
 	///           ^cursor
-	///      ----------- range
-	///      ------ needle
+	///      -----------range
+	///      ------needle
 	///
 	/// Not replacing:
 	///
 	/// 	"foo.bar.baz"
 	///           ^cursor
-	///      ------- range
-	///      ------- needle
+	///      -------range
+	///      -------needle
 	///
 	/// padding
 	fn gather_mapped<'text>(
@@ -760,13 +760,15 @@ impl Backend {
 		let contents = contents.as_bytes();
 		let query = PyCompletions::query();
 		let mut root = ast.root_node();
-		if let Some(zone) = damage_zone.as_ref() {
-			root = top_level_stmt(root, zone.end.0).unwrap_or(root);
-			diagnostics.retain(|diag| {
-				let range = lsp_range_to_offset_range(diag.range.clone(), &rope).unwrap();
-				!zone.contains(&range.start)
-			});
-		}
+		// TODO: Limit range of diagnostics with new heuristics
+		diagnostics.truncate(0);
+		// if let Some(zone) = damage_zone.as_ref() {
+		// 	root = top_level_stmt(root, zone.end.0).unwrap_or(root);
+		// 	diagnostics.retain(|diag| {
+		// 		let range = lsp_range_to_offset_range(diag.range.clone(), &rope).unwrap();
+		// 		!zone.contains(&range.start)
+		// 	});
+		// }
 		let in_active_root =
 			|range: core::ops::Range<usize>| damage_zone.as_ref().map(|zone| zone.intersects(range)).unwrap_or(true);
 		let top_level_ranges = root
@@ -837,6 +839,15 @@ impl Backend {
 						};
 						let mut model = interner().get_or_intern(&model);
 						let mut needle = needle.as_ref();
+						if let (Some(dot), true) = (needle.find('.'), single_field) {
+							let range = range.start.0 + dot..range.end.0;
+							diagnostics.push(Diagnostic {
+								range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
+								severity: Some(DiagnosticSeverity::ERROR),
+								message: "Dotted access is not supported in this context".to_string(),
+								..Default::default()
+							});
+						}
 						if !single_field {
 							self.index
 								.models
@@ -846,14 +857,12 @@ impl Backend {
 							// Nothing to compare yet, keep going.
 							continue;
 						}
-						let mut has_field_or_unresolved = false;
+						let mut has_field_or_unresolved = true;
 						if let (Some(model), Some(field)) =
 							(self.index.models.get(&model.into()), interner().get(needle))
 						{
 							if let Some(fields) = model.fields.as_ref() {
 								has_field_or_unresolved = fields.contains_key(field.into_usize() as _);
-							} else {
-								has_field_or_unresolved = true;
 							}
 						}
 
