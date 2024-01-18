@@ -440,6 +440,22 @@ impl Backend {
 			}),
 		}))
 	}
+	pub fn hover_record(&self, xml_id: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
+		let key = some!(interner().get(xml_id));
+		let record = some!(self.index.records.get(&key.into()));
+		let model = match record.model.as_ref() {
+			Some(model) => interner().resolve(&model),
+			None => "<unknown>",
+		};
+		let value = format!("<record id=\"{xml_id}\" model=\"{model}\" />");
+		Ok(Some(Hover {
+			contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
+				language: "xml".to_owned(),
+				value,
+			})),
+			range,
+		}))
+	}
 	pub fn model_references(&self, model: &ModelName) -> miette::Result<Option<Vec<Location>>> {
 		let record_locations = self
 			.index
@@ -666,15 +682,17 @@ impl Text {
 			Self::Full(_) => return None,
 			Self::Delta(deltas) => deltas,
 		};
-		let mut out = seed.unwrap_or_default().erase();
+		const NULL_RANGE: core::ops::Range<usize> = usize::MAX..usize::MIN;
+		let mut out = seed.clone().unwrap_or_else(|| NULL_RANGE.map_unit(ByteOffset)).erase();
 		for delta in deltas {
 			let Some(range) = delta.range else {
-				out = Default::default();
+				out = NULL_RANGE;
 				continue;
 			};
 			let range = lsp_range_to_offset_range(range, rope)?;
 			out = out.start.min(range.start.0)..out.end.max(range.end.0);
 		}
+		debug!("(damage_zone)\nseed={seed:?}\n out={out:?}");
 		(!out.is_empty()).then(|| out.map_unit(ByteOffset))
 	}
 }

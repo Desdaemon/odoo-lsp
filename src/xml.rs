@@ -137,11 +137,11 @@ impl Backend {
 			.record_ranges
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build record ranges for {}", uri.path()))?;
-		let mut cursor_by_char = position_to_offset(position, rope).ok_or_else(|| diagnostic!("cursor"))?;
+		let mut offset_at_cursor = position_to_offset(position, rope).ok_or_else(|| diagnostic!("cursor"))?;
 		let Ok(record) = ranges.value().binary_search_by(|range| {
-			if cursor_by_char < range.start {
+			if offset_at_cursor < range.start {
 				Ordering::Greater
-			} else if cursor_by_char > range.end {
+			} else if offset_at_cursor > range.end {
 				Ordering::Less
 			} else {
 				Ordering::Equal
@@ -149,21 +149,21 @@ impl Backend {
 		}) else {
 			debug!("(record_slice) fall back to full slice");
 			let slice = Cow::from(rope.slice(..));
-			return Ok((slice, cursor_by_char, 0));
+			return Ok((slice, offset_at_cursor, 0));
 		};
 		let record_range = &ranges.value()[record];
 		debug!(
 			"(record_slice) found {:?}, cursor={:?}",
 			record_range.erase(),
-			cursor_by_char
+			offset_at_cursor
 		);
 		let relative_offset = record_range.start.0;
-		cursor_by_char.0 = cursor_by_char.0.saturating_sub(relative_offset);
+		offset_at_cursor.0 = offset_at_cursor.0.saturating_sub(relative_offset);
 
 		let slice = rope.byte_slice(record_range.clone().map_unit(|unit| unit.0));
 		let slice = Cow::from(slice);
 
-		Ok((slice, cursor_by_char, relative_offset))
+		Ok((slice, offset_at_cursor, relative_offset))
 	}
 	pub async fn xml_completions(
 		&self,
@@ -182,11 +182,11 @@ impl Backend {
 
 		let mut items = MaxVec::new(Self::LIMIT);
 		let XmlRefs {
-			cursor_value,
+			ref_at_cursor: cursor_value,
 			ref_kind,
 			model_filter,
 			..
-		} = gather_refs(cursor_by_char.0, &mut reader, interner())?;
+		} = gather_refs(cursor_by_char, &mut reader, interner())?;
 		let (Some(value), Some(record_field)) = (cursor_value, ref_kind) else {
 			return Ok(None);
 		};
@@ -241,11 +241,11 @@ impl Backend {
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
 		let XmlRefs {
-			cursor_value,
+			ref_at_cursor: cursor_value,
 			ref_kind,
 			model_filter,
 			..
-		} = gather_refs(cursor_by_char.0, &mut reader, interner())?;
+		} = gather_refs(cursor_by_char, &mut reader, interner())?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -269,8 +269,10 @@ impl Backend {
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
 		let XmlRefs {
-			cursor_value, ref_kind, ..
-		} = gather_refs(cursor_by_char.0, &mut reader, interner())?;
+			ref_at_cursor: cursor_value,
+			ref_kind,
+			..
+		} = gather_refs(cursor_by_char, &mut reader, interner())?;
 
 		let Some(cursor_value) = cursor_value else {
 			return Ok(None);
@@ -292,20 +294,21 @@ impl Backend {
 }
 
 struct XmlRefs<'a> {
-	cursor_value: Option<StrSpan<'a>>,
+	ref_at_cursor: Option<StrSpan<'a>>,
 	ref_kind: Option<RefKind>,
 	model_filter: Option<String>,
 }
 
 fn gather_refs<'read>(
-	cursor_by_char: usize,
+	offset_at_cursor: ByteOffset,
 	reader: &mut Tokenizer<'read>,
 	interner: &ThreadedRodeo,
 ) -> miette::Result<XmlRefs<'read>> {
 	let mut tag = None;
-	let mut cursor_value = None;
+	let mut ref_at_cursor = None;
 	let mut ref_kind = None;
 	let mut model_filter = None;
+	let offset_at_cursor = offset_at_cursor.0;
 	for token in reader {
 		match token {
 			Ok(Token::ElementStart { local, .. }) => match local.as_str() {
@@ -318,59 +321,62 @@ fn gather_refs<'read>(
 				"menuitem" => tag = Some(Tag::Menuitem),
 				_ => {}
 			},
+			// <field name=.. ref=.. />
 			Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
-				let value_in_range = value.range().contains_end(cursor_by_char);
+				let value_in_range = value.range().contains_end(offset_at_cursor);
 				if local.as_str() == "ref" && value_in_range {
-					cursor_value = Some(value);
+					ref_at_cursor = Some(value);
 				} else if local.as_str() == "name" && value_in_range {
-					cursor_value = Some(value);
+					ref_at_cursor = Some(value);
 					ref_kind = Some(RefKind::FieldName);
 				} else if local.as_str() == "name" {
 					let relation = interner.get_or_intern(value.as_str());
 					ref_kind = Some(RefKind::Ref(relation));
 				}
 			}
+			// <template inherit_id=.. />
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Template))
-					&& value.range().contains_end(cursor_by_char)
+					&& value.range().contains_end(offset_at_cursor)
 					&& matches!(local.as_str(), "inherit_id" | "t-call") =>
 			{
-				let inherit_id = interner.get_or_intern_static("inherit_id");
-				cursor_value = Some(value);
-				ref_kind = Some(RefKind::Ref(inherit_id));
+				ref_at_cursor = Some(value);
+				ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("inherit_id")));
 			}
+			// <record model=.. />
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>
 			{
-				if value.range().contains_end(cursor_by_char) {
-					cursor_value = Some(value);
+				if value.range().contains_end(offset_at_cursor) {
+					ref_at_cursor = Some(value);
 					ref_kind = Some(RefKind::Model);
 				} else {
 					model_filter = Some(value.as_str().to_string());
 				}
 			}
+			// <record id=.. /> or <template id=.. />
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Record | Tag::Template))
-					&& local == "id" && value.range().contains(&cursor_by_char) =>
+					&& local == "id" && value.range().contains(&offset_at_cursor) =>
 			{
-				cursor_value = Some(value);
+				ref_at_cursor = Some(value);
 				ref_kind = Some(RefKind::Id);
 			}
 			Ok(Token::Attribute { local, value, .. })
-				if matches!(tag, Some(Tag::Menuitem)) && value.range().contains_end(cursor_by_char) =>
+				if matches!(tag, Some(Tag::Menuitem)) && value.range().contains_end(offset_at_cursor) =>
 			{
 				match local.as_str() {
 					"id" => {
-						cursor_value = Some(value);
+						ref_at_cursor = Some(value);
 						ref_kind = Some(RefKind::Id);
 					}
 					"parent" => {
-						cursor_value = Some(value);
+						ref_at_cursor = Some(value);
 						ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("parent_id")));
 						model_filter = Some("ir.ui.menu".to_string());
 					}
 					"action" => {
-						cursor_value = Some(value);
+						ref_at_cursor = Some(value);
 						ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("action")));
 						model_filter = Some("ir.ui.menu".to_string());
 					}
@@ -378,34 +384,34 @@ fn gather_refs<'read>(
 				}
 			}
 			// leftover cases
-			Ok(Token::Attribute { local, value, .. }) if value.range().contains_end(cursor_by_char) => {
+			Ok(Token::Attribute { local, value, .. }) if value.range().contains_end(offset_at_cursor) => {
 				match local.as_str() {
 					"t-name" => {
-						cursor_value = Some(value);
+						ref_at_cursor = Some(value);
 						ref_kind = Some(RefKind::TName);
 					}
 					"t-inherit" => {
-						cursor_value = Some(value);
+						ref_at_cursor = Some(value);
 						ref_kind = Some(RefKind::TInherit);
 					}
 					"t-call" => {
-						cursor_value = Some(value);
+						ref_at_cursor = Some(value);
 						ref_kind = Some(RefKind::TCall);
 					}
 					_ => {}
 				}
 			}
-			Ok(Token::ElementEnd { .. }) if cursor_value.is_some() => break,
+			Ok(Token::ElementEnd { .. }) if ref_at_cursor.is_some() => break,
 			Err(_) => break,
 			Ok(token) => {
-				if token_span(&token).start() > cursor_by_char {
+				if token_span(&token).start() > offset_at_cursor {
 					break;
 				}
 			}
 		}
 	}
 	Ok(XmlRefs {
-		cursor_value,
+		ref_at_cursor,
 		ref_kind,
 		model_filter,
 	})

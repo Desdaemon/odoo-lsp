@@ -6,7 +6,7 @@ use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
 use futures::executor::block_on;
 use lasso::{Key, Spur};
-use log::{debug, error, warn};
+use log::{debug, error, trace, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use qp_trie::{wrapper::BString, Trie};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
@@ -144,7 +144,7 @@ impl ModelIndex {
 								.map(|sym| ModelName::from(interner.get_or_intern(&sym))),
 						);
 					} else {
-						debug!(
+						warn!(
 							"Conflicting bases:\nfirst={}\n  new={}",
 							entry.base.as_ref().unwrap(),
 							ModelLocation(
@@ -354,7 +354,7 @@ impl ModelIndex {
 	/// Returns None if resolution fails before `needle` is exhausted.
 	pub fn resolve_mapped(&self, model: &mut Spur, needle: &mut &str, mut range: Option<&mut ByteRange>) -> Option<()> {
 		while let Some((lhs, rhs)) = needle.split_once('.') {
-			debug!("mapped `{needle}`");
+			trace!("mapped `{needle}`");
 			// lhs: foo
 			// rhs: ba
 			let fields = self.populate_field_names(model.clone().into(), &[])?;
@@ -385,7 +385,7 @@ impl ModelIndex {
 		let mut kind = field_entry.kind.clone();
 		let mut field_model = model.clone();
 		if let FieldKind::Related(related) = &field_entry.kind {
-			debug!(
+			trace!(
 				"related={related} field={} model={}",
 				interner().resolve(&field),
 				interner().resolve(&model)

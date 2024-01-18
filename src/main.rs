@@ -83,6 +83,7 @@ impl LanguageServer for Backend {
 			diagnostic: Some(..), ..
 		}) = params.capabilities.text_document
 		{
+			debug!("Client supports pull diagnostics");
 			self.capabilities.pull_diagnostics.store(true, Relaxed);
 		}
 
@@ -345,10 +346,13 @@ impl LanguageServer for Backend {
 			self.update_models(Text::Full(text.into_owned()), &uri, rope.clone())
 				.await
 				.report(|| format_loc!("update_models"));
-			self.diagnose_python(&uri, &document.rope.clone(), zone, &mut document.diagnostics_cache);
-			self.client
-				.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
-				.await;
+			if zone.is_some() {
+				debug!("did_save diagnosis");
+				self.diagnose_python(&uri, &document.rope.clone(), zone, &mut document.diagnostics_cache);
+				self.client
+					.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
+					.await;
+			}
 		}
 	}
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {

@@ -143,7 +143,7 @@ impl QueryDefinition {
 				#(#variants)*
 			}
 
-			#[automatically_derived]
+			#[allow(dead_code)]
 			impl #name {
 				#[inline]
 				pub fn from(raw: u32) -> Option<Self> {

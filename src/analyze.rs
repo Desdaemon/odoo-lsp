@@ -1,6 +1,6 @@
 use std::{borrow::Borrow, collections::HashMap};
 
-use log::debug;
+use log::trace;
 use tree_sitter::{Node, QueryCursor};
 
 use odoo_lsp::{
@@ -130,7 +130,7 @@ impl Backend {
 		scope: Option<Scope>,
 		contents: &[u8],
 	) -> Option<ModelName> {
-		debug!("model_of_range {}", String::from_utf8_lossy(&contents[range.erase()]));
+		trace!("model_of_range {}", String::from_utf8_lossy(&contents[range.erase()]));
 		// Phase 1: Determine the scope.
 		let query = FieldCompletion::query();
 		let mut self_type = None; // (string)
@@ -324,13 +324,13 @@ impl Backend {
 		// 1. foo.bar;
 		//    foo: Model('t) => bar: Model('t).field('bar')
 		if node.byte_range().len() <= 64 {
-			debug!(
+			trace!(
 				"type_of {} '{}'",
 				node.kind(),
 				String::from_utf8_lossy(&contents[node.byte_range()])
 			);
 		} else {
-			debug!("type_of {} range={:?}", node.kind(), node.byte_range());
+			trace!("type_of {} range={:?}", node.kind(), node.byte_range());
 		}
 		let interner = interner();
 		match normalize(&mut node).kind() {

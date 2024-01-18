@@ -208,17 +208,12 @@ impl Backend {
 						Some(PyCompletions::XmlId) => {
 							let range = capture.node.byte_range();
 							if range.contains(&offset) {
-								let Some(slice) = rope.get_byte_slice(range.clone()) else {
-									dbg!(&range);
-									break 'match_;
-								};
-								let relative_offset = range.start;
-								let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+								let range = range.shrink(1);
+								let needle = String::from_utf8_lossy(&contents[range.start..offset]);
 								early_return = Some((
 									EarlyReturn::XmlId(model_filter, current_module.into()),
 									needle,
-									// remove the quotes
-									range.shrink(1).map_unit(ByteOffset),
+									range.map_unit(ByteOffset),
 									rope.clone(),
 								));
 								break 'match_;
@@ -693,8 +688,17 @@ impl Backend {
 								break 'match_;
 							}
 						}
+						Some(PyCompletions::XmlId) => {
+							let range = capture.node.byte_range();
+							if range.contains(&offset) {
+								let xml_id = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
+								return self.hover_record(
+									&xml_id,
+									offset_range_to_lsp_range(range.map_unit(ByteOffset), rope),
+								);
+							}
+						}
 						Some(PyCompletions::Request)
-						| Some(PyCompletions::XmlId)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Depends)
 						| Some(PyCompletions::Prop)
@@ -761,14 +765,13 @@ impl Backend {
 		let query = PyCompletions::query();
 		let mut root = ast.root_node();
 		// TODO: Limit range of diagnostics with new heuristics
-		diagnostics.truncate(0);
-		// if let Some(zone) = damage_zone.as_ref() {
-		// 	root = top_level_stmt(root, zone.end.0).unwrap_or(root);
-		// 	diagnostics.retain(|diag| {
-		// 		let range = lsp_range_to_offset_range(diag.range.clone(), &rope).unwrap();
-		// 		!zone.contains(&range.start)
-		// 	});
-		// }
+		if let Some(zone) = damage_zone.as_ref() {
+			root = top_level_stmt(root, zone.end.0).unwrap_or(root);
+			diagnostics.retain(|diag| {
+				let range = lsp_range_to_offset_range(diag.range.clone(), &rope).unwrap();
+				!root.byte_range().contains(&range.start.0)
+			});
+		}
 		let in_active_root =
 			|range: core::ops::Range<usize>| damage_zone.as_ref().map(|zone| zone.intersects(range)).unwrap_or(true);
 		let top_level_ranges = root
@@ -839,16 +842,20 @@ impl Backend {
 						};
 						let mut model = interner().get_or_intern(&model);
 						let mut needle = needle.as_ref();
-						if let (Some(dot), true) = (needle.find('.'), single_field) {
-							let range = range.start.0 + dot..range.end.0;
-							diagnostics.push(Diagnostic {
-								range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
-								severity: Some(DiagnosticSeverity::ERROR),
-								message: "Dotted access is not supported in this context".to_string(),
-								..Default::default()
-							});
-						}
-						if !single_field {
+						if single_field {
+							if let Some(dot) = needle.find('.') {
+								let message_range = range.start.0 + dot..range.end.0;
+								diagnostics.push(Diagnostic {
+									range: offset_range_to_lsp_range(message_range.map_unit(ByteOffset), rope.clone())
+										.unwrap(),
+									severity: Some(DiagnosticSeverity::ERROR),
+									message: "Dotted access is not supported in this context".to_string(),
+									..Default::default()
+								});
+								needle = &needle[..dot];
+								range = (range.start.0..range.start.0 + dot).map_unit(ByteOffset);
+							}
+						} else {
 							self.index
 								.models
 								.resolve_mapped(&mut model, &mut needle, Some(&mut range));
@@ -857,12 +864,15 @@ impl Backend {
 							// Nothing to compare yet, keep going.
 							continue;
 						}
-						let mut has_field_or_unresolved = true;
+						let models = self.index.models.get(&model.into());
+						let mut has_field_or_unresolved = models.is_none();
 						if let (Some(model), Some(field)) =
 							(self.index.models.get(&model.into()), interner().get(needle))
 						{
 							if let Some(fields) = model.fields.as_ref() {
 								has_field_or_unresolved = fields.contains_key(field.into_usize() as _);
+							} else {
+								has_field_or_unresolved = true;
 							}
 						}
 
@@ -906,7 +916,7 @@ impl Backend {
 						let prop_key = interner().get(&prop);
 						if !prop_key
 							.map(|key| fields.contains_key(key.into_usize() as _))
-							.unwrap_or(false)
+							.unwrap_or(true)
 						{
 							diagnostics.push(Diagnostic {
 								range: ts_range_to_lsp_range(capture.node.range()),
