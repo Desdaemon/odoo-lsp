@@ -172,7 +172,7 @@ impl Backend {
 	) -> miette::Result<Option<CompletionResponse>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
-		let (slice, cursor_by_char, relative_offset) = self.record_slice(&rope, uri, position)?;
+		let (slice, offset_at_cursor, relative_offset) = self.record_slice(&rope, uri, position)?;
 		let mut reader = Tokenizer::from(&slice[..]);
 
 		let current_module = self
@@ -186,11 +186,11 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			..
-		} = gather_refs(cursor_by_char, &mut reader, interner())?;
+		} = gather_refs(offset_at_cursor, &mut reader, interner())?;
 		let (Some(value), Some(record_field)) = (cursor_value, ref_kind) else {
 			return Ok(None);
 		};
-		let needle = &value.as_str()[..cursor_by_char.0 - value.range().start];
+		let needle = &value.as_str()[..offset_at_cursor.0 - value.range().start];
 		let replace_range = value.range().map_unit(|unit| ByteOffset(unit + relative_offset));
 		match record_field {
 			RefKind::Ref(relation) => {
@@ -289,6 +289,45 @@ impl Backend {
 			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.template_references(&cursor_value, true),
 			Some(RefKind::TName) => self.template_references(&cursor_value, false),
 			Some(RefKind::FieldName) | None => Ok(None),
+		}
+	}
+	pub async fn xml_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
+		let position = params.text_document_position_params.position;
+		let uri = &params.text_document_position_params.text_document.uri;
+		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
+		let mut reader = Tokenizer::from(&slice[..]);
+		let XmlRefs {
+			ref_at_cursor,
+			ref_kind,
+			model_filter,
+		} = gather_refs(cursor_by_char, &mut reader, interner())?;
+
+		let Some(ref_at_cursor) = ref_at_cursor else {
+			return Ok(None);
+		};
+
+		let lsp_range = offset_range_to_lsp_range(ref_at_cursor.range().map_unit(ByteOffset), rope.clone());
+		match ref_kind {
+			Some(RefKind::Model) => self.hover_model(&ref_at_cursor, lsp_range, false, None),
+			Some(RefKind::Ref(_)) => {
+				if ref_at_cursor.contains('.') {
+					self.hover_record(&ref_at_cursor, lsp_range)
+				} else {
+					let current_module = self
+						.index
+						.module_of_path(Path::new(params.text_document_position_params.text_document.uri.path()));
+					let current_module = some!(current_module);
+					let xml_id = format!("{}.{}", interner().resolve(&current_module), ref_at_cursor);
+					self.hover_record(&xml_id, lsp_range)
+				}
+			}
+			Some(RefKind::FieldName) => {
+				let model = some!(model_filter);
+				self.hover_field_name(&ref_at_cursor, &model, lsp_range).await
+			}
+			Some(RefKind::TInherit) | Some(RefKind::TCall) | Some(RefKind::TName) | Some(RefKind::Id) | None => {
+				Ok(None)
+			}
 		}
 	}
 }

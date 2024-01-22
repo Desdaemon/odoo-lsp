@@ -525,6 +525,14 @@ impl LanguageServer for Backend {
 					Ok(None)
 				}
 			}
+		} else if ext == "xml" {
+			match self.xml_hover(params, document.rope.clone()).await {
+				Ok(ret) => Ok(ret),
+				Err(err) => {
+					error!("{err}");
+					Ok(None)
+				}
+			}
 		} else {
 			debug!("(hover) unsupported: {}", uri.path());
 			Ok(None)
