@@ -19,16 +19,18 @@ use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
 query! {
-	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, Model, Access, Prop);
+	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, Model, Access, Prop, ForXmlId);
 r#"
 ((call [
 	(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
 	(attribute (identifier) @REQUEST (identifier) @_render)
+	(attribute (_) (identifier) @FOR_XML_ID)
 ] (argument_list . (string) @XML_ID))
 (#eq? @_env "env")
 (#eq? @_ref "ref")
 (#eq? @REQUEST "request")
-(#eq? @_render "render"))
+(#eq? @_render "render")
+(#eq? @FOR_XML_ID "_for_xml_id"))
 
 (subscript
 	[(identifier) @_env (attribute (_) (identifier) @_env)] (string) @MODEL
@@ -205,6 +207,19 @@ impl Backend {
 						Some(PyCompletions::Request) => {
 							model_filter = Some("ir.ui.view");
 						}
+						Some(PyCompletions::ForXmlId) => {
+							let model = || {
+								let model = capture.node.prev_named_sibling()?;
+								let model = self.model_of_range(
+									root,
+									model.byte_range().map_unit(ByteOffset),
+									None,
+									&contents,
+								)?;
+								Some(interner().resolve(&model))
+							};
+							model_filter = model()
+						}
 						Some(PyCompletions::XmlId) => {
 							let range = capture.node.byte_range();
 							if range.contains(&offset) {
@@ -369,7 +384,6 @@ impl Backend {
 	///      -------range
 	///      -------needle
 	///
-	/// padding
 	fn gather_mapped<'text>(
 		&self,
 		root: Node,
@@ -514,6 +528,7 @@ impl Backend {
 							}
 						}
 						Some(PyCompletions::Request)
+						| Some(PyCompletions::ForXmlId)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Depends)
 						| Some(PyCompletions::Prop)
@@ -598,6 +613,7 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::Request)
+					| Some(PyCompletions::ForXmlId)
 					| Some(PyCompletions::Mapped)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
@@ -699,6 +715,7 @@ impl Backend {
 							}
 						}
 						Some(PyCompletions::Request)
+						| Some(PyCompletions::ForXmlId)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Depends)
 						| Some(PyCompletions::Prop)
@@ -927,6 +944,7 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::Request)
+					| Some(PyCompletions::ForXmlId)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
 					| Some(PyCompletions::Prop)
