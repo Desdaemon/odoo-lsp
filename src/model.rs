@@ -346,10 +346,12 @@ impl ModelIndex {
 		entry.fields_set = fields_set;
 		Some(entry)
 	}
+	/// Splits a mapped access expression, e.g. `foo.bar.baz`, and traverses until the expression is exhausted.
+	///
 	/// For completing a `Model.write({'foo.bar.baz': ..})`:
 	/// - `model` is the key of `Model`
-	/// - `needle` is a left substring of 'foo.bar.baz'
-	/// - `range` spans the entire range of 'foo.bar.baz'
+	/// - `needle` is a left-wise substring of `foo.bar.baz`
+	/// - `range` spans the entire range of `foo.bar.baz`
 	///
 	/// Returns None if resolution fails before `needle` is exhausted.
 	pub fn resolve_mapped(&self, model: &mut Spur, needle: &mut &str, mut range: Option<&mut ByteRange>) -> Option<()> {
@@ -379,6 +381,7 @@ impl ModelIndex {
 		}
 		Some(())
 	}
+	/// Turns related fields ([`FieldKind::Related`]) into concrete fields, and return the field's type itself.
 	pub fn normalize_field_relation(&self, field: Symbol<FieldName>, model: Spur) -> Option<Spur> {
 		let model_entry = self.get(&model.into())?;
 		let field_entry = model_entry.fields.as_ref()?.get(&field)?;

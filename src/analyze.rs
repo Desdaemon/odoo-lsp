@@ -29,6 +29,7 @@ static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
 	b"with_company",
 	b"with_env",
 	b"sudo",
+	b"_for_xml_id",
 	// TODO: Limit to Forms only
 	b"new",
 );
@@ -45,9 +46,10 @@ pub enum Type {
 	/// Unresolved model.
 	Record(ImStr),
 	Super,
+	Method(ModelName, &'static str),
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Scope {
 	variables: HashMap<String, Type>,
 	parent: Option<Box<Scope>>,
@@ -316,13 +318,13 @@ impl Backend {
 		//    sudo, with_user, with_env, with_context, ..
 		// 4. [foo for foo in bar];
 		//    bar: 't => foo: 't
-		// 5. self.mapped(lambda rec: ..)
-		//    self: 't => rec: 't
-		//    mapped, filtered, ..
 
 		// What transforms value types?
 		// 1. foo.bar;
 		//    foo: Model('t) => bar: Model('t).field('bar')
+		// 2. foo.mapped('..')
+		//    foo: Model('t) => _: Model('t).mapped('..')
+		// 3. foo.mapped(lambda rec: 't): 't
 		if node.byte_range().len() <= 64 {
 			trace!(
 				"type_of {} '{}'",
@@ -354,6 +356,10 @@ impl Backend {
 					b"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
 					b"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
 					b"company" | b"companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
+					b"mapped" => {
+						let model = self.resolve_type(&lhs, &scope)?;
+						Some(Type::Method(model, "mapped"))
+					}
 					func if MODEL_METHODS.contains(func) => match lhs {
 						Type::Model(model) => Some(Type::ModelFn(model)),
 						Type::Record(xml_id) => {
@@ -363,22 +369,7 @@ impl Backend {
 						}
 						_ => None,
 					},
-					ident if rhs.kind() == "identifier" => {
-						let model = match lhs {
-							Type::Model(model) => ModelName::from(interner.get(model.as_str())?),
-							Type::Record(xml_id) => {
-								let xml_id = interner.get(xml_id)?;
-								let record = self.index.records.get(&xml_id.into())?;
-								record.model?
-							}
-							_ => return None,
-						};
-						let ident = String::from_utf8_lossy(ident);
-						let ident = interner.get_or_intern(ident.as_ref());
-						self.index.models.populate_field_names(model, &[])?;
-						let relation = self.index.models.normalize_field_relation(ident.into(), model.into())?;
-						Some(Type::Model(interner.resolve(&relation).into()))
-					}
+					ident if rhs.kind() == "identifier" => self.typeof_attribute(&lhs, ident, scope),
 					_ => None,
 				}
 			}
@@ -410,12 +401,55 @@ impl Backend {
 					}
 					Type::ModelFn(model) => Some(Type::Model(model)),
 					Type::Super => scope.get(scope.super_.as_deref()?).cloned(),
-					Type::Env | Type::Record(..) | Type::Model(..) => None,
+					Type::Method(model, "mapped") => {
+						// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
+						let mapped = node.named_child(1)?.named_child(0)?;
+						match mapped.kind() {
+							"string" => {
+								let mut model = model.into();
+								let mapped = String::from_utf8_lossy(&contents[mapped.byte_range().shrink(1)]);
+								let mut mapped = mapped.as_ref();
+								self.index.models.resolve_mapped(&mut model, &mut mapped, None)?;
+								self.typeof_attribute(
+									&Type::Model(interner.resolve(&model).into()),
+									mapped.as_bytes(),
+									scope,
+								)
+							}
+							"lambda" => {
+								// (lambda (lambda_parameters)? body: (_))
+								let mut scope = Scope::new(Some(scope.clone()));
+								if let Some(params) = mapped.child_by_field_name(b"parameters") {
+									let first_arg = params.named_child(0)?;
+									if first_arg.kind() == "identifier" {
+										let first_arg = String::from_utf8_lossy(&contents[first_arg.byte_range()]);
+										scope.insert(
+											first_arg.into_owned(),
+											Type::Model(interner.resolve(&model).into()),
+										);
+									}
+								}
+								let body = mapped.child_by_field_name(b"body")?;
+								self.type_of(body, &scope, &contents)
+							}
+							_ => None,
+						}
+					}
+					Type::Env | Type::Record(..) | Type::Method(..) | Type::Model(..) => None,
 				}
 			}
 			_ => None,
 		}
 	}
+	fn typeof_attribute(&self, type_: &Type, attr: &[u8], scope: &Scope) -> Option<Type> {
+		let model = self.resolve_type(type_, &scope)?;
+		let attr = String::from_utf8_lossy(attr);
+		let attr = interner().get_or_intern(attr.as_ref());
+		self.index.models.populate_field_names(model, &[])?;
+		let relation = self.index.models.normalize_field_relation(attr.into(), model.into())?;
+		Some(Type::Model(interner().resolve(&relation).into()))
+	}
+	/// Call this method if it's unclear whether `type_` is a [`Type::Model`] and you just want the model's name.
 	fn resolve_type(&self, type_: &Type, scope: &Scope) -> Option<ModelName> {
 		match type_ {
 			Type::Model(model) => Some(interner().get(model)?.into()),
