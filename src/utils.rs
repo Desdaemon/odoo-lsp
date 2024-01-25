@@ -283,17 +283,23 @@ pub struct CondVar {
 	notifier: tokio::sync::Notify,
 }
 
+pub struct Blocker<'a>(&'a CondVar);
+
 impl CondVar {
-	pub fn block_waiters(&self) {
+	pub fn block(&self) -> Blocker {
 		self.should_wait.store(true, std::sync::atomic::Ordering::Relaxed);
+		Blocker(self)
 	}
 	pub async fn wait(&self) {
 		if self.should_wait.load(std::sync::atomic::Ordering::Relaxed) {
 			self.notifier.notified().await;
 		}
 	}
-	pub fn release_waiters(&self) {
-		self.notifier.notify_waiters();
-		self.should_wait.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl Drop for Blocker<'_> {
+	fn drop(&mut self) {
+		self.0.notifier.notify_waiters();
+		self.0.should_wait.store(false, std::sync::atomic::Ordering::Relaxed);
 	}
 }

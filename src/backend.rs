@@ -109,6 +109,7 @@ impl Backend {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
 				self.on_change_python(&params.text, &params.uri, rope.clone(), params.old_rope)?;
 				if eager_diagnostics {
+					self.root_setup.wait().await;
 					self.diagnose_python(
 						&params.uri,
 						&rope,

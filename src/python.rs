@@ -881,19 +881,15 @@ impl Backend {
 							// Nothing to compare yet, keep going.
 							continue;
 						}
-						let models = self.index.models.get(&model.into());
-						let mut has_field_or_unresolved = models.is_none();
-						if let (Some(model), Some(field)) =
-							(self.index.models.get(&model.into()), interner().get(needle))
-						{
-							if let Some(fields) = model.fields.as_ref() {
-								has_field_or_unresolved = fields.contains_key(field.into_usize() as _);
-							} else {
-								has_field_or_unresolved = true;
-							}
+						let mut has_field = false;
+						if self.index.models.contains_key(&model.into()) {
+							let Some(entry) = self.index.models.populate_field_names(model.into(), &[]) else {
+								continue;
+							};
+							let Some(fields) = entry.fields.as_ref() else { continue };
+							has_field = fields.contains_key(interner().get_or_intern(needle).into_usize() as _);
 						}
-
-						if !has_field_or_unresolved {
+						if !has_field {
 							diagnostics.push(Diagnostic {
 								range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
 								severity: Some(DiagnosticSeverity::WARNING),

@@ -171,7 +171,7 @@ impl LanguageServer for Backend {
 			self.roots.insert(file_path.to_string_lossy().to_string());
 		}
 
-		self.root_setup.block_waiters();
+		let blocker = self.root_setup.block();
 		for root in self.roots.iter() {
 			match self.index.add_root(root.as_str(), progress.clone(), false).await {
 				Ok(Some(results)) => {
@@ -201,7 +201,7 @@ impl LanguageServer for Backend {
 			})
 			.await;
 
-		self.root_setup.release_waiters();
+		drop(blocker);
 
 		if self.capabilities.dynamic_config.load(Relaxed) {
 			_ = self
@@ -412,6 +412,7 @@ impl LanguageServer for Backend {
 			debug!("Bug: did not build a document for {}", uri.path());
 			return Ok(None);
 		};
+		self.root_setup.wait().await;
 		if ext == "xml" {
 			let completions = self.xml_completions(params, document.rope.clone()).await;
 			match completions {
@@ -634,6 +635,7 @@ impl LanguageServer for Backend {
 		let mut diagnostics = vec![];
 		if let Some((_, "py")) = path.rsplit_once('.') {
 			if let Some(mut document) = self.document_map.try_get_mut(path).expect(format_loc!("deadlock")) {
+				self.root_setup.wait().await;
 				let damage_zone = document.damage_zone.take();
 				let rope = &document.rope.clone();
 				self.diagnose_python(
