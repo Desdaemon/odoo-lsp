@@ -785,7 +785,8 @@ impl Backend {
 		if let Some(zone) = damage_zone.as_ref() {
 			root = top_level_stmt(root, zone.end.0).unwrap_or(root);
 			diagnostics.retain(|diag| {
-				let range = lsp_range_to_offset_range(diag.range.clone(), &rope).unwrap();
+				// If we couldn't get a range here, rope has changed significantly so just toss the diag.
+				let range = lsp_range_to_offset_range(diag.range.clone(), &rope).unwrap_or_default();
 				!root.byte_range().contains(&range.start.0)
 			});
 		}
