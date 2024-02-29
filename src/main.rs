@@ -534,8 +534,15 @@ impl LanguageServer for Backend {
 					Ok(None)
 				}
 			}
+		} else if ext == "js" {
+			match self.js_hover(params, &document.rope) {
+				Ok(ret) => Ok(ret),
+				Err(err) => {
+					error!("{err}");
+					Ok(None)
+				}
+			}
 		} else {
-			debug!("(hover) unsupported: {}", uri.path());
 			Ok(None)
 		}
 	}

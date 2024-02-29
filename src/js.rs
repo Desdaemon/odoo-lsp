@@ -10,7 +10,7 @@ use odoo_lsp::{
 	utils::{position_to_offset, ByteOffset, RangeExt},
 };
 use ropey::Rope;
-use tower_lsp::lsp_types::{GotoDefinitionParams, Location, ReferenceParams, Url};
+use tower_lsp::lsp_types::{GotoDefinitionParams, Hover, HoverParams, Location, ReferenceParams, Url};
 use tree_sitter::{Parser, QueryCursor};
 
 impl Backend {
@@ -79,6 +79,18 @@ impl Backend {
 				}
 			}
 		}
+
+		Ok(None)
+	}
+	pub fn js_hover(&self, params: HoverParams, rope: &Rope) -> miette::Result<Option<Hover>> {
+		let uri = &params.text_document_position_params.text_document.uri;
+		let ast = self
+			.ast_map
+			.get(uri.path())
+			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, rope) else {
+			Err(diagnostic!("could not find offset for {}", uri.path()))?
+		};
 
 		Ok(None)
 	}
