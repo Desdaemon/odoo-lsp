@@ -1,5 +1,5 @@
 use core::ops::{Add, Sub};
-use std::{fmt::Display, sync::atomic::AtomicBool};
+use std::{borrow::Cow, fmt::Display, sync::atomic::AtomicBool};
 
 use dashmap::try_result::TryResult;
 use lasso::Spur;
@@ -108,6 +108,26 @@ pub fn token_span<'r, 't>(token: &'r Token<'t>) -> &'r StrSpan<'t> {
 		| Token::ElementEnd { span, .. }
 		| Token::Text { text: span, .. }
 		| Token::Cdata { span, .. } => span,
+	}
+}
+
+pub fn cow_split_once<'src>(
+	mut src: Cow<'src, str>,
+	sep: &str,
+) -> Result<(Cow<'src, str>, Cow<'src, str>), Cow<'src, str>> {
+	match src {
+		Cow::Borrowed(inner) => inner
+			.split_once(sep)
+			.map(|(lhs, rhs)| (Cow::Borrowed(lhs), Cow::Borrowed(rhs)))
+			.ok_or(src),
+		Cow::Owned(ref mut inner) => {
+			let Some(offset) = inner.find(sep) else {
+				return Err(src);
+			};
+			let mut rhs = inner.split_off(offset);
+			rhs.replace_range(0..sep.len(), "");
+			Ok((Cow::Owned(core::mem::take(inner)), Cow::Owned(rhs)))
+		}
 	}
 }
 

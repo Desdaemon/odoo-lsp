@@ -19,7 +19,7 @@ use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
 query! {
-	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, Model, Access, Prop, ForXmlId);
+	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Access, Prop, ForXmlId);
 r#"
 ((call [
 	(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
@@ -81,6 +81,11 @@ r#"
 ])
 (#match? @_Field "^(Many2one|One2many|Many2many)$")
 (#eq? @_comodel_name "comodel_name"))
+
+((call
+	(attribute (_) @MAPPED_TARGET (identifier) @READ_FN)
+	(argument_list (list (string) @MAPPED)))
+(#match? @READ_FN "^read(_group)?$"))
 
 ((call
 	(attribute (_) @MAPPED_TARGET (identifier) @DEPENDS)
@@ -274,7 +279,7 @@ impl Backend {
 									Some(offset),
 									range.clone(),
 									this_model.inner,
-									&rope,
+									// &rope,
 									&contents[..],
 									true,
 								)
@@ -315,6 +320,7 @@ impl Backend {
 						Some(PyCompletions::Depends)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Prop)
+						| Some(PyCompletions::ReadFn)
 						| None => {}
 					}
 				}
@@ -391,16 +397,18 @@ impl Backend {
 		offset: Option<usize>,
 		mut range: core::ops::Range<usize>,
 		this_model: Option<&[u8]>,
-		rope: &'text Rope,
-		contents: &[u8],
+		// rope: &'text Rope,
+		contents: &'text [u8],
 		for_replacing: bool,
 	) -> Option<Mapped<'text>> {
-		let needle = if for_replacing {
+		let mut needle = if for_replacing {
 			range = range.shrink(1);
 			let offset = offset.unwrap_or(range.end);
-			Cow::from(rope.get_byte_slice(range.start..offset)?)
+			// Cow::from(rope.get_byte_slice(range.start..offset)?)
+			String::from_utf8_lossy(&contents[range.start..offset])
 		} else {
-			let slice = Cow::from(rope.get_byte_slice(range.clone().shrink(1))?);
+			// let slice = Cow::from(rope.get_byte_slice(range.clone().shrink(1))?);
+			let slice = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
 			let relative_start = range.start + 1;
 			let offset = offset.unwrap_or((range.end - 1).max(relative_start));
 			assert!(
@@ -413,8 +421,12 @@ impl Backend {
 			// How many characters until the next period or end-of-string?
 			let limit = slice_till_end.find('.').unwrap_or(slice_till_end.len());
 			range = relative_start..offset + limit;
-			Cow::from(rope.get_byte_slice(range.clone())?)
+			// Cow::from(rope.get_byte_slice(range.clone())?)
+			String::from_utf8_lossy(&contents[range.clone()])
 		};
+		if needle == "|" || needle == "&" {
+			return None;
+		}
 
 		let model;
 		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next() {
@@ -432,6 +444,19 @@ impl Backend {
 				&contents[depends.byte_range()],
 				b"write" | b"create" | b"constrains" | b"onchange"
 			);
+		} else if let Some(read_fn) = match_.nodes_for_capture_index(PyCompletions::ReadFn as _).next() {
+			// read or read_group, fields only
+			single_field = true;
+			if &contents[read_fn.byte_range()] == b"read_group" {
+				// split off aggregate functions
+				needle = match cow_split_once(needle, ":") {
+					Err(unchanged) => unchanged,
+					Ok((field, _)) => {
+						range = range.start..range.start + field.len();
+						field
+					}
+				}
+			}
 		}
 
 		Some(Mapped {
@@ -519,7 +544,7 @@ impl Backend {
 										Some(offset),
 										range.clone(),
 										this_model.inner,
-										&rope,
+										// &rope,
 										&contents,
 										false,
 									)
@@ -532,6 +557,7 @@ impl Backend {
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Depends)
 						| Some(PyCompletions::Prop)
+						| Some(PyCompletions::ReadFn)
 						| None => {}
 					}
 				}
@@ -619,6 +645,7 @@ impl Backend {
 					| Some(PyCompletions::Depends)
 					| Some(PyCompletions::Access)
 					| Some(PyCompletions::Prop)
+					| Some(PyCompletions::ReadFn)
 					| None => {}
 				}
 			}
@@ -696,7 +723,7 @@ impl Backend {
 										Some(offset),
 										range.clone(),
 										this_model.inner,
-										&rope,
+										// &rope,
 										&contents[..],
 										false,
 									)
@@ -719,6 +746,7 @@ impl Backend {
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Depends)
 						| Some(PyCompletions::Prop)
+						| Some(PyCompletions::ReadFn)
 						| None => {}
 					}
 				}
@@ -851,7 +879,7 @@ impl Backend {
 							None,
 							capture.node.byte_range(),
 							this_model.inner,
-							&rope,
+							// &rope,
 							contents,
 							false,
 						)
@@ -945,6 +973,7 @@ impl Backend {
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
 					| Some(PyCompletions::Prop)
+					| Some(PyCompletions::ReadFn)
 					| None => {}
 				}
 			}
