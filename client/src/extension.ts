@@ -245,7 +245,12 @@ export async function activate(context: ExtensionContext) {
 		const response = await client.sendRequest('odoo-lsp/statistics');
 		const doc = await workspace.openTextDocument({ language: 'json', content: JSON.stringify(response, undefined, 2) });
 		await window.showTextDocument(doc);
-	}))
+	}));
+
+	context.subscriptions.push(commands.registerCommand('odoo-lsp.restart-lsp', async () => {
+		await client.restart();
+		traceOutputChannel.appendLine("Odoo LSP restarted");
+	}));
 
 	client = new LanguageClient("odoo-lsp", "Odoo LSP", serverOptions, clientOptions);
 	await client.start();
