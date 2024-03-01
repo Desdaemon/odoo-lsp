@@ -1,11 +1,8 @@
 use crate::utils::Usage;
-use std::{
-	hash::Hash,
-	marker::PhantomData,
-	ops::{Deref, DerefMut},
-};
+use std::{fmt::Debug, hash::Hash, marker::PhantomData};
 
 use dashmap::{mapref::one::Ref, DashMap};
+use derive_more::{Deref, DerefMut};
 use futures::executor::block_on;
 use intmap::IntMap;
 use lasso::{Key, Spur, ThreadedRodeo};
@@ -16,8 +13,9 @@ use crate::{model::ModelName, record::Record};
 
 use super::{interner, Symbol};
 
-#[derive(Default)]
+#[derive(Default, Deref)]
 pub struct RecordIndex {
+	#[deref]
 	inner: DashMap<RecordId, Record>,
 	by_model: DashMap<ModelName, SymbolSet<Record>>,
 	by_inherit_id: DashMap<RecordId, SymbolSet<Record>>,
@@ -26,14 +24,6 @@ pub struct RecordIndex {
 
 pub type RecordId = Symbol<Record>;
 pub type RecordPrefixTrie = qp_trie::Trie<BString, SymbolSet<Record>>;
-
-impl Deref for RecordIndex {
-	type Target = DashMap<RecordId, Record>;
-	#[inline]
-	fn deref(&self) -> &Self::Target {
-		&self.inner
-	}
-}
 
 impl RecordIndex {
 	pub async fn insert(&self, qualified_id: RecordId, record: Record, prefix: Option<&mut RecordPrefixTrie>) {
@@ -55,7 +45,7 @@ impl RecordIndex {
 		if let Some(prefix) = prefix {
 			prefix
 				.entry(BString::from(record.id.as_str()))
-				.or_insert_with(SymbolMap::default)
+				.or_insert_with(SymbolSet::default)
 				.insert(qualified_id);
 		} else {
 			self.by_prefix
@@ -109,23 +99,34 @@ impl RecordIndex {
 	}
 }
 
-pub struct SymbolMap<K, T = ()>(IntMap<T>, PhantomData<K>);
-pub type SymbolSet<K> = SymbolMap<K, ()>;
-impl<K, T> Deref for SymbolMap<K, T> {
-	type Target = IntMap<T>;
-	fn deref(&self) -> &Self::Target {
-		&self.0
-	}
-}
-impl<K, T> DerefMut for SymbolMap<K, T> {
-	fn deref_mut(&mut self) -> &mut Self::Target {
-		&mut self.0
+#[derive(Deref, DerefMut)]
+pub struct SymbolMap<K, T = ()>(
+	#[deref]
+	#[deref_mut]
+	IntMap<T>,
+	PhantomData<K>,
+);
+
+impl<K: Debug, T: Debug> Debug for SymbolMap<K, T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_map().entries(self.iter()).finish()
 	}
 }
 
+#[derive(Deref, DerefMut)]
+pub struct SymbolSet<K>(pub(crate) SymbolMap<K, ()>);
+
 impl<K, T> Default for SymbolMap<K, T> {
+	#[inline]
 	fn default() -> Self {
 		Self(Default::default(), PhantomData)
+	}
+}
+
+impl<K> Default for SymbolSet<K> {
+	#[inline]
+	fn default() -> Self {
+		Self(Default::default())
 	}
 }
 
@@ -143,32 +144,48 @@ impl<K, T> SymbolMap<K, T> {
 			.iter()
 			.map(|(key, _)| Spur::try_from_usize(*key as usize).unwrap().into())
 	}
+	pub fn iter(&self) -> IterMap<impl Iterator<Item = (&u64, &T)>, K, T> {
+		IterMap(self.0.iter(), PhantomData)
+	}
 }
 
 impl<K> SymbolSet<K> {
 	#[inline]
 	pub fn insert(&mut self, key: Symbol<K>) -> bool {
-		self.0.insert_checked(key.into_usize() as u64, ())
+		self.0 .0.insert_checked(key.into_usize() as u64, ())
 	}
 	#[inline]
 	pub fn contains_key(&self, key: Symbol<K>) -> bool {
-		self.0.contains_key(key.into_usize() as _)
+		self.0 .0.contains_key(key.into_usize() as _)
 	}
-	pub fn iter(&self) -> Iter<impl Iterator<Item = (&u64, &())>, K> {
-		Iter(self.0.iter(), PhantomData)
+	pub fn iter(&self) -> IterSet<impl Iterator<Item = (&u64, &())>, K> {
+		IterSet(self.0 .0.iter(), PhantomData)
 	}
 	pub fn extend<I>(&mut self, items: I)
 	where
 		I: IntoIterator<Item = Symbol<K>>,
 	{
-		self.0
-			.extend(items.into_iter().map(|key| (key.into_usize() as u64, ())));
+		(self.0 .0).extend(items.into_iter().map(|key| (key.into_usize() as u64, ())));
 	}
 }
 
-pub struct Iter<'a, I, T>(I, PhantomData<&'a T>);
+pub struct IterMap<'a, I, K, T>(I, PhantomData<(&'a K, &'a T)>);
 
-impl<'iter, T, I> Iterator for Iter<'iter, I, T>
+impl<'iter, K, T, I> Iterator for IterMap<'iter, I, K, T>
+where
+	I: Iterator<Item = (&'iter u64, &'iter T)>,
+{
+	type Item = (Symbol<T>, &'iter T);
+
+	fn next(&mut self) -> Option<Self::Item> {
+		let (next_key, next_value) = self.0.next()?;
+		Some((Symbol::from(Spur::try_from_usize(*next_key as _).unwrap()), next_value))
+	}
+}
+
+pub struct IterSet<'a, I, T>(I, PhantomData<&'a T>);
+
+impl<'iter, T, I> Iterator for IterSet<'iter, I, T>
 where
 	I: Iterator<Item = (&'iter u64, &'iter ())>,
 {

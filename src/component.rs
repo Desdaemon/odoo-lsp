@@ -6,7 +6,7 @@ use crate::utils::MinLoc;
 
 pub type ComponentName = Symbol<Component>;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Component {
 	pub location: Option<MinLoc>,
 	pub subcomponents: Vec<ComponentName>,
@@ -16,6 +16,7 @@ pub struct Component {
 	pub template: Option<ComponentTemplate>,
 }
 
+#[derive(Debug)]
 pub enum ComponentTemplate {
 	Name(TemplateName),
 	Inline(Range),
@@ -37,15 +38,17 @@ impl Component {
 	}
 }
 
+#[derive(Debug)]
 pub enum Prop {}
 
+#[derive(Debug)]
 pub struct PropDescriptor {
 	pub location: MinLoc,
 	pub type_: PropType,
 }
 
 bitflags::bitflags! {
-	#[derive(Default, Copy, Clone)]
+	#[derive(Default, Copy, Clone, Debug)]
 	pub struct PropType: u8 {
 		const  Unknown = 0;
 		const Optional = 1 << 0;

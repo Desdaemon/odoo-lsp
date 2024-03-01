@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use globwalk::FileType;
-use lasso::{Spur, ThreadedRodeo};
+use lasso::{Key, Spur, ThreadedRodeo};
 use log::{debug, info, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
@@ -36,7 +36,7 @@ pub type Interner = ThreadedRodeo;
 
 #[derive(Default)]
 pub struct Index {
-	pub roots: DashMap<ImStr, SymbolSet<Module>>,
+	pub roots: DashMap<ImStr, SymbolMap<Module, ImStr>>,
 	pub records: record::RecordIndex,
 	pub templates: template::TemplateIndex,
 	pub models: ModelIndex,
@@ -115,7 +115,13 @@ impl Index {
 					.await;
 			}
 			let module_key = interner.get_or_intern(&module_name);
-			if !self.roots.entry(root.into()).or_default().insert(module_key.into()) {
+			let module_path = module_dir
+				.strip_prefix(root)
+				.map_err(|_| miette::diagnostic!("module_dir={:?} is not a subpath of root={}", module_dir, root))?;
+			if !self.roots.entry(root.into()).or_default().insert_checked(
+				module_key.into_usize() as _,
+				module_path.to_str().expect("non-utf8 path").into(),
+			) {
 				debug!("duplicate module {module_name}");
 			}
 			if tsconfig {
@@ -225,9 +231,8 @@ impl Index {
 				for component in path.components() {
 					if let Component::Normal(norm) = component {
 						if let Some(module) = interner().get(&norm.to_string_lossy()) {
-							let module = module.into();
-							if entry.value().contains_key(module) {
-								return Some(module);
+							if entry.value().contains_key(module.into_usize() as _) {
+								return Some(module.into());
 							}
 						}
 					}

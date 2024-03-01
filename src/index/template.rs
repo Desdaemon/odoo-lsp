@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use derive_more::Deref;
 
 use dashmap::DashMap;
 use futures::executor::block_on;
@@ -9,20 +9,14 @@ use crate::{template::NewTemplate, utils::Usage};
 
 use super::{interner, SymbolSet, Template, TemplateName};
 
-#[derive(Default)]
+#[derive(Default, Deref)]
 pub struct TemplateIndex {
+	#[deref]
 	inner: DashMap<TemplateName, Template>,
 	pub by_prefix: RwLock<TemplatePrefixTrie>,
 }
 
 pub type TemplatePrefixTrie = qp_trie::Trie<BString, SymbolSet<Template>>;
-
-impl Deref for TemplateIndex {
-	type Target = DashMap<TemplateName, Template>;
-	fn deref(&self) -> &Self::Target {
-		&self.inner
-	}
-}
 
 impl TemplateIndex {
 	pub async fn append(&self, entries: Vec<NewTemplate>) {

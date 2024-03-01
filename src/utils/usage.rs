@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
 	component::{Component, ComponentTemplate, PropDescriptor},
-	index::{Symbol, SymbolMap},
+	index::{Symbol, SymbolMap, SymbolSet},
 	model::{Field, FieldKind, ModelEntry, ModelLocation},
 	record::Record,
 	template::Template,
@@ -119,6 +119,12 @@ impl<K, V: Usage> Usage for SymbolMap<K, V> {
 		let usage = Layout::new::<(u64, V)>().size() * self.capacity();
 		let usage = usage + self.iter().map(|(_, value)| value.usage().1).sum::<usize>();
 		UsageInfo(len, usage)
+	}
+}
+
+impl<K> Usage for SymbolSet<K> {
+	fn usage(&self) -> UsageInfo {
+		self.0.usage()
 	}
 }
 

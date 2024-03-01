@@ -325,7 +325,7 @@ impl ModelIndex {
 			if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
 				if let Some(fields) = entry.fields.as_ref() {
 					// TODO: Implement copy-on-write to increase reuse
-					out.extend(fields.iter().map(|(key, val)| (key.clone(), val.clone())));
+					out.extend(fields.iter().map(|(key, val)| (key.into_usize() as u64, val.clone())));
 				}
 			}
 		}

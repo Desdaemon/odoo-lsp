@@ -518,32 +518,21 @@ impl LanguageServer for Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let document = some!(self.document_map.get(uri.path()));
 		let (_, ext) = some!(uri.path().rsplit_once('.'));
-		if ext == "py" {
-			match self.python_hover(params, document.rope.clone()).await {
-				Ok(ret) => Ok(ret),
-				Err(err) => {
-					error!("{err}");
-					Ok(None)
-				}
+		let hover = match ext {
+			"py" => self.python_hover(params, document.rope.clone()).await,
+			"xml" => self.xml_hover(params, document.rope.clone()).await,
+			"js" => self.js_hover(params, document.rope.clone()),
+			_ => {
+				debug!("(hover) unsupported {}", uri.path());
+				Ok(None)
 			}
-		} else if ext == "xml" {
-			match self.xml_hover(params, document.rope.clone()).await {
-				Ok(ret) => Ok(ret),
-				Err(err) => {
-					error!("{err}");
-					Ok(None)
-				}
+		};
+		match hover {
+			Ok(ret) => Ok(ret),
+			Err(err) => {
+				error!("{err}");
+				Ok(None)
 			}
-		} else if ext == "js" {
-			match self.js_hover(params, &document.rope) {
-				Ok(ret) => Ok(ret),
-				Err(err) => {
-					error!("{err}");
-					Ok(None)
-				}
-			}
-		} else {
-			Ok(None)
 		}
 	}
 	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
