@@ -7,10 +7,13 @@ use miette::diagnostic;
 use odoo_lsp::{
 	index::{interner, ComponentQuery},
 	some,
-	utils::{position_to_offset, ByteOffset, RangeExt},
+	utils::{position_to_offset, ts_range_to_lsp_range, ByteOffset, RangeExt},
 };
 use ropey::Rope;
-use tower_lsp::lsp_types::{GotoDefinitionParams, Hover, HoverParams, Location, ReferenceParams, Url};
+use tower_lsp::lsp_types::{
+	GotoDefinitionParams, Hover, HoverContents, HoverParams, LanguageString, Location, MarkedString, ReferenceParams,
+	Url,
+};
 use tree_sitter::{Parser, QueryCursor};
 
 impl Backend {
@@ -82,15 +85,48 @@ impl Backend {
 
 		Ok(None)
 	}
-	pub fn js_hover(&self, params: HoverParams, rope: &Rope) -> miette::Result<Option<Hover>> {
+	pub fn js_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, rope) else {
+		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
 			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
+		let contents = Cow::from(rope);
+		let contents = contents.as_bytes();
+		let query = ComponentQuery::query();
+		let mut cursor = QueryCursor::new();
+		for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
+			for capture in match_.captures {
+				let range = capture.node.byte_range();
+				if capture.index == ComponentQuery::TemplateName as u32 && range.contains(&offset) {
+					let key = String::from_utf8_lossy(&contents[range.shrink(1)]);
+					let key = some!(interner().get(&key));
+					let template = some!(self.index.templates.get(&key.into()));
+					return Ok(Some(Hover {
+						contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
+							language: "rust".to_string(),
+							value: format!("{:?}", template.value()),
+						})),
+						range: Some(ts_range_to_lsp_range(capture.node.range())),
+					}));
+				}
+				if capture.index == ComponentQuery::Name as u32 && range.contains(&offset) {
+					let key = String::from_utf8_lossy(&contents[range.shrink(1)]);
+					let key = some!(interner().get(&key));
+					let component = some!(self.index.components.get(&key.into()));
+					return Ok(Some(Hover {
+						contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
+							language: "rust".to_string(),
+							value: format!("{:?}", component.value()),
+						})),
+						range: Some(ts_range_to_lsp_range(capture.node.range())),
+					}));
+				}
+			}
+		}
 
 		Ok(None)
 	}
