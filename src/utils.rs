@@ -3,9 +3,9 @@ use std::{borrow::Cow, fmt::Display, sync::atomic::AtomicBool};
 
 use dashmap::try_result::TryResult;
 use lasso::Spur;
-use ropey::Rope;
+use ropey::{Rope, RopeSlice};
 use tower_lsp::lsp_types::*;
-use xmlparser::{StrSpan, Token};
+use xmlparser::{StrSpan, TextPos, Token};
 
 mod visitor;
 pub use visitor::PreTravel;
@@ -58,7 +58,18 @@ pub fn position_to_offset(position: Position, rope: &Rope) -> Option<ByteOffset>
 	Some(ByteOffset(byte_offset))
 }
 
+pub fn position_to_offset_slice(position: Position, slice: &RopeSlice) -> Option<ByteOffset> {
+	let CharOffset(char_offset) = position_to_char_slice(position, slice)?;
+	let byte_offset = slice.try_char_to_byte(char_offset).ok()?;
+	Some(ByteOffset(byte_offset))
+}
+
 fn position_to_char(position: Position, rope: &Rope) -> Option<CharOffset> {
+	let line_offset_in_char = rope.try_line_to_char(position.line as usize).ok()?;
+	Some(CharOffset(line_offset_in_char + position.character as usize))
+}
+
+fn position_to_char_slice(position: Position, rope: &RopeSlice) -> Option<CharOffset> {
 	let line_offset_in_char = rope.try_line_to_char(position.line as usize).ok()?;
 	Some(CharOffset(line_offset_in_char + position.character as usize))
 }
@@ -79,6 +90,13 @@ pub fn offset_range_to_lsp_range(range: ByteRange, rope: Rope) -> Option<Range> 
 	let start = offset_to_position(range.start, rope.clone())?;
 	let end = offset_to_position(range.end, rope)?;
 	Some(Range { start, end })
+}
+
+pub fn xml_position_to_lsp_position(position: TextPos) -> Position {
+	Position {
+		line: position.row - 1 as u32,
+		character: position.col - 1 as u32,
+	}
 }
 
 pub fn ts_range_to_lsp_range(range: tree_sitter::Range) -> Range {

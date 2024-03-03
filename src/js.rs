@@ -4,16 +4,11 @@ use crate::backend::Backend;
 use crate::Text;
 
 use miette::diagnostic;
-use odoo_lsp::{
-	index::{interner, ComponentQuery},
-	some,
-	utils::{position_to_offset, ts_range_to_lsp_range, ByteOffset, RangeExt},
-};
+use odoo_lsp::index::{interner, ComponentQuery};
+use odoo_lsp::some;
+use odoo_lsp::utils::{position_to_offset, ts_range_to_lsp_range, ByteOffset, RangeExt};
 use ropey::Rope;
-use tower_lsp::lsp_types::{
-	GotoDefinitionParams, Hover, HoverContents, HoverParams, LanguageString, Location, MarkedString, ReferenceParams,
-	Url,
-};
+use tower_lsp::lsp_types::*;
 use tree_sitter::{Parser, QueryCursor};
 
 impl Backend {
@@ -108,19 +103,19 @@ impl Backend {
 					return Ok(Some(Hover {
 						contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
 							language: "rust".to_string(),
-							value: format!("{:?}", template.value()),
+							value: format!("{:#?}", template.value()),
 						})),
 						range: Some(ts_range_to_lsp_range(capture.node.range())),
 					}));
 				}
 				if capture.index == ComponentQuery::Name as u32 && range.contains(&offset) {
-					let key = String::from_utf8_lossy(&contents[range.shrink(1)]);
+					let key = String::from_utf8_lossy(&contents[range]);
 					let key = some!(interner().get(&key));
 					let component = some!(self.index.components.get(&key.into()));
 					return Ok(Some(Hover {
 						contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
 							language: "rust".to_string(),
-							value: format!("{:?}", component.value()),
+							value: format!("{:#?}", component.value()),
 						})),
 						range: Some(ts_range_to_lsp_range(capture.node.range())),
 					}));
@@ -130,4 +125,13 @@ impl Backend {
 
 		Ok(None)
 	}
+
+	// fn visible_components<'a>(&'a self, component: &'a Component) -> impl Iterator<Item = ComponentName> + 'a  {
+	// 	component.subcomponents.iter().cloned().chain(
+	// 		component
+	// 			.extends
+	// 			.iter()
+	// 			.flat_map(move |ancestor| self.visible_components(&self.index.components.get(&ancestor).unwrap()).collect::<Vec<_>>()),
+	// 	)
+	// }
 }

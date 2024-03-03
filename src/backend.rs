@@ -367,6 +367,38 @@ impl Backend {
 		items.extend(matches);
 		Ok(())
 	}
+	pub fn complete_prop_of(
+		&self,
+		needle: &str,
+		range: ByteRange,
+		rope: Rope,
+		component: &str,
+		items: &mut MaxVec<CompletionItem>,
+	) -> miette::Result<()> {
+		let component = interner().get(component).ok_or_else(|| diagnostic!("(complete_prop_of) component"))?;
+		let component = self.index.components.get(&component.into()).ok_or_else(|| diagnostic!("component"))?;
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_prop_of) range"))?;
+		let completions = component.props.iter().filter_map(|(prop, desc)| {
+			let prop = interner().resolve(&prop);
+			if prop.contains(needle) {
+				Some(CompletionItem {
+					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+						new_text: prop.to_string(),
+						insert: range,
+						replace: range,
+					})),
+					label: prop.to_string(),
+					kind: Some(CompletionItemKind::PROPERTY),
+					detail: Some(format!("{:?}", desc.type_)),
+					..Default::default()
+				})
+			} else {
+				None
+			}
+		});
+		items.extend(completions);
+		Ok(())
+	}
 	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
 		let mut value = Cow::from(cursor_value);
 		if !value.contains('.') {

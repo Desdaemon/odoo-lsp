@@ -282,6 +282,7 @@ impl Usage for Component {
 			props,
 			ancestors,
 			template,
+			extends,
 		} = self;
 		let mut usage = Layout::new::<Self>().size();
 		usage += location.usage().1;
@@ -289,6 +290,7 @@ impl Usage for Component {
 		usage += props.usage().1;
 		usage += ancestors.usage().1;
 		usage += template.usage().1;
+		usage += extends.usage().1;
 		UsageInfo(0, usage)
 	}
 }

@@ -19,7 +19,7 @@ impl<T> Debug for Symbol<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_tuple("Symbol")
 			.field(&type_name::<T>())
-			.field(&self.inner)
+			.field(&interner().resolve(&self.inner))
 			.finish()
 	}
 }

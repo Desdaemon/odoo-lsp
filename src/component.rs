@@ -13,6 +13,8 @@ pub struct Component {
 	pub props: SymbolMap<Prop, PropDescriptor>,
 	/// Ancestors whose props are considered part of self.
 	pub ancestors: Vec<ComponentName>,
+	/// Extended as part of normal inheritance.
+	pub extends: Option<ComponentName>,
 	pub template: Option<ComponentTemplate>,
 }
 

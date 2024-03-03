@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use dashmap::DashMap;
 use futures::executor::block_on;
+use lasso::Key;
 use miette::{diagnostic, Context, IntoDiagnostic};
 use qp_trie::wrapper::BString;
 use tokio::sync::RwLock;
@@ -129,7 +130,7 @@ pub(super) async fn add_root_js(path: PathBuf) -> miette::Result<Output> {
 			});
 		}
 
-		for capture in &match_.captures[1..] {
+		for capture in match_.captures {
 			use intmap::Entry;
 			match ComponentQuery::from(capture.index) {
 				Some(ComponentQuery::Prop) => {
@@ -137,8 +138,8 @@ pub(super) async fn add_root_js(path: PathBuf) -> miette::Result<Output> {
 					if capture.node.kind() == "string" {
 						range = range.shrink(1);
 					}
-					let prop = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
-					let prop = interner().get_or_intern(prop).into_inner().get();
+					let prop = String::from_utf8_lossy(&contents[range.clone()]);
+					let prop = interner().get_or_intern(prop).into_usize();
 					let entry = match component.props.entry(prop as _) {
 						Entry::Occupied(entry) => entry.into_mut(),
 						Entry::Vacant(entry) => entry.insert(PropDescriptor {
