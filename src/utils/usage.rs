@@ -1,8 +1,10 @@
 use std::{
 	alloc::Layout,
 	borrow::{Borrow, Cow},
+	collections::HashMap,
 	hash::Hash,
 	ops::Add,
+	sync::Arc,
 };
 
 use crate::{
@@ -122,6 +124,13 @@ impl<K, V: Usage> Usage for SymbolMap<K, V> {
 	}
 }
 
+impl<K: Usage, V: Usage> Usage for HashMap<K, V> {
+	fn usage(&self) -> UsageInfo {
+		let usage = self.iter().map(|(k, v)| k.usage().1 + v.usage().1).sum::<usize>();
+		UsageInfo(self.len(), Layout::new::<(K, V)>().size() * self.capacity() + usage)
+	}
+}
+
 impl<K> Usage for SymbolSet<K> {
 	fn usage(&self) -> UsageInfo {
 		self.0.usage()
@@ -182,7 +191,9 @@ impl Usage for BString {
 
 impl<T: Usage> Usage for Option<T> {
 	fn usage(&self) -> UsageInfo {
-		self.as_ref().map(|self_| self_.usage()).unwrap_or(UsageInfo(0, 0))
+		self.as_ref()
+			.map(|self_| self_.usage())
+			.unwrap_or(UsageInfo(0, Layout::new::<Self>().size()))
 	}
 }
 
@@ -313,5 +324,11 @@ impl Usage for ComponentTemplate {
 impl Usage for tower_lsp::lsp_types::Diagnostic {
 	fn usage(&self) -> UsageInfo {
 		UsageInfo(0, core::mem::size_of::<Self>())
+	}
+}
+
+impl<T: Usage> Usage for Arc<T> {
+	fn usage(&self) -> UsageInfo {
+		UsageInfo(0, Layout::new::<T>().size())
 	}
 }

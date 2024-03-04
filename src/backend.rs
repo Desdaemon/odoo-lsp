@@ -370,7 +370,7 @@ impl Backend {
 	}
 	pub fn complete_component_prop(
 		&self,
-		needle: &str,
+		// needle: &str,
 		range: ByteRange,
 		rope: Rope,
 		component: &str,

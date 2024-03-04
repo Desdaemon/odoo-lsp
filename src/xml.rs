@@ -3,6 +3,7 @@ use crate::{Backend, Text};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::path::Path;
+use std::sync::Arc;
 
 use lasso::{Spur, ThreadedRodeo};
 use log::{debug, warn};
@@ -205,7 +206,7 @@ impl Backend {
 				let Some(Field {
 					kind: FieldKind::Relational(relation),
 					..
-				}) = fields.get(&relation.into())
+				}) = fields.get(&relation.into()).map(Arc::as_ref)
 				else {
 					return Ok(None);
 				};
@@ -232,7 +233,7 @@ impl Backend {
 					.await?;
 			}
 			RefKind::PropOf(component) => {
-				self.complete_component_prop(needle, replace_range, rope.clone(), component, &mut items)?;
+				self.complete_component_prop(/*needle,*/ replace_range, rope.clone(), component, &mut items)?;
 			}
 			RefKind::Id | RefKind::TName => return Ok(None),
 		}

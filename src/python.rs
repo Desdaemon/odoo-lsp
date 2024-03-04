@@ -5,7 +5,6 @@ use std::cmp::Ordering;
 use std::path::Path;
 
 use dashmap::try_result::TryResult;
-use lasso::Key;
 use log::{debug, error, warn};
 use miette::diagnostic;
 use odoo_lsp::index::{index_models, interner, Module, Symbol};
@@ -916,7 +915,7 @@ impl Backend {
 								continue;
 							};
 							let Some(fields) = entry.fields.as_ref() else { continue };
-							has_field = fields.contains_key(interner().get_or_intern(needle).into_usize() as _);
+							has_field = fields.contains_key(&interner().get_or_intern(needle).into());
 						}
 						if !has_field {
 							diagnostics.push(Diagnostic {
@@ -956,10 +955,7 @@ impl Backend {
 						};
 						let Some(fields) = entry.fields.as_ref() else { continue };
 						let prop_key = interner().get(&prop);
-						if !prop_key
-							.map(|key| fields.contains_key(key.into_usize() as _))
-							.unwrap_or(true)
-						{
+						if !prop_key.map(|key| fields.contains_key(&key.into())).unwrap_or(true) {
 							diagnostics.push(Diagnostic {
 								range: ts_range_to_lsp_range(capture.node.range()),
 								severity: Some(DiagnosticSeverity::WARNING),

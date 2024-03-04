@@ -1,11 +1,13 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::Deref;
+use std::sync::Arc;
 
 use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
 use futures::executor::block_on;
-use lasso::{Key, Spur};
+use lasso::Spur;
 use log::{debug, error, trace, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use qp_trie::{wrapper::BString, Trie};
@@ -15,7 +17,7 @@ use tower_lsp::lsp_types::Range;
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
-use crate::index::{interner, Interner, Symbol, SymbolMap, SymbolSet};
+use crate::index::{interner, Interner, Symbol};
 use crate::str::Text;
 use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt, Usage};
 use crate::{format_loc, ImStr};
@@ -45,13 +47,13 @@ pub type ModelName = Symbol<ModelEntry>;
 pub struct ModelEntry {
 	pub base: Option<ModelLocation>,
 	pub descendants: Vec<ModelLocation>,
-	pub ancestors: SymbolSet<ModelEntry>,
-	pub fields: Option<SymbolMap<FieldName, Field>>,
+	pub ancestors: Vec<ModelName>,
+	pub fields: Option<HashMap<Symbol<Field>, Arc<Field>>>,
 	pub fields_set: qp_trie::Trie<BString, ()>,
 	pub docstring: Option<Text>,
 }
 
-pub enum FieldName {}
+// pub enum FieldName {}
 
 #[derive(Clone, Debug)]
 pub enum FieldKind {
@@ -140,7 +142,7 @@ impl ModelIndex {
 						));
 						entry.ancestors.extend(
 							ancestors
-								.into_iter()
+								.iter()
 								.map(|sym| ModelName::from(interner.get_or_intern(&sym))),
 						);
 					} else {
@@ -313,7 +315,7 @@ impl ModelIndex {
 			})
 			.flatten_iter();
 
-		let ancestors = entry.ancestors.iter().collect::<Vec<_>>();
+		let ancestors = entry.ancestors.iter().cloned().collect::<Vec<_>>();
 		let mut out = entry.fields.take().unwrap_or_default();
 		let mut fields_set = core::mem::take(&mut entry.fields_set);
 
@@ -322,16 +324,15 @@ impl ModelIndex {
 
 		// recursively get or populate ancestors' fields
 		for ancestor in ancestors {
-			if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
+			if let Some(entry) = self.populate_field_names(ancestor.clone(), locations_filter) {
 				if let Some(fields) = entry.fields.as_ref() {
-					// TODO: Implement copy-on-write to increase reuse
-					out.extend(fields.iter().map(|(key, val)| (key.into_usize() as u64, val.clone())));
+					out.extend(fields.iter().map(|(key, val)| (key.clone(), val.clone())));
 				}
 			}
 		}
 
 		for (key, type_) in fields.collect::<Vec<_>>() {
-			out.insert_checked(key.into_usize() as u64, type_);
+			out.insert(key.into(), type_.into());
 			fields_set.insert_str(interner().resolve(&key), ());
 		}
 
@@ -382,7 +383,7 @@ impl ModelIndex {
 		Some(())
 	}
 	/// Turns related fields ([`FieldKind::Related`]) into concrete fields, and return the field's type itself.
-	pub fn normalize_field_relation(&self, field: Symbol<FieldName>, model: Spur) -> Option<Spur> {
+	pub fn normalize_field_relation(&self, field: Symbol<Field>, model: Spur) -> Option<Spur> {
 		let model_entry = self.get(&model.into())?;
 		let field_entry = model_entry.fields.as_ref()?.get(&field)?;
 		let mut kind = field_entry.kind.clone();
@@ -399,7 +400,11 @@ impl ModelIndex {
 			if self.resolve_mapped(&mut field_model, &mut related, None).is_some() {
 				kind = FieldKind::Relational(field_model.into());
 				let mut model_entry = self.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
-				model_entry.fields.as_mut()?.get_mut(&field)?.kind = kind.clone();
+				let Some(field) = Arc::get_mut(model_entry.fields.as_mut()?.get_mut(&field)?) else {
+					// Field is already used elsewhere, don't modify it.
+					return Some(field_model);
+				};
+				field.kind = kind.clone();
 			} else {
 				warn!("(normalize_field_kind) failed to normalize {related}");
 			}
