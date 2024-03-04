@@ -125,13 +125,4 @@ impl Backend {
 
 		Ok(None)
 	}
-
-	// fn visible_components<'a>(&'a self, component: &'a Component) -> impl Iterator<Item = ComponentName> + 'a  {
-	// 	component.subcomponents.iter().cloned().chain(
-	// 		component
-	// 			.extends
-	// 			.iter()
-	// 			.flat_map(move |ancestor| self.visible_components(&self.index.components.get(&ancestor).unwrap()).collect::<Vec<_>>()),
-	// 	)
-	// }
 }

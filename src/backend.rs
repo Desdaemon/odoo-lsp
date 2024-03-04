@@ -7,6 +7,7 @@ use dashmap::{DashMap, DashSet};
 use globwalk::FileType;
 use log::debug;
 use miette::{diagnostic, IntoDiagnostic};
+use odoo_lsp::component::{Prop, PropDescriptor};
 use ropey::Rope;
 use serde_json::Value;
 use tower_lsp::lsp_types::*;
@@ -14,7 +15,7 @@ use tower_lsp::Client;
 use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
-use odoo_lsp::index::{interner, Index, Interner, ModuleName, RecordId, SymbolSet};
+use odoo_lsp::index::{interner, Component, Index, Interner, ModuleName, RecordId, Symbol, SymbolSet};
 use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName};
 use odoo_lsp::record::Record;
 use odoo_lsp::{format_loc, some, utils::*};
@@ -367,7 +368,7 @@ impl Backend {
 		items.extend(matches);
 		Ok(())
 	}
-	pub fn complete_prop_of(
+	pub fn complete_component_prop(
 		&self,
 		needle: &str,
 		range: ByteRange,
@@ -375,26 +376,28 @@ impl Backend {
 		component: &str,
 		items: &mut MaxVec<CompletionItem>,
 	) -> miette::Result<()> {
-		let component = interner().get(component).ok_or_else(|| diagnostic!("(complete_prop_of) component"))?;
-		let component = self.index.components.get(&component.into()).ok_or_else(|| diagnostic!("component"))?;
+		let component = interner()
+			.get(component)
+			.ok_or_else(|| diagnostic!("(complete_component_prop) component"))?;
+		let component = self
+			.index
+			.components
+			.get(&component.into())
+			.ok_or_else(|| diagnostic!("component"))?;
 		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_prop_of) range"))?;
 		let completions = component.props.iter().filter_map(|(prop, desc)| {
 			let prop = interner().resolve(&prop);
-			if prop.contains(needle) {
-				Some(CompletionItem {
-					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-						new_text: prop.to_string(),
-						insert: range,
-						replace: range,
-					})),
-					label: prop.to_string(),
-					kind: Some(CompletionItemKind::PROPERTY),
-					detail: Some(format!("{:?}", desc.type_)),
-					..Default::default()
-				})
-			} else {
-				None
-			}
+			Some(CompletionItem {
+				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+					new_text: prop.to_string(),
+					insert: range,
+					replace: range,
+				})),
+				label: prop.to_string(),
+				kind: Some(CompletionItemKind::PROPERTY),
+				detail: Some(format!("{:?}", desc.type_)),
+				..Default::default()
+			})
 		});
 		items.extend(completions);
 		Ok(())
@@ -454,6 +457,24 @@ impl Backend {
 		let entry = some!(self.index.templates.get(&name.into()));
 		let location = some!(&entry.value().location);
 		Ok(Some(location.clone().into()))
+	}
+	pub fn jump_def_component_prop(&self, component: &str, prop: &str) -> miette::Result<Option<Location>> {
+		let component = some!(interner().get(component));
+		let prop = some!(interner().get(prop));
+		let prop = some!(self.find_prop_recursive(&component.into(), &prop.into()));
+		Ok(Some(prop.location.into()))
+	}
+	fn find_prop_recursive(&self, component: &Symbol<Component>, prop: &Symbol<Prop>) -> Option<PropDescriptor> {
+		let component = self.index.components.get(component)?;
+		if let Some(prop) = component.props.get(prop) {
+			return Some(prop.clone());
+		}
+		for ancestor in &component.ancestors {
+			if let Some(prop) = self.find_prop_recursive(ancestor, prop) {
+				return Some(prop);
+			}
+		}
+		None
 	}
 	pub async fn hover_field_name(
 		&self,

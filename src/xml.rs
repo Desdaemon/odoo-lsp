@@ -186,12 +186,12 @@ impl Backend {
 
 		let mut items = MaxVec::new(Self::LIMIT);
 		let XmlRefs {
-			ref_at_cursor: cursor_value,
+			ref_at_cursor,
 			ref_kind,
 			model_filter,
 			..
 		} = gather_refs(offset_at_cursor, &mut reader, interner(), &slice)?;
-		let (Some((value, value_range)), Some(record_field)) = (cursor_value, ref_kind) else {
+		let (Some((value, value_range)), Some(record_field)) = (ref_at_cursor, ref_kind) else {
 			return Ok(None);
 		};
 		let needle = &value[..offset_at_cursor.0 - value_range.start];
@@ -232,7 +232,7 @@ impl Backend {
 					.await?;
 			}
 			RefKind::PropOf(component) => {
-				self.complete_prop_of(needle, replace_range, rope.clone(), component, &mut items)?;
+				self.complete_component_prop(needle, replace_range, rope.clone(), component, &mut items)?;
 			}
 			RefKind::Id | RefKind::TName => return Ok(None),
 		}
@@ -249,13 +249,13 @@ impl Backend {
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
 		let XmlRefs {
-			ref_at_cursor: cursor_value,
+			ref_at_cursor,
 			ref_kind,
 			model_filter,
 			..
 		} = gather_refs(cursor_by_char, &mut reader, interner(), &slice)?;
 
-		let Some((cursor_value, _)) = cursor_value else {
+		let Some((cursor_value, _)) = ref_at_cursor else {
 			return Ok(None);
 		};
 		match ref_kind {
@@ -268,9 +268,8 @@ impl Backend {
 			Some(RefKind::TInherit) | Some(RefKind::TName) | Some(RefKind::TCall) => {
 				self.jump_def_template_name(&cursor_value)
 			}
-			Some(RefKind::Id)
-			| Some(RefKind::PropOf(..))  // TODO
-			| None => Ok(None),
+			Some(RefKind::PropOf(component)) => self.jump_def_component_prop(component, cursor_value),
+			Some(RefKind::Id) | None => Ok(None),
 		}
 	}
 	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {

@@ -43,7 +43,7 @@ impl Component {
 #[derive(Debug)]
 pub enum Prop {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PropDescriptor {
 	pub location: MinLoc,
 	pub type_: PropType,
