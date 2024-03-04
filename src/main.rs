@@ -678,6 +678,10 @@ async fn main() {
 			}
 			return;
 		}
+		cli::Command::SelfUpdate { nightly } => {
+			cli::self_update(nightly).report(|| format_loc!("self-update failed"));
+			return;
+		}
 	}
 
 	let stdin = tokio::io::stdin();

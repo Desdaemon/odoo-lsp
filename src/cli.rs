@@ -8,9 +8,12 @@ use odoo_lsp::{
 	format_loc,
 	index::{interner, Index},
 };
+use self_update::{backends::github, Status};
 use serde_json::Value;
 
 mod tsconfig;
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Default)]
 pub struct Args<'a> {
@@ -27,6 +30,9 @@ pub enum Command {
 		tsconfig: bool,
 	},
 	TsConfig,
+	SelfUpdate {
+		nightly: bool,
+	},
 }
 
 const HELP: &str = "Language server for Odoo Python/JS/XML
@@ -39,6 +45,8 @@ USAGE:
 		Files named `.odoo_lsp` and `.odoo_lsp.json` are recognized
 	odoo-lsp tsconfig --addons-path ..
 		Generate a tsconfig.json file for TypeScript support
+	odoo-lsp self-update [--nightly]
+		Update to the latest version available.
 
 OPTIONS:
 	-h, --help
@@ -50,6 +58,10 @@ OPTIONS:
 		Can be specified multiple times, or as a comma-separated list of paths.
 	--tsconfig
 		[init] Also generates a tsconfig.json file
+	-v, --version
+		Prints the current version and exit.
+	--nightly
+		When used with self-update, selects the latest nightly available.
 ";
 
 pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
@@ -64,8 +76,16 @@ pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
 				args = rest;
 				out.command = Command::Init { tsconfig: false };
 			}
+			["self-update", rest @ ..] => {
+				args = rest;
+				out.command = Command::SelfUpdate { nightly: false };
+			}
 			["-h" | "--help", ..] => {
 				eprintln!("{HELP}");
+				exit(0);
+			}
+			["-v" | "--version", ..] => {
+				eprintln!("odoo-lsp v{VERSION}");
 				exit(0);
 			}
 			["--addons-path", path, rest @ ..] => {
@@ -80,6 +100,12 @@ pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
 				args = rest;
 				if let Command::Init { tsconfig } = &mut out.command {
 					*tsconfig = true;
+				}
+			}
+			["--nightly", rest @ ..] => {
+				args = rest;
+				if let Command::SelfUpdate { nightly } = &mut out.command {
+					*nightly = true;
 				}
 			}
 			[] => break,
@@ -285,4 +311,38 @@ pub fn init(addons_path: &[&str], output: Option<&str>) -> miette::Result<()> {
 		eprintln!("Config file generated at {output}");
 		Ok(())
 	}
+}
+
+pub fn self_update(nightly: bool) -> miette::Result<()> {
+	let mut task = github::Update::configure();
+	let mut task = task
+		.repo_owner("Desdaemon")
+		.repo_name("odoo-lsp")
+		.bin_name("odoo-lsp")
+		.show_download_progress(true)
+		.current_version(VERSION);
+
+	if nightly {
+		let mut releases = github::ReleaseList::configure()
+			.repo_owner("Desdaemon")
+			.repo_name("odoo-lsp")
+			.build()
+			.into_diagnostic()?
+			.fetch()
+			.into_diagnostic()?;
+		releases.sort_unstable_by(|a, z| z.date.cmp(&a.date));
+		if let Some(latest_nightly) = releases.iter().filter(|rel| rel.name.starts_with("nightly")).next() {
+			eprintln!("Latest nightly is {}", latest_nightly.version);
+			task = task.target_version_tag(&latest_nightly.version);
+		} else {
+			eprintln!("No nightly versions found; defaulting to stable releases.");
+		}
+	}
+
+	let status = task.build().into_diagnostic()?.update().into_diagnostic()?;
+	match status {
+		Status::UpToDate(current) => eprintln!("odoo-lsp is already at the latest version: v{current}"),
+		Status::Updated(new) => eprintln!("Updated odoo-lsp to v{new}"),
+	}
+	Ok(())
 }

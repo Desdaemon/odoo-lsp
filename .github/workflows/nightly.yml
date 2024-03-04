@@ -106,7 +106,7 @@ jobs:
             7z a -tzip odoo-lsp-${{ matrix.target }}.zip ./odoo-lsp.exe
           else
             mv ./target/${{ matrix.target }}/release/odoo-lsp .
-            tar -czvf odoo-lsp-${{ matrix.target }}.tgz ./odoo-lsp
+            tar -czvf odoo-lsp-${{ matrix.target }}.tgz odoo-lsp
           fi
 
       - name: Upload artifacts
