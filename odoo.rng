@@ -1,0 +1,698 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<grammar xmlns="http://relaxng.org/ns/structure/1.0" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"
+    xmlns:a="http://relaxng.org/ns/compatibility/annotations/1.0">
+
+    <define name="env">
+        <optional>
+            <attribute name="uid">
+                <a:documentation>
+                    The ID of the user that creates this record, or performs this action.
+                </a:documentation>
+            </attribute>
+        </optional>
+        <optional>
+            <attribute name="context">
+                <a:documentation>
+                    A dictionary of key-value pairs that will be used to evaluate the expressions in this file.
+                </a:documentation>
+            </attribute>
+        </optional>
+    </define>
+
+    <define name="views">
+        <data type="string">
+            <param name="pattern">([a-z]+(,[a-z]+)*)?</param>
+        </data>
+    </define>
+
+    <define name="any">
+        <element>
+            <anyName />
+            <zeroOrMore>
+                <choice>
+                    <attribute>
+                        <anyName />
+                    </attribute>
+                    <text />
+                    <ref name="any" />
+                </choice>
+            </zeroOrMore>
+        </element>
+    </define>
+
+    <define name="value">
+        <element name="value">
+            <a:documentation>
+                A value that will be used to set the value of a field in a record.
+            </a:documentation>
+            <optional>
+                <attribute name="name">
+                    <a:documentation>
+                        The name of the field that this value will be set to.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="model">
+                    <a:documentation>
+                        The name of the model that this value will act on, e.g. `res.partner`.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <choice>
+                <attribute name="search">
+                    <a:documentation>
+                        A domain that will be used to search for the value.
+                    </a:documentation>
+                </attribute>
+                <attribute name="eval">
+                    <a:documentation>
+                        A Python expression that will be evaluated to produce the value.
+                    </a:documentation>
+                </attribute>
+                <group>
+                    <optional>
+                        <attribute name="type" />
+                    </optional>
+                    <choice>
+                        <attribute name="file" />
+                        <text />
+                    </choice>
+                </group>
+            </choice>
+            <optional>
+                <attribute name="use">
+                    <a:documentation>
+                        If specified, extract this field from the result of the search.
+                    </a:documentation>
+                </attribute>
+            </optional>
+        </element>
+    </define>
+
+    <define name="function">
+        <element name="function">
+            <a:documentation>
+                A function that will be called when this XML file is imported into Odoo.
+            </a:documentation>
+            <attribute name="model">
+                <a:documentation>
+                    The name of the model that this function will act on.
+                </a:documentation>
+            </attribute>
+            <attribute name="name">
+                <a:documentation>
+                    The name of the function that will be called.
+                </a:documentation>
+            </attribute>
+            <ref name="env" />
+            <optional>
+                <choice>
+                    <attribute name="eval">
+                        <a:documentation>
+                            A Python expression that will be evaluated to produce the value.
+                        </a:documentation>
+                    </attribute>
+                    <oneOrMore>
+                        <choice>
+                            <ref name="value" />
+                            <ref name="function" />
+                        </choice>
+                    </oneOrMore>
+                </choice>
+            </optional>
+        </element>
+    </define>
+
+    <define name="report">
+        <element name="report">
+            <a:documentation>
+                A report that will be available in the Odoo system.
+            </a:documentation>
+            <optional>
+                <attribute name="id" />
+            </optional>
+            <attribute name="string" />
+            <attribute name="model" />
+            <attribute name="name" />
+            <optional>
+                <attribute name="print_report_name" />
+            </optional>
+            <optional>
+                <attribute name="report_type" />
+            </optional>
+            <optional>
+                <attribute name="multi" />
+            </optional>
+            <optional>
+                <attribute name="menu" />
+            </optional>
+            <optional>
+                <attribute name="keyword" />
+            </optional>
+            <optional>
+                <attribute name="file" />
+            </optional>
+            <optional>
+                <attribute name="xml" />
+            </optional>
+            <optional>
+                <attribute name="parser" />
+            </optional>
+            <optional>
+                <attribute name="auto" />
+            </optional>
+            <optional>
+                <attribute name="header" />
+            </optional>
+            <optional>
+                <attribute name="attachment" />
+            </optional>
+            <optional>
+                <attribute name="attachment_use">
+                    <a:documentation>
+                        The name of the field that will be used to attach the report to a record.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="groups" />
+            </optional>
+            <optional>
+                <attribute name="paperformat" />
+            </optional>
+            <!-- `Usage` may help identify the best report for a certain task,
+                 for example usage="default" for reports that are attached by
+                 default in EDI exports -->
+            <optional>
+                <attribute name="usage">
+                    <a:documentation>
+                        A short description of the purpose of the report.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <empty />
+        </element>
+    </define>
+
+    <define name="field">
+        <element name="field">
+            <a:documentation>
+                A field that will be set in a record.
+            </a:documentation>
+            <attribute name="name">
+                <a:documentation>
+                    The name of the field that this value will be set to.
+                </a:documentation>
+            </attribute>
+            <choice>
+                <group>
+                    <attribute name="type">
+                        <a:documentation> The type of the field that this value will be set to.<p /> - For binary
+                            fields, either provide the path to `file=` or the contents to the body of the tag.<p /> -
+                            For numeric fields, provide the value directly in the body of the tag.<p /> - For `list` and
+                            `tuple` fields, provide one or more `&lt;value />` tags.<p /> - For `html` and `xml` fields,
+                            provide the contents directly in the body of the tag. Each tag must be a well-formed XML
+                            fragment, i.e. empty attributes must have a value, like `&lt;img contenteditable="" />`. </a:documentation>
+                        <choice>
+                            <value>base64</value>
+                            <value>char</value>
+                            <value>file</value>
+                        </choice>
+                    </attribute>
+                    <choice>
+                        <group>
+                            <attribute name="file">
+                                <a:documentation>
+                                    The path to the file that will be attached to the field.
+                                </a:documentation>
+                            </attribute>
+                            <empty />
+                        </group>
+                        <text />
+                    </choice>
+                </group>
+                <group>
+                    <attribute name="type">
+                        <value>int</value>
+                    </attribute>
+                    <choice>
+                        <data type="int" />
+                        <value>None</value>
+                    </choice>
+                </group>
+                <group>
+                    <attribute name="type">
+                        <value>float</value>
+                    </attribute>
+                    <data type="float" />
+                </group>
+                <group>
+                    <attribute name="type">
+                        <choice>
+                            <value>list</value>
+                            <value>tuple</value>
+                        </choice>
+                    </attribute>
+                    <oneOrMore>
+                        <ref name="value" />
+                    </oneOrMore>
+                </group>
+                <group>
+                    <attribute name="type">
+                        <choice>
+                            <value>html</value>
+                            <value>xml</value>
+                        </choice>
+                    </attribute>
+                    <oneOrMore>
+                        <ref name="any" />
+                    </oneOrMore>
+                </group>
+                <group>
+                    <attribute name="ref">
+                        <a:documentation>
+                            The XML ID of the record that this field will be set to.
+                        </a:documentation>
+                    </attribute>
+                    <empty />
+                </group>
+                <group>
+                    <attribute name="eval">
+                        <a:documentation>
+                            A Python expression that will be evaluated to produce the value.
+                            For relational fields, this should resolve to a list of IDs.
+                        </a:documentation>
+                    </attribute>
+                    <optional>
+                        <attribute name="model" />
+                    </optional>
+                    <empty />
+                </group>
+                <group>
+                    <attribute name="search" />
+                    <optional>
+                        <attribute name="model" />
+                        <optional>
+                            <attribute name="use" />
+                        </optional>
+                    </optional>
+                    <empty />
+                </group>
+                <text />
+                <zeroOrMore>
+                    <ref name="record" />
+                </zeroOrMore>
+            </choice>
+        </element>
+    </define>
+
+
+    <define name="record">
+        <element name="record">
+            <a:documentation>
+                A record that will be created in the Odoo system.
+            </a:documentation>
+            <optional>
+                <attribute name="id">
+                    <a:documentation>
+                        The XML ID of this record. If not set, this record cannot be referenced via ref().
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="forcecreate">
+                    <a:documentation>
+                        If set to "True", the record will be created even if it already exists in the database.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <attribute name="model">
+                <a:documentation>
+                    The name of the model that this record will act on, e.g. `res.partner`.
+                </a:documentation>
+            </attribute>
+            <ref name="env" />
+            <zeroOrMore>
+                <ref name="field" />
+            </zeroOrMore>
+        </element>
+    </define>
+
+    <define name="template">
+        <element name="template">
+            <a:documentation>
+                A template that will be used to render a report in the Odoo system.
+                Internally, this is used to create a record in the `ir.ui.view` model.
+            </a:documentation>
+            <optional>
+                <attribute name="id">
+                    <a:documentation>
+                        The XML ID of this template. If not set, this template cannot be referenced via ref().
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="t-name">
+                    <a:documentation>
+                        The name of the template that will be used to render the report.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="name">
+                    <a:documentation>
+                        The name of the template that will be used to render the report. Legacy syntax.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="forcecreate">
+                    <a:documentation>
+                        If set to "True", the template will be created even if it already exists in the database.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="context">
+                    <a:documentation>
+                        A dictionary of key-value pairs that will be used to render the template.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="priority">
+                    <a:documentation>
+                        The priority of the template. Higher priority templates will be used first.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="key" />
+            </optional>
+            <optional>
+                <attribute name="website_id">
+                    <a:documentation>
+                        The XML ID of the website that this template will be used in.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="track">
+                    <a:documentation>
+                        If set to "True", the template will be tracked in the website's statistics.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <group>
+                <optional>
+                    <attribute name="inherit_id">
+                        <a:documentation>
+                            The XML ID of the template to inherit from.
+                        </a:documentation>
+                    </attribute>
+                </optional>
+                <optional>
+                    <attribute name="primary">
+                        <value>True</value>
+                    </attribute>
+                </optional>
+                <optional>
+                    <attribute name="groups">
+                        <a:documentation>
+                            A comma-separated list of group names that are allowed to see this template.
+                        </a:documentation>
+                    </attribute>
+                </optional>
+                <optional>
+                    <attribute name="active" />
+                </optional>
+                <optional>
+                    <attribute name="customize_show">
+                        <a:documentation>
+                            If set to "True", the template will be shown in the website's customization menu.
+                        </a:documentation>
+                    </attribute>
+                </optional>
+            </group>
+            <zeroOrMore>
+                <choice>
+                    <text />
+                    <ref name="any" />
+                </choice>
+            </zeroOrMore>
+        </element>
+    </define>
+
+    <define name="delete">
+        <element name="delete">
+            <a:documentation>
+                A record that will be deleted from the Odoo system.
+            </a:documentation>
+            <attribute name="model" />
+            <choice>
+                <attribute name="id" />
+                <attribute name="search" />
+            </choice>
+        </element>
+    </define>
+
+    <define name="menuitem_attrs">
+        <attribute name="id" />
+        <optional>
+            <attribute name="name" />
+        </optional>
+        <optional>
+            <attribute name="sequence">
+                <a:documentation>
+                    A hint to the order in which the menu items should be displayed.
+                </a:documentation>
+                <data type="int" />
+            </attribute>
+        </optional>
+        <optional>
+            <attribute name="groups">
+                <a:documentation>
+                    A comma-separated list of group names that are allowed to see this menu item.
+                </a:documentation>
+            </attribute>
+        </optional>
+        <optional>
+            <attribute name="active" />
+        </optional>
+    </define>
+    <define name="submenuitem_contents">
+        <optional>
+            <choice>
+                <attribute name="action" />
+                <oneOrMore>
+                    <ref name="submenuitem" />
+                </oneOrMore>
+            </choice>
+        </optional>
+    </define>
+    <define name="menuitem">
+        <element name="menuitem">
+            <a:documentation>
+                A menu item that will be displayed in the Odoo system.
+            </a:documentation>
+            <ref name="menuitem_attrs" />
+            <choice>
+                <!-- a root menu can have a web_icon, an action and children -->
+                <group>
+                    <optional>
+                        <attribute name="web_icon" />
+                    </optional>
+                    <optional>
+                        <attribute name="action">
+                            <a:documentation>
+                                The action to execute when the menu item is clicked.
+                            </a:documentation>
+                        </attribute>
+                    </optional>
+                    <zeroOrMore>
+                        <ref name="submenuitem" />
+                    </zeroOrMore>
+                </group>
+                <!-- a non-root menu can have a parent and either an action or submenus -->
+                <group>
+                    <attribute name="parent">
+                        <a:documentation>
+                            The name of the parent menu item.
+                        </a:documentation>
+                    </attribute>
+                    <ref name="submenuitem_contents" />
+                </group>
+            </choice>
+        </element>
+    </define>
+    <define name="submenuitem">
+        <element name="menuitem">
+            <a:documentation>
+                A menu item that is a child of another menu item.
+            </a:documentation>
+            <ref name="menuitem_attrs" />
+            <ref name="submenuitem_contents" />
+        </element>
+    </define>
+
+    <define name="act_window">
+        <element name="act_window">
+            <a:documentation>
+                An action that will be executed when this menu item is clicked.
+            </a:documentation>
+            <attribute name="id">
+                <a:documentation>
+                    The XML ID of this action. If not set, this action cannot be referenced via ref().
+                </a:documentation>
+            </attribute>
+            <attribute name="name" />
+            <attribute name="res_model">
+                <a:documentation>
+                    The name of the model that this action will act on.
+                </a:documentation>
+            </attribute>
+            <optional>
+                <attribute name="domain">
+                    <a:documentation>
+                        A domain that will be used to filter the records that this action will act on.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="context">
+                    <a:documentation>
+                        A dictionary of key-value pairs that will be used to evaluate the expressions in this file.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="view_id" />
+            </optional>
+            <optional>
+                <attribute name="view_mode" />
+            </optional>
+            <optional>
+                <attribute name="target">
+                    <a:documentation>
+                        The target window in which the view will be displayed.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="groups">
+                    <a:documentation>
+                        A comma-separated list of group names that are allowed to see this action.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="limit">
+                    <a:documentation>
+                        The maximum number of records that will be displayed in the view.
+                    </a:documentation>
+                </attribute>
+            </optional>
+            <optional>
+                <attribute name="usage" />
+            </optional>
+            <optional>
+                <attribute name="binding_model">
+                    <a:documentation>
+                        The name of the model that this action will be bound to.
+                    </a:documentation>
+                </attribute>
+                <optional>
+                    <attribute name="binding_type">
+                        <a:documentation>
+                            The type of binding that this action will be bound to.
+                        </a:documentation>
+                        <choice>
+                            <value>action</value>
+                            <value>report</value>
+                        </choice>
+                    </attribute>
+                </optional>
+                <optional>
+                    <attribute name="binding_views">
+                        <a:documentation>
+                            A comma-separated list of view names that this action will be bound to.
+                        </a:documentation>
+                        <ref name="views" />
+                    </attribute>
+                </optional>
+            </optional>
+            <empty />
+        </element>
+    </define>
+
+    <define name="odoo_openerp_data">
+        <optional>
+            <attribute name="noupdate">
+                <a:documentation>
+                    If set to "1", the records in this file will not be updated
+                    if they already exist in the database.
+                </a:documentation>
+            </attribute>
+        </optional>
+        <optional>
+            <attribute name="auto_sequence">
+                <a:documentation>
+                    If set to "1", the records in this file will be assigned
+                    a sequence number automatically.
+                </a:documentation>
+            </attribute>
+        </optional>
+        <ref name="env" />
+        <zeroOrMore>
+            <choice>
+                <text />
+                <ref name="odoo" />
+                <ref name="openerp" />
+                <ref name="data" />
+                <ref name="menuitem" />
+                <ref name="record" />
+                <ref name="template" />
+                <ref name="delete" />
+                <ref name="act_window" />
+                <ref name="report" />
+                <ref name="function" />
+            </choice>
+        </zeroOrMore>
+    </define>
+
+    <define name="odoo">
+        <element name="odoo">
+            <a:documentation>
+                The root element of an XML file that can be imported into Odoo.
+            </a:documentation>
+            <ref name="odoo_openerp_data" />
+        </element>
+    </define>
+
+    <define name="data">
+        <element name="data">
+            <a:documentation>
+                The root element of an XML file that can be imported into Odoo. Legacy syntax.
+            </a:documentation>
+            <ref name="odoo_openerp_data" />
+        </element>
+    </define>
+
+    <define name="openerp">
+        <element name="openerp">
+            <a:documentation>
+                The root element of an XML file that can be imported into Odoo. Legacy syntax.
+            </a:documentation>
+            <ref name="odoo_openerp_data" />
+        </element>
+    </define>
+
+    <start>
+        <choice>
+            <ref name="odoo" />
+            <ref name="data" />
+            <ref name="openerp" />
+        </choice>
+    </start>
+</grammar>

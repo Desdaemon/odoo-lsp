@@ -6,7 +6,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import { ObjectEncodingOptions, existsSync } from "node:fs";
 import { exec, spawn, ExecOptions } from "node:child_process";
-import { workspace, window, ExtensionContext, commands, WorkspaceFolder } from "vscode";
+import { workspace, window, ExtensionContext, commands, WorkspaceFolder, extensions } from "vscode";
 
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node";
 
@@ -181,6 +181,30 @@ async function openLink(url: string) {
 
 export async function activate(context: ExtensionContext) {
 	const traceOutputChannel = window.createOutputChannel("Odoo LSP Extension");
+
+	try {
+		// see https://github.com/redhat-developer/vscode-xml/blob/main/src/api/xmlExtensionApi.ts
+		const xmlApi = await extensions.getExtension<XMLExtensionApi>("redhat.vscode-xml")?.activate();
+		if (xmlApi) {
+			xmlApi.addXMLFileAssociations([
+				// HACK: systemId must be unique
+				{ systemId: `${context.extensionUri}/odoo.rng`, pattern: "views/*.xml" },
+				{ systemId: `${context.extensionUri}/./odoo.rng`, pattern: "data/*.xml" },
+				{ systemId: `${context.extensionUri}/././odoo.rng`, pattern: "security/*.xml" },
+				{ systemId: `${context.extensionUri}/./././odoo.rng`, pattern: "report/*.xml" },
+				{ systemId: `${context.extensionUri}/././././odoo.rng`, pattern: "wizard/*.xml" },
+			]);
+		} else {
+			// Recommend that the user install the XML extension
+			window.showInformationMessage("Install the 'XML' extension for a better XML editing experience.", "Install", "Remind me later").then(choice => {
+				if (choice !== 'Install') return;
+				commands.executeCommand('workbench.extensions.search', '@id:redhat.vscode-xml');
+			});
+		}
+	} catch (err) {
+		traceOutputChannel.appendLine(`Failed to register XML file associations: ${err}`);
+	}
+
 	let command = process.env.SERVER_PATH || "odoo-lsp";
 	if (!(await which(command))) {
 		command = (await downloadLspBinary(context)) || command;
@@ -216,41 +240,51 @@ export async function activate(context: ExtensionContext) {
 		traceOutputChannel,
 	};
 
-	context.subscriptions.push(commands.registerCommand('odoo-lsp.tsconfig', async () => {
-		const activeWindow = window.activeTextEditor?.document.uri.fsPath;
-		let folder: WorkspaceFolder | undefined;
-		if (activeWindow) {
-			folder = workspace.workspaceFolders?.find(ws => activeWindow.includes(ws.uri.fsPath))
-		}
+	context.subscriptions.push(
+		commands.registerCommand("odoo-lsp.tsconfig", async () => {
+			const activeWindow = window.activeTextEditor?.document.uri.fsPath;
+			let folder: WorkspaceFolder | undefined;
+			if (activeWindow) {
+				folder = workspace.workspaceFolders?.find((ws) => activeWindow.includes(ws.uri.fsPath));
+			}
 
-		if (!folder) folder = await window.showWorkspaceFolderPick();
-		if (!folder) return;
+			if (!folder) folder = await window.showWorkspaceFolderPick();
+			if (!folder) return;
 
-		const selection = await window.showOpenDialog({
-			canSelectFiles: false,
-			canSelectFolders: true,
-			canSelectMany: true,
-			title: 'Select addons roots',
-			defaultUri: folder.uri,
-		}) ?? [];
+			const selection =
+				(await window.showOpenDialog({
+					canSelectFiles: false,
+					canSelectFolders: true,
+					canSelectMany: true,
+					title: "Select addons roots",
+					defaultUri: folder.uri,
+				})) ?? [];
 
-		const paths = selection.map(sel => `--addons-path ${sel.fsPath}`).join(' ');
-		let {stdout} = await execAsync(`${command} tsconfig ${paths}`, { cwd: folder.uri.fsPath });
+			const paths = selection.map((sel) => `--addons-path ${sel.fsPath}`).join(" ");
+			let { stdout } = await execAsync(`${command} tsconfig ${paths}`, { cwd: folder.uri.fsPath });
 
-		const doc = await workspace.openTextDocument({ language: 'json', content: stdout as string });
-		await window.showTextDocument(doc);
-	}));
+			const doc = await workspace.openTextDocument({ language: "json", content: stdout as string });
+			await window.showTextDocument(doc);
+		}),
+	);
 
-	context.subscriptions.push(commands.registerCommand('odoo-lsp.statistics', async () => {
-		const response = await client.sendRequest('odoo-lsp/statistics');
-		const doc = await workspace.openTextDocument({ language: 'json', content: JSON.stringify(response, undefined, 2) });
-		await window.showTextDocument(doc);
-	}));
+	context.subscriptions.push(
+		commands.registerCommand("odoo-lsp.statistics", async () => {
+			const response = await client.sendRequest("odoo-lsp/statistics");
+			const doc = await workspace.openTextDocument({
+				language: "json",
+				content: JSON.stringify(response, undefined, 2),
+			});
+			await window.showTextDocument(doc);
+		}),
+	);
 
-	context.subscriptions.push(commands.registerCommand('odoo-lsp.restart-lsp', async () => {
-		await client.restart();
-		traceOutputChannel.appendLine("Odoo LSP restarted");
-	}));
+	context.subscriptions.push(
+		commands.registerCommand("odoo-lsp.restart-lsp", async () => {
+			await client.restart();
+			traceOutputChannel.appendLine("Odoo LSP restarted");
+		}),
+	);
 
 	client = new LanguageClient("odoo-lsp", "Odoo LSP", serverOptions, clientOptions);
 	await client.start();
@@ -262,4 +296,9 @@ export function deactivate(): Thenable<void> | undefined {
 		return undefined;
 	}
 	return client.stop();
+}
+
+interface XMLExtensionApi {
+	// addXMLCatalogs(_: string[]): void;
+	addXMLFileAssociations(_: { systemId: string; pattern: string }[]): void;
 }

@@ -1,19 +1,19 @@
 <odoo>
-    <record id="generic_tax_report" model="ir.ui.view">
-        <field name="name">Generic Tax report</field>
-        <field name="filter_multi_company">tax_units</field>
-        <field name="filter_fiscal_position" eval="1"/>
-        <field name="default_opening_date_filter">last_month</field>
-        <field name="only_tax_exigible" eval="True"/>
-        <field name="column_ids">
-            <record id="generic_tax_report_column_net" model="account.report.column">
-                <field name="name">NET</field>
-                <field name="expression_label">net</field>
-            </record>
-            <record id="generic_tax_report_column_tax" model="account.report.column">
-                <field name="name">TAX</field>
-                <field name="expression_label">tax</field>
-            </record>
-        </field>
-    </record>
+	<record id="generic_tax_report" model="ir.ui.view">
+		<field name="name">Generic Tax report</field>
+		<field name="filter_multi_company">tax_units</field>
+		<field name="filter_fiscal_position" eval="1" />
+		<field name="default_opening_date_filter">last_month</field>
+		<field name="only_tax_exigible" eval="True" />
+		<field name="column_ids">
+			<record id="generic_tax_report_column_net" model="account.report.column">
+				<field name="name">NET</field>
+				<field name="expression_label">net</field>
+			</record>
+			<record id="generic_tax_report_column_tax" model="account.report.column">
+				<field name="name">TAX</field>
+				<field name="expression_label">tax</field>
+			</record>
+		</field>
+	</record>
 </odoo>

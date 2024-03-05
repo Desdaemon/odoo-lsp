@@ -344,7 +344,7 @@ impl Backend {
 			| Some(RefKind::TCall)
 			| Some(RefKind::TName)
 			| Some(RefKind::Id)
-			| Some(RefKind::PropOf(..))
+			| Some(RefKind::PropOf(..))  // TODO
 			| None => {
 				#[cfg(not(debug_assertions))]
 				return Ok(None);
@@ -520,6 +520,7 @@ fn gather_refs<'read>(
 				if let Some(Tag::TComponent(..)) = &tag {
 					_ = tag.take();
 				}
+				// no need to turn off template mode yet
 				// match end {
 				// 	ElementEnd::Open => depth += 1,
 				// 	ElementEnd::Close(..) => {

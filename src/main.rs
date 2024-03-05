@@ -679,7 +679,10 @@ async fn main() {
 			return;
 		}
 		cli::Command::SelfUpdate { nightly } => {
-			cli::self_update(nightly).report(|| format_loc!("self-update failed"));
+			tokio::task::spawn_blocking(move || cli::self_update(nightly))
+				.await
+				.unwrap()
+				.report(|| format_loc!("self-update failed"));
 			return;
 		}
 	}

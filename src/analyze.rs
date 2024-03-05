@@ -1,3 +1,6 @@
+//! Methods related to type analysis. The two most important methods are
+//! [`Backend::model_of_range`] and [`Backend::type_of`].
+
 use std::{borrow::Borrow, collections::HashMap};
 
 use log::trace;
@@ -49,6 +52,7 @@ pub enum Type {
 	Method(ModelName, &'static str),
 }
 
+/// The current environment, populated from the AST statement by statement.
 #[derive(Default, Clone)]
 pub struct Scope {
 	variables: HashMap<String, Type>,
@@ -369,7 +373,7 @@ impl Backend {
 						}
 						_ => None,
 					},
-					ident if rhs.kind() == "identifier" => self.typeof_attribute(&lhs, ident, scope),
+					ident if rhs.kind() == "identifier" => self.type_of_attribute(&lhs, ident, scope),
 					_ => None,
 				}
 			}
@@ -410,7 +414,7 @@ impl Backend {
 								let mapped = String::from_utf8_lossy(&contents[mapped.byte_range().shrink(1)]);
 								let mut mapped = mapped.as_ref();
 								self.index.models.resolve_mapped(&mut model, &mut mapped, None)?;
-								self.typeof_attribute(
+								self.type_of_attribute(
 									&Type::Model(interner.resolve(&model).into()),
 									mapped.as_bytes(),
 									scope,
@@ -441,7 +445,7 @@ impl Backend {
 			_ => None,
 		}
 	}
-	fn typeof_attribute(&self, type_: &Type, attr: &[u8], scope: &Scope) -> Option<Type> {
+	fn type_of_attribute(&self, type_: &Type, attr: &[u8], scope: &Scope) -> Option<Type> {
 		let model = self.resolve_type(type_, &scope)?;
 		let attr = String::from_utf8_lossy(attr);
 		let attr = interner().get_or_intern(attr.as_ref());

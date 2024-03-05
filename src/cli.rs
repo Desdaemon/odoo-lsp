@@ -341,8 +341,8 @@ pub fn self_update(nightly: bool) -> miette::Result<()> {
 
 	let status = task.build().into_diagnostic()?.update().into_diagnostic()?;
 	match status {
-		Status::UpToDate(current) => eprintln!("odoo-lsp is already at the latest version: v{current}"),
-		Status::Updated(new) => eprintln!("Updated odoo-lsp to v{new}"),
+		Status::UpToDate(current) => eprintln!("odoo-lsp is already at the latest version: {current}"),
+		Status::Updated(new) => eprintln!("Updated odoo-lsp to {new}"),
 	}
 	Ok(())
 }

@@ -1,6 +1,6 @@
 <odoo>
-  <template id="view_one">
-  </template>
-  <template id="view_two" inherit_id="view_one">
-  </template>
+	<template id="view_one">
+	</template>
+	<template id="view_two" inherit_id="view_one">
+	</template>
 </odoo>
