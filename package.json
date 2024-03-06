@@ -2,7 +2,7 @@
 	"name": "odoo-lsp",
 	"description": "Language server for Odoo Python/JS/XML",
 	"license": "MIT",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"categories": [
 		"Programming Languages"
 	],

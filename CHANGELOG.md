@@ -1,3 +1,36 @@
+## [0.3.1](https://github.com/Desdaemon/odoo-lsp/compare/v0.3.0...v0.3.1) (2024-03-06)
+
+Fixes a major issue with the extension not being able to download nightly binaries by default.
+
+### Bug Fixes
+
+* **ci:** failed to cross-compile Linux targets ([ba41685](https://github.com/Desdaemon/odoo-lsp/commit/ba41685c42889c781c6b3727b81c144cb7bb8dfa))
+* issue with wrong download link for nightlies ([9235ef9](https://github.com/Desdaemon/odoo-lsp/commit/9235ef9d744a610262a91cf92648f0a867671d75))
+* limit diagnostics range based on edits ([06f6dd2](https://github.com/Desdaemon/odoo-lsp/commit/06f6dd2ff351c110d81b2833bb55c932366ad47e))
+* prevent panic when clearing oob'd diags ([7bf2b03](https://github.com/Desdaemon/odoo-lsp/commit/7bf2b0391cbcd4322458bd25456ecabca059cb29))
+* skip attribute diagnostics if not modified ([f2a7adb](https://github.com/Desdaemon/odoo-lsp/commit/f2a7adb5afc4e4437f24bafb0579678a86515621))
+* **tsconfig:** Correct path for recursive modules ([ad253f7](https://github.com/Desdaemon/odoo-lsp/commit/ad253f775ae10120cde1d87a8e53a24afb107a7b))
+* wait for initialization before first requests ([813c2a8](https://github.com/Desdaemon/odoo-lsp/commit/813c2a8a58a0a053f38d1f65d0b00e4fc2db4fac))
+* wrong paths for tsconfig ([239802e](https://github.com/Desdaemon/odoo-lsp/commit/239802e7fa128967671bab0b05752c19f77d1df1))
+
+
+### Features
+
+* **analysis:** Resolve types of .mapped('..') ([bc54a28](https://github.com/Desdaemon/odoo-lsp/commit/bc54a28a2baa14d69784f5cfa40208b8a2fadce8))
+* completions for component props ([510843d](https://github.com/Desdaemon/odoo-lsp/commit/510843defcf950404371ca111fa6c9b7a99a237c))
+* debug output for templates ([8a28582](https://github.com/Desdaemon/odoo-lsp/commit/8a28582ceb06b379726a636015c3b930f5cf606a))
+* diagnose wrong usage of dotted access ([8424d3c](https://github.com/Desdaemon/odoo-lsp/commit/8424d3c96fd824bd20a919a7c598a8093b6781b0))
+* include XML schema with extension ([1e3c533](https://github.com/Desdaemon/odoo-lsp/commit/1e3c53384db36e5b71985fe23b9114c37ca772e8))
+* **internal:** copy-on-write for fields ([54319f9](https://github.com/Desdaemon/odoo-lsp/commit/54319f98e86ae79e2290b3c31e3d96da46249c2e))
+* jump-to-def for component props ([922cc68](https://github.com/Desdaemon/odoo-lsp/commit/922cc6842d4bba05daf400f5c6d7f2556c155ae2))
+* new command to restart LSP server ([7ff9235](https://github.com/Desdaemon/odoo-lsp/commit/7ff92354dbf6464de0db1d69209cc9f5841162c7))
+* self-update ([ebeb4e8](https://github.com/Desdaemon/odoo-lsp/commit/ebeb4e8ee91a8ae63899a8ff74efb1c9d56b19b8))
+* support for Model._for_xml_id ([93efcf9](https://github.com/Desdaemon/odoo-lsp/commit/93efcf9b7377aabcb450266f47dc51b29a315332))
+* support for read and read_group fields ([bae66d8](https://github.com/Desdaemon/odoo-lsp/commit/bae66d8f0c3ec048c82078d2420171feaa27801f))
+* xml hovers ([2fc9a22](https://github.com/Desdaemon/odoo-lsp/commit/2fc9a2280b90bdcb6432f9df5b83f3fe8dd45f56))
+
+
+
 # [0.3.0](https://github.com/Desdaemon/odoo-lsp/compare/v0.2.1...v0.3.0) (2023-12-18)
 
 
