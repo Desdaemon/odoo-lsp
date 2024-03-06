@@ -146,7 +146,8 @@ impl LanguageServer for Backend {
 			.await;
 	}
 	async fn initialized(&self, _: InitializedParams) {
-		debug!("initialized");
+		let blocker = self.root_setup.block();
+
 		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
 		self.client
 			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
@@ -168,10 +169,10 @@ impl LanguageServer for Backend {
 			let Ok(file_path) = workspace.uri.to_file_path() else {
 				continue;
 			};
-			self.roots.insert(file_path.to_string_lossy().to_string());
+			self.roots.insert(file_path.to_string_lossy().into_owned());
 		}
+		self.ensure_nonoverlapping_roots();
 
-		let blocker = self.root_setup.block();
 		for root in self.roots.iter() {
 			match self.index.add_root(root.as_str(), progress.clone(), false).await {
 				Ok(Some(results)) => {
@@ -216,7 +217,7 @@ impl LanguageServer for Backend {
 	}
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
 		self.root_setup.wait().await;
-		// let language;
+
 		let language_id = params.text_document.language_id.as_str();
 		let split_uri = params.text_document.uri.path().rsplit_once('.');
 		let language = match (language_id, split_uri) {

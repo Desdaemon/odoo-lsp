@@ -4,11 +4,13 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use globwalk::FileType;
+use ignore::gitignore::Gitignore;
+use ignore::Match;
 use lasso::{Key, Spur, ThreadedRodeo};
 use log::{debug, info, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
-use tower_lsp::lsp_types::notification::{Progress, ShowMessage};
+use tower_lsp::lsp_types::notification::Progress;
 use tower_lsp::lsp_types::request::{ShowDocument, ShowMessageRequest};
 use tower_lsp::lsp_types::*;
 use tree_sitter::QueryCursor;
@@ -92,17 +94,40 @@ impl Index {
 			.build()
 			.into_diagnostic()
 			.with_context(|| format!("Could not glob into {root}"))?;
+		let mut gitignore = ignore::gitignore::GitignoreBuilder::new(root);
+		gitignore
+			.add(".gitignore")
+			.inspect(|err| warn!("error adding {root}/.gitignore: {err:?}"));
+		let gitignore = gitignore
+			.build()
+			.inspect_err(|err| warn!("gitignore error for {root}: {err:?}"))
+			.ok();
 
 		let mut module_count = 0;
 		let mut outputs = tokio::task::JoinSet::new();
 		let interner = interner();
 		for manifest in manifests {
-			module_count += 1;
 			let manifest = manifest.into_diagnostic()?;
 			let module_dir = manifest
 				.path()
 				.parent()
 				.ok_or_else(|| miette::diagnostic!("Unexpected empty path"))?;
+			fn matched_top_to_bottom(gitignore: &Gitignore, path: &Path) -> bool {
+				let ancestors = path.ancestors().collect::<Vec<_>>();
+				for ancestor in ancestors.into_iter().rev() {
+					if let Match::Ignore(_) = gitignore.matched(ancestor, true) {
+						return true;
+					}
+				}
+				false
+			}
+			if let Some(true) = gitignore
+				.as_ref()
+				.map(|g| matched_top_to_bottom(g, module_dir.strip_prefix(root).unwrap()))
+			{
+				continue;
+			}
+			module_count += 1;
 			let module_name = module_dir.file_name().unwrap().to_string_lossy().to_string();
 			if let Some((client, token)) = &progress {
 				_ = client
@@ -122,9 +147,9 @@ impl Index {
 			if !self.roots.entry(root.into()).or_default().insert_checked(
 				module_key.into_usize() as _,
 				module_path.to_str().expect("non-utf8 path").into(),
-			) && module_name == "base"
-			{
-				if let Some((client, _)) = &progress {
+			) {
+				warn!("duplicate module {module_name} path={module_path:?}");
+				if let (Some((client, _)), "base") = (&progress, module_name.as_str()) {
 					let resp = client
 						.send_request::<ShowMessageRequest>(ShowMessageRequestParams {
 							typ: MessageType::WARNING,
@@ -217,11 +242,11 @@ impl Index {
 			let outputs = match outputs {
 				Ok(Ok(out)) => out,
 				Ok(Err(err)) => {
-					warn!("{}", err);
+					warn!("task failed: {err}");
 					continue;
 				}
 				Err(err) => {
-					debug!("task failed: {err}");
+					debug!("join error: {err}");
 					continue;
 				}
 			};
@@ -398,7 +423,7 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 			.nodes_for_capture_index(ModelQuery::Name as _)
 			.next()
 			.ok_or_else(|| diagnostic!("(index_models) name"))?;
-		let model = models.entry(model_node.byte_range()).or_insert_with(|| NewModel {
+		let model = models.entry(model_node.id()).or_insert_with(|| NewModel {
 			name: None,
 			range: model_node.range(),
 			byte_range: model_node.byte_range().map_unit(ByteOffset),
@@ -539,6 +564,8 @@ mod tests {
 	use pretty_assertions::assert_eq;
 	use tree_sitter::{Parser, QueryCursor};
 
+	use super::index_models;
+
 	#[test]
 	fn test_model_query() {
 		let mut parser = Parser::new();
@@ -556,6 +583,12 @@ class Bar(models.Model):
 	_name = 'bar'
 	what = fields.Foo()
 	_inherit = 'baz'
+
+class Base(models.Model):
+	_name = 'haha'
+	_description = 'What?'
+	_order = 'foo, bar'
+
 "#;
 		let ast = parser.parse(&contents[..], None).unwrap();
 		let query = ModelQuery::query();
@@ -565,6 +598,7 @@ class Bar(models.Model):
 			&["models", "AbstractModel", "_inherit"],
 			&["models", "Model", "_name"],
 			&["models", "Model", "_inherit"],
+			&["models", "Model", "_name"],
 		];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])
@@ -578,5 +612,19 @@ class Bar(models.Model):
 			})
 			.collect::<Vec<_>>();
 		assert_eq!(expected, actual);
+	}
+
+	#[test]
+	fn test_index_query() {
+		let models = index_models(
+			br#"
+class TransifexCodeTranslation(models.Model):
+    _name = "transifex.code.translation"
+    _description = "Code Translation"
+    _log_access = False
+"#,
+		)
+		.unwrap();
+		assert_eq!(models.len(), 1);
 	}
 }

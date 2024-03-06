@@ -75,26 +75,13 @@ pub struct ModelLocation(pub MinLoc, pub ByteRange);
 
 impl Display for ModelLocation {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		if self.0.range.start.line == self.0.range.end.line {
-			write!(
-				f,
-				"{} [{}:{}..{}]",
-				interner().resolve(&self.0.path),
-				self.0.range.start.line,
-				self.0.range.start.character,
-				self.0.range.end.character,
-			)
-		} else {
-			write!(
-				f,
-				"{} [{}:{}..{}:{}]",
-				interner().resolve(&self.0.path),
-				self.0.range.start.line,
-				self.0.range.start.character,
-				self.0.range.end.line,
-				self.0.range.end.character,
-			)
-		}
+		write!(
+			f,
+			"{}:{}:{}",
+			interner().resolve(&self.0.path),
+			self.0.range.start.line + 1,
+			self.0.range.start.character + 1,
+		)
 	}
 }
 
@@ -147,7 +134,8 @@ impl ModelIndex {
 						);
 					} else {
 						warn!(
-							"Conflicting bases:\nfirst={}\n  new={}",
+							"Conflicting bases for {}:\nfirst={}\n  new={}",
+							interner.resolve(&name),
 							entry.base.as_ref().unwrap(),
 							ModelLocation(
 								MinLoc {

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use dashmap::{DashMap, DashSet};
 use globwalk::FileType;
-use log::debug;
+use log::{debug, info, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::component::{Prop, PropDescriptor};
 use ropey::Rope;
@@ -677,6 +677,9 @@ impl Backend {
 		let Some(ModuleConfig { roots: Some(roots), .. }) = config.module else {
 			return;
 		};
+		if !roots.is_empty() {
+			self.roots.clear();
+		}
 		for root in roots {
 			let Ok(root) = Path::new(&root).canonicalize() else {
 				continue;
@@ -726,6 +729,33 @@ impl Backend {
 				"bytes": symbols_usage,
 			}
 		}})
+	}
+	pub fn ensure_nonoverlapping_roots(&self) {
+		let mut redundant = vec![];
+		let mut roots = self.roots.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+		roots.sort_unstable_by_key(|root| root.len());
+		info!("{:?}", roots);
+		for lhs in 1..roots.len() {
+			for rhs in 0..lhs {
+				if roots[lhs].starts_with(&roots[rhs]) {
+					redundant.push(&roots[lhs]);
+					break;
+				}
+			}
+		}
+		if !redundant.is_empty() {
+			warn!(
+				concat!(
+					"The following configured roots are redundant: {:?}\n",
+					"Reconfigure your roots to dismiss this warning.\n",
+					"Note that in VSCode, .odoo_lsp configs are applied before workspace folders."
+				),
+				redundant
+			);
+		}
+		for root in redundant {
+			self.roots.remove(root);
+		}
 	}
 }
 

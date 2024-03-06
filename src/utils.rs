@@ -1,5 +1,9 @@
 use core::ops::{Add, Sub};
-use std::{borrow::Cow, fmt::Display, sync::atomic::AtomicBool};
+use std::{
+	borrow::Cow,
+	fmt::Display,
+	sync::atomic::{AtomicBool, Ordering},
+};
 
 use dashmap::try_result::TryResult;
 use lasso::Spur;
@@ -325,11 +329,11 @@ pub struct Blocker<'a>(&'a CondVar);
 
 impl CondVar {
 	pub fn block(&self) -> Blocker {
-		self.should_wait.store(true, std::sync::atomic::Ordering::Relaxed);
+		self.should_wait.store(true, Ordering::SeqCst);
 		Blocker(self)
 	}
 	pub async fn wait(&self) {
-		if self.should_wait.load(std::sync::atomic::Ordering::Relaxed) {
+		if self.should_wait.load(Ordering::SeqCst) {
 			self.notifier.notified().await;
 		}
 	}
@@ -337,7 +341,7 @@ impl CondVar {
 
 impl Drop for Blocker<'_> {
 	fn drop(&mut self) {
+		self.0.should_wait.store(false, Ordering::SeqCst);
 		self.0.notifier.notify_waiters();
-		self.0.should_wait.store(false, std::sync::atomic::Ordering::Relaxed);
 	}
 }
