@@ -147,7 +147,7 @@ impl LanguageServer for Backend {
 	}
 	async fn initialized(&self, _: InitializedParams) {
 		debug!("initialized");
-		let token = NumberOrString::String("_odoo_lsp_initialized".to_string());
+		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
 		self.client
 			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
 			.await

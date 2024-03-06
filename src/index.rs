@@ -8,7 +8,8 @@ use lasso::{Key, Spur, ThreadedRodeo};
 use log::{debug, info, warn};
 use miette::{diagnostic, Context, IntoDiagnostic};
 use ropey::Rope;
-use tower_lsp::lsp_types::notification::Progress;
+use tower_lsp::lsp_types::notification::{Progress, ShowMessage};
+use tower_lsp::lsp_types::request::{ShowDocument, ShowMessageRequest};
 use tower_lsp::lsp_types::*;
 use tree_sitter::QueryCursor;
 use ts_macros::query;
@@ -121,8 +122,43 @@ impl Index {
 			if !self.roots.entry(root.into()).or_default().insert_checked(
 				module_key.into_usize() as _,
 				module_path.to_str().expect("non-utf8 path").into(),
-			) {
-				debug!("duplicate module {module_name}");
+			) && module_name == "base"
+			{
+				if let Some((client, _)) = &progress {
+					let resp = client
+						.send_request::<ShowMessageRequest>(ShowMessageRequestParams {
+							typ: MessageType::WARNING,
+							message: concat!(
+								"Duplicate base module found. The language server's performance may be affected.\n",
+								"Please configure your workspace (or .odoo_lsp) to only include one version of Odoo as described in the wiki.",
+							)
+							.to_string(),
+							actions: Some(vec![
+								MessageActionItem {
+									title: "Go to odoo-lsp wiki".to_string(),
+									properties: Default::default(),
+								},
+								MessageActionItem {
+									title: "Dismiss".to_string(),
+									properties: Default::default(),
+								},
+							]),
+						})
+						.await;
+					match resp {
+						Ok(Some(resp)) if resp.title == "Go to odoo-lsp wiki" => {
+							_ = client
+								.send_request::<ShowDocument>(ShowDocumentParams {
+									uri: Url::parse("https://github.com/Desdaemon/odoo-lsp/wiki#usage").unwrap(),
+									external: Some(true),
+									take_focus: None,
+									selection: None,
+								})
+								.await;
+						}
+						_ => {}
+					}
+				}
 			}
 			if tsconfig {
 				continue;
