@@ -4,7 +4,7 @@ use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::index::{interner, ModuleName};
+use crate::index::{interner, ModuleName, RecordId};
 use crate::model::ModelName;
 use crate::utils::{offset_to_position, position_to_offset};
 use crate::utils::{ByteOffset, MinLoc};
@@ -17,7 +17,7 @@ pub struct Record {
 	pub module: ModuleName,
 	pub model: Option<ModelName>,
 	/// (inherit_module?, xml_id)
-	pub inherit_id: Option<(Option<ModelName>, ImStr)>,
+	pub inherit_id: Option<RecordId>,
 	pub location: MinLoc,
 }
 
@@ -85,10 +85,14 @@ impl Record {
 						let Some(maybe_inherit_id) = maybe_inherit_id else {
 							continue;
 						};
-						if let Some((module, xml_id)) = maybe_inherit_id.split_once('.') {
-							inherit_id = Some((Some(interner().get_or_intern(module).into()), xml_id.into()));
+						if maybe_inherit_id.contains(',') {
+							inherit_id = Some(interner().get_or_intern(maybe_inherit_id).into());
 						} else {
-							inherit_id = Some((None, maybe_inherit_id.into()));
+							inherit_id = Some(
+								interner()
+									.get_or_intern(&format!("{}.{maybe_inherit_id}", interner().resolve(&module)))
+									.into(),
+							);
 						}
 					}
 				}
@@ -167,12 +171,17 @@ impl Record {
 							id = Some(value.as_str().into());
 						}
 					}
-					b"inherit_id" => match value.split_once('.') {
-						Some((module, xml_id)) => {
-							inherit_id = Some((Some(interner().get_or_intern(module).into()), xml_id.into()))
+					b"inherit_id" => {
+						if value.contains('.') {
+							inherit_id = Some(interner().get_or_intern(value.as_str()).into());
+						} else {
+							inherit_id = Some(
+								interner()
+									.get_or_intern(&format!("{}.{value}", interner().resolve(&module)))
+									.into(),
+							)
 						}
-						None => inherit_id = Some((None, value.as_str().into())),
-					},
+					}
 					_ => {}
 				},
 				Some(Ok(Token::ElementEnd {

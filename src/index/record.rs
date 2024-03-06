@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 
 use crate::{model::ModelName, record::Record};
 
-use super::{interner, Symbol};
+use super::Symbol;
 
 #[derive(Default, Deref)]
 pub struct RecordIndex {
@@ -27,18 +27,12 @@ pub type RecordPrefixTrie = qp_trie::Trie<BString, SymbolSet<Record>>;
 
 impl RecordIndex {
 	pub async fn insert(&self, qualified_id: RecordId, record: Record, prefix: Option<&mut RecordPrefixTrie>) {
-		let interner = interner();
 		if let Some(model) = &record.model {
 			self.by_model.entry(*model).or_default().insert(qualified_id);
 		}
 		if let Some(inherit_id) = &record.inherit_id {
-			let inherit_id = match inherit_id {
-				(Some(module), xml_id) => format!("{}.{xml_id}", interner.resolve(module)),
-				(None, xml_id) => format!("{}.{xml_id}", interner.resolve(&record.module)),
-			};
-			let inherit_id = interner.get_or_intern(inherit_id);
 			self.by_inherit_id
-				.entry(inherit_id.into())
+				.entry(inherit_id.clone())
 				.or_default()
 				.insert(qualified_id);
 		}
