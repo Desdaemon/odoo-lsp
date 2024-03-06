@@ -1,0 +1,7 @@
+{
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"formatter": {
+		"lineWidth": 120,
+		"indentStyle": "tab"
+	}
+}

@@ -7,6 +7,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { ObjectEncodingOptions, existsSync } from "node:fs";
 import { exec, spawn, ExecOptions } from "node:child_process";
 import { workspace, window, ExtensionContext, commands, WorkspaceFolder, extensions } from "vscode";
+import { get } from "node:https";
 
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node";
 
@@ -16,23 +17,15 @@ function guessRustTarget() {
 	const platform = process.platform;
 	const arch = process.arch;
 	if (platform === "win32") {
-		if (arch === "x64") {
-			return "x86_64-pc-windows-msvc";
-		} else {
-			return "i686-pc-windows-msvc";
-		}
-	} else if (platform === "darwin") {
-		if (arch == "x64") {
-			return "x86_64-apple-darwin";
-		} else if (arch == "arm64") {
-			return "aarch64-apple-darwin";
-		}
+		if (arch === "x64") return "x86_64-pc-windows-msvc";
+		return "i686-pc-windows-msvc";
+	}
+	if (platform === "darwin") {
+		if (arch === "x64") return "x86_64-apple-darwin";
+		if (arch === "arm64") return "aarch64-apple-darwin";
 	} else if (platform === "linux") {
-		if (arch === "x64") {
-			return "x86_64-unknown-linux-gnu";
-		} else {
-			return "i686-unknown-linux-gnu";
-		}
+		if (arch === "x64") return "x86_64-unknown-linux-gnu";
+		return "i686-unknown-linux-gnu";
 	}
 }
 
@@ -45,7 +38,7 @@ function execAsync(command: string, options?: ObjectEncodingOptions & ExecOption
 	});
 }
 
-const REPO = "https://github.com/Desdaemon/odoo-lsp";
+const repo = "https://github.com/Desdaemon/odoo-lsp";
 
 async function downloadLspBinary(context: ExtensionContext) {
 	const isWindows = process.platform === "win32";
@@ -53,11 +46,37 @@ async function downloadLspBinary(context: ExtensionContext) {
 	const runtimeDir = context.globalStorageUri.fsPath;
 	await mkdir(runtimeDir, { recursive: true });
 	const preferNightly = !!workspace.getConfiguration("odoo-lsp.binary").get("preferNightly");
-	const overrideVersion = workspace.getConfiguration("odoo-lsp.binary").get("overrideVersion");
+	const overrideVersion: string | undefined = workspace.getConfiguration("odoo-lsp.binary").get("overrideVersion");
 
-	let release = overrideVersion || "nightly";
+	let release = overrideVersion;
 	if (!preferNightly && !overrideVersion) {
 		release = context.extension.packageJSON._release || release;
+	} else if (preferNightly) {
+		release =
+			(await new Promise<string | undefined>((resolve, reject) =>
+				get(
+					"https://api.github.com/repos/Desdaemon/odoo-lsp/releases?per_page=5",
+					{
+						headers: {
+							accept: "application/vnd.github+json",
+							"user-agent": "vscode-odoo-lsp",
+						},
+					},
+					(resp) => {
+						const chunks: Buffer[] = [];
+						resp.on("data", chunks.push.bind(chunks)).on("end", () => {
+							try {
+								const releases: { tag_name: string; name: string }[] = JSON.parse(Buffer.concat(chunks).toString());
+								const latest = releases.find((r) => r.name === "nightly");
+								resolve(latest?.tag_name);
+							} catch (err) {
+								window.showErrorMessage(`Unable to fetch nightly release: ${err}`);
+								resolve(context.extension.packageJSON._release);
+							}
+						});
+					},
+				),
+			)) || release;
 	}
 	if (typeof release !== "string" || !release) {
 		window.showErrorMessage(`Bug: invalid release "${release}"`);
@@ -69,32 +88,49 @@ async function downloadLspBinary(context: ExtensionContext) {
 
 	const target = guessRustTarget();
 	if (!target) {
-		const enum Actions {
+		enum Actions {
 			Ok = "OK",
 			Repo = "Go to odoo-lsp",
 			InstallSource = "Install from source",
+			Binstall = "Install with cargo-binstall",
 		}
 		const actions = [Actions.Ok, Actions.Repo];
-		// TODO: setup for cargo-binstall
 		if (await which("cargo")) {
 			actions.push(Actions.InstallSource);
 		}
+		if (await which("cargo-binstall")) {
+			actions.push(Actions.Binstall);
+		}
 		const resp = await window.showInformationMessage(
 			`odoo-lsp: No prebuilt binaries available for your platform (platform=${process.platform}, arch=${process.arch}).
-			Please file an issue at ${REPO}, or install odoo-lsp from source.`,
+			Please file an issue at ${repo}, or install odoo-lsp from source.`,
 			...actions,
 		);
 		switch (resp) {
 			case Actions.Repo:
-				await openLink(REPO);
+				await openLink(repo);
 				break;
-			case Actions.InstallSource:
+			case Actions.InstallSource: {
 				const channel = window.createOutputChannel("cargo install odoo-lsp");
 				channel.show();
 				context.subscriptions.push(channel);
-				const cargo = spawn("cargo install --git https://github.com/Desdaemon/odoo-lsp", {
-					shell: true,
-				});
+				const cargo = spawn(`cargo install --git ${repo}`, { shell: true });
+				cargo.stdout.on("data", (data) => channel.append(data.toString()));
+				cargo.stderr.on("data", (data) => channel.append(data.toString()));
+				await new Promise((resolve, reject) =>
+					cargo.on("exit", (err) => {
+						if (err) reject(err);
+						else resolve(void 0);
+					}),
+				);
+				channel.hide();
+				break;
+			}
+			case Actions.Binstall: {
+				const channel = window.createOutputChannel("cargo-binstall odoo-lsp");
+				channel.show();
+				context.subscriptions.push(channel);
+				const cargo = spawn("cargo binstall odoo-lsp", { shell: true });
 				cargo.stdout.on("data", (data) => {
 					channel.append(data.toString());
 				});
@@ -109,10 +145,11 @@ async function downloadLspBinary(context: ExtensionContext) {
 				);
 				channel.hide();
 				break;
+			}
 		}
 		return;
 	}
-	const link = `https://github.com/Desdaemon/odoo-lsp/releases/download/${release}/odoo-lsp-${target}${archiveExtension}`;
+	const link = `${repo}/releases/download/${release}/odoo-lsp-${target}${archiveExtension}`;
 	const shaLink = `${link}.sha256`;
 	const shaOutput = `${latest}.sha256`;
 
@@ -188,18 +225,39 @@ export async function activate(context: ExtensionContext) {
 		if (xmlApi) {
 			xmlApi.addXMLFileAssociations([
 				// HACK: systemId must be unique
-				{ systemId: `${context.extensionUri}/odoo.rng`, pattern: "views/*.xml" },
-				{ systemId: `${context.extensionUri}/./odoo.rng`, pattern: "data/*.xml" },
-				{ systemId: `${context.extensionUri}/././odoo.rng`, pattern: "security/*.xml" },
-				{ systemId: `${context.extensionUri}/./././odoo.rng`, pattern: "report/*.xml" },
-				{ systemId: `${context.extensionUri}/././././odoo.rng`, pattern: "wizard/*.xml" },
+				{
+					systemId: `${context.extensionUri}/odoo.rng`,
+					pattern: "views/*.xml",
+				},
+				{
+					systemId: `${context.extensionUri}/./odoo.rng`,
+					pattern: "data/*.xml",
+				},
+				{
+					systemId: `${context.extensionUri}/././odoo.rng`,
+					pattern: "security/*.xml",
+				},
+				{
+					systemId: `${context.extensionUri}/./././odoo.rng`,
+					pattern: "report/*.xml",
+				},
+				{
+					systemId: `${context.extensionUri}/././././odoo.rng`,
+					pattern: "wizard/*.xml",
+				},
 			]);
 		} else {
 			// Recommend that the user install the XML extension
-			window.showInformationMessage("Install the 'XML' extension for a better XML editing experience.", "Install", "Remind me later").then(choice => {
-				if (choice !== 'Install') return;
-				commands.executeCommand('workbench.extensions.search', '@id:redhat.vscode-xml');
-			});
+			window
+				.showInformationMessage(
+					"Install the 'XML' extension for a better XML editing experience.",
+					"Install",
+					"Remind me later",
+				)
+				.then((choice) => {
+					if (choice !== "Install") return;
+					commands.executeCommand("workbench.extensions.search", "@id:redhat.vscode-xml");
+				});
 		}
 	} catch (err) {
 		traceOutputChannel.appendLine(`Failed to register XML file associations: ${err}`);
@@ -228,7 +286,7 @@ export async function activate(context: ExtensionContext) {
 			},
 		},
 	};
-	let clientOptions: LanguageClientOptions = {
+	const clientOptions: LanguageClientOptions = {
 		documentSelector: [
 			{ language: "xml", scheme: "file" },
 			{ language: "python", scheme: "file" },
@@ -261,9 +319,14 @@ export async function activate(context: ExtensionContext) {
 				})) ?? [];
 
 			const paths = selection.map((sel) => `--addons-path ${sel.fsPath}`).join(" ");
-			let { stdout } = await execAsync(`${command} tsconfig ${paths}`, { cwd: folder.uri.fsPath });
+			const { stdout } = await execAsync(`${command} tsconfig ${paths}`, {
+				cwd: folder.uri.fsPath,
+			});
 
-			const doc = await workspace.openTextDocument({ language: "json", content: stdout as string });
+			const doc = await workspace.openTextDocument({
+				language: "json",
+				content: stdout as string,
+			});
 			await window.showTextDocument(doc);
 		}),
 	);

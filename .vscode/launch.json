@@ -46,6 +46,12 @@
 				"${workspaceRoot}/client/testFixture"
 			],
 			"outFiles": ["${workspaceRoot}/client/out/test/**/*.js"]
+		},
+		{
+			"name": "Attach to LSP",
+			"type": "lldb",
+			"request": "attach",
+			"program": "odoo-lsp"
 		}
 	],
 	"compounds": [
