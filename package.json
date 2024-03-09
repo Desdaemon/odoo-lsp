@@ -3,13 +3,8 @@
 	"description": "Language server for Odoo Python/JS/XML",
 	"license": "MIT",
 	"version": "0.3.1",
-	"categories": [
-		"Programming Languages"
-	],
-	"keywords": [
-		"language-server",
-		"tower-lsp"
-	],
+	"categories": ["Programming Languages"],
+	"keywords": ["language-server", "tower-lsp"],
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/Desdaemon/odoo-lsp.git"
@@ -17,14 +12,21 @@
 	"engines": {
 		"vscode": "^1.66.0"
 	},
-	"activationEvents": [
-		"onLanguage:xml",
-		"onLanguage:python",
-		"onLanguage:javascript"
-	],
+	"activationEvents": ["onLanguage:xml", "onLanguage:python", "onLanguage:javascript"],
 	"publisher": "Desdaemon",
 	"main": "./dist/extension.js",
 	"contributes": {
+		"grammars": [
+			{
+				"path": "./syntaxes/odoo-xml.tmLanguage.json",
+				"scopeName": "text.xml.odoo",
+				"injectTo": ["text.xml"],
+				"embeddedLanguages": {
+					"meta.embedded.inline.python": "python",
+					"meta.embedded.inline.javascript": "javascript"
+				}
+			}
+		],
 		"commands": [
 			{
 				"command": "odoo-lsp.tsconfig",
@@ -46,16 +48,8 @@
 				"odoo-lsp.trace.server": {
 					"type": "string",
 					"scope": "window",
-					"enum": [
-						"off",
-						"messages",
-						"verbose"
-					],
-					"enumDescriptions": [
-						"No traces",
-						"Error only",
-						"Full log"
-					],
+					"enum": ["off", "messages", "verbose"],
+					"enumDescriptions": ["No traces", "Error only", "Full log"],
 					"default": "off",
 					"description": "Traces the communication between VS Code and the language server."
 				},
@@ -92,7 +86,7 @@
 	},
 	"scripts": {
 		"postinstall": "pnpm i -C client",
-		"vscode:prepublish": "npm run esbuild-base -- --minify",
+		"vscode:prepublish": "./scripts/prepublish",
 		"esbuild-base": "esbuild ./client/src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
 		"esbuild": "npm run esbuild-base -- --sourcemap",
 		"esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
@@ -128,7 +122,7 @@
 		"mocha": "^8.4.0",
 		"prettier": "^3.0.3",
 		"ts-loader": "^9.5.0",
-		"typescript": "^4.9.5",
+		"typescript": "^5.4.2",
 		"vscode-uri": "^3.0.8",
 		"webpack": "^5.89.0",
 		"webpack-cli": "^5.1.4"

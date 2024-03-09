@@ -1,0 +1,237 @@
+{
+	"scopeName": "text.xml.odoo",
+	"fileTypes": [
+		"xml"
+	],
+	"injectionSelector": "L:meta.tag.no-content.xml, L:meta.tag.xml",
+	"patterns": [
+		{
+			"begin": "(?:^|\\s+)(t-(?:call|valuef|attf-\\S+|slot))\\s*=(\")",
+			"end": "(\")",
+			"contentName": "string.quoted.double.xml",
+			"beginCaptures": {
+				"1": {
+					"name": "entity.other.attribute-name.localname.xml"
+				},
+				"2": {
+					"name": "string.quoted.double.xml"
+				}
+			},
+			"endCaptures": {
+				"1": {
+					"name": "string.quoted.double.xml"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#jinjaEscape"
+				},
+				{
+					"include": "#rubyEscape"
+				},
+				{
+					"include": "constant.character.entity.xml"
+				}
+			]
+		},
+		{
+			"begin": "(?:^|\\s+)(t-(?:call|valuef|attf-\\S+|slot))\\s*=(')",
+			"end": "(')",
+			"contentName": "string.quoted.single.xml",
+			"beginCaptures": {
+				"1": {
+					"name": "entity.other.attribute-name.localname.xml"
+				},
+				"2": {
+					"name": "string.quoted.single.xml"
+				}
+			},
+			"endCaptures": {
+				"1": {
+					"name": "string.quoted.single.xml"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#jinjaEscape"
+				},
+				{
+					"include": "#rubyEscape"
+				},
+				{
+					"include": "constant.character.entity.xml"
+				}
+			]
+		},
+		{
+			"begin": "(?:^|\\s+)(t-(?:name|inherit(?:-mode)?|nocache\\S*|set-slot|ref|translation))\\s*=(\")",
+			"end": "(\")",
+			"contentName": "string.quoted.double.xml",
+			"beginCaptures": {
+				"1": {
+					"name": "entity.other.attribute-name.localname.xml"
+				},
+				"2": {
+					"name": "string.quoted.double.xml"
+				}
+			},
+			"endCaptures": {
+				"1": {
+					"name": "string.quoted.double.xml"
+				}
+			}
+		},
+		{
+			"begin": "(?:^|\\s+)(t-(?:name|inherit(?:-mode)?|nocache\\S*|set-slot|ref|translation))\\s*=(')",
+			"end": "(')",
+			"contentName": "string.quoted.single.xml",
+			"beginCaptures": {
+				"1": {
+					"name": "entity.other.attribute-name.localname.xml"
+				},
+				"2": {
+					"name": "string.quoted.single.xml"
+				}
+			},
+			"endCaptures": {
+				"1": {
+					"name": "string.quoted.single.xml"
+				}
+			}
+		},
+		{
+			"begin": "(?:^|\\s+)(t-on-\\S+)\\s*=(\")",
+			"end": "\\s*(\")",
+			"contentName": "meta.embedded.inline.javascript",
+			"beginCaptures": {
+				"1": {
+					"name": "entity.other.attribute-name.localname.xml"
+				},
+				"2": {
+					"name": "string.quoted.double.xml"
+				}
+			},
+			"endCaptures": {
+				"1": {
+					"name": "string.quoted.double.xml"
+				}
+			},
+			"patterns": [
+				{
+					"include": "source.js"
+				}
+			]
+		},
+		{
+			"begin": "(?:^|\\s+)(t-on-\\S+)\\s*=(')",
+			"end": "\\s*(')",
+			"contentName": "meta.embedded.inline.javascript",
+			"beginCaptures": {
+				"1": {
+					"name": "entity.other.attribute-name.localname.xml"
+				},
+				"2": {
+					"name": "string.quoted.single.xml"
+				}
+			},
+			"endCaptures": {
+				"1": {
+					"name": "string.quoted.single.xml"
+				}
+			},
+			"patterns": [
+				{
+					"include": "source.js"
+				}
+			]
+		},
+		{
+			"begin": "(?:^|\\s+)(required|include|readonly|(?:column_)?invisible|(?:filter_)?domain|context|eval|options|attrs|(?:t|decoration)-\\S+)\\s*=(\")",
+			"end": "\\s*(\")",
+			"contentName": "meta.embedded.inline.python",
+			"beginCaptures": {
+				"1": {
+					"name": "entity.other.attribute-name.localname.xml"
+				},
+				"2": {
+					"name": "string.quoted.double.xml"
+				}
+			},
+			"endCaptures": {
+				"1": {
+					"name": "string.quoted.double.xml"
+				}
+			},
+			"patterns": [
+				{
+					"include": "source.python"
+				}
+			]
+		},
+		{
+			"begin": "(?:^|\\s+)(required|include|readonly|(?:column_)?invisible|(?:filter_)?domain|context|eval|options|attrs|(?:t|decoration)-\\S+)\\s*=(')",
+			"end": "\\s*(')",
+			"contentName": "meta.embedded.inline.python",
+			"beginCaptures": {
+				"1": {
+					"name": "entity.other.attribute-name.localname.xml"
+				},
+				"2": {
+					"name": "string.quoted.single.xml"
+				}
+			},
+			"endCaptures": {
+				"1": {
+					"name": "string.quoted.single.xml"
+				}
+			},
+			"patterns": [
+				{
+					"include": "source.python"
+				}
+			]
+		}
+	],
+	"repository": {
+		"jinjaEscape": {
+			"begin": "({{)",
+			"beginCaptures": {
+				"1": {
+					"name": "constant.character.format.placeholder.other.python"
+				}
+			},
+			"end": "(}})",
+			"endCaptures": {
+				"1": {
+					"name": "constant.character.format.placeholder.other.python"
+				}
+			},
+			"contentName": "meta.embedded.inline.python",
+			"patterns": [
+				{
+					"include": "source.python"
+				}
+			]
+		},
+		"rubyEscape": {
+			"begin": "(#{)",
+			"beginCaptures": {
+				"1": {
+					"name": "constant.character.format.placeholder.other.python"
+				}
+			},
+			"end": "(})",
+			"endCaptures": {
+				"1": {
+					"name": "constant.character.format.placeholder.other.python"
+				}
+			},
+			"contentName": "meta.embedded.inline.python",
+			"patterns": [
+				{
+					"include": "source.python"
+				}
+			]
+		}
+	}
+}

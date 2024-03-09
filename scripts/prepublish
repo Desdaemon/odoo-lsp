@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+
+rm dist/**
+npm run esbuild-base -- --minify
+if command -v deno &> /dev/null; then
+	./syntaxes/gen/odoo-xml.ts > ./syntaxes/odoo-xml.tmLanguage.json
+else
+	echo "Deno not found, skipping grammar generation"
+fi

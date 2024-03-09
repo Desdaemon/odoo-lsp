@@ -625,6 +625,12 @@ class TransifexCodeTranslation(models.Model):
 "#,
 		)
 		.unwrap();
-		assert_eq!(models.len(), 1);
+		assert!(matches!(
+			&models[..],
+			[super::Model {
+				type_: super::ModelType::Base { .. },
+				..
+			}]
+		));
 	}
 }
