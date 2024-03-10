@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-rm dist/**
+rm dist/** || true
 npm run esbuild-base -- --minify
 if command -v deno &> /dev/null; then
 	./syntaxes/gen/odoo-xml.ts > ./syntaxes/odoo-xml.tmLanguage.json

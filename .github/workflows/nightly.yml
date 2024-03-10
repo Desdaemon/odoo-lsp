@@ -8,7 +8,7 @@ on:
         description: Release name, defaults to `nightly`
       tag_name:
         type: string
-        description: Tag name, defaults to `nightly-YYYYMMDD`, or release_name if specified
+        description: Tag name, defaults to `nightly-YYYYMMDD`, or release name if specified
       prerelease:
         type: boolean
         default: true
@@ -173,4 +173,4 @@ jobs:
           name: ${{ inputs.release_name || 'nightly' }}
           tag_name: ${{ env.TAG }}
           generate_release_notes: true
-          prerelease: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease == 'true' }}
+          prerelease: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
