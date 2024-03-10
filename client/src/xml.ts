@@ -83,7 +83,7 @@ export async function registerXPathSemanticTokensProvider(
 	await extension.activate();
 	let module: typeof XPathExtension;
 	try {
-		module = await import(`${extension.extensionPath}/out/extension`);
+		module = await import(`${extension.extensionPath}/${extension.packageJSON.main}`);
 	} catch (err) {
 		traceOutputChannel.appendLine(`Failed to import XPath extension module: ${err}`);
 		return;
