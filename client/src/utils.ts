@@ -1,6 +1,9 @@
-import { ObjectEncodingOptions } from "node:fs";
-import { exec, ExecOptions } from "node:child_process";
+import type { ObjectEncodingOptions } from "node:fs";
+import { exec, type ExecOptions } from "node:child_process";
 import type { ExtensionContext } from "vscode";
+
+export const isWindows = process.platform === "win32";
+export const shell = isWindows ? "powershell.exe" : "sh";
 
 export function guessRustTarget() {
 	const platform = process.platform;
@@ -18,7 +21,7 @@ export function guessRustTarget() {
 	}
 }
 
-export function execAsync(command: string, options?: ObjectEncodingOptions & ExecOptions) {
+export function $(command: string, options?: ObjectEncodingOptions & ExecOptions) {
 	return new Promise<{ stdout: string | Buffer; stderr: string | Buffer }>((resolve, reject) => {
 		exec(command, options, (err, stdout, stderr) => {
 			if (err) reject(err);
@@ -31,7 +34,7 @@ export function makeStates<T extends Record<string | number, (..._: unknown[]) =
 	context: ExtensionContext,
 	schema: T,
 ) {
-	const out = {} as { [K in keyof T]: ReturnType<T[K]> };
+	const out = {} as { [K in keyof T]: ReturnType<T[K]> | null };
 	for (const key in schema) {
 		Object.defineProperty(out, key, {
 			get() {
@@ -40,7 +43,37 @@ export function makeStates<T extends Record<string | number, (..._: unknown[]) =
 			set(value: ReturnType<T[typeof key]>) {
 				context.globalState.update(`odoo-lsp.${key}`, value);
 			},
-		})
+		});
 	}
 	return out;
+}
+
+export async function downloadFile(src: string, dest: string) {
+	if (isWindows) {
+		await $(`Invoke-WebRequest -Uri ${src} -OutFile ${dest}`, { shell });
+	} else {
+		await $(`wget -O ${dest} ${src}`, { shell });
+	}
+}
+
+export function which(bin: string) {
+	const checker = isWindows ? "Get-Command" : "which";
+	return new Promise<boolean>((resolve) => {
+		exec(`${checker} ${bin}`, { shell }, (err) => resolve(err === null));
+	});
+}
+
+export async function openLink(url: string) {
+	let opener: string;
+	if (process.platform === "win32") {
+		opener = "start";
+	} else if (process.platform === "darwin") {
+		opener = "open";
+	} else if (await which("wslview")) {
+		// from wslu
+		opener = "wslview";
+	} else {
+		opener = "xdg-open";
+	}
+	return await $(`${opener} ${url}`);
 }

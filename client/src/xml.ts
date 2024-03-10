@@ -9,7 +9,7 @@ interface XMLExtensionApi {
 export async function registerXmlFileAssociations(
 	context: vscode.ExtensionContext,
 	traceOutputChannel: vscode.OutputChannel,
-	extensionState: State
+	extensionState: State,
 ) {
 	try {
 		// see https://github.com/redhat-developer/vscode-xml/blob/main/src/api/xmlExtensionApi.ts
@@ -45,7 +45,7 @@ export async function registerXmlFileAssociations(
 					"Install the 'XML' extension for a better XML editing experience.",
 					"Install",
 					"Remind me later",
-					"Never show again"
+					"Never show again",
 				)
 				.then((choice) => {
 					if (choice === "Never show again") extensionState.noXmlReminders = true;
@@ -61,7 +61,7 @@ export async function registerXmlFileAssociations(
 export async function registerXPathSemanticTokensProvider(
 	context: vscode.ExtensionContext,
 	traceOutputChannel: vscode.OutputChannel,
-	extensionState: State
+	extensionState: State,
 ) {
 	const extension = vscode.extensions.all.find((e) => e.id === "deltaxml.xslt-xpath");
 	if (!extension) {
@@ -118,20 +118,26 @@ enum DocumentTypes {
 /** @see https://github.com/DeltaXML/vscode-xslt-tokenizer/blob/master/src/extension.ts */
 declare namespace XPathExtension {
 	class XsltSemanticTokensProvider implements vscode.DocumentSemanticTokensProvider {
-		protected xslLexer: XslLexer;
+		/*private*/ xslLexer: __private__.XslLexer;
 		public constructor(languageConfig: LanguageConfiguration);
-		onDidChangeSemanticTokens?: vscode.Event<void> | undefined;
 		provideDocumentSemanticTokens(
 			document: vscode.TextDocument,
 			token: vscode.CancellationToken,
 		): vscode.ProviderResult<vscode.SemanticTokens>;
 	}
-	class XslLexer {
-		public provideCharLevelState: boolean;
-		public analyse(xsl: string, keepNameTests?: boolean): BaseToken[];
-		public static getTextmateTypeLegend(): string[];
+
+	/** not exported by the actual extension, do not use directly. */
+	namespace __private__ {
+		class XslLexer {
+			// biome-ignore lint/complexity/useLiteralKeys: otherwise not allowed by TS
+			get ["constructor"](): typeof XslLexer;
+			public provideCharLevelState: boolean;
+			public analyse(xsl: string, keepNameTests?: boolean): BaseToken[];
+			public static getTextmateTypeLegend(): string[];
+		}
+		enum ErrorType {}
 	}
-	class XPathLexer {}
+
 	interface LanguageConfiguration {
 		expressionAtts: string[];
 		variableElementNames: string[];
@@ -157,12 +163,11 @@ declare namespace XPathExtension {
 		charType?: number;
 		tokenType: number;
 		context?: BaseToken | null;
-		error?: ErrorType;
+		error?: __private__.ErrorType;
 		nesting?: number;
 		referenced?: boolean;
 		tagElementId?: number;
 	}
-	enum ErrorType {}
 }
 
 export const OdooXpathSemanticTokensProviderMixin = (clazz: typeof XPathExtension.XsltSemanticTokensProvider) =>
@@ -175,7 +180,7 @@ export const OdooXpathSemanticTokensProviderMixin = (clazz: typeof XPathExtensio
 			super(config);
 			this.xslLexer.provideCharLevelState = false;
 		}
-		async provideDocumentSemanticTokens(document: vscode.TextDocument, token: vscode.CancellationToken) {
+		async provideDocumentSemanticTokens(document: vscode.TextDocument, cancellationToken: vscode.CancellationToken) {
 			const tokens = this.xslLexer.analyse(document.getText());
 			const builder = new vscode.SemanticTokensBuilder();
 			const attributeNameToken = XmlSemanticTokensProviderMixin.attributeNameToken;
@@ -185,6 +190,7 @@ export const OdooXpathSemanticTokensProviderMixin = (clazz: typeof XPathExtensio
 			let inExpr = false;
 
 			for (const token of tokens) {
+				if (cancellationToken.isCancellationRequested) break;
 				if (
 					!inExpr &&
 					attributeNameToken === token.tokenType &&
@@ -194,7 +200,7 @@ export const OdooXpathSemanticTokensProviderMixin = (clazz: typeof XPathExtensio
 						)
 				) {
 					inExpr = true;
-					skipTillStart = 3; // skips expr = "
+					skipTillStart = 3; // skips `expr = "`
 				}
 				if (inExpr && skipTillStart-- > 0) continue;
 				if (inExpr) builder.push(token.line, token.startCharacter, token.length, token.tokenType, 0);
@@ -206,8 +212,7 @@ export const OdooXpathSemanticTokensProviderMixin = (clazz: typeof XPathExtensio
 
 		get legend() {
 			if (XmlSemanticTokensProviderMixin.legend) return XmlSemanticTokensProviderMixin.legend;
-			const clazz = this.xslLexer.constructor as typeof XPathExtension.XslLexer;
-			const tokenTypesLegend = clazz.getTextmateTypeLegend();
+			const tokenTypesLegend = this.xslLexer.constructor.getTextmateTypeLegend();
 			const tokenModifiersLegend = [
 				"declaration",
 				"documentation",
@@ -222,11 +227,7 @@ export const OdooXpathSemanticTokensProviderMixin = (clazz: typeof XPathExtensio
 			tokenModifiersLegend.forEach((tokenModifier, index) => tokenModifiers.set(tokenModifier, index));
 			XmlSemanticTokensProviderMixin.attributeNameToken = tokenTypesLegend.indexOf("attributeName");
 			XmlSemanticTokensProviderMixin.attributeValueToken = tokenTypesLegend.indexOf("attributeValue");
-
-			// biome-ignore lint/suspicious/noAssignInExpressions: <explanation>
-			return (XmlSemanticTokensProviderMixin.legend = new vscode.SemanticTokensLegend(
-				tokenTypesLegend,
-				tokenModifiersLegend,
-			));
+			XmlSemanticTokensProviderMixin.legend = new vscode.SemanticTokensLegend(tokenTypesLegend, tokenModifiersLegend);
+			return XmlSemanticTokensProviderMixin.legend;
 		}
 	};

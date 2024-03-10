@@ -5,19 +5,19 @@
 
 import { mkdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { exec, spawn } from "node:child_process";
-import * as vscode from "vscode";
+import { spawn } from "node:child_process";
 import { get } from "node:https";
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node";
 import { registerXmlFileAssociations, registerXPathSemanticTokensProvider } from "./xml";
-import { execAsync as $, guessRustTarget, makeStates } from "./utils";
+import { $, downloadFile, guessRustTarget, isWindows, makeStates, openLink, which } from "./utils";
+import * as vscode from "vscode";
 
 let client: LanguageClient;
+let extensionState: State;
 
 const repo = "https://github.com/Desdaemon/odoo-lsp";
 
 async function downloadLspBinary(context: vscode.ExtensionContext) {
-	const isWindows = process.platform === "win32";
 	const archiveExtension = isWindows ? ".zip" : ".tgz";
 	const runtimeDir = context.globalStorageUri.fsPath;
 	await mkdir(runtimeDir, { recursive: true });
@@ -28,7 +28,7 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 
 	let release = overrideVersion;
 	if (!preferNightly && !overrideVersion) {
-		release = context.extension.packageJSON._release || release;
+		release = context.extension.packageJSON._release || `v${context.extension.packageJSON.version}`;
 	} else if (preferNightly) {
 		release =
 			(await new Promise<string | undefined>((resolve, reject) =>
@@ -49,7 +49,7 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 								resolve(latest?.tag_name);
 							} catch (err) {
 								vscode.window.showErrorMessage(`Unable to fetch nightly release: ${err}`);
-								resolve(context.extension.packageJSON._release);
+								resolve(release);
 							}
 						});
 					},
@@ -60,7 +60,13 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		vscode.window.showErrorMessage(`Bug: invalid release "${release}"`);
 		return;
 	}
-	const latest = `${runtimeDir}/${release}${archiveExtension}`;
+
+	const today = new Date();
+	const todaysNightly = `nightly-${today.getFullYear()}${today.getUTCMonth() + 1}${today.getUTCDate()}`;
+	const hasNewerNightly = release.startsWith("nightly") && todaysNightly <= release;
+
+	const archiveName = release.startsWith("nightly") ? "nightly" : release;
+	const latest = `${runtimeDir}/${archiveName}${archiveExtension}`;
 	const exeExtension = isWindows ? ".exe" : "";
 	const odooLspBin = `${runtimeDir}/odoo-lsp${exeExtension}`;
 
@@ -128,39 +134,41 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		return;
 	}
 	const link = `${repo}/releases/download/${release}/odoo-lsp-${target}${archiveExtension}`;
+	const vsixLink = `${repo}/releases/download/${release}/odoo-lsp-${context.extension.packageJSON.version}.vsix`;
+	const vsixOutput = `${runtimeDir}/odoo-lsp.vsix`;
 	const shaLink = `${link}.sha256`;
 	const shaOutput = `${latest}.sha256`;
 
 	const powershell = { shell: "powershell.exe" };
 	const sh = { shell: "sh" };
 	if (!existsSync(latest)) {
-		vscode.window.setStatusBarMessage(`Downloading odoo-lsp@${release}...`, 5);
-		try {
-			if (isWindows) {
-				await $(`Invoke-WebRequest -Uri ${link} -OutFile ${latest}`, powershell);
-				await $(`Invoke-WebRequest -Uri ${shaLink} -OutFile ${shaOutput}`, powershell);
-				const { stdout } = await $(
-					`(Get-FileHash ${latest} -Algorithm SHA256).Hash -eq (Get-Content ${shaOutput})`,
-					powershell,
-				);
-				if (stdout.toString().trim() !== "True") throw new Error("Checksum verification failed");
-				await $(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
-			} else {
-				await $(`wget -O ${latest} ${link}`, sh);
-				await $(`wget -O ${shaOutput} ${shaLink}`, sh);
-				await $(
-					`if [ "$(shasum -a 256 ${latest} | cut -d ' ' -f 1)" != "$(cat ${shaOutput})" ]; then exit 1; fi`,
-					sh,
-				);
-				await $(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
-			}
-		} catch (err) {
-			// We only build nightly when there are changes, so there will be days without nightly builds.
-			if (!(err instanceof Error) || !err.message.includes("404")) {
-				vscode.window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
-			}
-			await rm(latest);
-		}
+		await vscode.window.withProgress(
+			{ location: vscode.ProgressLocation.Notification, title: `Downloading odoo-lsp@${release}...` },
+			async () => {
+				try {
+					await downloadFile(link, latest);
+					await downloadFile(shaLink, shaOutput);
+					if (isWindows) {
+						const { stdout } = await $(
+							`(Get-FileHash ${latest} -Algorithm SHA256).Hash -eq (Get-Content ${shaOutput})`,
+							powershell,
+						);
+						if (stdout.toString().trim() !== "True") throw new Error("Checksum verification failed");
+						await $(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
+					} else {
+						await $(
+							`if [ "$(shasum -a 256 ${latest} | cut -d ' ' -f 1)" != "$(cat ${shaOutput})" ]; then exit 1; fi`,
+							sh,
+						);
+						await $(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
+					}
+				} catch (err) {
+					// We only build nightly when there are changes, so there will be days without nightly builds.
+					if (hasNewerNightly) vscode.window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
+					await rm(latest, { force: true });
+				}
+			},
+		);
 	} else if (!existsSync(odooLspBin)) {
 		if (isWindows) {
 			await $(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
@@ -169,41 +177,43 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		}
 	}
 
+	if (extensionState.nightlyExtensionUpdates !== "never" && preferNightly && hasNewerNightly) {
+		downloadFile(vsixLink, vsixOutput).then(async () => {
+			const resp = await vscode.window.showInformationMessage(
+				"A new nightly update for the extension is available. Install and reload?",
+				"Yes",
+				"No",
+				"Always",
+				"Never show again",
+			);
+			if (resp === "Always") extensionState.nightlyExtensionUpdates = "always";
+			else if (resp === "Never show again") extensionState.nightlyExtensionUpdates = "never";
+
+			if (resp === "Yes" || resp === "Always") {
+				await vscode.commands.executeCommand(
+					"workbench.extensions.installExtension",
+					vscode.Uri.file(`${runtimeDir}/odoo-lsp.vsix`),
+				);
+				await vscode.commands.executeCommand("workbench.action.reloadWindow");
+			}
+		});
+	}
+
 	if (existsSync(odooLspBin)) return odooLspBin;
 }
 
-function which(bin: string) {
-	const checker = process.platform === "win32" ? "where.exe" : "which";
-	return new Promise<boolean>((resolve) => {
-		exec(`${checker} ${bin}`, (err) => resolve(err === null));
+const makeExtensionState = (context: vscode.ExtensionContext) =>
+	makeStates(context, {
+		noXmlReminders: Boolean,
+		noXPathReminders: Boolean,
+		nightlyExtensionUpdates: String as () => "always" | "never",
 	});
-}
-
-async function openLink(url: string) {
-	let opener: string;
-	if (process.platform === "win32") {
-		opener = "start";
-	} else if (process.platform === "darwin") {
-		opener = "open";
-	} else if (await which("wslview")) {
-		// from wslu
-		opener = "wslview";
-	} else {
-		opener = "xdg-open";
-	}
-	return await $(`${opener} ${url}`);
-}
-
-const makeExtensionState = (context: vscode.ExtensionContext) => makeStates(context, {
-	noXmlReminders: Boolean,
-	noXPathReminders: Boolean,
-});
 
 export type State = ReturnType<typeof makeExtensionState>;
 
 export async function activate(context: vscode.ExtensionContext) {
 	const traceOutputChannel = vscode.window.createOutputChannel("Odoo LSP Extension");
-	const extensionState = makeExtensionState(context);
+	extensionState = makeExtensionState(context);
 
 	await registerXmlFileAssociations(context, traceOutputChannel, extensionState);
 	await registerXPathSemanticTokensProvider(context, traceOutputChannel, extensionState);
@@ -297,6 +307,8 @@ export async function activate(context: vscode.ExtensionContext) {
 	client = new LanguageClient("odoo-lsp", "Odoo LSP", serverOptions, clientOptions);
 	await client.start();
 	traceOutputChannel.appendLine("Odoo LSP started");
+
+	return { client, serverOptions };
 }
 
 export function deactivate(): Thenable<void> | undefined {
