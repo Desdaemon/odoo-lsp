@@ -2,12 +2,9 @@ use std::{env::current_dir, fs::canonicalize, io::stdout, path::Path, process::e
 
 use globwalk::FileType;
 use log::{debug, warn};
-use miette::{diagnostic, Context, IntoDiagnostic};
-use odoo_lsp::{
-	config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig},
-	format_loc,
-	index::{interner, Index},
-};
+use miette::{diagnostic, IntoDiagnostic};
+use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
+use odoo_lsp::index::{interner, Index};
 use self_update::{backends::github, Status};
 use serde_json::Value;
 
@@ -169,8 +166,7 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 			.file_type(FileType::FILE | FileType::SYMLINK)
 			.follow_links(true)
 			.build()
-			.into_diagnostic()
-			.with_context(|| format_loc!("Could not glob into {:?}", entry.key()))?;
+			.into_diagnostic()?;
 		for js in scripts {
 			let Ok(js) = js else { continue };
 			let path = js.path().to_path_buf();
@@ -185,10 +181,10 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 		match res {
 			Ok(Ok(())) => {}
 			Ok(Err(err)) => {
-				warn!("(tsconfig) {err}");
+				warn!(target: "tsconfig", "{err}");
 			}
 			Err(err) => {
-				debug!("(tsconfig) join error: {err}")
+				debug!(target: "tsconfig", "join error: {err}")
 			}
 		}
 	}
@@ -281,6 +277,7 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 	} else {
 		let file = std::fs::OpenOptions::new()
 			.write(true)
+			.truncate(true)
 			.create(true)
 			.open(output)
 			.into_diagnostic()?;
@@ -304,6 +301,7 @@ pub fn init(addons_path: &[&str], output: Option<&str>) -> miette::Result<()> {
 	} else {
 		let file = std::fs::OpenOptions::new()
 			.write(true)
+			.truncate(true)
 			.create(true)
 			.open(output)
 			.into_diagnostic()?;

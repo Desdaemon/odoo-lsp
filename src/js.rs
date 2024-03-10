@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use crate::backend::Backend;
 use crate::Text;
 
+use fomat_macros::fomat;
 use miette::diagnostic;
 use odoo_lsp::index::{interner, ComponentQuery};
 use odoo_lsp::some;
@@ -97,26 +98,32 @@ impl Backend {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				if capture.index == ComponentQuery::TemplateName as u32 && range.contains(&offset) {
-					let key = String::from_utf8_lossy(&contents[range.shrink(1)]);
-					let key = some!(interner().get(&key));
+					let name = String::from_utf8_lossy(&contents[range.shrink(1)]);
+					let key = some!(interner().get(&name));
 					let template = some!(self.index.templates.get(&key.into()));
+					let value = fomat!(
+						"```xml\n"
+						"<t t-name=\"" (name) "\"/>\n"
+						"```"
+						if let Some(loc) = template.location.as_ref() { "\n*Defined at:* " (loc) }
+					);
 					return Ok(Some(Hover {
-						contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
-							language: "rust".to_string(),
-							value: format!("{:#?}", template.value()),
-						})),
+						contents: HoverContents::Scalar(MarkedString::String(value)),
 						range: Some(ts_range_to_lsp_range(capture.node.range())),
 					}));
 				}
 				if capture.index == ComponentQuery::Name as u32 && range.contains(&offset) {
-					let key = String::from_utf8_lossy(&contents[range]);
-					let key = some!(interner().get(&key));
+					let name = String::from_utf8_lossy(&contents[range]);
+					let key = some!(interner().get(&name));
 					let component = some!(self.index.components.get(&key.into()));
+					let value = fomat!(
+						"```js\n"
+						"(component) class " (name) ";\n"
+						"```"
+						if let Some(loc) = component.location.as_ref() { "\n*Defined at:* " (loc) }
+					);
 					return Ok(Some(Hover {
-						contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
-							language: "rust".to_string(),
-							value: format!("{:#?}", component.value()),
-						})),
+						contents: HoverContents::Scalar(MarkedString::String(value)),
 						range: Some(ts_range_to_lsp_range(capture.node.range())),
 					}));
 				}

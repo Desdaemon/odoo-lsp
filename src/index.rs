@@ -8,7 +8,7 @@ use ignore::gitignore::Gitignore;
 use ignore::Match;
 use lasso::{Key, Spur, ThreadedRodeo};
 use log::{debug, info, warn};
-use miette::{diagnostic, Context, IntoDiagnostic};
+use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use tower_lsp::lsp_types::notification::Progress;
 use tower_lsp::lsp_types::request::{ShowDocument, ShowMessageRequest};
@@ -20,7 +20,7 @@ use xmlparser::{Token, Tokenizer};
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
 use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, RangeExt, Usage};
-use crate::{format_loc, ImStr};
+use crate::{format_loc, ok, ImStr};
 
 mod record;
 pub use record::{RecordId, SymbolMap, SymbolSet};
@@ -88,12 +88,14 @@ impl Index {
 		}
 
 		let t0 = tokio::time::Instant::now();
-		let manifests = globwalk::glob_builder(format!("{root}/**/__manifest__.py"))
-			.file_type(FileType::FILE | FileType::SYMLINK)
-			.follow_links(true)
-			.build()
-			.into_diagnostic()
-			.with_context(|| format!("Could not glob into {root}"))?;
+		let manifests = ok!(
+			globwalk::glob_builder(format!("{root}/**/__manifest__.py"))
+				.file_type(FileType::FILE | FileType::SYMLINK)
+				.follow_links(true)
+				.build(),
+			"Could not glob into {}",
+			root
+		);
 		let mut gitignore = ignore::gitignore::GitignoreBuilder::new(root);
 		gitignore
 			.add(".gitignore")
@@ -141,9 +143,12 @@ impl Index {
 					.await;
 			}
 			let module_key = interner.get_or_intern(&module_name);
-			let module_path = module_dir
-				.strip_prefix(root)
-				.map_err(|_| miette::diagnostic!("module_dir={:?} is not a subpath of root={}", module_dir, root))?;
+			let module_path = ok!(
+				module_dir.strip_prefix(root),
+				"module_dir={:?} is not a subpath of root={}",
+				module_dir,
+				root
+			);
 			if !self.roots.entry(root.into()).or_default().insert_checked(
 				module_key.into_usize() as _,
 				module_path.to_str().expect("non-utf8 path").into(),
@@ -188,12 +193,14 @@ impl Index {
 			if tsconfig {
 				continue;
 			}
-			let xmls = globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
-				.file_type(FileType::FILE | FileType::SYMLINK)
-				.follow_links(true)
-				.build()
-				.into_diagnostic()
-				.with_context(|| format_loc!("Could not glob into {:?}", manifest.path()))?;
+			let xmls = ok!(
+				globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
+					.file_type(FileType::FILE | FileType::SYMLINK)
+					.follow_links(true)
+					.build(),
+				"Could not glob into {:?}",
+				manifest.path()
+			);
 			for xml in xmls {
 				let xml = match xml {
 					Ok(entry) => entry,
@@ -204,12 +211,14 @@ impl Index {
 				};
 				outputs.spawn(add_root_xml(xml.path().to_path_buf(), module_key.into()));
 			}
-			let pys = globwalk::glob_builder(format!("{}/**/*.py", module_dir.display()))
-				.file_type(FileType::FILE | FileType::SYMLINK)
-				.follow_links(true)
-				.build()
-				.into_diagnostic()
-				.with_context(|| format_loc!("Could not glob into {:?}", manifest.path()))?;
+			let pys = ok!(
+				globwalk::glob_builder(format!("{}/**/*.py", module_dir.display()))
+					.file_type(FileType::FILE | FileType::SYMLINK)
+					.follow_links(true)
+					.build(),
+				"Could not glob into {:?}",
+				manifest.path()
+			);
 			for py in pys {
 				let py = match py {
 					Ok(entry) => entry,
@@ -221,12 +230,14 @@ impl Index {
 				let path = py.path().to_path_buf();
 				outputs.spawn(add_root_py(path));
 			}
-			let scripts = globwalk::glob_builder(format!("{}/**/*.js", module_dir.display()))
-				.file_type(FileType::FILE | FileType::SYMLINK)
-				.follow_links(true)
-				.build()
-				.into_diagnostic()
-				.with_context(|| format_loc!("Could not glob into {:?}", manifest.path()))?;
+			let scripts = ok!(
+				globwalk::glob_builder(format!("{}/**/*.js", module_dir.display()))
+					.file_type(FileType::FILE | FileType::SYMLINK)
+					.follow_links(true)
+					.build(),
+				"Could not glob into {:?}",
+				manifest.path()
+			);
 			for js in scripts {
 				let Ok(js) = js else { continue };
 				let path = js.path().to_path_buf();
@@ -307,10 +318,7 @@ impl Index {
 
 async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<Output> {
 	let path_uri = interner().get_or_intern(path.to_string_lossy().as_ref());
-	let file = tokio::fs::read(&path)
-		.await
-		.into_diagnostic()
-		.with_context(|| format_loc!("Could not read {path_uri}"))?;
+	let file = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
 	let file = String::from_utf8_lossy(&file);
 	let mut reader = Tokenizer::from(file.as_ref());
 	let mut records = vec![];
@@ -387,10 +395,7 @@ r#"
 }
 
 async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
-	let contents = tokio::fs::read(&path)
-		.await
-		.into_diagnostic()
-		.with_context(|| format_loc!("Could not read {}", path.display()))?;
+	let contents = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
 
 	let path = interner().get_or_intern(path.to_string_lossy().as_ref());
 	let models = index_models(&contents)?;

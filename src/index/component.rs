@@ -4,15 +4,15 @@ use std::{collections::HashMap, path::PathBuf};
 use dashmap::DashMap;
 use futures::executor::block_on;
 use lasso::Key;
-use miette::{diagnostic, Context, IntoDiagnostic};
+use miette::diagnostic;
 use qp_trie::wrapper::BString;
 use tokio::sync::RwLock;
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query_js;
 
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
-use crate::format_loc;
 use crate::utils::{offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, MinLoc, RangeExt, Usage};
+use crate::{format_loc, ok};
 
 use super::{interner, Component, ComponentName, Output, TemplateName};
 
@@ -100,15 +100,10 @@ r#"
 
 pub(super) async fn add_root_js(path: PathBuf) -> miette::Result<Output> {
 	let path_key = interner().get_or_intern(path.to_string_lossy().as_ref());
-	let contents = tokio::fs::read(&path)
-		.await
-		.into_diagnostic()
-		.with_context(|| format_loc!("Could not read {path_uri}"))?;
+	let contents = ok!(tokio::fs::read(&path).await, "Could not read {:?}", path);
 	let rope = ropey::Rope::from(String::from_utf8_lossy(&contents));
 	let mut parser = Parser::new();
-	parser
-		.set_language(tree_sitter_javascript::language())
-		.into_diagnostic()?;
+	ok!(parser.set_language(tree_sitter_javascript::language()));
 	let ast = parser
 		.parse(&contents, None)
 		.ok_or_else(|| diagnostic!("AST not parsed"))?;

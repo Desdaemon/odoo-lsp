@@ -8,7 +8,7 @@ use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
 use futures::executor::block_on;
 use lasso::Spur;
-use log::{debug, error, trace, warn};
+use log::{debug, error, info, trace, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use qp_trie::{wrapper::BString, Trie};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
@@ -197,7 +197,7 @@ impl ModelIndex {
 				let mut fields = vec![];
 				let fpath = interner().resolve(&location.path);
 				let contents = std::fs::read(fpath)
-					.map_err(|err| error!("Failed to read {fpath}:\n{err}"))
+					.map_err(|err| error!(target: "populate_field_names", "Failed to read {fpath}:\n{err}"))
 					.ok()?;
 				let mut parser = Parser::new();
 				parser
@@ -324,9 +324,9 @@ impl ModelIndex {
 			fields_set.insert_str(interner().resolve(&key), ());
 		}
 
-		log::info!(
-			"[{}] Populated {} fields in {}ms",
-			model_name,
+		info!(
+			target: "populate_model_fields",
+			"{model_name}: {} fields, {}ms",
 			out.len(),
 			t0.elapsed().as_millis()
 		);

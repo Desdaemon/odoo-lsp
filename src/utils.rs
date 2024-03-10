@@ -1,9 +1,7 @@
 use core::ops::{Add, Sub};
-use std::{
-	borrow::Cow,
-	fmt::Display,
-	sync::atomic::{AtomicBool, Ordering},
-};
+use std::borrow::Cow;
+use std::fmt::Display;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::try_result::TryResult;
 use lasso::Spur;
@@ -19,6 +17,7 @@ use crate::index::interner;
 mod usage;
 pub use usage::{Usage, UsageInfo};
 
+/// Unwraps the option in the context of a function that returns [`Result<Option<_>>`].
 #[macro_export]
 macro_rules! some {
 	($opt:expr) => {
@@ -32,11 +31,33 @@ macro_rules! some {
 	};
 }
 
+/// Early return, with optional message passed to [`format_loc`].
+#[macro_export]
+macro_rules! ok {
+    ($res:expr $(,)?) => {
+        miette::IntoDiagnostic::into_diagnostic($res)?
+    };
+    ($res:expr, $($tt:tt)+) => {
+    	miette::WrapErr::wrap_err_with(miette::IntoDiagnostic::into_diagnostic($res), || format_loc!($($tt)+))?
+    }
+}
+
 /// A more economical version of [Location].
 #[derive(Clone, Debug)]
 pub struct MinLoc {
 	pub path: Spur,
 	pub range: Range,
+}
+
+impl Display for MinLoc {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_fmt(format_args!(
+			"{}:{}:{}",
+			interner().resolve(&self.path),
+			self.range.start.line + 1,
+			self.range.start.character + 1
+		))
+	}
 }
 
 impl From<MinLoc> for Location {
@@ -236,17 +257,11 @@ impl<T> RangeExt for core::ops::Range<T> {
 	}
 }
 
-pub trait Report {
-	fn report<S: Display>(self, context: impl FnOnce() -> S);
-}
-
-impl<T> Report for miette::Result<T> {
-	/// Consumes self and reports the results of a computation.
-	fn report<S: Display>(self, context: impl FnOnce() -> S) {
-		if let Err(err) = self {
-			eprintln!("{}:\n{err}", context());
-		}
-	}
+#[macro_export]
+macro_rules! loc {
+	() => {
+		concat!("[", file!(), ":", line!(), ":", column!(), "]")
+	};
 }
 
 /// [format] preceded with file location information.
@@ -254,7 +269,7 @@ impl<T> Report for miette::Result<T> {
 #[macro_export]
 macro_rules! format_loc {
 	($tpl:literal) => {
-		concat!("[", file!(), ":", line!(), ":", column!(), "] ", $tpl)
+		concat!($crate::loc!(), " ", $tpl)
 	};
 	($tpl:literal $($tt:tt)*) => {
 		format!($crate::format_loc!($tpl) $($tt)*)
@@ -343,5 +358,71 @@ impl Drop for Blocker<'_> {
 	fn drop(&mut self) {
 		self.0.should_wait.store(false, Ordering::SeqCst);
 		self.0.notifier.notify_waiters();
+	}
+}
+
+// /// Custom display trait to bypass orphan rules.
+// /// Implemented on [`Option<_>`] to default to printing nothing.
+pub trait DisplayExt {
+	fn display(self) -> impl Display;
+}
+
+// impl<T: Display> DisplayExt for Option<T> {
+// 	fn display(&self) -> impl Display {
+// 		#[repr(transparent)]
+// 		struct OptionDisplay<'a, T>(Option<&'a T>);
+// 		impl<T: Display> Display for OptionDisplay<'_, T> {
+// 			#[inline]
+// 			fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> std::fmt::Result {
+// 				match &self.0 {
+// 					Some(value) => value.fmt(f),
+// 					None => Ok(()),
+// 				}
+// 			}
+// 		}
+// 		OptionDisplay(self.as_ref())
+// 	}
+// }
+
+// impl<T: Display> DisplayExt for Option<&T> {
+// 	fn display(self) -> impl Display {
+// 		match self {
+// 			Some(value) => value as &dyn Display,
+// 			None => &"" as &dyn Display,
+// 		}
+// 	}
+// }
+impl<T: Display> DisplayExt for Option<T> {
+	fn display(self) -> impl Display {
+		struct Adapter<T>(Option<T>);
+		impl<T: Display> Display for Adapter<T> {
+			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				match &self.0 {
+					Some(value) => value.fmt(f),
+					None => Ok(()),
+				}
+			}
+		}
+		Adapter(self)
+	}
+}
+
+impl<T: Display> DisplayExt for &T {
+	fn display(self) -> impl Display {
+		self as &dyn Display
+	}
+}
+
+impl DisplayExt for std::fmt::Arguments<'_> {
+	fn display(self) -> impl Display {
+		#[repr(transparent)]
+		struct Adapter<'a>(std::fmt::Arguments<'a>);
+		impl Display for Adapter<'_> {
+			#[inline]
+			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				f.write_fmt(self.0)
+			}
+		}
+		Adapter(self)
 	}
 }

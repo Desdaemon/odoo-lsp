@@ -79,7 +79,7 @@ impl Backend {
 								if let Err(err) =
 									gather_templates(path_uri, &mut reader, rope.clone(), &mut entries, true)
 								{
-									warn!("gather_templates failed: {err}");
+									warn!(target: "on_change_xml/gather_templates", "{err}");
 									continue;
 								}
 								record_ranges.extend(entries.into_iter().map(|entry| {
@@ -89,15 +89,15 @@ impl Backend {
 							}
 							Err(err) => {
 								warn!(
-									"{} could not be completely parsed: {}\n{err}",
-									local.as_str(),
+									target: "on_change_xml",
+									"{local} could not be completely parsed: {}\n{err}",
 									uri.path()
 								);
 								continue;
 							}
 						};
 						let Some(range) = lsp_range_to_offset_range(record.location.range, &rope) else {
-							log::debug!("(on_change_xml) no range for {}", record.id);
+							debug!(target: "on_change_xml", "no range for {}", record.id);
 							continue;
 						};
 						record_ranges.push(range);

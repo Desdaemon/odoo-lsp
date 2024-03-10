@@ -4,9 +4,10 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use dashmap::{DashMap, DashSet};
+use fomat_macros::fomat;
 use globwalk::FileType;
 use log::{debug, info, warn};
-use miette::{diagnostic, IntoDiagnostic};
+use miette::{diagnostic, miette};
 use odoo_lsp::component::{Prop, PropDescriptor};
 use ropey::Rope;
 use serde_json::Value;
@@ -127,7 +128,7 @@ impl Backend {
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
 				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
 			}
-			other => return Err(diagnostic!("Unhandled language: {other:?}")).into_diagnostic(),
+			other => return Err(miette!("Unhandled language: {other:?}")),
 		}
 
 		if eager_diagnostics {
@@ -575,26 +576,10 @@ impl Backend {
 		Ok(Some(locations))
 	}
 	pub fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>, identifier: Option<&str>) -> String {
-		use std::fmt::Write;
-		let mut out = String::new();
-		if let Some(name) = model_name {
-			if let Some(ident) = identifier {
-				_ = writeln!(
-					&mut out,
-					concat!("```python\n", "{}: Model[\"{}\"]\n", "```  "),
-					ident, name
-				)
-			} else {
-				_ = writeln!(&mut out, concat!("```python\n", "Model[\"{}\"]\n", "```  "), name)
-			}
-		}
-
-		if let Some(base) = &model.base {
-			if let Some(module) = self.index.module_of_path(Path::new(interner().resolve(&base.0.path))) {
-				let module = interner().resolve(&module);
-				_ = writeln!(&mut out, "*Defined in:* `{module}`  ")
-			}
-		}
+		let module = model
+			.base
+			.as_ref()
+			.and_then(|base| self.index.module_of_path(Path::new(interner().resolve(&base.0.path))));
 		let mut descendants = model
 			.descendants
 			.iter()
@@ -604,68 +589,55 @@ impl Backend {
 					return Some(None);
 				};
 				if mods.insert(module) {
-					Some(Some(loc))
+					Some(Some(module))
 				} else {
 					Some(None)
 				}
 			})
 			.flatten();
-		let mut descendants_count = 0;
-		while descendants_count < Self::INHERITS_LIMIT {
-			let Some(loc) = descendants.next() else {
-				break;
-			};
-			let Some(module) = self.index.module_of_path(Path::new(interner().resolve(&loc.path))) else {
-				continue;
-			};
-			let module = interner().resolve(&module);
-			if descendants_count == 0 {
-				_ = write!(&mut out, "*Inherited in:* `{module}`");
-			} else {
-				_ = write!(&mut out, ", `{module}`");
+		fomat! {
+			if let Some(name) = model_name {
+				"```python\n"
+				if let Some(ident) = identifier { (ident) ": " } "Model[\"" (name) "\"]\n"
+				"```  \n"
 			}
-			descendants_count += 1
+			if let Some(module) = module {
+				"*Defined in:* `" (interner().resolve(&module)) "`  \n"
+			}
+			for (idx, descendant) in descendants
+				.by_ref()
+				.take(Self::INHERITS_LIMIT)
+				.enumerate()
+			{
+				if idx == 0 { "*Inherited in:* " } "`" (interner().resolve(&descendant)) "`"
+			} sep { ", " }
+			match descendants.count() {
+				0 => {}
+				remaining => { " (+" (remaining) " modules)" }
+			}
+			if let Some(help) = &model.docstring { "  \n" (help.to_string()) }
 		}
-		let remaining = descendants.count();
-		if remaining > 0 {
-			_ = writeln!(&mut out, " (+{remaining} modules)  \n");
-		} else {
-			_ = out.write_str("  \n\n");
-		}
-		if let Some(help) = &model.docstring {
-			_ = out.write_str(help.to_string().as_ref());
-		}
-		out
 	}
 	pub fn field_docstring(&self, name: &str, field: &Field, signature: bool) -> String {
-		use std::fmt::Write;
-		let mut out = String::new();
-		let type_ = interner().resolve(&field.type_);
-		if signature {
-			match &field.kind {
-				FieldKind::Value | FieldKind::Related(_) => {
-					out = format!(concat!("```python\n", "{} = fields.{}(…)\n", "```\n\n"), name, type_)
+		fomat! {
+			if signature {
+				"```python\n"
+				(name) " = fields." (interner().resolve(&field.type_))
+				r#"("#
+				match &field.kind {
+					FieldKind::Value | FieldKind::Related(_) => {}
+					FieldKind::Relational(relation) => { "\"" (interner().resolve(relation)) "\", " }
 				}
-				FieldKind::Relational(relation) => {
-					let relation = interner().resolve(relation);
-					out = format!(
-						concat!("```python\n", "{} = fields.{}(\"{}\", …)\n", "```\n\n"),
-						name, type_, relation
-					);
-				}
+				"…)\n```  \n"
 			}
+			if let Some(module) = self
+				.index
+				.module_of_path(Path::new(interner().resolve(&field.location.path)))
+			{
+				"*Defined in:* `" (interner().resolve(&module)) "`  \n"
+			}
+			if let Some(help) = &field.help { (help.to_string()) }
 		}
-		if let Some(module) = self
-			.index
-			.module_of_path(Path::new(interner().resolve(&field.location.path)))
-		{
-			let module = interner().resolve(&module);
-			_ = writeln!(&mut out, "*Defined in:* `{module}`  ");
-		}
-		if let Some(help) = &field.help {
-			_ = out.write_str(help.to_string().as_ref());
-		}
-		out
 	}
 	pub async fn on_change_config(&self, config: Config) {
 		if let Some(SymbolsConfig { limit: Some(limit) }) = config.symbols {
@@ -734,7 +706,7 @@ impl Backend {
 		let mut redundant = vec![];
 		let mut roots = self.roots.iter().map(|r| r.to_string()).collect::<Vec<_>>();
 		roots.sort_unstable_by_key(|root| root.len());
-		info!("{:?}", roots);
+		info!(target: "ensure_nonoverlapping_roots", "{roots:?}");
 		for lhs in 1..roots.len() {
 			for rhs in 0..lhs {
 				if roots[lhs].starts_with(&roots[rhs]) {
@@ -745,6 +717,7 @@ impl Backend {
 		}
 		if !redundant.is_empty() {
 			warn!(
+				target: "ensure_nonoverlapping_roots",
 				concat!(
 					"The following configured roots are redundant: {:?}\n",
 					"Reconfigure your roots to dismiss this warning.\n",

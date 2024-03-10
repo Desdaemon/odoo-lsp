@@ -5,8 +5,8 @@ use std::cmp::Ordering;
 use std::path::Path;
 
 use dashmap::try_result::TryResult;
-use log::{debug, error, warn};
-use miette::diagnostic;
+use log::{debug, warn};
+use miette::{diagnostic, miette};
 use odoo_lsp::index::{index_models, interner, Module, Symbol};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
@@ -19,8 +19,7 @@ use ts_macros::query;
 
 query! {
 	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Access, Prop, ForXmlId);
-r#"
-((call [
+r#"((call [
 	(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
 	(attribute (identifier) @REQUEST (identifier) @_render)
 	(attribute (_) (identifier) @FOR_XML_ID)
@@ -178,14 +177,14 @@ impl Backend {
 		rope: Rope,
 	) -> miette::Result<Option<CompletionResponse>> {
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, &rope) else {
-			error!(format_loc!("python_completions: invalid offset"));
+			warn!(target: "python_completions", "invalid position {:?}", params.text_document_position.position);
 			return Ok(None);
 		};
 		let Some(current_module) = self
 			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
 		else {
-			debug!(format_loc!("python_completions: no current_module"));
+			debug!(target: "python_completions", "no current module");
 			return Ok(None);
 		};
 		let mut cursor = tree_sitter::QueryCursor::new();
@@ -472,7 +471,7 @@ impl Backend {
 			.get(uri.path())
 			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
-			Err(diagnostic!("could not find offset for {}", uri.path()))?
+			return Err(miette!("could not find offset for {}", uri.path()));
 		};
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
@@ -801,7 +800,7 @@ impl Backend {
 	) {
 		let path = uri.path();
 		let Some(ast) = self.ast_map.get(path) else {
-			warn!("Did not build AST for {path}");
+			warn!(target: "diagnose_python", "Did not build AST for {path}");
 			return;
 		};
 		let contents = Cow::from(rope.clone());

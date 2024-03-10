@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use ropey::Rope;
 use serde_json::Value;
 use tower::ServiceBuilder;
@@ -17,7 +17,7 @@ use tower_lsp::{LanguageServer, LspService, Server};
 
 use odoo_lsp::config::Config;
 use odoo_lsp::index::{interner, Interner};
-use odoo_lsp::{format_loc, some, utils::*};
+use odoo_lsp::{format_loc, loc, some, utils::*};
 
 mod analyze;
 mod backend;
@@ -177,6 +177,7 @@ impl LanguageServer for Backend {
 			match self.index.add_root(root.as_str(), progress.clone(), false).await {
 				Ok(Some(results)) => {
 					info!(
+						target: "initialized",
 						"{} | {} modules | {} records | {} templates | {} models | {} components | {:.2}s",
 						root.as_str(),
 						results.module_count,
@@ -188,7 +189,7 @@ impl LanguageServer for Backend {
 					);
 				}
 				Err(err) => {
-					error!("(initialized) could not add root {}:\n{err}", root.as_str());
+					error!(target: "initialized", "could not add root {}:\n{err}", root.as_str());
 				}
 				_ => {}
 			}
@@ -253,10 +254,11 @@ impl LanguageServer for Backend {
 					{
 						if let Some(file_path) = path_.parent() {
 							let file_path = file_path.to_string_lossy();
-							self.index
+							_ = self
+								.index
 								.add_root(&file_path, None, false)
 								.await
-								.report(|| format_loc!("failed to add root {}", file_path));
+								.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path));
 							break;
 						}
 					}
@@ -265,16 +267,17 @@ impl LanguageServer for Backend {
 			}
 		}
 
-		self.on_change(backend::TextDocumentItem {
-			uri: params.text_document.uri,
-			text: Text::Full(params.text_document.text),
-			version: params.text_document.version,
-			language: Some(language),
-			old_rope: None,
-			open: true,
-		})
-		.await
-		.report(|| format_loc!("did_open failed"))
+		_ = self
+			.on_change(backend::TextDocumentItem {
+				uri: params.text_document.uri,
+				text: Text::Full(params.text_document.text),
+				version: params.text_document.version,
+				language: Some(language),
+				old_rope: None,
+				open: true,
+			})
+			.await
+			.inspect_err(|err| warn!(target: "did_open", "{err}"));
 	}
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
 		self.root_setup.wait().await;
@@ -284,16 +287,17 @@ impl LanguageServer for Backend {
 			text,
 		}] = params.content_changes.as_mut_slice()
 		{
-			self.on_change(backend::TextDocumentItem {
-				uri: params.text_document.uri,
-				text: Text::Full(core::mem::take(text)),
-				version: params.text_document.version,
-				language: None,
-				old_rope: None,
-				open: false,
-			})
-			.await
-			.report(|| format_loc!("did_change failed"));
+			_ = self
+				.on_change(backend::TextDocumentItem {
+					uri: params.text_document.uri,
+					text: Text::Full(core::mem::take(text)),
+					version: params.text_document.version,
+					language: None,
+					old_rope: None,
+					open: false,
+				})
+				.await
+				.inspect_err(|err| warn!(target: "did_change", "{err}"));
 			return;
 		}
 		let mut document = self
@@ -320,16 +324,17 @@ impl LanguageServer for Backend {
 			}
 		}
 		drop(document);
-		self.on_change(backend::TextDocumentItem {
-			uri: params.text_document.uri,
-			text: Text::Delta(params.content_changes),
-			version: params.text_document.version,
-			language: None,
-			old_rope: Some(old_rope),
-			open: false,
-		})
-		.await
-		.report(|| format_loc!("did_change failed"));
+		_ = self
+			.on_change(backend::TextDocumentItem {
+				uri: params.text_document.uri,
+				text: Text::Delta(params.content_changes),
+				version: params.text_document.version,
+				language: None,
+				old_rope: Some(old_rope),
+				open: false,
+			})
+			.await
+			.inspect_err(|err| warn!(target: "did_change", "{err}"));
 	}
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		self.root_setup.wait().await;
@@ -344,9 +349,10 @@ impl LanguageServer for Backend {
 			let zone = document.damage_zone.take();
 			let rope = &document.rope;
 			let text = Cow::from(rope.slice(..));
-			self.update_models(Text::Full(text.into_owned()), &uri, rope.clone())
+			_ = self
+				.update_models(Text::Full(text.into_owned()), &uri, rope.clone())
 				.await
-				.report(|| format_loc!("update_models"));
+				.inspect_err(|err| warn!("update_models failed:\n{err}"));
 			if zone.is_some() {
 				debug!("did_save diagnosis");
 				self.diagnose_python(&uri, &document.rope.clone(), zone, &mut document.diagnostics_cache);
@@ -377,7 +383,7 @@ impl LanguageServer for Backend {
 		};
 
 		let location = location
-			.map_err(|err| error!("Error retrieving references:\n{err}"))
+			.map_err(|err| error!(target: "goto_definition", "Error retrieving references:\n{err}"))
 			.ok()
 			.flatten();
 		Ok(location.map(GotoDefinitionResponse::Scalar))
@@ -400,11 +406,14 @@ impl LanguageServer for Backend {
 			_ => return Ok(None),
 		};
 
-		Ok(refs.map_err(|err| error!("{err}")).ok().flatten())
+		Ok(refs
+			.inspect_err(|err| warn!(target: "references", "{err}"))
+			.ok()
+			.flatten())
 	}
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
 		let uri = &params.text_document_position.text_document.uri;
-		debug!("completion {}", uri.path());
+		debug!(target: "completion", "{}", uri.path());
 
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
@@ -559,10 +568,12 @@ impl LanguageServer for Backend {
 		for added in params.event.added {
 			let file_path = added.uri.to_file_path().expect("not a file path");
 			let file_path = file_path.as_os_str().to_string_lossy();
-			self.index
-				.add_root(&file_path, None, false)
-				.await
-				.report(|| format_loc!("(did_change_workspace_folders) failed to add root {}", file_path));
+			_ = self.index.add_root(&file_path, None, false).await.inspect_err(|err| {
+				warn!(
+					"(did_change_workspace_folders) failed to add root {}:\n{err}",
+					file_path
+				)
+			});
 		}
 		for removed in params.event.removed {
 			self.index.remove_root(removed.uri.path());
@@ -658,7 +669,14 @@ impl LanguageServer for Backend {
 
 #[tokio::main]
 async fn main() {
-	env_logger::init();
+	env_logger::Builder::new()
+		.filter_level(log::LevelFilter::Off)
+		.format_timestamp(None)
+		.format_indent(Some(2))
+		.format_target(true)
+		.format_module_path(cfg!(debug_assertions))
+		.parse_default_env()
+		.init();
 
 	let args = std::env::args().collect::<Vec<_>>();
 	let args = args.iter().skip(1).map(String::as_str).collect::<Vec<_>>();
@@ -666,24 +684,25 @@ async fn main() {
 	match args.command {
 		cli::Command::Run => {}
 		cli::Command::TsConfig => {
-			return cli::tsconfig(&args.addons_path, args.output)
+			_ = cli::tsconfig(&args.addons_path, args.output)
 				.await
-				.report(|| format_loc!("tsconfig failed"))
+				.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
+			return;
 		}
 		cli::Command::Init { tsconfig } => {
-			cli::init(&args.addons_path, args.output).report(|| format_loc!("init failed"));
+			_ = cli::init(&args.addons_path, args.output).inspect_err(|err| eprintln!("{} init failed: {err}", loc!()));
 			if tsconfig {
-				cli::tsconfig(&args.addons_path, None)
+				_ = cli::tsconfig(&args.addons_path, None)
 					.await
-					.report(|| format_loc!("tsconfig failed"));
+					.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
 			}
 			return;
 		}
 		cli::Command::SelfUpdate { nightly } => {
-			tokio::task::spawn_blocking(move || cli::self_update(nightly))
+			_ = tokio::task::spawn_blocking(move || cli::self_update(nightly))
 				.await
 				.unwrap()
-				.report(|| format_loc!("self-update failed"));
+				.inspect_err(|err| eprintln!("{} self-update failed: {err}", loc!()));
 			return;
 		}
 	}
