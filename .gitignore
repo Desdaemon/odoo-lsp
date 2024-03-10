@@ -4,6 +4,6 @@ out/
 .pnpm-debug.log
 *.ast 
 *.nrs
-dist/
+dist/*
 *.vsix
 Cargo.toml

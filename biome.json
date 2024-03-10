@@ -3,5 +3,15 @@
 	"formatter": {
 		"lineWidth": 120,
 		"indentStyle": "tab"
-	}
+	},
+	"overrides": [
+		{
+			"include": [".vscode/**"],
+			"json": {
+				"parser": {
+					"allowComments": true
+				}
+			}
+		}
+	]
 }

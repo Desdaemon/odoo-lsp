@@ -23,7 +23,8 @@
 				"injectTo": ["text.xml"],
 				"embeddedLanguages": {
 					"meta.embedded.inline.python": "python",
-					"meta.embedded.inline.javascript": "javascript"
+					"meta.embedded.inline.javascript": "javascript",
+					"meta.embedded.inline.xpath": "xpath"
 				}
 			}
 		],

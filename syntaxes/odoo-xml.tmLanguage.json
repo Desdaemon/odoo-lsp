@@ -190,6 +190,42 @@
 					"include": "source.python"
 				}
 			]
+		},
+		{
+			"begin": "(?:^|\\s+)(expr)\\s*=(\")",
+			"end": "\\s*(\")",
+			"contentName": "meta.embedded.inline.xpath",
+			"beginCaptures": {
+				"1": {
+					"name": "entity.other.attribute-name.localname.xml"
+				},
+				"2": {
+					"name": "string.quoted.double.xml"
+				}
+			},
+			"endCaptures": {
+				"1": {
+					"name": "string.quoted.double.xml"
+				}
+			}
+		},
+		{
+			"begin": "(?:^|\\s+)(expr)\\s*=(')",
+			"end": "\\s*(')",
+			"contentName": "meta.embedded.inline.xpath",
+			"beginCaptures": {
+				"1": {
+					"name": "entity.other.attribute-name.localname.xml"
+				},
+				"2": {
+					"name": "string.quoted.single.xml"
+				}
+			},
+			"endCaptures": {
+				"1": {
+					"name": "string.quoted.single.xml"
+				}
+			}
 		}
 	],
 	"repository": {

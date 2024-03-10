@@ -1,5 +1,5 @@
 #!/usr/bin/env -S deno run
-import type { Grammar, Pattern } from "./schema";
+import type { Grammar } from "./schema";
 
 type XmlStringVariantProducer<T> = (
 	quote: '"' | "'",
@@ -96,6 +96,20 @@ export default function grammar() {
 					1: { name },
 				},
 				patterns: [{ include: "source.python" }],
+			})),
+			...makeXmlStringVariants((quote, name) => ({
+				begin: r`${leadingWs}(expr)\s*=(${quote})`,
+				end: r`\s*(${quote})`,
+				contentName: "meta.embedded.inline.xpath",
+				beginCaptures: {
+					1: {
+						name: "entity.other.attribute-name.localname.xml",
+					},
+					2: { name },
+				},
+				endCaptures: {
+					1: { name },
+				},
 			})),
 		],
 		repository: {

@@ -4,49 +4,27 @@
  * ------------------------------------------------------------------------------------------ */
 
 import { mkdir, rm } from "node:fs/promises";
-import { ObjectEncodingOptions, existsSync } from "node:fs";
-import { exec, spawn, ExecOptions } from "node:child_process";
-import { workspace, window, ExtensionContext, commands, WorkspaceFolder, extensions } from "vscode";
+import { existsSync } from "node:fs";
+import { exec, spawn } from "node:child_process";
+import * as vscode from "vscode";
 import { get } from "node:https";
-
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node";
+import { registerXmlFileAssociations, registerXPathSemanticTokensProvider } from "./xml";
+import { execAsync as $, guessRustTarget, makeStates } from "./utils";
 
 let client: LanguageClient;
 
-function guessRustTarget() {
-	const platform = process.platform;
-	const arch = process.arch;
-	if (platform === "win32") {
-		if (arch === "x64") return "x86_64-pc-windows-msvc";
-		return "i686-pc-windows-msvc";
-	}
-	if (platform === "darwin") {
-		if (arch === "x64") return "x86_64-apple-darwin";
-		if (arch === "arm64") return "aarch64-apple-darwin";
-	} else if (platform === "linux") {
-		if (arch === "x64") return "x86_64-unknown-linux-gnu";
-		return "i686-unknown-linux-gnu";
-	}
-}
-
-function execAsync(command: string, options?: ObjectEncodingOptions & ExecOptions) {
-	return new Promise<{ stdout: string | Buffer; stderr: string | Buffer }>((resolve, reject) => {
-		exec(command, options, (err, stdout, stderr) => {
-			if (err) reject(err);
-			else resolve({ stdout, stderr });
-		});
-	});
-}
-
 const repo = "https://github.com/Desdaemon/odoo-lsp";
 
-async function downloadLspBinary(context: ExtensionContext) {
+async function downloadLspBinary(context: vscode.ExtensionContext) {
 	const isWindows = process.platform === "win32";
 	const archiveExtension = isWindows ? ".zip" : ".tgz";
 	const runtimeDir = context.globalStorageUri.fsPath;
 	await mkdir(runtimeDir, { recursive: true });
-	const preferNightly = !!workspace.getConfiguration("odoo-lsp.binary").get("preferNightly");
-	const overrideVersion: string | undefined = workspace.getConfiguration("odoo-lsp.binary").get("overrideVersion");
+	const preferNightly = !!vscode.workspace.getConfiguration("odoo-lsp.binary").get("preferNightly");
+	const overrideVersion: string | undefined = vscode.workspace
+		.getConfiguration("odoo-lsp.binary")
+		.get("overrideVersion");
 
 	let release = overrideVersion;
 	if (!preferNightly && !overrideVersion) {
@@ -70,7 +48,7 @@ async function downloadLspBinary(context: ExtensionContext) {
 								const latest = releases.find((r) => r.name === "nightly");
 								resolve(latest?.tag_name);
 							} catch (err) {
-								window.showErrorMessage(`Unable to fetch nightly release: ${err}`);
+								vscode.window.showErrorMessage(`Unable to fetch nightly release: ${err}`);
 								resolve(context.extension.packageJSON._release);
 							}
 						});
@@ -79,7 +57,7 @@ async function downloadLspBinary(context: ExtensionContext) {
 			)) || release;
 	}
 	if (typeof release !== "string" || !release) {
-		window.showErrorMessage(`Bug: invalid release "${release}"`);
+		vscode.window.showErrorMessage(`Bug: invalid release "${release}"`);
 		return;
 	}
 	const latest = `${runtimeDir}/${release}${archiveExtension}`;
@@ -101,7 +79,7 @@ async function downloadLspBinary(context: ExtensionContext) {
 		if (await which("cargo-binstall")) {
 			actions.push(Actions.Binstall);
 		}
-		const resp = await window.showInformationMessage(
+		const resp = await vscode.window.showInformationMessage(
 			`odoo-lsp: No prebuilt binaries available for your platform (platform=${process.platform}, arch=${process.arch}).
 			Please file an issue at ${repo}, or install odoo-lsp from source.`,
 			...actions,
@@ -111,7 +89,7 @@ async function downloadLspBinary(context: ExtensionContext) {
 				await openLink(repo);
 				break;
 			case Actions.InstallSource: {
-				const channel = window.createOutputChannel("cargo install odoo-lsp");
+				const channel = vscode.window.createOutputChannel("cargo install odoo-lsp");
 				channel.show();
 				context.subscriptions.push(channel);
 				const cargo = spawn(`cargo install --git ${repo}`, { shell: true });
@@ -127,7 +105,7 @@ async function downloadLspBinary(context: ExtensionContext) {
 				break;
 			}
 			case Actions.Binstall: {
-				const channel = window.createOutputChannel("cargo-binstall odoo-lsp");
+				const channel = vscode.window.createOutputChannel("cargo-binstall odoo-lsp");
 				channel.show();
 				context.subscriptions.push(channel);
 				const cargo = spawn("cargo binstall odoo-lsp", { shell: true });
@@ -156,38 +134,38 @@ async function downloadLspBinary(context: ExtensionContext) {
 	const powershell = { shell: "powershell.exe" };
 	const sh = { shell: "sh" };
 	if (!existsSync(latest)) {
-		window.setStatusBarMessage(`Downloading odoo-lsp@${release}...`, 5);
+		vscode.window.setStatusBarMessage(`Downloading odoo-lsp@${release}...`, 5);
 		try {
 			if (isWindows) {
-				await execAsync(`Invoke-WebRequest -Uri ${link} -OutFile ${latest}`, powershell);
-				await execAsync(`Invoke-WebRequest -Uri ${shaLink} -OutFile ${shaOutput}`, powershell);
-				const { stdout } = await execAsync(
+				await $(`Invoke-WebRequest -Uri ${link} -OutFile ${latest}`, powershell);
+				await $(`Invoke-WebRequest -Uri ${shaLink} -OutFile ${shaOutput}`, powershell);
+				const { stdout } = await $(
 					`(Get-FileHash ${latest} -Algorithm SHA256).Hash -eq (Get-Content ${shaOutput})`,
 					powershell,
 				);
 				if (stdout.toString().trim() !== "True") throw new Error("Checksum verification failed");
-				await execAsync(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
+				await $(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
 			} else {
-				await execAsync(`wget -O ${latest} ${link}`, sh);
-				await execAsync(`wget -O ${shaOutput} ${shaLink}`, sh);
-				await execAsync(
+				await $(`wget -O ${latest} ${link}`, sh);
+				await $(`wget -O ${shaOutput} ${shaLink}`, sh);
+				await $(
 					`if [ "$(shasum -a 256 ${latest} | cut -d ' ' -f 1)" != "$(cat ${shaOutput})" ]; then exit 1; fi`,
 					sh,
 				);
-				await execAsync(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
+				await $(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
 			}
 		} catch (err) {
 			// We only build nightly when there are changes, so there will be days without nightly builds.
 			if (!(err instanceof Error) || !err.message.includes("404")) {
-				window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
+				vscode.window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
 			}
 			await rm(latest);
 		}
 	} else if (!existsSync(odooLspBin)) {
 		if (isWindows) {
-			await execAsync(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
+			await $(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
 		} else {
-			await execAsync(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
+			await $(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
 		}
 	}
 
@@ -213,55 +191,22 @@ async function openLink(url: string) {
 	} else {
 		opener = "xdg-open";
 	}
-	return await execAsync(`${opener} ${url}`);
+	return await $(`${opener} ${url}`);
 }
 
-export async function activate(context: ExtensionContext) {
-	const traceOutputChannel = window.createOutputChannel("Odoo LSP Extension");
+const makeExtensionState = (context: vscode.ExtensionContext) => makeStates(context, {
+	noXmlReminders: Boolean,
+	noXPathReminders: Boolean,
+});
 
-	try {
-		// see https://github.com/redhat-developer/vscode-xml/blob/main/src/api/xmlExtensionApi.ts
-		const xmlApi = await extensions.getExtension<XMLExtensionApi>("redhat.vscode-xml")?.activate();
-		if (xmlApi) {
-			xmlApi.addXMLFileAssociations([
-				// HACK: systemId must be unique
-				{
-					systemId: `${context.extensionUri}/odoo.rng`,
-					pattern: "views/*.xml",
-				},
-				{
-					systemId: `${context.extensionUri}/./odoo.rng`,
-					pattern: "data/*.xml",
-				},
-				{
-					systemId: `${context.extensionUri}/././odoo.rng`,
-					pattern: "security/*.xml",
-				},
-				{
-					systemId: `${context.extensionUri}/./././odoo.rng`,
-					pattern: "report/*.xml",
-				},
-				{
-					systemId: `${context.extensionUri}/././././odoo.rng`,
-					pattern: "wizard/*.xml",
-				},
-			]);
-		} else {
-			// Recommend that the user install the XML extension
-			window
-				.showInformationMessage(
-					"Install the 'XML' extension for a better XML editing experience.",
-					"Install",
-					"Remind me later",
-				)
-				.then((choice) => {
-					if (choice !== "Install") return;
-					commands.executeCommand("workbench.extensions.search", "@id:redhat.vscode-xml");
-				});
-		}
-	} catch (err) {
-		traceOutputChannel.appendLine(`Failed to register XML file associations: ${err}`);
-	}
+export type State = ReturnType<typeof makeExtensionState>;
+
+export async function activate(context: vscode.ExtensionContext) {
+	const traceOutputChannel = vscode.window.createOutputChannel("Odoo LSP Extension");
+	const extensionState = makeExtensionState(context);
+
+	await registerXmlFileAssociations(context, traceOutputChannel, extensionState);
+	await registerXPathSemanticTokensProvider(context, traceOutputChannel, extensionState);
 
 	let command = process.env.SERVER_PATH || "odoo-lsp";
 	if (!(await which(command))) {
@@ -269,7 +214,7 @@ export async function activate(context: ExtensionContext) {
 	}
 	traceOutputChannel.appendLine(`odoo-lsp executable: ${command}`);
 	if (!(await which(command))) {
-		window.showErrorMessage(`no odoo-lsp executable present: ${command}`);
+		vscode.window.showErrorMessage(`no odoo-lsp executable present: ${command}`);
 		return;
 	}
 	const serverOptions: ServerOptions = {
@@ -293,24 +238,24 @@ export async function activate(context: ExtensionContext) {
 			{ language: "javascript", scheme: "file" },
 		],
 		synchronize: {
-			fileEvents: workspace.createFileSystemWatcher("**/.odoo_lsp*"),
+			fileEvents: vscode.workspace.createFileSystemWatcher("**/.odoo_lsp*"),
 		},
 		traceOutputChannel,
 	};
 
 	context.subscriptions.push(
-		commands.registerCommand("odoo-lsp.tsconfig", async () => {
-			const activeWindow = window.activeTextEditor?.document.uri.fsPath;
-			let folder: WorkspaceFolder | undefined;
+		vscode.commands.registerCommand("odoo-lsp.tsconfig", async () => {
+			const activeWindow = vscode.window.activeTextEditor?.document.uri.fsPath;
+			let folder: vscode.WorkspaceFolder | undefined;
 			if (activeWindow) {
-				folder = workspace.workspaceFolders?.find((ws) => activeWindow.includes(ws.uri.fsPath));
+				folder = vscode.workspace.workspaceFolders?.find((ws) => activeWindow.includes(ws.uri.fsPath));
 			}
 
-			if (!folder) folder = await window.showWorkspaceFolderPick();
+			if (!folder) folder = await vscode.window.showWorkspaceFolderPick();
 			if (!folder) return;
 
 			const selection =
-				(await window.showOpenDialog({
+				(await vscode.window.showOpenDialog({
 					canSelectFiles: false,
 					canSelectFolders: true,
 					canSelectMany: true,
@@ -319,31 +264,31 @@ export async function activate(context: ExtensionContext) {
 				})) ?? [];
 
 			const paths = selection.map((sel) => `--addons-path ${sel.fsPath}`).join(" ");
-			const { stdout } = await execAsync(`${command} tsconfig ${paths}`, {
+			const { stdout } = await $(`${command} tsconfig ${paths}`, {
 				cwd: folder.uri.fsPath,
 			});
 
-			const doc = await workspace.openTextDocument({
+			const doc = await vscode.workspace.openTextDocument({
 				language: "json",
 				content: stdout as string,
 			});
-			await window.showTextDocument(doc);
+			await vscode.window.showTextDocument(doc);
 		}),
 	);
 
 	context.subscriptions.push(
-		commands.registerCommand("odoo-lsp.statistics", async () => {
+		vscode.commands.registerCommand("odoo-lsp.statistics", async () => {
 			const response = await client.sendRequest("odoo-lsp/statistics");
-			const doc = await workspace.openTextDocument({
+			const doc = await vscode.workspace.openTextDocument({
 				language: "json",
 				content: JSON.stringify(response, undefined, 2),
 			});
-			await window.showTextDocument(doc);
+			await vscode.window.showTextDocument(doc);
 		}),
 	);
 
 	context.subscriptions.push(
-		commands.registerCommand("odoo-lsp.restart-lsp", async () => {
+		vscode.commands.registerCommand("odoo-lsp.restart-lsp", async () => {
 			await client.restart();
 			traceOutputChannel.appendLine("Odoo LSP restarted");
 		}),
@@ -359,9 +304,4 @@ export function deactivate(): Thenable<void> | undefined {
 		return undefined;
 	}
 	return client.stop();
-}
-
-interface XMLExtensionApi {
-	// addXMLCatalogs(_: string[]): void;
-	addXMLFileAssociations(_: { systemId: string; pattern: string }[]): void;
 }
