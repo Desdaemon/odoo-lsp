@@ -7,12 +7,19 @@
 ### Completion, definition and references for models, XML IDs and model fields
 
 Works for `record`s, `template`s, `env.ref()` and other structures.
+For VSCode, also includes schema-based validation and completions for Odoo XML.
 
 [![model demo](https://raw.githubusercontent.com/Desdaemon/odoo-lsp/main/static/model.gif)](https://asciinema.org/a/604545)
 
 ### Browse models and XML records as workspace symbols
 
 [![symbols demo](https://raw.githubusercontent.com/Desdaemon/odoo-lsp/main/static/symbols.gif)](https://asciinema.org/a/604560)
+
+### Syntax enhancements
+
+Provides syntax highlighting in VSCode for Python, JavaScript, and XPath expressions in Odoo XML.
+
+https://github.com/Desdaemon/odoo-lsp/assets/36768030/6003d5fe-9617-41df-ae3d-a704af77455c
 
 For more features check out the [wiki].
 
