@@ -1,6 +1,6 @@
 //! This module contains all leaf methods for [Backend] that are not suitable
 //! for inclusion in [main](super).
-//! 
+//!
 //! This is the final destination in the flowchart.
 
 use std::borrow::Cow;
@@ -94,6 +94,15 @@ impl Backend {
 	/// Maximum file line count to process diagnostics each on_change
 	pub const DIAGNOSTICS_LINE_LIMIT: usize = 1200;
 
+	pub fn find_root_of(&self, path: &str) -> Option<String> {
+		for root_ in self.roots.iter() {
+			if path.starts_with(root_.key()) {
+				return Some(root_.key().to_string());
+			}
+		}
+		None
+	}
+
 	pub async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
 		let split_uri = params.uri.path().rsplit_once('.');
 		let mut document = self
@@ -110,6 +119,10 @@ impl Backend {
 				// Rope updates are handled by did_change
 			}
 		}
+		let root = self
+			.find_root_of(params.uri.path())
+			.ok_or_else(|| miette!("file not under any root"))?;
+		let root = interner().get_or_intern(&root);
 		let rope = document.rope.clone();
 		let eager_diagnostics = self.eager_diagnostics(params.open, &rope);
 		match (split_uri, params.language) {
@@ -128,7 +141,7 @@ impl Backend {
 				}
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
-				self.on_change_xml(&params.text, &params.uri, &rope).await?;
+				self.on_change_xml(root, &params.text, &params.uri, &rope).await?;
 			}
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
 				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
@@ -323,8 +336,7 @@ impl Backend {
 			.map(|model| {
 				let label = interner().resolve(model.key()).to_string();
 				let module = model.base.as_ref().and_then(|base| {
-					let loc = interner().resolve(&base.0.path);
-					let module = self.index.module_of_path(Path::new(loc))?;
+					let module = self.index.module_of_path(&base.0.path.as_path())?;
 					Some(interner().resolve(&module).to_string())
 				});
 				CompletionItem {
@@ -584,13 +596,13 @@ impl Backend {
 		let module = model
 			.base
 			.as_ref()
-			.and_then(|base| self.index.module_of_path(Path::new(interner().resolve(&base.0.path))));
+			.and_then(|base| self.index.module_of_path(&base.0.path.as_path()));
 		let mut descendants = model
 			.descendants
 			.iter()
 			.map(|loc| &loc.0)
 			.scan(SymbolSet::default(), |mods, loc| {
-				let Some(module) = self.index.module_of_path(Path::new(interner().resolve(&loc.path))) else {
+				let Some(module) = self.index.module_of_path(&loc.path.as_path()) else {
 					return Some(None);
 				};
 				if mods.insert(module) {
@@ -637,7 +649,7 @@ impl Backend {
 			}
 			if let Some(module) = self
 				.index
-				.module_of_path(Path::new(interner().resolve(&field.location.path)))
+				.module_of_path(&field.location.path.as_path())
 			{
 				"*Defined in:* `" (interner().resolve(&module)) "`  \n"
 			}

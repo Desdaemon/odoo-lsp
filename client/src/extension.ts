@@ -304,6 +304,21 @@ export async function activate(context: vscode.ExtensionContext) {
 		}),
 	);
 
+	context.subscriptions.push(
+		vscode.commands.registerCommand("odoo-lsp.debug.intern", async () => {
+			const response: Record<string, [string, number][]> | null = await client.sendRequest("odoo-lsp/debug/usage");
+			if (!response) return;
+			const formatted = Object.fromEntries(
+				Object.entries(response).map(([key, lines]) => [key, Object.fromEntries(lines)]),
+			);
+			const doc = await vscode.workspace.openTextDocument({
+				language: "json",
+				content: JSON.stringify(formatted, undefined, 2),
+			});
+			await vscode.window.showTextDocument(doc);
+		}),
+	);
+
 	client = new LanguageClient("odoo-lsp", "Odoo LSP", serverOptions, clientOptions);
 	await client.start();
 	traceOutputChannel.appendLine("Odoo LSP started");

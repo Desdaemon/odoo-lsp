@@ -17,7 +17,7 @@ use tower_lsp::lsp_types::Range;
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
-use crate::index::{interner, Interner, Symbol};
+use crate::index::{interner, Interner, PathSymbol, Symbol};
 use crate::str::Text;
 use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt, Usage};
 use crate::{format_loc, ImStr};
@@ -78,7 +78,7 @@ impl Display for ModelLocation {
 		write!(
 			f,
 			"{}:{}:{}",
-			interner().resolve(&self.0.path),
+			self.0.path,
 			self.0.range.start.line + 1,
 			self.0.range.start.character + 1,
 		)
@@ -111,7 +111,7 @@ r#"
 }
 
 impl ModelIndex {
-	pub async fn append(&self, path: Spur, interner: &Interner, replace: bool, items: &[Model]) {
+	pub async fn append(&self, path: PathSymbol, interner: &Interner, replace: bool, items: &[Model]) {
 		let mut by_prefix = self.by_prefix.write().await;
 		for item in items {
 			match &item.type_ {
@@ -177,7 +177,7 @@ impl ModelIndex {
 	pub fn populate_field_names<'model>(
 		&'model self,
 		model: ModelName,
-		locations_filter: &'model [Spur],
+		locations_filter: &'model [PathSymbol],
 	) -> Option<RefMut<'model, ModelName, ModelEntry>> {
 		let model_name = interner().resolve(&model);
 		let mut entry = self.try_get_mut(&model).expect(format_loc!("deadlock"))?;
@@ -195,9 +195,9 @@ impl ModelIndex {
 					return None;
 				}
 				let mut fields = vec![];
-				let fpath = interner().resolve(&location.path);
-				let contents = std::fs::read(fpath)
-					.map_err(|err| error!(target: "populate_field_names", "Failed to read {fpath}:\n{err}"))
+				let fpath = location.path.as_path();
+				let contents = std::fs::read(&fpath)
+					.map_err(|err| error!(target: "populate_field_names", "Failed to read {}:\n{err}", fpath.display()))
 					.ok()?;
 				let mut parser = Parser::new();
 				parser
@@ -429,7 +429,7 @@ impl ModelEntry {
 			return Ok(());
 		};
 		if self.docstring.is_none() {
-			let contents = tokio::fs::read(interner().resolve(&loc.path)).await.into_diagnostic()?;
+			let contents = tokio::fs::read(loc.path.as_path()).await.into_diagnostic()?;
 			let mut parser = Parser::new();
 			parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
 			let ast = parser

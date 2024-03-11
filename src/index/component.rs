@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use dashmap::DashMap;
 use futures::executor::block_on;
-use lasso::Key;
+use lasso::{Key, Spur};
 use miette::diagnostic;
 use qp_trie::wrapper::BString;
 use tokio::sync::RwLock;
@@ -11,6 +11,7 @@ use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query_js;
 
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
+use crate::index::PathSymbol;
 use crate::utils::{offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, MinLoc, RangeExt, Usage};
 use crate::{format_loc, ok};
 
@@ -98,8 +99,8 @@ r#"
 "#
 }
 
-pub(super) async fn add_root_js(path: PathBuf) -> miette::Result<Output> {
-	let path_key = interner().get_or_intern(path.to_string_lossy().as_ref());
+pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Output> {
+	let path_key = PathSymbol::strip_root(root, &path);
 	let contents = ok!(tokio::fs::read(&path).await, "Could not read {:?}", path);
 	let rope = ropey::Rope::from(String::from_utf8_lossy(&contents));
 	let mut parser = Parser::new();

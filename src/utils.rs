@@ -4,7 +4,6 @@ use std::fmt::Display;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::try_result::TryResult;
-use lasso::Spur;
 use ropey::{Rope, RopeSlice};
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, TextPos, Token};
@@ -12,7 +11,7 @@ use xmlparser::{StrSpan, TextPos, Token};
 mod visitor;
 pub use visitor::PreTravel;
 
-use crate::index::interner;
+use crate::index::PathSymbol;
 
 mod usage;
 pub use usage::{Usage, UsageInfo};
@@ -45,7 +44,7 @@ macro_rules! ok {
 /// A more economical version of [Location].
 #[derive(Clone, Debug)]
 pub struct MinLoc {
-	pub path: Spur,
+	pub path: PathSymbol,
 	pub range: Range,
 }
 
@@ -53,7 +52,7 @@ impl Display for MinLoc {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.write_fmt(format_args!(
 			"{}:{}:{}",
-			interner().resolve(&self.path),
+			self.path,
 			self.range.start.line + 1,
 			self.range.start.character + 1
 		))
@@ -63,7 +62,7 @@ impl Display for MinLoc {
 impl From<MinLoc> for Location {
 	fn from(value: MinLoc) -> Self {
 		Location {
-			uri: format!("file://{}", interner().resolve(&value.path)).parse().unwrap(),
+			uri: format!("file://{}", value.path).parse().unwrap(),
 			range: value.range,
 		}
 	}

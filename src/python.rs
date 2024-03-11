@@ -5,9 +5,10 @@ use std::cmp::Ordering;
 use std::path::Path;
 
 use dashmap::try_result::TryResult;
+use lasso::Spur;
 use log::{debug, warn};
 use miette::{diagnostic, miette};
-use odoo_lsp::index::{index_models, interner, Module, Symbol};
+use odoo_lsp::index::{index_models, interner, Module, PathSymbol, Symbol};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use tree_sitter::{Node, Parser, QueryCursor, QueryMatch, Tree};
@@ -139,14 +140,14 @@ impl Backend {
 			.expect("bug: failed to init python parser");
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)
 	}
-	pub async fn update_models(&self, text: Text, uri: &Url, rope: Rope) -> miette::Result<()> {
+	pub async fn update_models(&self, text: Text, uri: &Url, root: Spur, rope: Rope) -> miette::Result<()> {
 		let text = match text {
 			Text::Full(text) => Cow::from(text),
 			// TODO: Limit range of possible updates based on delta
 			Text::Delta(_) => Cow::from(rope.slice(..)),
 		};
 		let models = index_models(text.as_bytes())?;
-		let path = interner().get_or_intern(uri.path());
+		let path = PathSymbol::strip_root(root, Path::new(uri.path()));
 		self.index.models.append(path, interner(), true, &models).await;
 		for model in models {
 			match model.type_ {

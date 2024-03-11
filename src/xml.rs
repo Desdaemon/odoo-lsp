@@ -8,7 +8,7 @@ use std::sync::Arc;
 use lasso::{Spur, ThreadedRodeo};
 use log::{debug, warn};
 use miette::diagnostic;
-use odoo_lsp::index::interner;
+use odoo_lsp::index::{interner, PathSymbol};
 use odoo_lsp::model::{Field, FieldKind};
 use odoo_lsp::template::gather_templates;
 use ropey::{Rope, RopeSlice};
@@ -40,7 +40,7 @@ enum Tag<'a> {
 }
 
 impl Backend {
-	pub async fn on_change_xml(&self, text: &Text, uri: &Url, rope: &Rope) -> miette::Result<()> {
+	pub async fn on_change_xml(&self, root: Spur, text: &Text, uri: &Url, rope: &Rope) -> miette::Result<()> {
 		let interner = interner();
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
@@ -54,7 +54,7 @@ impl Backend {
 			.module_of_path(Path::new(uri.path()))
 			.ok_or_else(|| diagnostic!("module_of_path for {} failed", uri.path()))?;
 		let mut record_prefix = self.index.records.by_prefix.write().await;
-		let path_uri = interner.get_or_intern(uri.path());
+		let path_uri = PathSymbol::strip_root(root, Path::new(uri.path()));
 		loop {
 			match reader.next() {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
