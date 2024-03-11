@@ -1,10 +1,9 @@
-use lasso::Spur;
 use miette::diagnostic;
 use ropey::Rope;
 use tower_lsp::lsp_types::{Position, Range};
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::index::{interner, Symbol};
+use crate::index::{interner, PathSymbol, Symbol};
 use crate::utils::{offset_to_position, ByteOffset, MinLoc};
 
 #[derive(Default, Debug)]
@@ -25,7 +24,7 @@ pub struct NewTemplate {
 }
 
 pub fn gather_templates(
-	path: Spur,
+	path: PathSymbol,
 	reader: &mut Tokenizer,
 	document: Rope,
 	templates: &mut Vec<NewTemplate>,
@@ -177,14 +176,7 @@ mod tests {
 		let rope = Rope::from_str(contents);
 		_ = reader.next();
 
-		gather_templates(
-			interner().get_or_intern_static(""),
-			&mut reader,
-			rope,
-			&mut templates,
-			false,
-		)
-		.unwrap();
+		gather_templates(PathSymbol::empty(), &mut reader, rope, &mut templates, false).unwrap();
 
 		assert!(
 			matches!(
@@ -223,14 +215,7 @@ mod tests {
 		_ = reader.next();
 		_ = reader.next();
 
-		gather_templates(
-			interner().get_or_intern_static(""),
-			&mut reader,
-			rope,
-			&mut templates,
-			false,
-		)
-		.unwrap();
+		gather_templates(PathSymbol::empty(), &mut reader, rope, &mut templates, false).unwrap();
 
 		assert!(
 			matches!(&templates[..], [NewTemplate { base: true, .. },]),

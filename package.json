@@ -40,6 +40,10 @@
 			{
 				"command": "odoo-lsp.restart-lsp",
 				"title": "odoo-lsp: Restart language server"
+			},
+			{
+				"command": "odoo-lsp.debug.intern",
+				"title": "[Debug] Print common interned strings"
 			}
 		],
 		"configuration": {

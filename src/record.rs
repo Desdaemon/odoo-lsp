@@ -1,10 +1,10 @@
-use lasso::{Spur, ThreadedRodeo};
+use lasso::ThreadedRodeo;
 use miette::diagnostic;
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::index::{interner, ModuleName, RecordId};
+use crate::index::{interner, ModuleName, PathSymbol, RecordId};
 use crate::model::ModelName;
 use crate::utils::{offset_to_position, position_to_offset};
 use crate::utils::{ByteOffset, MinLoc};
@@ -28,7 +28,7 @@ impl Record {
 	pub fn from_reader(
 		offset: ByteOffset,
 		module: ModuleName,
-		path: Spur,
+		path: PathSymbol,
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
@@ -39,8 +39,7 @@ impl Record {
 		// nested records are a thing apparently
 		let mut stack = 1;
 		let mut in_record = true;
-		let start = offset_to_position(offset, rope.clone())
-			.ok_or_else(|| diagnostic!("fail(start): {}", interner().resolve(&path)))?;
+		let start = offset_to_position(offset, rope.clone()).ok_or_else(|| diagnostic!("fail(start): {path}"))?;
 
 		loop {
 			match reader.next() {
@@ -132,8 +131,7 @@ impl Record {
 		}
 		let id = some!(id);
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for record"))?;
-		let end = offset_to_position(end, rope.clone())
-			.ok_or_else(|| diagnostic!("fail(end): {}", interner().resolve(&path)))?;
+		let end = offset_to_position(end, rope.clone()).ok_or_else(|| diagnostic!("fail(end): {path}"))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {
@@ -148,12 +146,12 @@ impl Record {
 	pub fn template(
 		offset: ByteOffset,
 		module: ModuleName,
-		path: Spur,
+		path: PathSymbol,
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
-		let start = offset_to_position(offset, rope.clone())
-			.ok_or_else(|| diagnostic!("fail(start,template): {}", interner().resolve(&path)))?;
+		let start =
+			offset_to_position(offset, rope.clone()).ok_or_else(|| diagnostic!("fail(start,template): {path}"))?;
 		let mut id = None;
 		let mut inherit_id = None;
 		let mut end = None;
@@ -230,8 +228,7 @@ impl Record {
 			}
 		}
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for template"))?;
-		let end = offset_to_position(end, rope)
-			.ok_or_else(|| diagnostic!("fail(end,template): {}", interner().resolve(&path)))?;
+		let end = offset_to_position(end, rope).ok_or_else(|| diagnostic!("fail(end,template): {path}"))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {
@@ -246,14 +243,14 @@ impl Record {
 	pub fn menuitem(
 		offset: ByteOffset,
 		module: ModuleName,
-		path: Spur,
+		path: PathSymbol,
 		reader: &mut Tokenizer,
 		rope: Rope,
 	) -> miette::Result<Option<Self>> {
 		let mut id = None;
 		let mut end = None;
-		let start = offset_to_position(offset, rope.clone())
-			.ok_or_else(|| diagnostic!("fail(start,menuitem): {}", interner().resolve(&path)))?;
+		let start =
+			offset_to_position(offset, rope.clone()).ok_or_else(|| diagnostic!("fail(start,menuitem): {path}"))?;
 
 		loop {
 			match reader.next() {
@@ -286,8 +283,7 @@ impl Record {
 
 		let id = some!(id);
 		let end = end.ok_or_else(|| diagnostic!("Unbound range for menuitem"))?;
-		let end = offset_to_position(end, rope)
-			.ok_or_else(|| diagnostic!("fail(end,menuitem): {}", interner().resolve(&path)))?;
+		let end = offset_to_position(end, rope).ok_or_else(|| diagnostic!("fail(end,menuitem): {path}"))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {

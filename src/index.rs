@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -25,7 +26,7 @@ use crate::{format_loc, ok, ImStr};
 mod record;
 pub use record::{RecordId, SymbolMap, SymbolSet};
 mod symbol;
-pub use symbol::{interner, Symbol};
+pub use symbol::{interner, PathSymbol, Symbol};
 mod template;
 pub use crate::template::{Template, TemplateName};
 pub use template::TemplateIndex;
@@ -35,7 +36,62 @@ pub use component::ComponentQuery;
 
 use crate::template::{gather_templates, NewTemplate};
 
-pub type Interner = ThreadedRodeo;
+pub type Interner = Wrapper<ThreadedRodeo>;
+
+#[derive(Default)]
+pub struct Wrapper<T>(T);
+
+impl Deref for Interner {
+	type Target = ThreadedRodeo;
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
+#[cfg(debug_assertions)]
+impl Interner {
+	fn get_counter(&self) -> &'static DashMap<Spur, u32> {
+		static COUNTER: std::sync::OnceLock<DashMap<Spur, u32>> = std::sync::OnceLock::new();
+		COUNTER.get_or_init(Default::default)
+	}
+	pub fn get_or_intern<T: AsRef<str>>(&self, value: T) -> Spur {
+		let out = self.0.get_or_intern(value);
+		*self.get_counter().entry(out).or_default().value_mut() += 1;
+		out
+	}
+	pub fn report_usage(&self) -> serde_json::Value {
+		let items = self
+			.get_counter()
+			.iter()
+			.map(|entry| (*entry.key(), *entry.value()))
+			.collect::<Vec<_>>();
+
+		let most_common = {
+			let mut items = items.clone();
+			items.sort_by(|(_, a), (_, z)| z.cmp(a));
+			items
+				.into_iter()
+				.take(20)
+				.map(|(key, value)| (self.resolve(&key), value))
+				.collect::<Vec<_>>()
+		};
+
+		let longest = {
+			let mut items = items
+				.into_iter()
+				.map(|(key, value)| (self.resolve(&key), value))
+				.collect::<Vec<_>>();
+			items.sort_by(|(a, _), (z, _)| z.len().cmp(&a.len()));
+			items.truncate(30);
+			items
+		};
+
+		serde_json::json!({
+			"most_common": most_common,
+			"longest": longest,
+		})
+	}
+}
 
 #[derive(Default)]
 pub struct Index {
@@ -56,7 +112,7 @@ enum Output {
 		templates: Vec<NewTemplate>,
 	},
 	Models {
-		path: Spur,
+		path: PathSymbol,
 		models: Vec<Model>,
 	},
 	Components(HashMap<ComponentName, Component>),
@@ -108,6 +164,7 @@ impl Index {
 		let mut module_count = 0;
 		let mut outputs = tokio::task::JoinSet::new();
 		let interner = interner();
+		let root_key = interner.get_or_intern(&root);
 		for manifest in manifests {
 			let manifest = manifest.into_diagnostic()?;
 			let module_dir = manifest
@@ -209,7 +266,7 @@ impl Index {
 						continue;
 					}
 				};
-				outputs.spawn(add_root_xml(xml.path().to_path_buf(), module_key.into()));
+				outputs.spawn(add_root_xml(root_key, xml.path().to_path_buf(), module_key.into()));
 			}
 			let pys = ok!(
 				globwalk::glob_builder(format!("{}/**/*.py", module_dir.display()))
@@ -228,7 +285,7 @@ impl Index {
 					}
 				};
 				let path = py.path().to_path_buf();
-				outputs.spawn(add_root_py(path));
+				outputs.spawn(add_root_py(root_key, path));
 			}
 			let scripts = ok!(
 				globwalk::glob_builder(format!("{}/**/*.js", module_dir.display()))
@@ -241,7 +298,7 @@ impl Index {
 			for js in scripts {
 				let Ok(js) = js else { continue };
 				let path = js.path().to_path_buf();
-				outputs.spawn(component::add_root_js(path));
+				outputs.spawn(component::add_root_js(root_key, path));
 			}
 		}
 
@@ -316,8 +373,8 @@ impl Index {
 	}
 }
 
-async fn add_root_xml(path: PathBuf, module_name: ModuleName) -> miette::Result<Output> {
-	let path_uri = interner().get_or_intern(path.to_string_lossy().as_ref());
+async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> miette::Result<Output> {
+	let path_uri = PathSymbol::strip_root(root, &path);
 	let file = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
 	let file = String::from_utf8_lossy(&file);
 	let mut reader = Tokenizer::from(file.as_ref());
@@ -394,10 +451,10 @@ r#"
  (#match? @NAME "^_(name|inherits?)$"))"#
 }
 
-async fn add_root_py(path: PathBuf) -> miette::Result<Output> {
+async fn add_root_py(root: Spur, path: PathBuf) -> miette::Result<Output> {
 	let contents = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
 
-	let path = interner().get_or_intern(path.to_string_lossy().as_ref());
+	let path = PathSymbol::strip_root(root, &path);
 	let models = index_models(&contents)?;
 	Ok(Output::Models { path, models })
 }
