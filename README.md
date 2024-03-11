@@ -128,6 +128,8 @@ Please include these logs when opening an issue.
 
 ## Development
 
+Don't know where to start? Run `cargo doc --bin odoo-lsp` for a quick overview of the codebase. All contributions welcome!
+
 1. `pnpm i`
 2. `cargo build`
 3. In VSCode, press <kbd>F5</kbd> or change to the Debug panel and click `Launch Client`

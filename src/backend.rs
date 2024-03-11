@@ -1,3 +1,8 @@
+//! This module contains all leaf methods for [Backend] that are not suitable
+//! for inclusion in [main](super).
+//! 
+//! This is the final destination in the flowchart.
+
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;

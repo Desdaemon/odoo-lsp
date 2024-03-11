@@ -1,3 +1,71 @@
+//! ## Application flow
+//!
+//! All LSP requests are implemented here on [`Backend`] via the [`LanguageServer`] trait.
+//!
+//! As the server handles these requests, it may opt to delegate language-specific tasks
+//! to methods in the appropriate modules, for example Python to [`python`], XML to [`xml`] etc.
+//!
+//! Finally, these modules may also opt to delegate formulation of responses to [`backend`],
+//! where most leaf methods live.
+//!
+//! Here's a rough flowchart of the server:
+//! ```txt
+//!                      ┌───────────────┐                        
+//!        ┌─────────────► src/python.rs ├───────────────┐        
+//!        │             └───────────────┘               │        
+//!        │             ┌────────────┐                  │        
+//!        ├─────────────► src/xml.rs ├──────────────────┤        
+//!        │             └────────────┘                  │        
+//! ┌──────┴──────┐                             ┌────────▼───────┐
+//! │ src/main.rs │                             │ src/backend.rs │
+//! └──────┬──────┘                             └────────▲───────┘
+//!        │             ┌───────────┐                   │        
+//!        ├─────────────► src/js.rs ├───────────────────┤        
+//!        │             └───────────┘                   │        
+//!        │             ┌──────────────┐                │        
+//!        └─────────────► src/index.rs ├────────────────┘        
+//!                      └──────────────┘                         
+//! ```
+//!
+//! ## String handling
+//!
+//! Apart from normal Rust strings, the server uses a few more string-like types
+//! for optimizing memory usage and performance:
+//!
+//! - [`ropey::Rope`] represents full documents, and is also a [data structure] of the same name.
+//! - [`Spur`] and [`Symbol`] are [`u32`]-sized tokens representing
+//!   [interned strings]. While they are not themselves strings, the
+//!   [`interner`] can be used to resolve them into strings as well as intern new strings.
+//!   Furthermore, [`Symbol`] is a type-safe wrapper around [`Spur`] to prevent mixing
+//!   symbols representing different types.
+//! - [`ImStr`](odoo_lsp::str::ImStr) and [`Text`](odoo_lsp::str::Text) are used strategically
+//!   to avoid excessive memory usage and copying.
+//!
+//! ## tree-sitter
+//!
+//! [tree-sitter] is used to parse and analyze Python and JS code.
+//! The entire library is too large to cover here, but the important functions/types used are:
+//!
+//! - [`tree_sitter::Parser`] creates a generic parser for any language.
+//! - [`tree_sitter::Language`] defines the [AST] for each language, in this case
+//!   they are provided by [`tree_sitter_python`] and [`tree_sitter_javascript`].
+//! - [`tree_sitter::QueryCursor`] is used to extract desired patterns from a [`tree_sitter::Tree`],
+//!   which is produced by parsing raw text.
+//! - [`ts_macros::query!`] provides a shorthand to manually defining queries
+//!   and correctly extracting [captures].
+//!
+//! XML doesn't use tree-sitter, but instead a low-level [lexer](xmlparser::Tokenizer) which
+//! yields a sequence of [tokens](xmlparser::Token).
+//!
+//! [tree-sitter]: https://tree-sitter.github.io/tree-sitter/
+//! [AST]: https://en.wikipedia.org/wiki/Abstract_syntax_tree
+//! [data structure]: https://en.wikipedia.org/wiki/Rope_(data_structure)
+//! [interned strings]: https://en.wikipedia.org/wiki/String_interning
+//! [captures]: https://tree-sitter.github.io/tree-sitter/using-parsers#capturing-nodes
+//! [lexer]: quickxml::Reader
+//! [`Spur`]: lasso::Spur
+//! [`Symbol`]: odoo_lsp::index::Symbol
+
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
@@ -26,6 +94,9 @@ mod cli;
 mod js;
 mod python;
 mod xml;
+
+#[cfg(doc)]
+pub use odoo_lsp::*;
 
 use backend::{Backend, Document, Language, Text};
 
@@ -605,7 +676,7 @@ impl LanguageServer for Backend {
 		fn to_symbol_information(record: &odoo_lsp::record::Record, interner: &Interner) -> SymbolInformation {
 			#[allow(deprecated)]
 			SymbolInformation {
-				name: record.qualified_id(interner),
+				name: record.qualified_id(),
 				kind: SymbolKind::VARIABLE,
 				tags: None,
 				deprecated: None,

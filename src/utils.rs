@@ -31,7 +31,7 @@ macro_rules! some {
 	};
 }
 
-/// Early return, with optional message passed to [`format_loc`].
+/// Early return, with optional message passed to [`format_loc`](crate::format_loc!).
 #[macro_export]
 macro_rules! ok {
     ($res:expr $(,)?) => {

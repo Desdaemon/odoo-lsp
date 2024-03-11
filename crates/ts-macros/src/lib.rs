@@ -9,7 +9,9 @@ use proc_macro2_diagnostics::SpanDiagnosticExt;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{parse::Parse, punctuated::Punctuated, *};
 
-/// Usage:
+/// Define a [tree-sitter query], optionally extracting its named captures into an enum.
+/// 
+/// *Usage:*
 /// ```rust,noplayground
 /// ts_macros::query! {
 ///     MyQuery(Foo, Bar);
@@ -35,13 +37,14 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 /// 	pub fn from(raw: u32) -> Option<Self>;
 /// }
 /// ```
+/// [tree-sitter query]: https://tree-sitter.github.io/tree-sitter/using-parsers#query-syntax
 #[proc_macro]
 pub fn query(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
 	let def = syn::parse_macro_input!(tokens as QueryDefinition);
 	def.into_tokens(TsLang::Python).into()
 }
 
-/// See [query] for usage info
+/// See [query!] for usage info
 #[proc_macro]
 pub fn query_js(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
 	let def = syn::parse_macro_input!(tokens as QueryDefinition);

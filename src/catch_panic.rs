@@ -1,4 +1,4 @@
-//! copied from tower_http::catch_panic
+//! copied from [`tower_http::catch_panic`](https://docs.rs/tower-http/latest/tower_http/catch_panic/index.html)
 
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
