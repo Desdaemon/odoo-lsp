@@ -463,6 +463,46 @@ impl Backend {
 			}),
 		}))
 	}
+	pub fn hover_component(&self, name: &str, range: Option<Range>) -> Option<Hover> {
+		let key = interner().get(&name)?;
+		let component = self.index.components.get(&key.into())?;
+		let module = component
+			.location
+			.as_ref()
+			.and_then(|loc| self.index.module_of_path(&loc.path.as_path()));
+		let value = fomat!(
+			"```js\n"
+			"(component) class " (name) ";\n"
+			"```"
+			if let Some(module) = module {
+				"\n*Defined in:* `" (interner().resolve(&module)) "`"
+			}
+		);
+		Some(Hover {
+			contents: HoverContents::Scalar(MarkedString::String(value)),
+			range,
+		})
+	}
+	pub fn hover_template(&self, name: &str, range: Option<Range>) -> Option<Hover> {
+		let key = interner().get(&name)?;
+		let template = self.index.templates.get(&key.into())?;
+		let module = template
+			.location
+			.as_ref()
+			.and_then(|loc| self.index.module_of_path(&loc.path.as_path()));
+		let value = fomat!(
+			"```xml\n"
+			"<t t-name=\"" (name) "\"/>\n"
+			"```"
+			if let Some(module) = module {
+				"\n*Defined in:* `" (interner().resolve(&module)) "`"
+			}
+		);
+		Some(Hover {
+			contents: HoverContents::Scalar(MarkedString::String(value)),
+			range,
+		})
+	}
 	pub async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model_key = interner().get_or_intern(model);
 		let field = some!(interner().get(field));
