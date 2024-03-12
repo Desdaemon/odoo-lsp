@@ -7,3 +7,4 @@ out/
 dist/*
 *.vsix
 Cargo.toml
+syntaxes/*.json

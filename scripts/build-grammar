@@ -7,11 +7,13 @@ const fileMap = {
 	"syntaxes/gen/odoo-owl.yml": "syntaxes/odoo-owl.tmLanguage.json",
 };
 
+const onigurumaComment = /\(\?#[^)]*\)/g;
 for (const input in fileMap) {
 	readFile(input, "utf8", (readErr, data) => {
 		if (readErr) return console.error({ readErr });
 		const parsed = load(data);
-		writeFile(fileMap[input], JSON.stringify(parsed), (writeErr) => {
+		const trimmed = JSON.stringify(parsed).replace(onigurumaComment, '');
+		writeFile(fileMap[input], trimmed, (writeErr) => {
 			if (writeErr) console.error({ writeErr });
 		});
 	});

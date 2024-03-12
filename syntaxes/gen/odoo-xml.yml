@@ -20,7 +20,7 @@ repository:
     begin: |
       (?x)
       (?:^|\s+) (?# start-of-line or skip leading whitespace)
-      (t- (?: call | valuef | attf- \S+ | slot | ref | component))
+      (t- (?: call | valuef | attf- \S+ | slot | ref))
       \s* = (['"])
     end: (\2)
     beginCaptures:
@@ -52,7 +52,7 @@ repository:
   js: # Attributes that only make sense in a JS context, e.g. t-on-{event}
     begin: |
       (?x)(?:^|\s+)
-      (t-on- \S+)
+      (t- (?: on- \S+ | component | props | portal))
       \s* = (['"])
     end: (\2)
     beginCaptures:
@@ -129,13 +129,12 @@ repository:
     patterns:
       - include: "#operators"
       - include: "#keywords"
-      - include: "#builtins"
       - include: source.js#template
 
   operators:
     match: |
       (?x)
-      (?: === | !==? | delete
+      (?: === | !== | delete | \|\|
         | \?\?= (?# Nullish assignment)
         | [?+-]{2} (?# Nullish coalescing, increment, decrement)
         | [!?]\.? (?# Negation, ternary, optional chaining)
