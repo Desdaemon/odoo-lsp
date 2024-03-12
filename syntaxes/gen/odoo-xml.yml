@@ -1,0 +1,149 @@
+# yaml-language-server: $schema=https://json.schemastore.org/tmlanguage.json
+# Injects into https://github.com/microsoft/vscode/blob/main/extensions/xml/syntaxes/xml.tmLanguage.json
+# Required reading: https://github.com/sveltejs/language-tools/tree/master/packages/svelte-vscode/syntaxes
+# Oniguruma regex syntax reference: https://github.com/kkos/oniguruma/blob/master/doc/RE
+
+scopeName: text.xml.odoo
+injectionSelector: L:(meta.tag.xml | meta.tag.no-content.xml)
+patterns:
+  - include: "#injections"
+repository:
+  injections:
+    patterns:
+      - include: "#plain"
+      - include: "#js"
+      - include: "#formatted"
+      - include: "#xpath"
+      - include: "#python"
+
+  formatted: # Formatted strings with interpolation using either "{{ }}" or "#{}"
+    begin: |
+      (?x)
+      (?:^|\s+) (?# start-of-line or skip leading whitespace)
+      (t- (?: call | valuef | attf- \S+ | slot | ref | component))
+      \s* = (['"])
+    end: (\2)
+    beginCaptures:
+      1: { name: entity.other.attribute-name.localname.xml }
+      2: { name: string.quoted.xml }
+    endCaptures:
+      1: { name: string.quoted.xml }
+    contentName: string.quoted.xml
+    patterns:
+      - include: "#jinjaEscape"
+      - include: "#rubyEscape"
+      - include: text.xml#entity # &nbsp; and friends
+
+  plain: # Attributes that should be opted out of injection
+    begin: |
+      (?x)(?:^|\s+)
+      (t- (?: name | inherit (?: -mode)? | nocache \S* | set-slot | translation))
+      \s* = (['"])
+    end: (\2)
+    beginCaptures:
+      1: { name: entity.other.attribute-name.localname.xml }
+      2: { name: string.quoted.xml }
+    endCaptures:
+      1: { name: string.quoted.xml }
+    contentName: string.quoted.xml
+    patterns:
+      - include: text.xml#entity
+
+  js: # Attributes that only make sense in a JS context, e.g. t-on-{event}
+    begin: |
+      (?x)(?:^|\s+)
+      (t-on- \S+)
+      \s* = (['"])
+    end: (\2)
+    beginCaptures:
+      1: { name: entity.other.attribute-name.localname.xml }
+      2: { name: string.quoted.xml }
+    endCaptures:
+      1: { name: string.quoted.xml }
+    contentName: meta.embedded.inline.javascript
+    patterns:
+      - include: text.xml#entity
+      - include: source.js#expression
+
+  python:
+    begin: |
+      (?x)(?:^|\s+)
+      (required | include | readonly | (?:column_)? invisible | (?:filter_)? domain
+        | context | eval | options | attrs
+        | (?: t | decoration) - \S+)
+      \s* = (['"])
+    end: (\2)
+    beginCaptures:
+      1: { name: entity.other.attribute-name.localname.xml }
+      2: { name: string.quoted.xml }
+    endCaptures:
+      1: { name: string.quoted.xml }
+    contentName: meta.embedded.inline.python
+    patterns:
+      - include: text.xml#entity
+      - include: "#fauxJs"
+      - include: source.python#expression
+
+  xpath:
+    begin: |
+      (?x)(?:^|\s+)
+      (expr)
+      \s* = (['"])
+    end: (\2)
+    beginCaptures:
+      1: { name: entity.other.attribute-name.localname.xml }
+      2: { name: string.quoted.xml }
+    endCaptures:
+      1: { name: string.quoted.xml }
+    contentName: meta.embedded.inline.xpath
+    patterns:
+      - include: text.xml#entity
+
+  jinjaEscape:
+    begin: "({{)"
+    end: "(}})"
+    beginCaptures:
+      1: { name: constant.character.format.placeholder.other.python }
+    endCaptures:
+      1: { name: constant.character.format.placeholder.other.python }
+    contentName: meta.embedded.inline.python
+    patterns:
+      - include: text.xml#entity
+      - include: "#fauxJs"
+      - include: source.python#expression
+
+  rubyEscape:
+    begin: "(#{)"
+    end: "(})"
+    beginCaptures:
+      1: { name: constant.character.format.placeholder.other.python }
+    endCaptures:
+      1: { name: constant.character.format.placeholder.other.python }
+    contentName: meta.embedded.inline.python
+    patterns:
+      - include: text.xml#entity
+      - include: "#fauxJs"
+      - include: source.python#expression
+
+  fauxJs: # Fixup various invalid JS syntax where Python is expected
+    patterns:
+      - include: "#operators"
+      - include: "#keywords"
+      - include: "#builtins"
+      - include: source.js#template
+
+  operators:
+    match: |
+      (?x)
+      (?: === | !==? | delete
+        | \?\?= (?# Nullish assignment)
+        | [?+-]{2} (?# Nullish coalescing, increment, decrement)
+        | [!?]\.? (?# Negation, ternary, optional chaining)
+        | lt | gt (?# XML compatible replacements) )
+    name: keyword.operator.foreign.python
+
+  keywords:
+    match: |
+      (?x)
+      \b (?: this | super | constructor) \b
+    name: variable.language.foreign.python

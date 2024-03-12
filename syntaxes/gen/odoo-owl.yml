@@ -1,0 +1,63 @@
+# yaml-language-server: $schema=https://json.schemastore.org/tmlanguage.json
+# Parses XML inside of <templates> according to Odoo Owl rules.
+
+scopeName: text.xml.odoo.owl
+injectionSelector: L:text.xml
+patterns:
+  - include: "#templates"
+repository:
+  templates:
+    name: meta.tag.templates.xml
+    begin: |
+      (?x)
+      (<) (templates) ([^>]*) (?# content inside the tag)
+      (/?>)
+    end: |
+      (?x)
+      (</) (templates) (>)
+    beginCaptures:
+      1: { name: punctuation.definition.tag.xml }
+      2: { name: entity.name.tag.localname.xml }
+      3: { patterns: [{ include: text.xml#tagStuff }] }
+      4: { name: punctuation.definition.tag.xml }
+    endCaptures:
+      1: { name: punctuation.definition.tag.xml }
+      2: { name: entity.name.tag.localname.xml }
+      3: { name: punctuation.definition.tag.xml }
+    patterns:
+      - include: "#component"
+      - include: text.xml
+
+  component:
+    name: meta.tag.component.xml
+    begin: |
+      (?x)
+      (</?) (?# also captures tag ends)
+      ([A-Z] [\w.]*)
+    end: "(/?>)"
+    beginCaptures:
+      1: { name: punctuation.definition.tag.xml }
+      2: { name: entity.name.tag.localname.xml }
+    endCaptures:
+      1: { name: punctuation.definition.tag.xml }
+    patterns:
+      - include: "#jsAny"
+
+  jsAny:
+    begin: |
+      (?x)(?:^|\s+)
+      (?: ([-\w.]+) ((:)) (?# namespace))?
+      ([-\w.:]+)
+      \s* = (['"])
+    end: '\s*(\5)'
+    beginCaptures:
+      1: { name: entity.name.tag.namespace.xml }
+      2: { name: entity.other.attribute-name.xml }
+      3: { name: punctuation.separator.namespace.xml }
+      4: { name: entity.other.attribute-name.localname.xml }
+      5: { name: string.quoted }
+    endCaptures:
+      1: { name: string.quoted }
+    contentName: meta.embedded.inline.javascript
+    patterns:
+      - include: source.js#expression

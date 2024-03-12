@@ -1,0 +1,18 @@
+#!/usr/bin/env node
+const { load } = require("js-yaml");
+const { readFile, writeFile } = require("fs");
+
+const fileMap = {
+	"syntaxes/gen/odoo-xml.yml": "syntaxes/odoo-xml.tmLanguage.json",
+	"syntaxes/gen/odoo-owl.yml": "syntaxes/odoo-owl.tmLanguage.json",
+};
+
+for (const input in fileMap) {
+	readFile(input, "utf8", (readErr, data) => {
+		if (readErr) return console.error({ readErr });
+		const parsed = load(data);
+		writeFile(fileMap[input], JSON.stringify(parsed), (writeErr) => {
+			if (writeErr) console.error({ writeErr });
+		});
+	});
+}

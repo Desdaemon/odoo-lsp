@@ -26,6 +26,14 @@
 					"meta.embedded.inline.javascript": "javascript",
 					"meta.embedded.inline.xpath": "xpath"
 				}
+			},
+			{
+				"path": "./syntaxes/odoo-owl.tmLanguage.json",
+				"scopeName": "text.xml.odoo.owl",
+				"injectTo": ["text.xml"],
+				"embeddedLanguages": {
+					"meta.embedded.inline.javascript": "javascript"
+				}
 			}
 		],
 		"commands": [
@@ -124,6 +132,7 @@
 		"esbuild": "^0.15.18",
 		"eslint": "^7.32.0",
 		"glob": "^7.2.3",
+		"js-yaml": "^4.1.0",
 		"mocha": "^8.4.0",
 		"prettier": "^3.0.3",
 		"ts-loader": "^9.5.0",
