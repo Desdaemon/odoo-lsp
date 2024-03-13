@@ -1,5 +1,5 @@
 use libflate::deflate::{Decoder, Encoder};
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::fmt::{Debug, Display};
 use std::io::{Read, Write};
 use std::ops::Deref;
@@ -10,11 +10,11 @@ use crate::utils::{Usage, UsageInfo};
 
 /// Immutable, [String]-sized clone-friendly string.
 #[derive(Clone)]
-pub struct ImStr(Repr);
+pub struct ImStr(pub(crate) Repr);
 
 const INLINE_BYTES: usize = 22;
 #[derive(Clone)]
-enum Repr {
+pub(crate) enum Repr {
 	Arc(Arc<str>),
 	Inline(u8, [u8; INLINE_BYTES]),
 }
@@ -30,6 +30,12 @@ impl Deref for ImStr {
 				unsafe { std::str::from_utf8_unchecked(slice) }
 			}
 		}
+	}
+}
+
+impl Borrow<[u8]> for ImStr {
+	fn borrow(&self) -> &[u8] {
+		self.as_str().as_bytes()
 	}
 }
 
@@ -198,11 +204,11 @@ impl Text {
 }
 
 impl Usage for Text {
-	fn usage(&self) -> UsageInfo {
+	fn usage(&self) -> UsageInfo<Self> {
 		match &self.0 {
-			TextRepr::Inline(_, _) => UsageInfo(0, 0),
-			TextRepr::Arc(arc) => UsageInfo(0, arc.as_bytes().len()),
-			TextRepr::Compressed(_, arc) => UsageInfo(0, arc.len()),
+			TextRepr::Inline(_, _) => UsageInfo::new(0),
+			TextRepr::Arc(ptr) => UsageInfo::new(ptr.len()),
+			TextRepr::Compressed(_, ptr) => UsageInfo::new(ptr.len()),
 		}
 	}
 }

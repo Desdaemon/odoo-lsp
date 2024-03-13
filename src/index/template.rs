@@ -1,13 +1,14 @@
+use std::collections::HashSet;
+
 use derive_more::Deref;
 
 use dashmap::DashMap;
 use futures::executor::block_on;
-use qp_trie::wrapper::BString;
 use tokio::sync::RwLock;
 
 use crate::{template::NewTemplate, utils::Usage};
 
-use super::{interner, SymbolSet, Template, TemplateName};
+use super::{interner, Template, TemplateName};
 
 #[derive(Default, Deref)]
 pub struct TemplateIndex {
@@ -16,7 +17,7 @@ pub struct TemplateIndex {
 	pub by_prefix: RwLock<TemplatePrefixTrie>,
 }
 
-pub type TemplatePrefixTrie = qp_trie::Trie<BString, SymbolSet<Template>>;
+pub type TemplatePrefixTrie = qp_trie::Trie<&'static [u8], HashSet<TemplateName>>;
 
 impl TemplateIndex {
 	pub async fn append(&self, entries: Vec<NewTemplate>) {
@@ -36,8 +37,8 @@ impl TemplateIndex {
 			}
 			let raw = interner().resolve(&entry.name);
 			prefix
-				.entry(raw.into())
-				.or_insert_with(SymbolSet::default)
+				.entry(raw.as_bytes())
+				.or_insert_with(Default::default)
 				.insert(entry.name);
 		}
 	}

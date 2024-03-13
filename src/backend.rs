@@ -262,7 +262,7 @@ impl Backend {
 				return Ok(());
 			};
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
-				keys.keys().flat_map(|key| {
+				keys.iter().flat_map(|key| {
 					self.index.records.get(&key).and_then(|record| {
 						(record.module == module && (model_filter.is_none() || record.model == model_filter))
 							.then(|| to_completion_items(&record, current_module, range, true, interner))
@@ -272,7 +272,7 @@ impl Backend {
 			items.extend(completions);
 		} else {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
-				keys.keys().flat_map(|key| {
+				keys.iter().flat_map(|key| {
 					self.index.records.get(&key).and_then(|record| {
 						(model_filter.is_none() || record.model == model_filter)
 							.then(|| to_completion_items(&record, current_module, range, false, interner))
@@ -302,18 +302,22 @@ impl Backend {
 		};
 		let completions = model_entry
 			.fields_set
-			.iter_prefix_str(needle)
-			.map(|(field_name, _)| CompletionItem {
-				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-					new_text: field_name.as_str().to_string(),
-					insert: range,
-					replace: range,
-				})),
-				label: field_name.as_str().to_string(),
-				kind: Some(CompletionItemKind::FIELD),
-				// TODO: Make this type-safe
-				data: Some(Value::String(model.clone())),
-				..Default::default()
+			.iter_prefix(needle.as_bytes())
+			.map(|(field_name, _)| {
+				// SAFETY: only utf-8 bytestrings from interner() are allowed
+				let field_name = unsafe { core::str::from_utf8_unchecked(field_name).to_string() };
+				CompletionItem {
+					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+						new_text: field_name.clone(),
+						insert: range,
+						replace: range,
+					})),
+					label: field_name,
+					kind: Some(CompletionItemKind::FIELD),
+					// TODO: Make this type-safe
+					data: Some(Value::String(model.clone())),
+					..Default::default()
+				}
 			});
 		items.extend(completions);
 		Ok(())
@@ -369,7 +373,7 @@ impl Backend {
 		let interner = interner();
 		let by_prefix = self.index.templates.by_prefix.read().await;
 		let matches = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, templates)| {
-			templates.keys().flat_map(|key| {
+			templates.iter().flat_map(|key| {
 				let label = interner.resolve(&*key).to_string();
 				Some(CompletionItem {
 					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
@@ -812,15 +816,15 @@ impl Text {
 }
 
 impl Usage for Document {
-	fn usage(&self) -> UsageInfo {
+	fn usage(&self) -> UsageInfo<Self> {
 		let Self {
 			rope,
 			diagnostics_cache,
 			damage_zone: _,
 		} = self;
-		let mut usage = core::mem::size_of::<Self>();
-		usage += rope.usage().1;
-		usage += diagnostics_cache.usage().1;
-		UsageInfo(0, usage)
+		let mut usage = 0;
+		usage += rope.usage().0;
+		usage += diagnostics_cache.usage().0;
+		UsageInfo::new(usage)
 	}
 }

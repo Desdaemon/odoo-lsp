@@ -1,12 +1,11 @@
-use crate::utils::Usage;
-use std::{fmt::Debug, hash::Hash, marker::PhantomData};
+use crate::{utils::Usage, ImStr};
+use std::{collections::HashSet, fmt::Debug, hash::Hash, marker::PhantomData};
 
 use dashmap::{mapref::one::Ref, DashMap};
 use derive_more::{Deref, DerefMut};
 use futures::executor::block_on;
 use intmap::IntMap;
 use lasso::{Key, Spur, ThreadedRodeo};
-use qp_trie::wrapper::BString;
 use tokio::sync::RwLock;
 
 use crate::{model::ModelName, record::Record};
@@ -17,13 +16,16 @@ use super::Symbol;
 pub struct RecordIndex {
 	#[deref]
 	inner: DashMap<RecordId, Record>,
-	by_model: DashMap<ModelName, SymbolSet<Record>>,
-	by_inherit_id: DashMap<RecordId, SymbolSet<Record>>,
+	// by_model: DashMap<ModelName, SymbolSet<Record>>,
+	by_model: DashMap<ModelName, HashSet<RecordId>>,
+	// by_inherit_id: DashMap<RecordId, SymbolSet<Record>>,
+	by_inherit_id: DashMap<RecordId, HashSet<RecordId>>,
+	/// unqualified XML ID -> RecordID
 	pub by_prefix: RwLock<RecordPrefixTrie>,
 }
 
 pub type RecordId = Symbol<Record>;
-pub type RecordPrefixTrie = qp_trie::Trie<BString, SymbolSet<Record>>;
+pub type RecordPrefixTrie = qp_trie::Trie<ImStr, HashSet<RecordId>>;
 
 impl RecordIndex {
 	pub async fn insert(&self, qualified_id: RecordId, record: Record, prefix: Option<&mut RecordPrefixTrie>) {
@@ -38,15 +40,15 @@ impl RecordIndex {
 		}
 		if let Some(prefix) = prefix {
 			prefix
-				.entry(BString::from(record.id.as_str()))
-				.or_insert_with(SymbolSet::default)
+				.entry(record.id.clone())
+				.or_insert_with(Default::default)
 				.insert(qualified_id);
 		} else {
 			self.by_prefix
 				.write()
 				.await
-				.entry(BString::from(record.id.as_str()))
-				.or_insert_with(SymbolSet::default)
+				.entry(record.id.clone())
+				.or_insert_with(Default::default)
 				.insert(qualified_id);
 		}
 		self.inner.insert(qualified_id, record);
@@ -82,12 +84,15 @@ impl RecordIndex {
 			.into_iter()
 			.flat_map(|ids| self.resolve_references(ids))
 	}
-	fn resolve_references<K>(&self, ids: Ref<K, SymbolSet<Record>>) -> impl IntoIterator<Item = Ref<RecordId, Record>>
+	fn resolve_references<K>(
+		&self,
+		ids: Ref<K, HashSet<Symbol<Record>>>,
+	) -> impl IntoIterator<Item = Ref<RecordId, Record>>
 	where
 		K: PartialEq + Eq + Hash,
 	{
 		ids.value()
-			.keys()
+			.iter()
 			.flat_map(|id| self.get(&id).into_iter())
 			.collect::<Vec<_>>()
 	}

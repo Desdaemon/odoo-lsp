@@ -5,7 +5,6 @@ use dashmap::DashMap;
 use futures::executor::block_on;
 use lasso::{Key, Spur};
 use miette::diagnostic;
-use qp_trie::wrapper::BString;
 use tokio::sync::RwLock;
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query_js;
@@ -243,7 +242,7 @@ fn parse_prop_type(node: Node, contents: &[u8], seed: Option<PropType>) -> PropT
 	type_
 }
 
-pub type ComponentPrefixTrie = qp_trie::Trie<BString, ComponentName>;
+pub type ComponentPrefixTrie = qp_trie::Trie<&'static [u8], ComponentName>;
 
 #[derive(Default)]
 pub struct ComponentIndex {
@@ -272,7 +271,7 @@ impl ComponentIndex {
 		let mut by_prefix = self.by_prefix.try_write().expect(format_loc!("deadlock"));
 		let interner = interner();
 		for (name, component) in components {
-			by_prefix.insert_str(interner.resolve(&name), name.clone());
+			by_prefix.insert(interner.resolve(&name).as_bytes(), name.clone());
 			if let Some(ComponentTemplate::Name(template_name)) = component.template.as_ref() {
 				self.by_template.insert(template_name.clone(), name.clone());
 			}

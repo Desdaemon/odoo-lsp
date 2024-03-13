@@ -10,7 +10,7 @@ use futures::executor::block_on;
 use lasso::Spur;
 use log::{debug, error, info, trace, warn};
 use miette::{diagnostic, IntoDiagnostic};
-use qp_trie::{wrapper::BString, Trie};
+use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
@@ -38,7 +38,7 @@ pub enum ModelType {
 #[derive(Default)]
 pub struct ModelIndex {
 	inner: DashMap<ModelName, ModelEntry>,
-	pub by_prefix: RwLock<Trie<BString, ModelName>>,
+	pub by_prefix: RwLock<Trie<ImStr, ModelName>>,
 }
 
 pub type ModelName = Symbol<ModelEntry>;
@@ -49,7 +49,7 @@ pub struct ModelEntry {
 	pub descendants: Vec<ModelLocation>,
 	pub ancestors: Vec<ModelName>,
 	pub fields: Option<HashMap<Symbol<Field>, Arc<Field>>>,
-	pub fields_set: qp_trie::Trie<BString, ()>,
+	pub fields_set: qp_trie::Trie<&'static [u8], ()>,
 	pub docstring: Option<Text>,
 }
 
@@ -117,7 +117,7 @@ impl ModelIndex {
 			match &item.type_ {
 				ModelType::Base { name: base, ancestors } => {
 					let name = interner.get_or_intern(base).into();
-					by_prefix.insert_str(base, name);
+					by_prefix.insert(base.clone(), name);
 					let mut entry = self.entry(name).or_default();
 					if entry.base.is_none() || replace {
 						entry.base = Some(ModelLocation(
@@ -321,7 +321,7 @@ impl ModelIndex {
 
 		for (key, type_) in fields.collect::<Vec<_>>() {
 			out.insert(key.into(), type_.into());
-			fields_set.insert_str(interner().resolve(&key), ());
+			fields_set.insert(interner().resolve(&key).as_bytes(), ());
 		}
 
 		info!(

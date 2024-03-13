@@ -670,7 +670,7 @@ impl LanguageServer for Backend {
 
 		let models_by_prefix = self.index.models.by_prefix.read().await;
 		let records_by_prefix = self.index.records.by_prefix.read().await;
-		let models = models_by_prefix.iter_prefix_str(query).flat_map(|(_, key)| {
+		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
 			self.index.models.get(key).into_iter().flat_map(|entry| {
 				#[allow(deprecated)]
 				entry.base.as_ref().map(|loc| SymbolInformation {
@@ -698,18 +698,19 @@ impl LanguageServer for Backend {
 		let interner = &interner();
 		if let Some((module, xml_id_query)) = query.split_once('.') {
 			let module = some!(interner.get(module)).into();
-			let records = records_by_prefix.iter_prefix_str(xml_id_query).flat_map(|(_, keys)| {
-				keys.keys().flat_map(|key| {
-					self.index
-						.records
-						.get(&key)
-						.and_then(|record| (record.module == module).then(|| to_symbol_information(&record, interner)))
-				})
-			});
+			let records = records_by_prefix
+				.iter_prefix(xml_id_query.as_bytes())
+				.flat_map(|(_, keys)| {
+					keys.iter().flat_map(|key| {
+						self.index.records.get(&key).and_then(|record| {
+							(record.module == module).then(|| to_symbol_information(&record, interner))
+						})
+					})
+				});
 			Ok(Some(models.chain(records).take(limit).collect()))
 		} else {
-			let records = records_by_prefix.iter_prefix_str(query).flat_map(|(_, keys)| {
-				keys.keys().flat_map(|key| {
+			let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, keys)| {
+				keys.iter().flat_map(|key| {
 					self.index
 						.records
 						.get(&key)
