@@ -1,4 +1,4 @@
-import type { ObjectEncodingOptions } from "node:fs";
+import { stat, statSync, type ObjectEncodingOptions } from "node:fs";
 import { exec, type ExecOptions } from "node:child_process";
 import type { ExtensionContext } from "vscode";
 
@@ -54,6 +54,20 @@ export async function downloadFile(src: string, dest: string) {
 	} else {
 		await $(`wget -O ${dest} ${src}`, { shell });
 	}
+}
+
+export function tryStatSync(path: string) {
+	try {
+		return statSync(path);
+	} catch {
+		return null;
+	}
+}
+
+export function compareDate(lhs: Date, rhs: Date) {
+	const left = lhs.setHours(0, 0, 0, 0); 
+	const right = rhs.setHours(0, 0, 0, 0);
+	return left - right;
 }
 
 export function which(bin: string) {

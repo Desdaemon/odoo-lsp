@@ -4,12 +4,22 @@
  * ------------------------------------------------------------------------------------------ */
 
 import { mkdir, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { type Stats, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { get } from "node:https";
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node";
 import { registerXmlFileAssociations, registerXPathSemanticTokensProvider } from "./xml";
-import { $, downloadFile, guessRustTarget, isWindows, makeStates, openLink, which } from "./utils";
+import {
+	$,
+	compareDate,
+	downloadFile,
+	guessRustTarget,
+	isWindows,
+	makeStates,
+	openLink,
+	tryStatSync,
+	which,
+} from "./utils";
 import * as vscode from "vscode";
 
 let client: LanguageClient;
@@ -60,10 +70,6 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		vscode.window.showErrorMessage(`Bug: invalid release "${release}"`);
 		return;
 	}
-
-	const today = new Date();
-	const todaysNightly = `nightly-${today.getFullYear()}${today.getUTCMonth() + 1}${today.getUTCDate()}`;
-	const hasNewerNightly = release.startsWith("nightly") && todaysNightly <= release;
 
 	const archiveName = release.startsWith("nightly") ? "nightly" : release;
 	const latest = `${runtimeDir}/${archiveName}${archiveExtension}`;
@@ -139,6 +145,11 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 	const shaLink = `${link}.sha256`;
 	const shaOutput = `${latest}.sha256`;
 
+	let stat: Stats | null;
+	const hasNewerNightly =
+		// biome-ignore lint/suspicious/noAssignInExpressions:
+		release.startsWith("nightly") && (!(stat = tryStatSync(vsixOutput)) || compareDate(stat.ctime, new Date()) < 0);
+
 	const powershell = { shell: "powershell.exe" };
 	const sh = { shell: "sh" };
 	if (!existsSync(latest)) {
@@ -179,13 +190,16 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 
 	if (extensionState.nightlyExtensionUpdates !== "never" && preferNightly && hasNewerNightly) {
 		downloadFile(vsixLink, vsixOutput).then(async () => {
-			const resp = await vscode.window.showInformationMessage(
-				"A new nightly update for the extension is available. Install and reload?",
-				"Yes",
-				"No",
-				"Always",
-				"Never show again",
-			);
+			const resp =
+				extensionState.nightlyExtensionUpdates === "always"
+					? "Yes"
+					: await vscode.window.showInformationMessage(
+							"A new nightly update for the extension is available. Install?",
+							"Yes",
+							"No",
+							"Always",
+							"Never show again",
+					  );
 			if (resp === "Always") extensionState.nightlyExtensionUpdates = "always";
 			else if (resp === "Never show again") extensionState.nightlyExtensionUpdates = "never";
 
@@ -194,7 +208,11 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 					"workbench.extensions.installExtension",
 					vscode.Uri.file(`${runtimeDir}/odoo-lsp.vsix`),
 				);
-				await vscode.commands.executeCommand("workbench.action.reloadWindow");
+				vscode.window
+					.showInformationMessage(`Extension updated to ${release}. Reload to apply changes.`, "Reload now", "Later")
+					.then((resp) => {
+						if (resp === "Reload now") vscode.commands.executeCommand("workbench.action.reloadWindow");
+					});
 			}
 		});
 	}
