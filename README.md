@@ -40,11 +40,14 @@ cargo binstall odoo-lsp
 
 # Install from source
 cargo install odoo-lsp
+
+# Update in-place, optionally with --nightly
+odoo-lsp self-update
 ```
 
 ## Setup
 
-For usage instructions please check the [wiki] (work in progress).
+For detailed usage instructions please check the [wiki] (work in progress).
 
 ### VSCode
 

@@ -129,13 +129,7 @@ r#"
 }
 
 impl Backend {
-	pub fn model_of_range(
-		&self,
-		node: Node<'_>,
-		range: ByteRange,
-		scope: Option<Scope>,
-		contents: &[u8],
-	) -> Option<ModelName> {
+	pub fn model_of_range(&self, node: Node<'_>, range: ByteRange, contents: &[u8]) -> Option<ModelName> {
 		trace!("model_of_range {}", String::from_utf8_lossy(&contents[range.erase()]));
 		// Phase 1: Determine the scope.
 		let query = FieldCompletion::query();
@@ -175,7 +169,7 @@ impl Backend {
 		//    Self-type analysis only uses a small part of the class definition.
 		// 3. Parameters, e.g. self which always has a fixed type
 		// 4. Assignments (including walrus-assignment)
-		let mut scope = scope.unwrap_or_default();
+		let mut scope = Scope::default();
 		let mut scope_ends = Vec::<usize>::new();
 		let self_type = match self_type {
 			Some(type_) => &contents[type_.byte_range().shrink(1)],
@@ -322,6 +316,8 @@ impl Backend {
 		//    sudo, with_user, with_env, with_context, ..
 		// 4. [foo for foo in bar];
 		//    bar: 't => foo: 't
+		// 5: foo[..]
+		//    foo: 't => foo[..]: 't
 
 		// What transforms value types?
 		// 1. foo.bar;
@@ -348,8 +344,13 @@ impl Backend {
 				}
 				let lhs = node.named_child(0)?;
 				let obj_ty = self.type_of(lhs, scope, contents)?;
-				matches!(obj_ty, Type::Env)
-					.then(|| Type::Model(String::from_utf8_lossy(&contents[rhs_range]).as_ref().into()))
+				match obj_ty {
+					Type::Env => Some(Type::Model(
+						String::from_utf8_lossy(&contents[rhs_range]).as_ref().into(),
+					)),
+					Type::Model(_) | Type::Record(_) => Some(obj_ty),
+					_ => None,
+				}
 			}
 			"attribute" => {
 				let lhs = node.named_child(0)?;

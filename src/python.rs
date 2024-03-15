@@ -214,12 +214,8 @@ impl Backend {
 						Some(PyCompletions::ForXmlId) => {
 							let model = || {
 								let model = capture.node.prev_named_sibling()?;
-								let model = self.model_of_range(
-									root,
-									model.byte_range().map_unit(ByteOffset),
-									None,
-									&contents,
-								)?;
+								let model =
+									self.model_of_range(root, model.byte_range().map_unit(ByteOffset), &contents)?;
 								Some(interner().resolve(&model))
 							};
 							model_filter = model()
@@ -299,12 +295,8 @@ impl Backend {
 									break 'match_;
 								};
 								let lhs = some!(capture.node.prev_named_sibling());
-								let model = some!(self.model_of_range(
-									root,
-									lhs.byte_range().map_unit(ByteOffset),
-									None,
-									&contents
-								));
+								let model =
+									some!(self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), &contents));
 								let model = interner().resolve(&model);
 								let needle = Cow::from(slice.byte_slice(..offset - range.start));
 								early_return = Some((
@@ -429,7 +421,7 @@ impl Backend {
 
 		let model;
 		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next() {
-			let model_ = self.model_of_range(root, local_model.byte_range().map_unit(ByteOffset), None, &contents)?;
+			let model_ = self.model_of_range(root, local_model.byte_range().map_unit(ByteOffset), &contents)?;
 			model = interner().resolve(&model_).to_string();
 		} else if let Some(this_model) = &this_model {
 			model = String::from_utf8_lossy(this_model).to_string();
@@ -526,7 +518,7 @@ impl Backend {
 							if range.contains_end(offset) {
 								let lhs = some!(capture.node.prev_named_sibling());
 								let lhs = lhs.byte_range().map_unit(ByteOffset);
-								let model = some!(self.model_of_range(root, lhs, None, &contents));
+								let model = some!(self.model_of_range(root, lhs, &contents));
 								let field = String::from_utf8_lossy(&contents[range]);
 								let model = interner().resolve(&model);
 								early_return = Some(EarlyReturn::Access(field, model));
@@ -702,7 +694,7 @@ impl Backend {
 								let lsp_range = ts_range_to_lsp_range(capture.node.range());
 								let lhs = some!(capture.node.prev_named_sibling());
 								let lhs = lhs.byte_range().map_unit(ByteOffset);
-								let model = some!(self.model_of_range(root, lhs, None, &contents));
+								let model = some!(self.model_of_range(root, lhs, &contents));
 								let field = String::from_utf8_lossy(&contents[range]);
 								early_return = Some(EarlyReturn::Access {
 									field,
@@ -786,7 +778,7 @@ impl Backend {
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
 		let lsp_range = ts_range_to_lsp_range(needle.range());
-		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), None, &contents));
+		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), &contents));
 		let model = interner().resolve(&model);
 		let identifier =
 			(needle.kind() == "identifier").then(|| String::from_utf8_lossy(&contents[needle.byte_range()]));
@@ -946,7 +938,7 @@ impl Backend {
 							continue;
 						};
 						let Some(model) =
-							self.model_of_range(root, obj.byte_range().map_unit(ByteOffset), None, &contents[..])
+							self.model_of_range(root, obj.byte_range().map_unit(ByteOffset), &contents[..])
 						else {
 							continue;
 						};
