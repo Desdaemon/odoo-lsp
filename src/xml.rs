@@ -29,6 +29,8 @@ enum RefKind<'a> {
 	TCall,
 	/// ref'd value is a prop of this component.
 	PropOf(&'a str),
+	// /// `<field name="model">..</field>`
+	// ModelString,
 }
 
 enum Tag<'a> {
@@ -384,24 +386,36 @@ fn gather_refs<'read>(
 	let mut model_filter = None;
 	let mut template_mode = false;
 	let offset_at_cursor = offset_at_cursor.0;
+
+	let mut arch_model = None;
+	// <field name="arch">..</field>
+	let mut arch_mode = false;
+	let mut arch_depth = 0;
+	let mut depth = 0;
+	let mut expect_model_string = false;
+
 	for token in reader {
 		match token {
-			Ok(Token::ElementStart { local, .. }) => match local.as_str() {
-				"field" => tag = Some(Tag::Field),
-				"template" => {
-					tag = Some(Tag::Template);
-					model_filter = Some("ir.ui.view".to_string());
+			Ok(Token::ElementStart { local, .. }) => {
+				expect_model_string = false;
+				depth += 1;
+				match local.as_str() {
+					"field" => tag = Some(Tag::Field),
+					"template" => {
+						tag = Some(Tag::Template);
+						model_filter = Some("ir.ui.view".to_string());
+					}
+					"record" => tag = Some(Tag::Record),
+					"menuitem" => tag = Some(Tag::Menuitem),
+					"templates" => {
+						template_mode = true;
+					}
+					component if template_mode && component.starts_with(|c| char::is_ascii_uppercase(&c)) => {
+						tag = Some(Tag::TComponent(component));
+					}
+					_ => {}
 				}
-				"record" => tag = Some(Tag::Record),
-				"menuitem" => tag = Some(Tag::Menuitem),
-				"templates" => {
-					template_mode = true;
-				}
-				component if template_mode && component.starts_with(|c| char::is_ascii_uppercase(&c)) => {
-					tag = Some(Tag::TComponent(component));
-				}
-				_ => {}
-			},
+			}
 			// <field name=.. ref=.. />
 			Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
 				let value_in_range = value.range().contains_end(offset_at_cursor);
@@ -410,6 +424,12 @@ fn gather_refs<'read>(
 				} else if local.as_str() == "name" && value_in_range {
 					ref_at_cursor = Some((value.as_str(), value.range()));
 					ref_kind = Some(RefKind::FieldName);
+				} else if local.as_str() == "name" && value.as_str() == "model" {
+					// contents should be a model string like res.partner
+					expect_model_string = true;
+				} else if local.as_str() == "name" && value.as_str() == "arch" {
+					arch_mode = true;
+					arch_depth = depth
 				} else if local.as_str() == "name" {
 					let relation = interner.get_or_intern(value.as_str());
 					ref_kind = Some(RefKind::Ref(relation));
@@ -499,7 +519,23 @@ fn gather_refs<'read>(
 					template_mode = true;
 				}
 			}
+			Ok(Token::Text { text }) if expect_model_string => {
+				expect_model_string = false;
+				if text.range().contains_end(offset_at_cursor) {
+					// TODO
+					// ref_at_cursor = Some((text.as_str(), text.range()));
+					// ref_kind = Some(RefKind::ModelString)
+				} else {
+					arch_model = Some(text);
+				}
+			}
 			Ok(Token::ElementEnd { end, span }) => {
+				if let ElementEnd::Close(..) | ElementEnd::Empty = end {
+					depth -= 1;
+					if depth == arch_depth {
+						arch_mode = false;
+					}
+				}
 				if template_mode
 					&& matches!(end, ElementEnd::Open | ElementEnd::Empty)
 					&& span.start() > offset_at_cursor
@@ -576,6 +612,11 @@ fn gather_refs<'read>(
 			}
 		}
 	}
+	let model_filter = if arch_mode {
+		arch_model.map(|span| span.to_string()).or(model_filter)
+	} else {
+		model_filter
+	};
 	Ok(XmlRefs {
 		ref_at_cursor,
 		ref_kind,

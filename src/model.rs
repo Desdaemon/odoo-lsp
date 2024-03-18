@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::Deref;
@@ -68,6 +69,28 @@ pub struct Field {
 	pub type_: Spur,
 	pub location: MinLoc,
 	pub help: Option<Text>,
+}
+
+impl Field {
+	pub fn merge<'this>(self: &'this mut Arc<Self>, other: &Self) -> &'this mut Self {
+		let self_ = Arc::make_mut(self);
+		let Self {
+			kind,
+			type_,
+			location,
+			help,
+		} = other;
+		debug!("TODO Field inheritance location {location}");
+		match &mut self_.kind {
+			FieldKind::Value | FieldKind::Related(_) => self_.kind = kind.clone(),
+			FieldKind::Relational(_) => {}
+		}
+		self_.type_ = type_.clone();
+		if let Some(help) = help {
+			self_.help = Some(help.clone());
+		}
+		self_
+	}
 }
 
 #[derive(Clone)]
@@ -314,13 +337,29 @@ impl ModelIndex {
 		for ancestor in ancestors {
 			if let Some(entry) = self.populate_field_names(ancestor.clone(), locations_filter) {
 				if let Some(fields) = entry.fields.as_ref() {
-					out.extend(fields.iter().map(|(key, val)| (key.clone(), val.clone())));
+					for (name, field) in fields {
+						match out.entry(name.clone()) {
+							Entry::Occupied(mut old_field) => {
+								old_field.get_mut().merge(field);
+							}
+							Entry::Vacant(empty) => {
+								empty.insert(field.clone());
+							}
+						}
+					}
 				}
 			}
 		}
 
 		for (key, type_) in fields.collect::<Vec<_>>() {
-			out.insert(key.into(), type_.into());
+			match out.entry(key.into()) {
+				Entry::Occupied(mut old_field) => {
+					old_field.get_mut().merge(&type_);
+				}
+				Entry::Vacant(empty) => {
+					empty.insert(type_.into());
+				}
+			}
 			fields_set.insert(interner().resolve(&key).as_bytes(), ());
 		}
 

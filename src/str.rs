@@ -1,4 +1,3 @@
-use libflate::deflate::{Decoder, Encoder};
 use std::borrow::{Borrow, Cow};
 use std::fmt::{Debug, Display};
 use std::io::{Read, Write};
@@ -6,17 +5,31 @@ use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 
+use libflate::deflate::{Decoder, Encoder};
+use num_enum::IntoPrimitive;
+use num_enum::TryFromPrimitive;
+
 use crate::utils::{Usage, UsageInfo};
 
 /// Immutable, [String]-sized clone-friendly string.
 #[derive(Clone)]
 pub struct ImStr(pub(crate) Repr);
 
-const INLINE_BYTES: usize = 22;
+const INLINE_BYTES: usize = 23;
 #[derive(Clone)]
 pub(crate) enum Repr {
 	Arc(Arc<str>),
-	Inline(u8, [u8; INLINE_BYTES]),
+	Inline(u23, [u8; INLINE_BYTES]),
+}
+
+#[allow(non_camel_case_types)]
+#[rustfmt::skip]
+#[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy)]
+#[repr(u8)]
+pub(crate) enum u23 {
+	_0, _1, _2, _3, _4, _5, _6, _7, _8, _9,
+	_10, _11, _12, _13, _14, _15, _16, _17, _18, _19,
+	_20, _21, _22, _23, 
 }
 
 impl Deref for ImStr {
@@ -46,7 +59,7 @@ impl From<&str> for ImStr {
 			let mut bytes = [0u8; INLINE_BYTES];
 			let slice = &mut bytes[..src.len()];
 			slice.copy_from_slice(src);
-			Self(Repr::Inline(src.len() as u8, bytes))
+			Self(Repr::Inline(u23::try_from(src.len() as u8).unwrap(), bytes))
 		} else {
 			Self(Repr::Arc(Arc::from(value)))
 		}
@@ -146,7 +159,7 @@ pub struct Text(TextRepr);
 
 #[derive(Clone)]
 enum TextRepr {
-	Inline(u8, [u8; INLINE_BYTES]),
+	Inline(u23, [u8; INLINE_BYTES]),
 	Arc(Arc<str>),
 	Compressed(u32, Arc<[u8]>),
 }
@@ -168,7 +181,7 @@ impl TryFrom<&str> for Text {
 			let mut buf = [0u8; INLINE_BYTES];
 			let slice = &mut buf[..bytes.len()];
 			slice.copy_from_slice(bytes);
-			return Ok(Text(TextRepr::Inline(bytes.len() as u8, buf)));
+			return Ok(Text(TextRepr::Inline(u23::try_from(bytes.len() as u8).unwrap(), buf)));
 		}
 		// TODO: Basic heuristics for determining cost/benefit ratio of compression
 		let mut enc = Encoder::new(Vec::new());
