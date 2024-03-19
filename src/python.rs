@@ -1026,7 +1026,6 @@ mod tests {
 	use super::*;
 	use odoo_lsp::model::ModelFields;
 	use pretty_assertions::assert_eq;
-	use tree_sitter::QueryCursor;
 
 	/// Tricky behavior here. The query syntax must match the trailing comma between
 	/// named arguments, and this test checks that. Furthermore, @help cannot be matched

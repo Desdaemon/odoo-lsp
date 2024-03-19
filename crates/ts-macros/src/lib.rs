@@ -4,13 +4,13 @@ use std::{
 };
 
 use heck::ToUpperCamelCase;
-use proc_macro2::{Ident, Literal, TokenStream};
+use proc_macro2::{Literal, TokenStream};
 use proc_macro2_diagnostics::SpanDiagnosticExt;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{parse::Parse, punctuated::Punctuated, *};
 
 /// Define a [tree-sitter query], optionally extracting its named captures into an enum.
-/// 
+///
 /// *Usage:*
 /// ```rust,noplayground
 /// ts_macros::query! {

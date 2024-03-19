@@ -1,4 +1,4 @@
-import { stat, statSync, type ObjectEncodingOptions } from "node:fs";
+import { statSync, type ObjectEncodingOptions } from "node:fs";
 import { exec, type ExecOptions } from "node:child_process";
 import type { ExtensionContext } from "vscode";
 
@@ -52,7 +52,7 @@ export async function downloadFile(src: string, dest: string) {
 	if (isWindows) {
 		await $(`Invoke-WebRequest -Uri ${src} -OutFile ${dest}`, { shell });
 	} else {
-		await $(`wget -O ${dest} ${src}`, { shell });
+		await $(`curl -Lo ${dest} ${src}`, { shell });
 	}
 }
 
@@ -65,7 +65,7 @@ export function tryStatSync(path: string) {
 }
 
 export function compareDate(lhs: Date, rhs: Date) {
-	const left = lhs.setHours(0, 0, 0, 0); 
+	const left = lhs.setHours(0, 0, 0, 0);
 	const right = rhs.setHours(0, 0, 0, 0);
 	return left - right;
 }
