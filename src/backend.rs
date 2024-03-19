@@ -175,6 +175,7 @@ impl Backend {
 			(Text::Delta(delta), Some(mut ast)) => {
 				let old_rope = old_rope.ok_or_else(|| diagnostic!("delta requires old rope"))?;
 				for change in delta {
+					// TODO: Handle full text changes in delta
 					let range = change.range.ok_or_else(|| diagnostic!("delta without range"))?;
 					let start = position_to_offset(range.start, &rope).ok_or_else(|| diagnostic!("delta start"))?;
 					// The old rope is used to calculate the *old* range-end, because

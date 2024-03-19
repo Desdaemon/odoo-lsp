@@ -29,8 +29,6 @@ enum RefKind<'a> {
 	TCall,
 	/// ref'd value is a prop of this component.
 	PropOf(&'a str),
-	// /// `<field name="model">..</field>`
-	// ModelString,
 }
 
 enum Tag<'a> {
@@ -522,9 +520,8 @@ fn gather_refs<'read>(
 			Ok(Token::Text { text }) if expect_model_string => {
 				expect_model_string = false;
 				if text.range().contains_end(offset_at_cursor) {
-					// TODO
-					// ref_at_cursor = Some((text.as_str(), text.range()));
-					// ref_kind = Some(RefKind::ModelString)
+					ref_at_cursor = Some((text.as_str(), text.range()));
+					ref_kind = Some(RefKind::Model);
 				} else {
 					arch_model = Some(text);
 				}
