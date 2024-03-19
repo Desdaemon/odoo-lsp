@@ -440,7 +440,8 @@ query! {
 ((class_definition
   (argument_list [
     (identifier) @_Model
-    (attribute (identifier) @_models (identifier) @_Model) ])
+    (attribute
+      (identifier) @_models (identifier) @_Model) ])
   (block
     (expression_statement
       (assignment (identifier) @NAME)) )) @MODEL

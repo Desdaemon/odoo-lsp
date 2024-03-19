@@ -6,23 +6,26 @@ use log::debug;
 use miette::IntoDiagnostic;
 use odoo_lsp::{index::interner, utils::RangeExt, ImStr};
 use tree_sitter::{Parser, QueryCursor};
-use ts_macros::query_js;
+use ts_macros::query;
 
 /// path -> \[defines]
 pub type DefineIndex = DashMap<Spur, Vec<ImStr>>;
 
-query_js! {
+#[rustfmt::skip]
+query! {
+	#[lang = "tree_sitter_javascript::language"]
 	OdooDefines(Pragma, Name);
-r#"
 ((program . (comment) @PRAGMA)
-(#match? @PRAGMA "odoo-module alias="))
+  (#match? @PRAGMA "odoo-module alias="))
 
-((program (expression_statement
+((program
+  (expression_statement
 	(call_expression
-		(member_expression (identifier) @_odoo (property_identifier) @_define)
-		(arguments . (string) @NAME))))
-(#eq? @_odoo "odoo")
-(#eq? @_define "define"))"#
+	  (member_expression
+		(identifier) @_odoo (property_identifier) @_define)
+	  (arguments . (string) @NAME))))
+  (#eq? @_odoo "odoo")
+  (#eq? @_define "define"))
 }
 
 pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> miette::Result<()> {

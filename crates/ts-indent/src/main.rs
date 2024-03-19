@@ -24,11 +24,11 @@ fn trim_lines(input: &str, indent: usize) -> String {
 			if trimmed.is_empty() {
 				String::new()
 			} else {
-				indent.clone() + trimmed
+				trimmed.to_string()
 			}
 		})
 		.collect::<Vec<_>>()
-		.join("\n");
+		.join(&format!("\n{indent}"));
 	format!("{}\n{indent}{}", first.trim(), rest)
 }
 
@@ -98,5 +98,7 @@ fn main() {
 		}
 	}
 
-	println!("{output}");
+	output.push_str(&input[last_offset..]);
+
+	print!("{output}");
 }

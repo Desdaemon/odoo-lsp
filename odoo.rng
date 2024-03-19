@@ -176,7 +176,11 @@
 				</attribute>
 			</optional>
 			<optional>
-				<attribute name="groups" />
+				<attribute name="groups">
+					<a:documentation>
+						A comma-separated list of <code>res.groups</code> that are allowed to see this report.
+					</a:documentation>
+				</attribute>
 			</optional>
 			<optional>
 				<attribute name="paperformat" />
@@ -272,7 +276,7 @@
 				<group>
 					<attribute name="ref">
 						<a:documentation>
-							The XML ID of the record that this field will be set to.
+							The external ID of the record that this field will be set to.
 						</a:documentation>
 					</attribute>
 					<empty />
@@ -316,7 +320,7 @@
 			<optional>
 				<attribute name="id">
 					<a:documentation>
-						The XML ID of this record. If not set, this record cannot be referenced via ref().
+						The external ID of this record. If not set, this record cannot be referenced via ref().
 					</a:documentation>
 				</attribute>
 			</optional>
@@ -343,12 +347,12 @@
 		<element name="template">
 			<a:documentation>
 				A template that will be used to render a report in the Odoo system.
-				Internally, this is used to create a record in the `ir.ui.view` model.
+				Internally, this is used to create a <code>ir.ui.view</code> record.
 			</a:documentation>
 			<optional>
 				<attribute name="id">
 					<a:documentation>
-						The XML ID of this template. If not set, this template cannot be referenced via ref().
+						The external ID of this template. If not set, this template cannot be referenced via ref().
 					</a:documentation>
 				</attribute>
 			</optional>
@@ -393,7 +397,7 @@
 			<optional>
 				<attribute name="website_id">
 					<a:documentation>
-						The XML ID of the website that this template will be used in.
+						The external ID of the website that this template will be used in.
 					</a:documentation>
 				</attribute>
 			</optional>
@@ -408,7 +412,7 @@
 				<optional>
 					<attribute name="inherit_id">
 						<a:documentation>
-							The XML ID of the template to inherit from.
+							The external ID of the template to inherit from.
 						</a:documentation>
 					</attribute>
 				</optional>
@@ -420,7 +424,7 @@
 				<optional>
 					<attribute name="groups">
 						<a:documentation>
-							A comma-separated list of group names that are allowed to see this template.
+							A comma-separated list of <code>res.groups</code> allowed to see this template.
 						</a:documentation>
 					</attribute>
 				</optional>
@@ -458,9 +462,17 @@
 	</define>
 
 	<define name="menuitem_attrs">
-		<attribute name="id" />
+		<attribute name="id">
+			<a:documentation>
+				The external ID of this menu item. If not set, this menu item cannot be referenced via ref().
+			</a:documentation>
+		</attribute>
 		<optional>
-			<attribute name="name" />
+			<attribute name="name">
+				<a:documentation>
+					The display name of the menu item.
+				</a:documentation>
+			</attribute>
 		</optional>
 		<optional>
 			<attribute name="sequence">
@@ -473,7 +485,7 @@
 		<optional>
 			<attribute name="groups">
 				<a:documentation>
-					A comma-separated list of group names that are allowed to see this menu item.
+					A comma-separated list of <code>res.groups</code> allowed to see this menu item.
 				</a:documentation>
 			</attribute>
 		</optional>
@@ -484,7 +496,12 @@
 	<define name="submenuitem_contents">
 		<optional>
 			<choice>
-				<attribute name="action" />
+				<attribute name="action">
+					<a:documentation>
+						The external ID to an <code>ir.actions.actions</code> record to execute when the menu item is clicked.<p>
+						For menuitems, this is usually <code>ir.actions.act_window</code>.</p>
+					</a:documentation>
+				</attribute>
 				<oneOrMore>
 					<ref name="submenuitem" />
 				</oneOrMore>
@@ -543,7 +560,7 @@
 			</a:documentation>
 			<attribute name="id">
 				<a:documentation>
-					The XML ID of this action. If not set, this action cannot be referenced via ref().
+					The external ID of this action. If not set, this action cannot be referenced via ref().
 				</a:documentation>
 			</attribute>
 			<attribute name="name" />
@@ -582,7 +599,7 @@
 			<optional>
 				<attribute name="groups">
 					<a:documentation>
-						A comma-separated list of group names that are allowed to see this action.
+						A comma-separated list of <code>res.groups</code> that are allowed to see this action.
 					</a:documentation>
 				</attribute>
 			</optional>

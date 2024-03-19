@@ -7,7 +7,7 @@ use lasso::{Key, Spur};
 use miette::diagnostic;
 use tokio::sync::RwLock;
 use tree_sitter::{Node, Parser, QueryCursor};
-use ts_macros::query_js;
+use ts_macros::query;
 
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
 use crate::index::PathSymbol;
@@ -20,34 +20,37 @@ use super::{interner, Component, ComponentName, Output, TemplateName};
 // static props OR Foo.props: Component props
 // static template OR Foo.template: Component template (XML name or inline decl)
 // static components OR Foo.components: Component subcomponents
-query_js! {
+#[rustfmt::skip]
+query! {
+	#[lang = "tree_sitter_javascript::language"]
 	ComponentQuery(Name, Prop, Parent, TemplateName, TemplateInline, Subcomponent);
-r#"
 ((class_declaration
-    (identifier) @NAME
-    (class_body
-      [ (field_definition . "static"
-          property: (property_identifier) @_props
-          value:
-	      [ (array ((string) @PROP "," ?)*)
-            (object
-              [ (spread_element
-                  (member_expression (identifier) @PARENT (property_identifier) @_props))
-                (pair key: [(property_identifier) @PROP (string) @PROP]) ])
-            (member_expression (identifier) @PARENT (property_identifier) @_props)])
-        (field_definition . "static"
-          property: (property_identifier) @_template
-          value:
-	      [ (string) @TEMPLATE_NAME
-            (call_expression
-              (identifier) @_xml
-              (template_string) @TEMPLATE_INLINE)])
-        (field_definition . "static"
-          property: (property_identifier) @_components
-          value:
-	      (object
-            [ (pair (property_identifier) @SUBCOMPONENT)
-              (shorthand_property_identifier) @SUBCOMPONENT])) ]?))
+  (identifier) @NAME
+  (class_body [
+    (field_definition . "static"
+      property: (property_identifier) @_props 
+      value: [
+        (array ((string) @PROP "," ?)*)
+        (object [
+          (spread_element
+            (member_expression
+              (identifier) @PARENT (property_identifier) @_props))
+          (pair key: [
+            (property_identifier) @PROP 
+            (string) @PROP]) ])
+        (member_expression
+          (identifier) @PARENT (property_identifier) @_props)])
+    (field_definition . "static"
+      property: (property_identifier) @_template 
+      value: [ 
+        (string) @TEMPLATE_NAME
+        (call_expression
+          (identifier) @_xml (template_string) @TEMPLATE_INLINE)])
+    (field_definition . "static"
+      property: (property_identifier) @_components 
+      value: (object [
+        (pair (property_identifier) @SUBCOMPONENT)
+        (shorthand_property_identifier) @SUBCOMPONENT])) ]?))
   (#eq? @_props "props")
   (#eq? @_template "template")
   (#eq? @_xml "xml")
@@ -56,23 +59,34 @@ r#"
   (#match? @PARENT "^[A-Z]")
   (#match? @SUBCOMPONENT "^[A-Z]"))
 
+
 ((assignment_expression
-    left: (member_expression (identifier) @NAME (property_identifier) @_props)
-    right:
-    [ (array ((string) @PROP "," ?)*)
-      (object
-        [ (spread_element
-            (member_expression (identifier) @PARENT (property_identifier) @_props))
-          (pair key: [(property_identifier) @PROP (string) @PROP]) ])
-      (member_expression (identifier) @PARENT (property_identifier) @_props)
-      (call_expression
-        (member_expression (identifier) @_Object (property_identifier) @_assign)
-        (arguments
-          [ (member_expression (identifier) @PARENT (property_identifier) @_props)
-            (object
-              [ (spread_element
-                  (member_expression (identifier) @PARENT (property_identifier) @_props))
-                (pair key: [(property_identifier) @PROP (string) @PROP]) ]) ]))])
+  left: (member_expression
+    (identifier) @NAME (property_identifier) @_props)
+  right: [ 
+    (array ((string) @PROP "," ?)*)
+    (object [ 
+      (spread_element
+        (member_expression
+          (identifier) @PARENT (property_identifier) @_props))
+      (pair key: [
+        (property_identifier) @PROP 
+        (string) @PROP]) ])
+    (member_expression
+      (identifier) @PARENT (property_identifier) @_props)
+    (call_expression
+      (member_expression
+        (identifier) @_Object (property_identifier) @_assign)
+      (arguments [ 
+        (member_expression
+          (identifier) @PARENT (property_identifier) @_props)
+        (object [ 
+          (spread_element
+            (member_expression
+              (identifier) @PARENT (property_identifier) @_props))
+          (pair key: [
+            (property_identifier) @PROP 
+            (string) @PROP]) ]) ]))])
   (#eq? @_props "props")
   (#eq? @_Object "Object")
   (#eq? @_assign "assign")
@@ -80,22 +94,22 @@ r#"
   (#match? @PARENT "^[A-Z]"))
 
 ((assignment_expression
-    left: (member_expression (identifier) @NAME (property_identifier) @_template)
-    right:
-    [ (string) @TEMPLATE_NAME
-      (call_expression (identifier) @_xml (template_string) @TEMPLATE_INLINE) ])
+  left: (member_expression
+    (identifier) @NAME (property_identifier) @_template)
+  right: [
+    (string) @TEMPLATE_NAME
+    (call_expression (identifier) @_xml (template_string) @TEMPLATE_INLINE) ])
   (#eq? @_template "template")
   (#match? @NAME "^[A-Z]"))
 
 ((assignment_expression
-    left: (member_expression (identifier) @NAME (property_identifier) @_components)
-    right:
-    (object
-      [ (pair (property_identifier) @SUBCOMPONENT)
-        (shorthand_property_identifier) @SUBCOMPONENT ]))
+  left: (member_expression
+    (identifier) @NAME (property_identifier) @_components)
+  right: (object [
+    (pair (property_identifier) @SUBCOMPONENT)
+    (shorthand_property_identifier) @SUBCOMPONENT ]))
   (#eq? @_components "components")
   (#match? @SUBCOMPONENT "^[A-Z]"))
-"#
 }
 
 pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Output> {

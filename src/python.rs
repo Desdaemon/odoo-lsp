@@ -23,9 +23,13 @@ query! {
 	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Access, Prop, ForXmlId);
 
 ((call [
-  (attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
-  (attribute (identifier) @REQUEST (identifier) @_render)
-  (attribute (_) (identifier) @FOR_XML_ID) ]
+  (attribute [
+    (identifier) @_env 
+    (attribute (_) (identifier) @_env)] (identifier) @_ref)
+  (attribute
+    (identifier) @REQUEST (identifier) @_render)
+  (attribute
+    (_) (identifier) @FOR_XML_ID) ]
   (argument_list . (string) @XML_ID))
   (#eq? @_env "env")
   (#eq? @_ref "ref")
@@ -47,27 +51,33 @@ query! {
         (string) @MODEL
         (list ((string) @MODEL ","?)*)
         (call
-          (attribute (identifier) @_fields (identifier))
+          (attribute
+            (identifier) @_fields (identifier))
           (argument_list
-            (keyword_argument (identifier) @_related (string) @MAPPED)?))]))))
+            (keyword_argument
+              (identifier) @_related (string) @MAPPED)?))]))))
   (#eq? @_fields "fields")
   (#eq? @_related "related"))
 
 ((call [
-  (attribute (_) @MAPPED_TARGET (identifier) @_mapper)
-  (attribute (identifier) @_api (identifier) @DEPENDS)]
+  (attribute
+    (_) @MAPPED_TARGET (identifier) @_mapper)
+  (attribute
+    (identifier) @_api (identifier) @DEPENDS)]
   (argument_list (string) @MAPPED))
   (#match? @_mapper "^(mapp|filter|sort)ed$")
   (#eq? @_api "api")
   (#match? @DEPENDS "^(depends|constrains|onchange)$"))
 
 ((call
-  (attribute (_) @MAPPED_TARGET (identifier) @_search)
+  (attribute
+    (_) @MAPPED_TARGET (identifier) @_search)
   (argument_list [
     (list [
       (tuple . (string) @MAPPED)
       (parenthesized_expression (string) @MAPPED)])
-    (keyword_argument (identifier) @_domain
+    (keyword_argument
+      (identifier) @_domain
       (list [
         (tuple . (string) @MAPPED)
         (parenthesized_expression (string) @MAPPED)]))]))
@@ -80,17 +90,21 @@ query! {
   [
     (argument_list . (string) @MODEL)
     (argument_list
-      (keyword_argument (identifier) @_comodel_name (string) @MODEL)) ])
+      (keyword_argument
+        (identifier) @_comodel_name (string) @MODEL)) ])
   (#match? @_Field "^(Many2one|One2many|Many2many)$")
   (#eq? @_comodel_name "comodel_name"))
 
 ((call
-  (attribute (_) @MAPPED_TARGET (identifier) @READ_FN)
-  (argument_list (list (string) @MAPPED)))
+  (attribute
+    (_) @MAPPED_TARGET (identifier) @READ_FN)
+  (argument_list
+    (list (string) @MAPPED)))
   (#match? @READ_FN "^read(_group)?$"))
 
 ((call
-  (attribute (_) @MAPPED_TARGET (identifier) @DEPENDS)
+  (attribute
+    (_) @MAPPED_TARGET (identifier) @DEPENDS)
   (argument_list . [
     (set (string) @MAPPED)
     (dictionary [
@@ -99,7 +113,8 @@ query! {
   (#eq? @DEPENDS "write"))
 
 ((call
-  (attribute (_) @MAPPED_TARGET (identifier) @DEPENDS)
+  (attribute
+    (_) @MAPPED_TARGET (identifier) @DEPENDS)
   (argument_list . [
     (set (string) @MAPPED)
     (dictionary [
