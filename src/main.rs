@@ -66,7 +66,6 @@
 //! [`Spur`]: lasso::Spur
 //! [`Symbol`]: odoo_lsp::index::Symbol
 
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
@@ -409,40 +408,10 @@ impl LanguageServer for Backend {
 	}
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		self.root_setup.wait().await;
-		let uri = params.text_document.uri;
-		debug!("did_save {}", uri.path());
-		if !uri.path().ends_with(".py") {
-			return;
-		}
-		let mut document = self
-			.document_map
-			.try_get_mut(uri.path())
-			.expect(format_loc!("deadlock"))
-			.expect(format_loc!("(did_save) Did not build document"));
-		let zone = document.damage_zone.take();
-		let rope = &document.rope;
-		let text = Cow::from(rope.slice(..));
-		let root = 'root: {
-			for root_ in self.roots.iter() {
-				if uri.path().starts_with(root_.key()) {
-					break 'root root_.key().to_owned();
-				}
-			}
-			warn!(target: "did_save", "{} does not belong to any roots={:?}", uri.path(), self.roots);
-			return;
-		};
-		let root = interner().get_or_intern(&root);
 		_ = self
-			.update_models(Text::Full(text.into_owned()), &uri, root, rope.clone())
+			.did_save_impl(params)
 			.await
-			.inspect_err(|err| warn!("update_models failed:\n{err}"));
-		if zone.is_some() {
-			debug!("did_save diagnosis");
-			self.diagnose_python(&uri, &document.rope.clone(), zone, &mut document.diagnostics_cache);
-			self.client
-				.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
-				.await;
-		}
+			.inspect_err(|err| warn!(target: "did_save", "{err}"));
 	}
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
 		let uri = &params.text_document_position_params.text_document.uri;
@@ -730,7 +699,7 @@ impl LanguageServer for Backend {
 				let damage_zone = document.damage_zone.take();
 				let rope = &document.rope.clone();
 				self.diagnose_python(
-					&params.text_document.uri,
+					params.text_document.uri.path(),
 					rope,
 					damage_zone,
 					&mut document.diagnostics_cache,

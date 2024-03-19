@@ -152,14 +152,14 @@ impl Backend {
 			.expect("bug: failed to init python parser");
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)
 	}
-	pub async fn update_models(&self, text: Text, uri: &Url, root: Spur, rope: Rope) -> miette::Result<()> {
+	pub async fn update_models(&self, text: Text, path: &str, root: Spur, rope: Rope) -> miette::Result<()> {
 		let text = match text {
 			Text::Full(text) => Cow::from(text),
 			// TODO: Limit range of possible updates based on delta
 			Text::Delta(_) => Cow::from(rope.slice(..)),
 		};
 		let models = index_models(text.as_bytes())?;
-		let path = PathSymbol::strip_root(root, Path::new(uri.path()));
+		let path = PathSymbol::strip_root(root, Path::new(path));
 		self.index.models.append(path, interner(), true, &models).await;
 		for model in models {
 			match model.type_ {
@@ -798,12 +798,11 @@ impl Backend {
 	}
 	pub fn diagnose_python(
 		&self,
-		uri: &Url,
+		path: &str,
 		rope: &Rope,
 		damage_zone: Option<ByteRange>,
 		diagnostics: &mut Vec<Diagnostic>,
 	) {
-		let path = uri.path();
 		let Some(ast) = self.ast_map.get(path) else {
 			warn!(target: "diagnose_python", "Did not build AST for {path}");
 			return;
@@ -919,7 +918,10 @@ impl Backend {
 								continue;
 							};
 							let Some(fields) = entry.fields.as_ref() else { continue };
-							has_field = fields.contains_key(&interner().get_or_intern(needle).into());
+							let Some(key) = interner().get(needle) else {
+								continue;
+							};
+							has_field = fields.contains_key(&key.into());
 						}
 						if !has_field {
 							diagnostics.push(Diagnostic {

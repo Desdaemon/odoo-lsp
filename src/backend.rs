@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use dashmap::{DashMap, DashSet};
 use fomat_macros::fomat;
 use globwalk::FileType;
+use lasso::Spur;
 use log::{debug, info, warn};
 use miette::{diagnostic, miette};
 use odoo_lsp::component::{Prop, PropDescriptor};
@@ -131,7 +132,7 @@ impl Backend {
 				if eager_diagnostics {
 					self.root_setup.wait().await;
 					self.diagnose_python(
-						&params.uri,
+						params.uri.path(),
 						&rope,
 						params.text.damage_zone(&rope, None),
 						&mut document.diagnostics_cache,
@@ -141,7 +142,7 @@ impl Backend {
 				}
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
-				self.on_change_xml(root, &params.text, &params.uri, &rope).await?;
+				self.update_xml(root, &params.text, &params.uri, &rope, false).await?;
 			}
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
 				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
@@ -155,6 +156,50 @@ impl Backend {
 				.await;
 		}
 
+		Ok(())
+	}
+	pub async fn did_save_impl(&self, params: DidSaveTextDocumentParams) -> miette::Result<()> {
+		let uri = params.text_document.uri;
+		debug!(target: "did_save", "{}", uri.path());
+		let (_, extension) = uri.path().rsplit_once('.').ok_or_else(|| diagnostic!("no extension"))?;
+		let root = self
+			.find_root_of(uri.path())
+			.ok_or_else(|| diagnostic!("out of root"))?;
+		let root = interner().get_or_intern(&root);
+
+		let mut document = self
+			.document_map
+			.try_get_mut(uri.path())
+			.expect(format_loc!("deadlock"))
+			.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
+
+		match extension {
+			"py" => self.did_save_python(uri, root, &mut document).await,
+			"xml" => self.did_save_xml(uri, root, &mut document).await?,
+			_ => {}
+		}
+		Ok(())
+	}
+	pub async fn did_save_python(&self, uri: Url, root: Spur, document: &mut Document) {
+		let path = uri.path();
+		let zone = document.damage_zone.take();
+		let rope = &document.rope;
+		let text = Cow::from(rope);
+		_ = self
+			.update_models(Text::Full(text.into_owned()), path, root, rope.clone())
+			.await
+			.inspect_err(|err| warn!(target: "update_models", "{err:?}"));
+		if zone.is_some() {
+			debug!(target: "did_save_python", "diagnostics");
+			self.diagnose_python(path, &document.rope.clone(), zone, &mut document.diagnostics_cache);
+			self.client
+				.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
+				.await;
+		}
+	}
+	pub async fn did_save_xml(&self, uri: Url, root: Spur, document: &mut Document) -> miette::Result<()> {
+		self.update_xml(root, &Text::Delta(vec![]), &uri, &document.rope, true)
+			.await?;
 		Ok(())
 	}
 	/// Whether diagnostics should be processed/pushed with each `on_change`.

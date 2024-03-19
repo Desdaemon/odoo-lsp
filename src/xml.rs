@@ -40,8 +40,14 @@ enum Tag<'a> {
 }
 
 impl Backend {
-	pub async fn on_change_xml(&self, root: Spur, text: &Text, uri: &Url, rope: &Rope) -> miette::Result<()> {
-		let interner = interner();
+	pub async fn update_xml(
+		&self,
+		root: Spur,
+		text: &Text,
+		uri: &Url,
+		rope: &Rope,
+		did_save: bool,
+	) -> miette::Result<()> {
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
 			// Assume rope is up to date
@@ -49,11 +55,16 @@ impl Backend {
 		};
 		let mut reader = Tokenizer::from(text.as_ref());
 		let mut record_ranges = vec![];
+		let interner = interner();
 		let current_module = self
 			.index
 			.module_of_path(Path::new(uri.path()))
 			.ok_or_else(|| diagnostic!("module_of_path for {} failed", uri.path()))?;
-		let mut record_prefix = self.index.records.by_prefix.write().await;
+		let mut record_prefix = if did_save {
+			Some(self.index.records.by_prefix.write().await)
+		} else {
+			None
+		};
 		let path_uri = PathSymbol::strip_root(root, Path::new(uri.path()));
 		loop {
 			match reader.next() {
@@ -101,14 +112,16 @@ impl Backend {
 							continue;
 						};
 						record_ranges.push(range);
-						self.index
-							.records
-							.insert(
-								interner.get_or_intern(record.qualified_id(interner)).into(),
-								record,
-								Some(&mut record_prefix),
-							)
-							.await;
+						if let Some(mut prefix) = record_prefix.as_mut() {
+							self.index
+								.records
+								.insert(
+									interner.get_or_intern(record.qualified_id(interner)).into(),
+									record,
+									Some(&mut prefix),
+								)
+								.await;
+						}
 					} else if local.as_str() == "templates" {
 						let mut entries = vec![];
 						if let Err(err) = gather_templates(path_uri, &mut reader, rope.clone(), &mut entries, false) {

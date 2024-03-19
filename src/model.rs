@@ -200,7 +200,7 @@ impl ModelIndex {
 	pub fn populate_field_names<'model>(
 		&'model self,
 		model: ModelName,
-		locations_filter: &'model [PathSymbol],
+		locations_filter: &[PathSymbol],
 	) -> Option<RefMut<'model, ModelName, ModelEntry>> {
 		let model_name = interner().resolve(&model);
 		let mut entry = self.try_get_mut(&model).expect(format_loc!("deadlock"))?;
