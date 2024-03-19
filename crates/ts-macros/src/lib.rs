@@ -1,10 +1,7 @@
-use std::{
-	borrow::Cow,
-	collections::{hash_map::Entry, HashMap},
-};
+use std::collections::{hash_map::Entry, HashMap};
 
 use heck::ToUpperCamelCase;
-use proc_macro2::{Literal, TokenStream};
+use proc_macro2::{Delimiter, Literal, TokenStream, TokenTree};
 use proc_macro2_diagnostics::SpanDiagnosticExt;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{parse::Parse, punctuated::Punctuated, *};
@@ -15,14 +12,13 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 /// ```rust,noplayground
 /// ts_macros::query! {
 ///     MyQuery(Foo, Bar);
-///     r#"
 /// (function_definition
-///   (parameters . (string) @FOO)
-///   (block
-///     (expression_statement
-///       (call
-///         (_) @callee
-///         (parameters . (string) @BAR)))))"#
+///  (parameters . (string) @FOO)
+///  (block
+///    (expression_statement
+///      (call
+///        (_) @callee
+///        (parameters . (string) @BAR)))))
 /// };
 /// ```
 ///
@@ -44,8 +40,8 @@ pub fn query(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
 	def.into_tokens(TsLang::Python).into()
 }
 
-/// See [query!] for usage info
 #[proc_macro]
+#[deprecated = "Use `query` with #[lang = \"..\"] instead"]
 pub fn query_js(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
 	let def = syn::parse_macro_input!(tokens as QueryDefinition);
 	def.into_tokens(TsLang::Javascript).into()
@@ -53,18 +49,30 @@ pub fn query_js(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 struct QueryDefinition {
 	meta: Vec<TokenStream>,
+	lang: Option<syn::LitStr>,
 	name: syn::Ident,
 	captures: Punctuated<Ident, Token![,]>,
-	query: syn::LitStr,
+	query: TokenStream,
+}
+
+mod kw {
+	syn::custom_keyword!(lang);
 }
 
 impl Parse for QueryDefinition {
 	fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
 		let mut meta = vec![];
+		let mut lang = None;
 		while input.peek(Token![#]) {
 			input.parse::<Token![#]>()?;
 			let content;
 			bracketed!(content in input);
+			if content.peek(kw::lang) {
+				content.parse::<kw::lang>()?;
+				content.parse::<Token![=]>()?;
+				lang = Some(content.parse()?);
+				continue;
+			}
 			meta.push(content.parse()?);
 		}
 		let name = input.parse()?;
@@ -78,6 +86,7 @@ impl Parse for QueryDefinition {
 			meta,
 			captures,
 			query: template,
+			lang,
 		})
 	}
 }
@@ -85,6 +94,7 @@ impl Parse for QueryDefinition {
 enum TsLang {
 	Python,
 	Javascript,
+	Custom(syn::LitStr),
 }
 
 impl ToTokens for TsLang {
@@ -92,38 +102,90 @@ impl ToTokens for TsLang {
 		match self {
 			Self::Python => tokens.extend(quote!(::tree_sitter_python::language())),
 			Self::Javascript => tokens.extend(quote!(::tree_sitter_javascript::language())),
+			Self::Custom(lang) => match syn::parse_str::<syn::Path>(&lang.value()) {
+				Ok(lang) => tokens.extend(quote!(#lang())),
+				Err(err) => {
+					let report = err.to_compile_error();
+					tokens.extend(quote_spanned!(lang.span() => #report))
+				}
+			},
+		}
+	}
+}
+
+fn tokens_to_string(tokens: TokenStream, output: &mut String) {
+	let mut tokens = tokens.into_iter().peekable();
+	while let Some(token) = tokens.next() {
+		match token {
+			TokenTree::Group(group) => {
+				let (lhs, rhs) = match group.delimiter() {
+					Delimiter::Parenthesis => ("(", ")"),
+					Delimiter::Brace => ("{", "}"),
+					Delimiter::Bracket => ("[", "]"),
+					Delimiter::None => (" ", " "),
+				};
+				output.push_str(lhs);
+				tokens_to_string(group.stream(), output);
+				output.push_str(rhs);
+			}
+			TokenTree::Punct(punct) if matches!(punct.as_char(), '@' | '#') => {
+				output.push(' ');
+				output.push(punct.as_char());
+				let Some(TokenTree::Ident(ident)) = tokens.peek() else {
+					continue;
+				};
+				output.push_str(&ident.to_string());
+				tokens.next();
+				let (Some(TokenTree::Punct(trailing)), '#') = (tokens.peek(), punct.as_char()) else {
+					continue;
+				};
+				output.push(trailing.as_char());
+				tokens.next();
+			}
+			_ => {
+				output.push(' ');
+				output.push_str(&token.to_string());
+			}
 		}
 	}
 }
 
 impl QueryDefinition {
 	fn into_tokens(self, language: TsLang) -> TokenStream {
-		let query = self.query.value();
-		let mut query = query.as_str();
+		let language = self.lang.map(TsLang::Custom).unwrap_or(language);
 		let mut captures = HashMap::new();
 		let mut diagnostics = Vec::new();
 		let mut index = 0u32;
-		// TODO: Skip symbols inside quotes
-		while let Some(mut start) = query.find('@') {
-			start += 1;
-			if start >= query.len() {
-				diagnostics.push(self.query.span().error("Unexpected end of query"));
-				break;
+		let mut tokens = self.query.clone().into_iter();
+		let mut expect_capture = false;
+		while let Some(token) = tokens.next() {
+			match token {
+				TokenTree::Punct(punct) if punct.as_char() == '@' => {
+					expect_capture = true;
+				}
+				TokenTree::Ident(capture) if expect_capture => {
+					expect_capture = false;
+					let capture = quote!(#capture).to_string();
+					let key = if capture.starts_with('_') {
+						capture
+					} else {
+						capture.to_upper_camel_case()
+					};
+					if let Entry::Vacant(entry) = captures.entry(key) {
+						entry.insert(index);
+						index += 1;
+					}
+				}
+				TokenTree::Group(group) => {
+					tokens = group
+						.stream()
+						.into_iter()
+						.chain(tokens)
+						.collect::<TokenStream>()
+						.into_iter();
+				}
+				_ => {}
 			}
-			let end = query[start..]
-				.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-				.unwrap_or(query.len() - start);
-			let capture = &query[start..start + end];
-			let key = if capture.starts_with('_') {
-				Cow::from(capture)
-			} else {
-				Cow::from(capture.to_upper_camel_case())
-			};
-			if let Entry::Vacant(entry) = captures.entry(key.into_owned()) {
-				entry.insert(index);
-				index += 1;
-			}
-			query = &query[start + end..];
 		}
 		let mut cases = vec![];
 		let mut variants = vec![];
@@ -137,7 +199,8 @@ impl QueryDefinition {
 			}
 		}
 		let name = self.name;
-		let query = self.query;
+		let mut query = String::new();
+		tokens_to_string(self.query, &mut query);
 		let meta = self.meta;
 		let diagnostics = diagnostics.into_iter().map(|diag| diag.emit_as_item_tokens());
 		quote_spanned!(name.span()=>

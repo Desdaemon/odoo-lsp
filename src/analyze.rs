@@ -97,35 +97,35 @@ impl Scope {
 	}
 }
 
+#[rustfmt::skip]
 query! {
 	#[derive(Debug)]
 	FieldCompletion(Name, SelfParam, Scope);
-r#"
 ((class_definition
-	(block
-		(expression_statement
-			(assignment (identifier) @_name (string) @NAME))?
-		[
-			(decorated_definition
-				(function_definition
-					(parameters . (identifier) @SELF_PARAM) (block) @SCOPE) .)
-			(function_definition (parameters . (identifier) @SELF_PARAM) (block) @SCOPE)
-		])) @class
-(#match? @_name "^_(name|inherit)$"))"#
+  (block
+    (expression_statement
+      (assignment
+        (identifier) @_name (string) @NAME))?
+    [
+      (decorated_definition
+        (function_definition
+          (parameters . (identifier) @SELF_PARAM) (block) @SCOPE) .)
+      (function_definition (parameters . (identifier) @SELF_PARAM) (block) @SCOPE) ])) @class
+  (#match? @_name "^_(name|inherit)$"))
 }
 
+#[rustfmt::skip]
 query! {
 	MappedCall(Callee, Iter);
-r#"
 ((call
-	(attribute (_) @CALLEE (identifier) @_mapped)
-	(argument_list
-		[(lambda (lambda_parameters . (identifier) @ITER))
-		 (keyword_argument
-			(identifier) @_func
-			(lambda (lambda_parameters . (identifier) @ITER)))]))
-(#match? @_func "^(func|key)$")
-(#match? @_mapped "^(mapp|filter|sort)ed$"))"#
+  (attribute (_) @CALLEE (identifier) @_mapped)
+  (argument_list [
+    (lambda (lambda_parameters . (identifier) @ITER))
+    (keyword_argument
+      (identifier) @_func
+      (lambda (lambda_parameters . (identifier) @ITER)))]))
+  (#match? @_func "^(func|key)$")
+  (#match? @_mapped "^(mapp|filter|sort)ed$"))
 }
 
 impl Backend {

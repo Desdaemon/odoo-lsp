@@ -18,104 +18,101 @@ use odoo_lsp::utils::*;
 use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
+#[rustfmt::skip]
 query! {
 	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Access, Prop, ForXmlId);
-r#"((call [
-	(attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
-	(attribute (identifier) @REQUEST (identifier) @_render)
-	(attribute (_) (identifier) @FOR_XML_ID)
-] (argument_list . (string) @XML_ID))
-(#eq? @_env "env")
-(#eq? @_ref "ref")
-(#eq? @REQUEST "request")
-(#eq? @_render "render")
-(#eq? @FOR_XML_ID "_for_xml_id"))
-
-(subscript
-	[(identifier) @_env (attribute (_) (identifier) @_env)] (string) @MODEL
-(#eq? @_env "env"))
-
-((class_definition
-	(block
-		(expression_statement
-			(assignment
-				(identifier) @PROP
-				[(string) @MODEL
-				 (list ((string) @MODEL ","?)*)
-				 (call
-					(attribute (identifier) @_fields (identifier))
-					(argument_list
-						(keyword_argument (identifier) @_related (string) @MAPPED)?))]))))
-(#eq? @_fields "fields")
-(#eq? @_related "related"))
-
-((call
-	[(attribute (_) @MAPPED_TARGET (identifier) @_mapper)
-	 (attribute (identifier) @_api (identifier) @DEPENDS)]
-	(argument_list (string) @MAPPED))
-(#match? @_mapper "^(mapp|filter|sort)ed$")
-(#eq? @_api "api")
-(#match? @DEPENDS "^(depends|constrains|onchange)$"))
-
-((call
-	(attribute (_) @MAPPED_TARGET (identifier) @_search)
-	(argument_list
-		[(list
-			[(tuple . (string) @MAPPED)
-			 (parenthesized_expression (string) @MAPPED)])
-		 (keyword_argument (identifier) @_domain
-			(list
-				[(tuple . (string) @MAPPED)
-			 	 (parenthesized_expression (string) @MAPPED)]))]))
-(#eq? @_domain "domain")
-(#match? @_search "^(search(_(read|count))?|read_group|filtered_domain)$"))
 
 ((call [
-	(identifier) @_Field
-    (attribute (identifier) @_fields (identifier) @_Field)
-] [
- 	(argument_list . (string) @MODEL)
+  (attribute [(identifier) @_env (attribute (_) (identifier) @_env)] (identifier) @_ref)
+  (attribute (identifier) @REQUEST (identifier) @_render)
+  (attribute (_) (identifier) @FOR_XML_ID) ]
+  (argument_list . (string) @XML_ID))
+  (#eq? @_env "env")
+  (#eq? @_ref "ref")
+  (#eq? @REQUEST "request")
+  (#eq? @_render "render")
+  (#eq? @FOR_XML_ID "_for_xml_id"))
+
+(subscript [
+  (identifier) @_env
+  (attribute (_) (identifier) @_env)]
+  (string) @MODEL
+  (#eq? @_env "env"))
+
+((class_definition
+  (block
+    (expression_statement
+      (assignment
+        (identifier) @PROP [
+        (string) @MODEL
+        (list ((string) @MODEL ","?)*)
+        (call
+          (attribute (identifier) @_fields (identifier))
+          (argument_list
+            (keyword_argument (identifier) @_related (string) @MAPPED)?))]))))
+  (#eq? @_fields "fields")
+  (#eq? @_related "related"))
+
+((call [
+  (attribute (_) @MAPPED_TARGET (identifier) @_mapper)
+  (attribute (identifier) @_api (identifier) @DEPENDS)]
+  (argument_list (string) @MAPPED))
+  (#match? @_mapper "^(mapp|filter|sort)ed$")
+  (#eq? @_api "api")
+  (#match? @DEPENDS "^(depends|constrains|onchange)$"))
+
+((call
+  (attribute (_) @MAPPED_TARGET (identifier) @_search)
+  (argument_list [
+    (list [
+      (tuple . (string) @MAPPED)
+      (parenthesized_expression (string) @MAPPED)])
+    (keyword_argument (identifier) @_domain
+      (list [
+        (tuple . (string) @MAPPED)
+        (parenthesized_expression (string) @MAPPED)]))]))
+  (#eq? @_domain "domain")
+  (#match? @_search "^(search(_(read|count))?|read_group|filtered_domain)$"))
+
+((call [
+  (identifier) @_Field
+  (attribute (identifier) @_fields (identifier) @_Field) ]
+  [
+    (argument_list . (string) @MODEL)
     (argument_list
-    	(keyword_argument (identifier) @_comodel_name (string) @MODEL))
-])
-(#match? @_Field "^(Many2one|One2many|Many2many)$")
-(#eq? @_comodel_name "comodel_name"))
+      (keyword_argument (identifier) @_comodel_name (string) @MODEL)) ])
+  (#match? @_Field "^(Many2one|One2many|Many2many)$")
+  (#eq? @_comodel_name "comodel_name"))
 
 ((call
-	(attribute (_) @MAPPED_TARGET (identifier) @READ_FN)
-	(argument_list (list (string) @MAPPED)))
-(#match? @READ_FN "^read(_group)?$"))
+  (attribute (_) @MAPPED_TARGET (identifier) @READ_FN)
+  (argument_list (list (string) @MAPPED)))
+  (#match? @READ_FN "^read(_group)?$"))
 
 ((call
-	(attribute (_) @MAPPED_TARGET (identifier) @DEPENDS)
-	(argument_list . [
-		(set (string) @MAPPED)
-		(dictionary [ 
-			(pair key: (string) @MAPPED)
-			(ERROR (string) @MAPPED)
-		])
-	]))
-(#eq? @DEPENDS "write"))
+  (attribute (_) @MAPPED_TARGET (identifier) @DEPENDS)
+  (argument_list . [
+    (set (string) @MAPPED)
+    (dictionary [
+      (pair key: (string) @MAPPED)
+      (ERROR (string) @MAPPED) ]) ]))
+  (#eq? @DEPENDS "write"))
 
 ((call
-	(attribute (_) @MAPPED_TARGET (identifier) @DEPENDS)
-	(argument_list . [
-		(set (string) @MAPPED)	
-		(dictionary [
-			(pair key: (string) @MAPPED)
-			(ERROR (string) @MAPPED)
-		])
-		(list [
-			(set (string) @MAPPED)
-			(dictionary [
-				(pair key: (string) @MAPPED)
-				(ERROR (string) @MAPPED)
-			])
-		])
-	]))
-(#eq? @DEPENDS "create"))
+  (attribute (_) @MAPPED_TARGET (identifier) @DEPENDS)
+  (argument_list . [
+    (set (string) @MAPPED)
+    (dictionary [
+      (pair key: (string) @MAPPED)
+      (ERROR (string) @MAPPED) ])
+    (list [
+      (set (string) @MAPPED)
+      (dictionary [
+        (pair key: (string) @MAPPED)
+        (ERROR (string) @MAPPED) ]) ]) ]))
+  (#eq? @DEPENDS "create"))
 
-(attribute (_) (identifier) @ACCESS)"#
+(attribute (_) (identifier) @ACCESS)
 }
 
 /// (module (_)*)

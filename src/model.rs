@@ -116,21 +116,21 @@ impl Deref for ModelIndex {
 	}
 }
 
+#[rustfmt::skip]
 query! {
 	ModelFields(Field, Type, Relation, Arg, Value);
-r#"
 ((class_definition
-	(block
-		(expression_statement
-			(assignment
-				(identifier) @FIELD
-				(call [
-					(identifier) @TYPE
-					(attribute (identifier) @_fields (identifier) @TYPE)
-				] (argument_list . (string)? @RELATION
-					((keyword_argument (identifier) @ARG (_) @VALUE) ","?)*))))))
-(#eq? @_fields "fields")
-(#match? @TYPE "^[A-Z]"))"#
+  (block
+    (expression_statement
+      (assignment
+        (identifier) @FIELD
+        (call [
+          (identifier) @TYPE
+          (attribute (identifier) @_fields (identifier) @TYPE) ]
+          (argument_list . (string)? @RELATION
+            ((keyword_argument (identifier) @ARG (_) @VALUE) ","?)*))))))
+  (#eq? @_fields "fields")
+  (#match? @TYPE "^[A-Z]"))
 }
 
 impl ModelIndex {
@@ -452,14 +452,14 @@ impl ModelIndex {
 	}
 }
 
+#[rustfmt::skip]
 query! {
 	ModelHelp(Docstring);
-r#"
 (class_definition
   (block .
     (expression_statement
       (string
-        ((string_start) . (string_content) @DOCSTRING)))))"#
+        ((string_start) . (string_content) @DOCSTRING)))))
 }
 
 impl ModelEntry {

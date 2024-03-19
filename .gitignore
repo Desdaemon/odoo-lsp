@@ -6,5 +6,4 @@ out/
 *.nrs
 dist/*
 *.vsix
-Cargo.toml
 syntaxes/*.json

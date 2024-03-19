@@ -39,6 +39,9 @@ pkg-fmt = "zip"
 [package.metadata.binstall.overrides.i686-pc-windows-msvc]
 pkg-fmt = "zip"
 
+[workspace.dependencies]
+tree-sitter = "0.20.10"
+
 [dependencies]
 env_logger = "0.10.0"
 ropey = "1.5.0"
@@ -54,7 +57,7 @@ futures = "0.3.28"
 xmlparser = "0.13.5"
 tower = "0.4.13"
 pin-project-lite = "0.2.12"
-tree-sitter = "0.20.10"
+tree-sitter.workspace = true
 tree-sitter-python = "0.20.4"
 qp-trie = "0.8.1"
 lasso = { version = "0.7.2", features = ["multi-threaded"] }

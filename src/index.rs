@@ -434,21 +434,19 @@ async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> mie
 	Ok(Output::Xml { records, templates })
 }
 
+#[rustfmt::skip]
 query! {
 	ModelQuery(Model, Name);
-r#"
 ((class_definition
-	(argument_list [
-		(identifier) @_Model
-		(attribute (identifier) @_models (identifier) @_Model)
-	])
-	(block
-		(expression_statement
-			(assignment (identifier) @NAME))
-	)) @MODEL
- (#eq? @_models "models")
- (#match? @_Model "^(Transient|Abstract)?Model$")
- (#match? @NAME "^_(name|inherits?)$"))"#
+  (argument_list [
+    (identifier) @_Model
+    (attribute (identifier) @_models (identifier) @_Model) ])
+  (block
+    (expression_statement
+      (assignment (identifier) @NAME)) )) @MODEL
+  (#eq? @_models "models")
+  (#match? @_Model "^(Transient|Abstract)?Model$")
+  (#match? @NAME "^_(name|inherits?)$"))
 }
 
 async fn add_root_py(root: Spur, path: PathBuf) -> miette::Result<Output> {

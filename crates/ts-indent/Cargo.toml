@@ -1,0 +1,10 @@
+[package]
+name = "ts-indent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+indent = "0.1.1"
+tree-sitter.workspace = true
+tree-sitter-scheme = { git = "https://github.com/6cdh/tree-sitter-scheme", version = "0.6.0", rev = "85b6188fb77c03dfb01d13e58e2844450506860c" }
+ts-macros = { version = "0.3.0", path = "../ts-macros" }
