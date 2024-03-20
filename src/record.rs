@@ -83,7 +83,7 @@ impl Record {
 						let Some(maybe_inherit_id) = maybe_inherit_id else {
 							continue;
 						};
-						if maybe_inherit_id.contains(',') {
+						if maybe_inherit_id.contains('.') {
 							inherit_id = Some(interner().get_or_intern(maybe_inherit_id).into());
 						} else {
 							inherit_id = Some(
