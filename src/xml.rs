@@ -295,9 +295,7 @@ impl Backend {
 				self.jump_def_template_name(&cursor_value)
 			}
 			Some(RefKind::PropOf(component)) => self.jump_def_component_prop(component, cursor_value),
-			Some(RefKind::Id) => {
-				self.jump_def_xml_id(&cursor_value, uri)
-			}
+			Some(RefKind::Id) => self.jump_def_xml_id(&cursor_value, uri),
 			None => Ok(None),
 		}
 	}
@@ -378,7 +376,9 @@ impl Backend {
 				self.hover_record(&xml_id, lsp_range)
 			}
 			Some(RefKind::TInherit)
-			| Some(RefKind::TCall)
+			| Some(RefKind::TCall) => {
+				Ok(self.hover_template(ref_at_cursor, lsp_range))
+			}
 			| Some(RefKind::TName)
 			| Some(RefKind::PropOf(..))  // TODO
 			| None => {
