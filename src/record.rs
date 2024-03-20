@@ -60,27 +60,7 @@ impl Record {
 						stack += 1;
 					}
 					if local.as_str() == "field" {
-						let mut is_inherit_id = false;
-						let mut maybe_inherit_id = None;
-						loop {
-							match reader.next() {
-								Some(Ok(Token::Attribute { local, value, .. }))
-									if local.as_str() == "name" && value.as_str() == "inherit_id" =>
-								{
-									is_inherit_id = true
-								}
-								Some(Ok(Token::Attribute { local, value, .. })) if local.as_str() == "ref" => {
-									maybe_inherit_id = Some(value.as_str());
-								}
-								Some(Ok(Token::ElementEnd { .. })) => break,
-								None | Some(Err(_)) => break,
-								_ => {}
-							}
-						}
-						if !is_inherit_id || stack > 1 {
-							continue;
-						}
-						let Some(maybe_inherit_id) = maybe_inherit_id else {
+						let Some(maybe_inherit_id) = extract_inherit_id(reader, stack) else {
 							continue;
 						};
 						if maybe_inherit_id.contains('.') {
@@ -160,15 +140,15 @@ impl Record {
 
 		loop {
 			match reader.next() {
-				Some(Ok(Token::Attribute { local, value, .. })) if in_template => match local.as_bytes() {
-					b"id" => {
+				Some(Ok(Token::Attribute { local, value, .. })) if in_template => match local.as_str() {
+					"id" => {
 						if let Some((_, xml_id)) = value.split_once('.') {
 							id = Some(xml_id.into());
 						} else {
 							id = Some(value.as_str().into());
 						}
 					}
-					b"inherit_id" => {
+					"inherit_id" => {
 						if value.contains('.') {
 							inherit_id = Some(interner().get_or_intern(value.as_str()).into());
 						} else {
@@ -294,4 +274,31 @@ impl Record {
 			location: MinLoc { path, range },
 		}))
 	}
+}
+
+fn extract_inherit_id<'text>(reader: &mut Tokenizer<'text>, stack: i32) -> Option<&'text str> {
+	let mut is_inherit_id = false;
+	let mut maybe_inherit_id = None;
+	loop {
+		match reader.next() {
+			Some(Ok(Token::Attribute { local, value, .. }))
+				if local.as_str() == "name" && value.as_str() == "inherit_id" =>
+			{
+				is_inherit_id = true
+			}
+			Some(Ok(Token::Attribute { local, value, .. })) if local.as_str() == "ref" => {
+				maybe_inherit_id = Some(value.as_str());
+			}
+			Some(Ok(Token::ElementEnd { .. })) => break,
+			None | Some(Err(_)) => break,
+			_ => {}
+		}
+	}
+	if !is_inherit_id || stack > 1 {
+		return None;
+	}
+	let Some(maybe_inherit_id) = maybe_inherit_id else {
+		return None;
+	};
+	Some(maybe_inherit_id)
 }
