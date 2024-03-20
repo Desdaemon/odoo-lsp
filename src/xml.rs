@@ -13,13 +13,14 @@ use odoo_lsp::model::{Field, FieldKind};
 use odoo_lsp::template::gather_templates;
 use ropey::{Rope, RopeSlice};
 use tower_lsp::lsp_types::*;
-use xmlparser::{ElementEnd, Error, StreamError, Token, Tokenizer};
+use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
 
 use odoo_lsp::record::Record;
 use odoo_lsp::{some, utils::*};
 
 #[derive(Debug)]
 enum RefKind<'a> {
+	/// `<field name=bar ref=".."/>`
 	Ref(Spur),
 	Model,
 	Id,
@@ -248,7 +249,18 @@ impl Backend {
 			RefKind::PropOf(component) => {
 				self.complete_component_prop(/*needle,*/ replace_range, rope.clone(), component, &mut items)?;
 			}
-			RefKind::Id | RefKind::TName => return Ok(None),
+			RefKind::Id => {
+				self.complete_xml_id(
+					needle,
+					replace_range,
+					rope.clone(),
+					model_filter.as_deref(),
+					current_module,
+					&mut items,
+				)
+				.await?;
+			}
+			RefKind::TName => return Ok(None),
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
@@ -283,7 +295,10 @@ impl Backend {
 				self.jump_def_template_name(&cursor_value)
 			}
 			Some(RefKind::PropOf(component)) => self.jump_def_component_prop(component, cursor_value),
-			Some(RefKind::Id) | None => Ok(None),
+			Some(RefKind::Id) => {
+				self.jump_def_xml_id(&cursor_value, uri)
+			}
+			None => Ok(None),
 		}
 	}
 	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
@@ -335,15 +350,15 @@ impl Backend {
 			ref_range.map_unit(|unit| ByteOffset(unit + relative_offset)),
 			rope.clone(),
 		);
+		let current_module = self
+			.index
+			.module_of_path(Path::new(params.text_document_position_params.text_document.uri.path()));
 		match ref_kind {
 			Some(RefKind::Model) => self.hover_model(&ref_at_cursor, lsp_range, false, None),
 			Some(RefKind::Ref(_)) => {
 				if ref_at_cursor.contains('.') {
 					self.hover_record(&ref_at_cursor, lsp_range)
 				} else {
-					let current_module = self
-						.index
-						.module_of_path(Path::new(params.text_document_position_params.text_document.uri.path()));
 					let current_module = some!(current_module);
 					let xml_id = format!("{}.{}", interner().resolve(&current_module), ref_at_cursor);
 					self.hover_record(&xml_id, lsp_range)
@@ -353,10 +368,18 @@ impl Backend {
 				let model = some!(model_filter);
 				self.hover_field_name(&ref_at_cursor, &model, lsp_range).await
 			}
+			Some(RefKind::Id) => {
+				let current_module = some!(current_module);
+				let xml_id = if ref_at_cursor.contains('.') {
+					Cow::from(ref_at_cursor)
+				} else {
+					format!("{}.{}", interner().resolve(&current_module), ref_at_cursor).into()
+				};
+				self.hover_record(&xml_id, lsp_range)
+			}
 			Some(RefKind::TInherit)
 			| Some(RefKind::TCall)
 			| Some(RefKind::TName)
-			| Some(RefKind::Id)
 			| Some(RefKind::PropOf(..))  // TODO
 			| None => {
 				#[cfg(not(debug_assertions))]
@@ -382,6 +405,41 @@ struct XmlRefs<'a> {
 	ref_at_cursor: Option<(&'a str, core::ops::Range<usize>)>,
 	ref_kind: Option<RefKind<'a>>,
 	model_filter: Option<String>,
+}
+
+fn determine_csv_xmlid_subgroup<'text>(
+	ref_at_cursor: &mut Option<(&'text str, core::ops::Range<usize>)>,
+	value: StrSpan<'text>,
+	offset_at_cursor: usize,
+) {
+	let mut start = value.range().start;
+	let mut csv_groups = value.as_str();
+	if !csv_groups.contains(',') {
+		*ref_at_cursor = Some((csv_groups, value.range()));
+		return;
+	}
+	loop {
+		let mut last_subgroup = false;
+		let subgroup = match csv_groups.split_once(',') {
+			Some((subgroup, rest)) => {
+				csv_groups = rest;
+				subgroup
+			}
+			None => {
+				last_subgroup = true;
+				csv_groups
+			}
+		};
+		let range = start..start + subgroup.len();
+		if range.contains_end(offset_at_cursor) {
+			*ref_at_cursor = Some((subgroup, range));
+			break;
+		}
+		start += subgroup.len() + 1;
+		if last_subgroup {
+			break;
+		}
+	}
 }
 
 /// `contents` is used for error recovery.
@@ -444,6 +502,11 @@ fn gather_refs<'read>(
 				} else if local.as_str() == "name" {
 					let relation = interner.get_or_intern(value.as_str());
 					ref_kind = Some(RefKind::Ref(relation));
+				} else if local.as_str() == "groups" && value_in_range {
+					ref_kind = Some(RefKind::Id);
+					model_filter = Some("res.groups".to_string());
+					arch_model = None;
+					determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
 				}
 			}
 			// <template inherit_id=.. />
@@ -505,6 +568,15 @@ fn gather_refs<'read>(
 				};
 				ref_at_cursor = Some((local.as_str(), local.range()));
 				ref_kind = Some(RefKind::PropOf(component));
+			}
+			// catchall groups=
+			Ok(Token::Attribute { local, value, .. })
+				if local.as_str() == "groups" && value.range().contains_end(offset_at_cursor) =>
+			{
+				ref_kind = Some(RefKind::Id);
+				model_filter = Some("res.groups".to_string());
+				arch_model = None;
+				determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
 			}
 			// on-hover cases
 			Ok(Token::Attribute { local, value, .. }) if value.range().contains_end(offset_at_cursor) => {

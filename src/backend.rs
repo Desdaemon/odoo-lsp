@@ -302,7 +302,7 @@ impl Backend {
 				..Default::default()
 			}
 		}
-		let interner = &interner();
+		let interner = interner();
 		if let Some((module, needle)) = needle.split_once('.') {
 			let Some(module) = interner.get(module).map(Into::into) else {
 				return Ok(());
