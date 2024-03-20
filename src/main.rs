@@ -174,7 +174,7 @@ impl LanguageServer for Backend {
 				})),
 				completion_provider: Some(CompletionOptions {
 					resolve_provider: Some(true),
-					trigger_characters: Some(['"', '\'', '.', '_'].iter().map(char::to_string).collect()),
+					trigger_characters: Some(['"', '\'', '.', '_', ',', ' '].iter().map(char::to_string).collect()),
 					all_commit_characters: None,
 					completion_item: None,
 					work_done_progress_options: Default::default(),

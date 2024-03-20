@@ -529,23 +529,28 @@ fn gather_refs<'read>(
 					model_filter = Some(value.as_str().to_string());
 				}
 			}
-			// <record id=.. /> or <template id=.. />
 			Ok(Token::Attribute { local, value, .. })
-				if matches!(tag, Some(Tag::Record | Tag::Template))
-					&& local == "id" && value.range().contains(&offset_at_cursor) =>
+				if matches!(tag, Some(Tag::Record | Tag::Template | Tag::Menuitem))
+					&& local == "id" && value.range().contains_end(offset_at_cursor) =>
 			{
 				ref_at_cursor = Some((value.as_str(), value.range()));
 				ref_kind = Some(RefKind::Id);
+				arch_model = None;
+				match tag {
+					Some(Tag::Template) => {
+						model_filter = Some("ir.ui.view".to_string());
+					}
+					Some(Tag::Menuitem) => {
+						model_filter = Some("ir.ui.menu".to_string());
+					}
+					_ => {}
+				}
 			}
 			// <menuitem parent=.. action=.. />
 			Ok(Token::Attribute { local, value, .. })
 				if matches!(tag, Some(Tag::Menuitem)) && value.range().contains_end(offset_at_cursor) =>
 			{
 				match local.as_str() {
-					"id" => {
-						ref_at_cursor = Some((value.as_str(), value.range()));
-						ref_kind = Some(RefKind::Id);
-					}
 					"parent" => {
 						ref_at_cursor = Some((value.as_str(), value.range()));
 						ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("parent_id")));
@@ -555,6 +560,12 @@ fn gather_refs<'read>(
 						ref_at_cursor = Some((value.as_str(), value.range()));
 						ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("action")));
 						model_filter = Some("ir.ui.menu".to_string());
+					}
+					"groups" => {
+						ref_kind = Some(RefKind::Id);
+						arch_model = None;
+						model_filter = Some("res.groups".to_string());
+						determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
 					}
 					_ => {}
 				}
@@ -569,16 +580,7 @@ fn gather_refs<'read>(
 				ref_at_cursor = Some((local.as_str(), local.range()));
 				ref_kind = Some(RefKind::PropOf(component));
 			}
-			// catchall groups=
-			Ok(Token::Attribute { local, value, .. })
-				if local.as_str() == "groups" && value.range().contains_end(offset_at_cursor) =>
-			{
-				ref_kind = Some(RefKind::Id);
-				model_filter = Some("res.groups".to_string());
-				arch_model = None;
-				determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
-			}
-			// on-hover cases
+			// catchall cases
 			Ok(Token::Attribute { local, value, .. }) if value.range().contains_end(offset_at_cursor) => {
 				match local.as_str() {
 					"t-name" => {
@@ -592,6 +594,12 @@ fn gather_refs<'read>(
 					"t-call" => {
 						ref_at_cursor = Some((value.as_str(), value.range()));
 						ref_kind = Some(RefKind::TCall);
+					}
+					"groups" => {
+						ref_kind = Some(RefKind::Id);
+						model_filter = Some("res.groups".to_string());
+						arch_model = None;
+						determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
 					}
 					_ => {}
 				}
