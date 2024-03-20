@@ -219,6 +219,7 @@ impl Backend {
 			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				let mut model_filter = None;
 				for capture in match_.captures {
+					let range = capture.node.byte_range();
 					match PyCompletions::from(capture.index) {
 						Some(PyCompletions::Request) => {
 							model_filter = Some("ir.ui.view");
@@ -232,22 +233,18 @@ impl Backend {
 							};
 							model_filter = model()
 						}
-						Some(PyCompletions::XmlId) => {
-							let range = capture.node.byte_range();
-							if range.contains(&offset) {
-								let range = range.shrink(1);
-								let needle = String::from_utf8_lossy(&contents[range.start..offset]);
-								early_return = Some((
-									EarlyReturn::XmlId(model_filter, current_module.into()),
-									needle,
-									range.map_unit(ByteOffset),
-									rope.clone(),
-								));
-								break 'match_;
-							}
+						Some(PyCompletions::XmlId) if range.contains(&offset) => {
+							let range = range.shrink(1);
+							let needle = String::from_utf8_lossy(&contents[range.start..offset]);
+							early_return = Some((
+								EarlyReturn::XmlId(model_filter, current_module.into()),
+								needle,
+								range.map_unit(ByteOffset),
+								rope.clone(),
+							));
+							break 'match_;
 						}
 						Some(PyCompletions::Model) => {
-							let range = capture.node.byte_range();
 							// to be checked later down that it only belongs to (assignment)
 							let is_inherit = match_
 								.nodes_for_capture_index(PyCompletions::Prop as _)
@@ -272,32 +269,28 @@ impl Backend {
 								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
 						}
-						Some(PyCompletions::Mapped) => {
-							let range = capture.node.byte_range();
-							if range.contains_end(offset) {
-								let Some(Mapped {
-									needle,
-									model,
-									single_field,
-									range,
-								}) = self.gather_mapped(
-									root,
-									&match_,
-									Some(offset),
-									range.clone(),
-									this_model.inner,
-									// &rope,
-									&contents[..],
-									true,
-								)
-								else {
-									break 'match_;
-								};
-
-								early_return =
-									Some((EarlyReturn::Mapped { model, single_field }, needle, range, rope.clone()));
+						Some(PyCompletions::Mapped) if range.contains_end(offset) => {
+							let Some(Mapped {
+								needle,
+								model,
+								single_field,
+								range,
+							}) = self.gather_mapped(
+								root,
+								&match_,
+								Some(offset),
+								range.clone(),
+								this_model.inner,
+								&contents[..],
+								true,
+							)
+							else {
 								break 'match_;
-							}
+							};
+
+							early_return =
+								Some((EarlyReturn::Mapped { model, single_field }, needle, range, rope.clone()));
+							break 'match_;
 						}
 						Some(PyCompletions::Access) => {
 							let range = capture.node.byte_range();
@@ -322,6 +315,8 @@ impl Backend {
 						}
 						Some(PyCompletions::Depends)
 						| Some(PyCompletions::MappedTarget)
+						| Some(PyCompletions::Mapped)
+						| Some(PyCompletions::XmlId)
 						| Some(PyCompletions::Prop)
 						| Some(PyCompletions::ReadFn)
 						| None => {}
@@ -400,7 +395,6 @@ impl Backend {
 		offset: Option<usize>,
 		mut range: core::ops::Range<usize>,
 		this_model: Option<&[u8]>,
-		// rope: &'text Rope,
 		contents: &'text [u8],
 		for_replacing: bool,
 	) -> Option<Mapped<'text>> {
@@ -492,19 +486,17 @@ impl Backend {
 			let mut this_model = ThisModel::default();
 			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				for capture in match_.captures {
+					let range = capture.node.byte_range();
 					match PyCompletions::from(capture.index) {
-						Some(PyCompletions::XmlId) => {
-							let range = capture.node.byte_range();
-							if range.contains(&offset) {
-								let range = range.shrink(1);
-								let Some(slice) = rope.get_byte_slice(range.clone()) else {
-									dbg!(&range);
-									break 'match_;
-								};
-								let slice = Cow::from(slice);
-								return self
-									.jump_def_xml_id(&slice, &params.text_document_position_params.text_document.uri);
-							}
+						Some(PyCompletions::XmlId) if range.contains(&offset) => {
+							let range = range.shrink(1);
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let slice = Cow::from(slice);
+							return self
+								.jump_def_xml_id(&slice, &params.text_document_position_params.text_document.uri);
 						}
 						Some(PyCompletions::Model) => {
 							let range = capture.node.byte_range();
@@ -525,38 +517,34 @@ impl Backend {
 								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
 						}
-						Some(PyCompletions::Access) => {
-							let range = capture.node.byte_range();
-							if range.contains_end(offset) {
-								let lhs = some!(capture.node.prev_named_sibling());
-								let lhs = lhs.byte_range().map_unit(ByteOffset);
-								let model = some!(self.model_of_range(root, lhs, &contents));
-								let field = String::from_utf8_lossy(&contents[range]);
-								let model = interner().resolve(&model);
-								early_return = Some(EarlyReturn::Access(field, model));
-								break 'match_;
-							}
+						Some(PyCompletions::Access) if range.contains_end(offset) => {
+							let lhs = some!(capture.node.prev_named_sibling());
+							let lhs = lhs.byte_range().map_unit(ByteOffset);
+							let model = some!(self.model_of_range(root, lhs, &contents));
+							let field = String::from_utf8_lossy(&contents[range]);
+							let model = interner().resolve(&model);
+							early_return = Some(EarlyReturn::Access(field, model));
+							break 'match_;
 						}
-						Some(PyCompletions::Mapped) => {
-							let range = capture.node.byte_range();
-							if range.contains_end(offset) {
-								early_return = self
-									.gather_mapped(
-										root,
-										&match_,
-										Some(offset),
-										range.clone(),
-										this_model.inner,
-										// &rope,
-										&contents,
-										false,
-									)
-									.map(EarlyReturn::Mapped);
-								break 'match_;
-							}
+						Some(PyCompletions::Mapped) if range.contains_end(offset) => {
+							early_return = self
+								.gather_mapped(
+									root,
+									&match_,
+									Some(offset),
+									range.clone(),
+									this_model.inner,
+									&contents,
+									false,
+								)
+								.map(EarlyReturn::Mapped);
+							break 'match_;
 						}
 						Some(PyCompletions::Request)
+						| Some(PyCompletions::Mapped)
 						| Some(PyCompletions::ForXmlId)
+						| Some(PyCompletions::XmlId)
+						| Some(PyCompletions::Access)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Depends)
 						| Some(PyCompletions::Prop)
@@ -610,18 +598,16 @@ impl Backend {
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
 		'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 			for capture in match_.captures {
+				let range = capture.node.byte_range();
 				match PyCompletions::from(capture.index) {
-					Some(PyCompletions::XmlId) => {
-						let range = capture.node.byte_range();
-						if range.contains(&offset) {
-							let range = range.shrink(1);
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
-								break 'match_;
-							};
-							let slice = Cow::from(slice);
-							return self.record_references(&slice, current_module);
-						}
+					Some(PyCompletions::XmlId) if range.contains(&offset) => {
+						let range = range.shrink(1);
+						let Some(slice) = rope.get_byte_slice(range.clone()) else {
+							dbg!(&range);
+							break 'match_;
+						};
+						let slice = Cow::from(slice);
+						return self.record_references(&slice, current_module);
 					}
 					Some(PyCompletions::Model) => {
 						let range = capture.node.byte_range();
@@ -642,6 +628,7 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::Request)
+					| Some(PyCompletions::XmlId)
 					| Some(PyCompletions::ForXmlId)
 					| Some(PyCompletions::Mapped)
 					| Some(PyCompletions::MappedTarget)
@@ -684,9 +671,9 @@ impl Backend {
 			let mut this_model = ThisModel::default();
 			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
 				for capture in match_.captures {
+					let range = capture.node.byte_range();
 					match PyCompletions::from(capture.index) {
 						Some(PyCompletions::Model) => {
-							let range = capture.node.byte_range();
 							if range.contains(&offset) {
 								let range = range.shrink(1);
 								let lsp_range = ts_range_to_lsp_range(capture.node.range());
@@ -700,51 +687,42 @@ impl Backend {
 								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
 						}
-						Some(PyCompletions::Access) => {
-							let range = capture.node.byte_range();
-							if range.contains(&offset) {
-								let lsp_range = ts_range_to_lsp_range(capture.node.range());
-								let lhs = some!(capture.node.prev_named_sibling());
-								let lhs = lhs.byte_range().map_unit(ByteOffset);
-								let model = some!(self.model_of_range(root, lhs, &contents));
-								let field = String::from_utf8_lossy(&contents[range]);
-								early_return = Some(EarlyReturn::Access {
-									field,
-									model,
-									lsp_range,
-								});
-								break 'match_;
-							}
+						Some(PyCompletions::Access) if range.contains(&offset) => {
+							let lsp_range = ts_range_to_lsp_range(capture.node.range());
+							let lhs = some!(capture.node.prev_named_sibling());
+							let lhs = lhs.byte_range().map_unit(ByteOffset);
+							let model = some!(self.model_of_range(root, lhs, &contents));
+							let field = String::from_utf8_lossy(&contents[range]);
+							early_return = Some(EarlyReturn::Access {
+								field,
+								model,
+								lsp_range,
+							});
+							break 'match_;
 						}
-						Some(PyCompletions::Mapped) => {
-							let range = capture.node.byte_range();
-							if range.contains(&offset) {
-								early_return = self
-									.gather_mapped(
-										root,
-										&match_,
-										Some(offset),
-										range.clone(),
-										this_model.inner,
-										// &rope,
-										&contents[..],
-										false,
-									)
-									.map(EarlyReturn::Mapped);
-								break 'match_;
-							}
+						Some(PyCompletions::Mapped) if range.contains(&offset) => {
+							early_return = self
+								.gather_mapped(
+									root,
+									&match_,
+									Some(offset),
+									range.clone(),
+									this_model.inner,
+									&contents[..],
+									false,
+								)
+								.map(EarlyReturn::Mapped);
+							break 'match_;
 						}
-						Some(PyCompletions::XmlId) => {
-							let range = capture.node.byte_range();
-							if range.contains(&offset) {
-								let xml_id = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
-								return self.hover_record(
-									&xml_id,
-									offset_range_to_lsp_range(range.map_unit(ByteOffset), rope),
-								);
-							}
+						Some(PyCompletions::XmlId) if range.contains(&offset) => {
+							let xml_id = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
+							return self
+								.hover_record(&xml_id, offset_range_to_lsp_range(range.map_unit(ByteOffset), rope));
 						}
 						Some(PyCompletions::Request)
+						| Some(PyCompletions::XmlId)
+						| Some(PyCompletions::Mapped)
+						| Some(PyCompletions::Access)
 						| Some(PyCompletions::ForXmlId)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Depends)
@@ -918,6 +896,11 @@ impl Backend {
 								continue;
 							};
 							let Some(fields) = entry.fields.as_ref() else { continue };
+							static MAPPED_BUILTINS: phf::Set<&str> =
+								phf::phf_set!("id", "display_name", "create_date", "write_date");
+							if MAPPED_BUILTINS.contains(&needle) {
+								continue;
+							}
 							let Some(key) = interner().get(needle) else {
 								continue;
 							};
