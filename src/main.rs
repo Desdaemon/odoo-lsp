@@ -69,6 +69,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
+use std::time::Duration;
 
 use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
@@ -721,12 +722,21 @@ impl LanguageServer for Backend {
 
 #[tokio::main]
 async fn main() {
+	let outlog = std::env::var("ODOO_LSP_LOG").ok().map(|var| {
+		let path = match var.as_str() {
+			#[cfg(unix)]
+			"1" => Path::new("/tmp/odoo_lsp.log"),
+			_ => Path::new(&var),
+		};
+		std::fs::File::create(path).unwrap()
+	});
 	env_logger::Builder::new()
 		.filter_level(log::LevelFilter::Off)
 		.format_timestamp(None)
 		.format_indent(Some(2))
 		.format_target(true)
 		.format_module_path(cfg!(debug_assertions))
+		.target(env_logger::Target::Pipe(Box::new(FileTee::new(outlog))))
 		.parse_default_env()
 		.init();
 
@@ -780,6 +790,9 @@ async fn main() {
 	})
 	.finish();
 
-	let service = ServiceBuilder::new().layer_fn(CatchPanic).service(service);
+	let service = ServiceBuilder::new()
+		.layer_fn(CatchPanic)
+		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(15)))
+		.service(service);
 	Server::new(stdin, stdout, socket).serve(service).await;
 }

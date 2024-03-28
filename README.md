@@ -91,9 +91,11 @@ language-servers = [
 
 ### Neovim via [lsp-zero.nvim]
 
+Instructions copied from [lsp-zero docs](https://lsp-zero.netlify.app/v3.x/language-server-configuration.html#custom-servers)
+
 1. Ensure that you have `odoo-lsp` on your path
 2. Configure your Neovim (Lua) configuration file e.g. at `~/.config/nvim/init.lua` to use [lsp-zero.nvim],
-   adding odoo-lsp as a new server using `lsp.new_server` before calling `lsp.setup()`:
+   adding odoo-lsp as a new server before calling `lsp.setup()`:
 
 ```lua
 -- lsp-zero stanza
@@ -102,15 +104,28 @@ lsp.on_attach(function(client, bufnr)
   lsp.default_keymaps({buffer = bufnr})
 end)
 
+local lspconfigs = require 'lspconfig.configs'
+
 -- define our custom language server here
-lsp.new_server({
-  name = 'odoo-lsp',
-  cmd = {'odoo-lsp'},
-  filetypes = {'javascript', 'xml', 'python'},
-  root_dir = function()
-    return lsp.dir.find_first({'.odoo_lsp', '.odoo_lsp.json', '.git'})
-  end,
-})
+lspconfigs.odoo_lsp = {
+  default_config = {
+    name = 'odoo-lsp',
+    cmd = {'odoo-lsp'},
+    filetypes = {'javascript', 'xml', 'python'},
+    root_dir = require('lspconfig.util').root_pattern('.odoo_lsp', '.odoo_lsp.json', '.git')
+  }
+}
+
+local configured_lsps = {
+  odoo_lsp = {},
+  -- optional but recommended, requires pyright-langserver on path
+  pyright = {},
+}
+
+local lspconfig = require 'lspconfig'
+for name, config in pairs(configured_lsps) do
+  lspconfig[name].setup(config)
+end
 
 -- LSP setup done
 lsp.setup()

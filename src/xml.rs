@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::path::Path;
 use std::sync::Arc;
 
-use lasso::{Spur, ThreadedRodeo};
+use lasso::Spur;
 use log::{debug, warn};
 use miette::diagnostic;
 use odoo_lsp::index::{interner, PathSymbol};
@@ -21,7 +21,7 @@ use odoo_lsp::{some, utils::*};
 #[derive(Debug)]
 enum RefKind<'a> {
 	/// `<field name=bar ref=".."/>`
-	Ref(Spur),
+	Ref(&'a str),
 	Model,
 	Id,
 	FieldName,
@@ -205,7 +205,7 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			..
-		} = gather_refs(offset_at_cursor, &mut reader, interner(), &slice)?;
+		} = gather_refs(offset_at_cursor, &mut reader, &slice)?;
 		let (Some((value, value_range)), Some(record_field)) = (ref_at_cursor, ref_kind) else {
 			return Ok(None);
 		};
@@ -217,6 +217,7 @@ impl Backend {
 				let model = some!(interner().get(&model_key));
 				let fields = some!(self.index.models.populate_field_names(model.into(), &[]));
 				let fields = some!(fields.fields.as_ref());
+				let relation = some!(interner().get(relation));
 				let Some(Field {
 					kind: FieldKind::Relational(relation),
 					..
@@ -279,7 +280,7 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			..
-		} = gather_refs(cursor_by_char, &mut reader, interner(), &slice)?;
+		} = gather_refs(cursor_by_char, &mut reader, &slice)?;
 
 		let Some((cursor_value, _)) = ref_at_cursor else {
 			return Ok(None);
@@ -309,7 +310,7 @@ impl Backend {
 			ref_at_cursor: cursor_value,
 			ref_kind,
 			..
-		} = gather_refs(cursor_by_char, &mut reader, interner(), &slice)?;
+		} = gather_refs(cursor_by_char, &mut reader, &slice)?;
 
 		let Some((cursor_value, _)) = cursor_value else {
 			return Ok(None);
@@ -338,7 +339,7 @@ impl Backend {
 			ref_at_cursor,
 			ref_kind,
 			model_filter,
-		} = gather_refs(offset_at_cursor, &mut reader, interner(), &slice)?;
+		} = gather_refs(offset_at_cursor, &mut reader, &slice)?;
 
 		let Some((ref_at_cursor, ref_range)) = ref_at_cursor else {
 			return Ok(None);
@@ -446,7 +447,6 @@ fn determine_csv_xmlid_subgroup<'text>(
 fn gather_refs<'read>(
 	offset_at_cursor: ByteOffset,
 	reader: &mut Tokenizer<'read>,
-	interner: &ThreadedRodeo,
 	slice: &'read RopeSlice<'read>,
 ) -> miette::Result<XmlRefs<'read>> {
 	let mut tag = None;
@@ -500,8 +500,7 @@ fn gather_refs<'read>(
 					arch_mode = true;
 					arch_depth = depth
 				} else if local.as_str() == "name" {
-					let relation = interner.get_or_intern(value.as_str());
-					ref_kind = Some(RefKind::Ref(relation));
+					ref_kind = Some(RefKind::Ref(value.as_str()));
 				} else if local.as_str() == "groups" && value_in_range {
 					ref_kind = Some(RefKind::Id);
 					model_filter = Some("res.groups".to_string());
@@ -516,7 +515,7 @@ fn gather_refs<'read>(
 					&& matches!(local.as_str(), "inherit_id" | "t-call") =>
 			{
 				ref_at_cursor = Some((value.as_str(), value.range()));
-				ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("inherit_id")));
+				ref_kind = Some(RefKind::Ref("inherit_id"));
 			}
 			// <record model=.. />
 			Ok(Token::Attribute { local, value, .. })
@@ -553,12 +552,12 @@ fn gather_refs<'read>(
 				match local.as_str() {
 					"parent" => {
 						ref_at_cursor = Some((value.as_str(), value.range()));
-						ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("parent_id")));
+						ref_kind = Some(RefKind::Ref("parent_id"));
 						model_filter = Some("ir.ui.menu".to_string());
 					}
 					"action" => {
 						ref_at_cursor = Some((value.as_str(), value.range()));
-						ref_kind = Some(RefKind::Ref(interner.get_or_intern_static("action")));
+						ref_kind = Some(RefKind::Ref("action"));
 						model_filter = Some("ir.ui.menu".to_string());
 					}
 					"groups" => {

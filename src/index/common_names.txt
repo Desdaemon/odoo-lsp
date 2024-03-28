@@ -18,3 +18,6 @@ res.company
 account.report
 ir.attachment
 res.groups
+inherit_id
+parent_id
+action
