@@ -91,3 +91,15 @@ export async function openLink(url: string) {
 	}
 	return await $(`${opener} ${url}`);
 }
+
+export function parseNightly(releaseName: string) {
+	if (!releaseName.startsWith('nightly-')) {
+		throw new Error(`bug: releaseName=${releaseName} is not a nightly release`);
+	}
+	// nightly-YYYYMMDD
+	const dateString = releaseName.slice('nightly-'.length);
+	const yearString = dateString.slice(0, 4);
+	const monthString = dateString.slice(4, 6);
+	const dayString = dateString.slice(6, 8);
+	return new Date(Date.UTC(+yearString, +monthString, +dayString))
+}

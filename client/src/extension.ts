@@ -17,6 +17,7 @@ import {
 	isWindows,
 	makeStates,
 	openLink,
+	parseNightly,
 	tryStatSync,
 	which,
 } from "./utils";
@@ -145,10 +146,13 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 	const shaLink = `${link}.sha256`;
 	const shaOutput = `${latest}.sha256`;
 
-	let stat: Stats | null;
-	const hasNewerNightly =
-		// biome-ignore lint/suspicious/noAssignInExpressions:
-		release.startsWith("nightly") && (!(stat = tryStatSync(vsixOutput)) || compareDate(stat.ctime, new Date()) < 0);
+	const hasNewerNightly = (() => {
+		if (!release.startsWith("nightly-")) return false;
+		const releaseDate = parseNightly(release);
+		const vsixStat = tryStatSync(vsixOutput);
+		if (!vsixStat) return false;
+		return compareDate(vsixStat.birthtime, releaseDate) < 0;
+	})();
 
 	const powershell = { shell: "powershell.exe" };
 	const sh = { shell: "sh" };
