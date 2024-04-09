@@ -20,7 +20,7 @@ repository:
     begin: |
       (?x)
       (?:^|\s+) (?# start-of-line or skip leading whitespace)
-      (t- (?: call | valuef | attf- \S+ | slot | ref))
+      (t- (?: call | valuef | attf- \S+? | slot | ref))
       \s* = (['"])
     end: (\2)
     beginCaptures:
@@ -37,7 +37,7 @@ repository:
   plain: # Attributes that should be opted out of injection
     begin: |
       (?x)(?:^|\s+)
-      (t- (?: name | inherit (?: -mode)? | nocache \S* | set-slot | translation))
+      (t- (?: name | inherit (?: -mode)? | nocache \S*? | set-slot | translation))
       \s* = (['"])
     end: (\2)
     beginCaptures:
@@ -52,7 +52,7 @@ repository:
   js: # Attributes that only make sense in a JS context, e.g. t-on-{event}
     begin: |
       (?x)(?:^|\s+)
-      (t- (?: on- \S+ | component | props | portal))
+      (t- (?: on- \S+? | component | props | portal))
       \s* = (['"])
     end: (\2)
     beginCaptures:
@@ -70,7 +70,7 @@ repository:
       (?x)(?:^|\s+)
       (required | include | readonly | (?:column_)? invisible | (?:filter_)? domain
         | context | eval | options | attrs
-        | (?: t | decoration) - \S+)
+        | (?: t | decoration) - \S+?)
       \s* = (['"])
     end: (\2)
     beginCaptures:
@@ -134,7 +134,7 @@ repository:
   operators:
     match: |
       (?x)
-      (?: === | !== | delete | \|\|
+      (?: ===? | !==? | delete | \|\|
         | \?\?= (?# Nullish assignment)
         | [?+-]{2} (?# Nullish coalescing, increment, decrement)
         | [!?]\.? (?# Negation, ternary, optional chaining)
