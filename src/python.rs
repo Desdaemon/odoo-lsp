@@ -797,6 +797,9 @@ impl Backend {
 				let range = lsp_range_to_offset_range(diag.range.clone(), &rope).unwrap_or_default();
 				!root.byte_range().contains(&range.start.0)
 			});
+		} else {
+			// There is no damage zone, assume everything has been reset.
+			diagnostics.clear();
 		}
 		let in_active_root =
 			|range: core::ops::Range<usize>| damage_zone.as_ref().map(|zone| zone.intersects(range)).unwrap_or(true);
