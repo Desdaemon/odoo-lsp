@@ -1,3 +1,43 @@
+# [0.4.0](https://github.com/Desdaemon/odoo-lsp/compare/v0.3.1...v0.4.0) (2024-04-20)
+
+
+### Bug Fixes
+
+* attempt to remove duplicate diags ([f5cd4a2](https://github.com/Desdaemon/odoo-lsp/commit/f5cd4a20a501bb326177706606c34b2418d7267d))
+* correct conditions for new nightlies ([498bb81](https://github.com/Desdaemon/odoo-lsp/commit/498bb8176faf4a3fc03ff789c65931c6430cdb99))
+* do not update records on change ([ccc9559](https://github.com/Desdaemon/odoo-lsp/commit/ccc955966998e27b456d21dc4a72082243a496d5))
+* **extension:** compare dates for nightly updates ([876f9eb](https://github.com/Desdaemon/odoo-lsp/commit/876f9eb88faf249bd5360102779e04614d2f2546))
+* greedy parsing of xml attribute name ([94b02f4](https://github.com/Desdaemon/odoo-lsp/commit/94b02f47594bb0c69efd45c8b8a44ea2db5deb8c))
+* inherit_ids not resolving ([625db08](https://github.com/Desdaemon/odoo-lsp/commit/625db08aca9d54cbe4dae4d0cf48233a43871a5e))
+* make logs more visible ([daf05f5](https://github.com/Desdaemon/odoo-lsp/commit/daf05f5b91b4b9d4e555ce71843c13cd851c979f))
+* missing menuitem groups completions ([4f43c62](https://github.com/Desdaemon/odoo-lsp/commit/4f43c622016797b7dd0795eeb19e36c2e8dbf279))
+* **python:** correctly resolve mapped relations ([115aea5](https://github.com/Desdaemon/odoo-lsp/commit/115aea5eab626274f67d226c71eb5b8fb166dd43))
+* store inherit_id as full XML ID ([c09a54b](https://github.com/Desdaemon/odoo-lsp/commit/c09a54bc0b50ec4f14803f8e0f2f08371230d695))
+* wrong import path for xpath extension ([d663e6e](https://github.com/Desdaemon/odoo-lsp/commit/d663e6e5c6c4c060c7207091e21691dfe71bc22a))
+
+
+### Features
+
+* add Python/JS injections for VSCode ([8cc6c0f](https://github.com/Desdaemon/odoo-lsp/commit/8cc6c0fe95bcce4864942ec08fb5c4c1a4ae0b64))
+* change hover message for component/template ([5543870](https://github.com/Desdaemon/odoo-lsp/commit/5543870c88dd20f630ba08318562d22d90665cb8))
+* completion inside arch ([2f24674](https://github.com/Desdaemon/odoo-lsp/commit/2f24674ec54ae6e26ec1cbb933eee6610192dfcc))
+* **extension:** use curl for more compatibility ([37e8d5f](https://github.com/Desdaemon/odoo-lsp/commit/37e8d5fca6b6a6a1e5a761628a293f25b95c83c6))
+* **extension:** Use LogOutputChannel ([989fe49](https://github.com/Desdaemon/odoo-lsp/commit/989fe494358a16eb54aaf429d506b85f91013457))
+* handle model= in XML fields ([ff6e325](https://github.com/Desdaemon/odoo-lsp/commit/ff6e325c00c483715caa2b62e96dd2b8316b29c6))
+* hover for qweb templates ([c6f07e0](https://github.com/Desdaemon/odoo-lsp/commit/c6f07e02e33eebc962fd70f8c668171e52d877b5))
+* **internal:** split path keys to improve mem use ([24193c8](https://github.com/Desdaemon/odoo-lsp/commit/24193c88aab1999b6d6daf9323f63729f680d01f))
+* limit redundant indexing ([135fcfd](https://github.com/Desdaemon/odoo-lsp/commit/135fcfd66bd6934e70794c666bb1380bcc856d37))
+* migrate grammar to yaml ([af8d013](https://github.com/Desdaemon/odoo-lsp/commit/af8d013d359d04e9b09d2b8457289f2bbc0a8e62))
+* offer to install nightlies of extension ([9a6e597](https://github.com/Desdaemon/odoo-lsp/commit/9a6e597e8ef8a0b90a89494400ed6c357d602f0a))
+* optimize memory usage ([f529b42](https://github.com/Desdaemon/odoo-lsp/commit/f529b42f8239654bee82fea405752acdd8599a11))
+* preserve types of subscript expressions ([4144579](https://github.com/Desdaemon/odoo-lsp/commit/41445792b9ba5d0a8960d459a44adb774803964b))
+* support XML groups ([fe2a880](https://github.com/Desdaemon/odoo-lsp/commit/fe2a880e6ce28e7fbc67a3b45c04c431b2c58b0a))
+* update owl grammar ([929d15f](https://github.com/Desdaemon/odoo-lsp/commit/929d15f04f9ad5e6a926f153d54a279034102061))
+* warn when duplicate base modules are found ([66df773](https://github.com/Desdaemon/odoo-lsp/commit/66df77372762fde5ea12fbc19347e652770d2bce))
+* xpath semantic tokens ([b665779](https://github.com/Desdaemon/odoo-lsp/commit/b665779d7ba482bae2b7bb970ab9572455811c80))
+
+
+
 ## [0.3.1](https://github.com/Desdaemon/odoo-lsp/compare/v0.3.0...v0.3.1) (2024-03-06)
 
 Fixes a major issue with the extension not being able to download nightly binaries by default.
