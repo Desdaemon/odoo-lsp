@@ -58,7 +58,7 @@ OPTIONS:
 	-v, --version
 		Prints the current version and exit.
 	--nightly
-		When used with self-update, selects the latest nightly available.
+		[self-update] Selects the latest nightly available.
 ";
 
 pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
@@ -181,10 +181,10 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 		match res {
 			Ok(Ok(())) => {}
 			Ok(Err(err)) => {
-				warn!(target: "tsconfig", "{err}");
+				warn!("{err}");
 			}
 			Err(err) => {
-				debug!(target: "tsconfig", "join error: {err}")
+				debug!("join error: {err}")
 			}
 		}
 	}

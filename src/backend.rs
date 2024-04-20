@@ -160,7 +160,7 @@ impl Backend {
 	}
 	pub async fn did_save_impl(&self, params: DidSaveTextDocumentParams) -> miette::Result<()> {
 		let uri = params.text_document.uri;
-		debug!(target: "did_save", "{}", uri.path());
+		debug!("{}", uri.path());
 		let (_, extension) = uri.path().rsplit_once('.').ok_or_else(|| diagnostic!("no extension"))?;
 		let root = self
 			.find_root_of(uri.path())
@@ -188,9 +188,9 @@ impl Backend {
 		_ = self
 			.update_models(Text::Full(text.into_owned()), path, root, rope.clone())
 			.await
-			.inspect_err(|err| warn!(target: "update_models", "{err:?}"));
+			.inspect_err(|err| warn!("{err:?}"));
 		if zone.is_some() {
-			debug!(target: "did_save_python", "diagnostics");
+			debug!("diagnostics");
 			self.diagnose_python(path, &document.rope.clone(), zone, &mut document.diagnostics_cache);
 			self.client
 				.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
@@ -337,7 +337,7 @@ impl Backend {
 		rope: Rope,
 		items: &mut MaxVec<CompletionItem>,
 	) -> miette::Result<()> {
-		debug!("complete_field_name needle={} model={}", needle, model);
+		debug!("needle=`{needle}` model=`{model}`");
 		if !items.has_space() {
 			return Ok(());
 		}
@@ -813,7 +813,7 @@ impl Backend {
 		let mut redundant = vec![];
 		let mut roots = self.roots.iter().map(|r| r.to_string()).collect::<Vec<_>>();
 		roots.sort_unstable_by_key(|root| root.len());
-		info!(target: "ensure_nonoverlapping_roots", "{roots:?}");
+		info!("{roots:?}");
 		for lhs in 1..roots.len() {
 			for rhs in 0..lhs {
 				if roots[lhs].starts_with(&roots[rhs]) {

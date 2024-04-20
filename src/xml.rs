@@ -91,7 +91,7 @@ impl Backend {
 								if let Err(err) =
 									gather_templates(path_uri, &mut reader, rope.clone(), &mut entries, true)
 								{
-									warn!(target: "on_change_xml/gather_templates", "{err}");
+									warn!("{err}");
 									continue;
 								}
 								record_ranges.extend(entries.into_iter().map(|entry| {
@@ -109,7 +109,7 @@ impl Backend {
 							}
 						};
 						let Some(range) = lsp_range_to_offset_range(record.location.range, &rope) else {
-							debug!(target: "on_change_xml", "no range for {}", record.id);
+							debug!("no range for {}", record.id);
 							continue;
 						};
 						record_ranges.push(range);

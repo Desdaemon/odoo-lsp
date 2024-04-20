@@ -414,7 +414,7 @@ impl Backend {
 								let mut model = model.into();
 								let mapped = String::from_utf8_lossy(&contents[mapped.byte_range().shrink(1)]);
 								let mut mapped = mapped.as_ref();
-								self.index.models.resolve_mapped(&mut model, &mut mapped, None)?;
+								self.index.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
 								self.type_of_attribute(
 									&Type::Model(interner.resolve(&model).into()),
 									mapped.as_bytes(),

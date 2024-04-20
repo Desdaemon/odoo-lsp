@@ -260,7 +260,7 @@ impl LanguageServer for Backend {
 					);
 				}
 				Err(err) => {
-					error!(target: "initialized", "could not add root {}:\n{err}", root.as_str());
+					error!("could not add root {}:\n{err}", root.as_str());
 				}
 				_ => {}
 			}
@@ -348,7 +348,7 @@ impl LanguageServer for Backend {
 				open: true,
 			})
 			.await
-			.inspect_err(|err| warn!(target: "did_open", "{err}"));
+			.inspect_err(|err| warn!("{err}"));
 	}
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
 		self.root_setup.wait().await;
@@ -368,7 +368,7 @@ impl LanguageServer for Backend {
 					open: false,
 				})
 				.await
-				.inspect_err(|err| warn!(target: "did_change", "{err}"));
+				.inspect_err(|err| warn!("{err}"));
 			return;
 		}
 		let mut document = self
@@ -405,14 +405,14 @@ impl LanguageServer for Backend {
 				open: false,
 			})
 			.await
-			.inspect_err(|err| warn!(target: "did_change", "{err}"));
+			.inspect_err(|err| warn!("{err}"));
 	}
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		self.root_setup.wait().await;
 		_ = self
 			.did_save_impl(params)
 			.await
-			.inspect_err(|err| warn!(target: "did_save", "{err}"));
+			.inspect_err(|err| warn!("{err}"));
 	}
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
 		let uri = &params.text_document_position_params.text_document.uri;
@@ -435,7 +435,7 @@ impl LanguageServer for Backend {
 		};
 
 		let location = location
-			.map_err(|err| error!(target: "goto_definition", "Error retrieving references:\n{err}"))
+			.map_err(|err| error!("Error retrieving references:\n{err}"))
 			.ok()
 			.flatten();
 		Ok(location.map(GotoDefinitionResponse::Scalar))
@@ -459,13 +459,13 @@ impl LanguageServer for Backend {
 		};
 
 		Ok(refs
-			.inspect_err(|err| warn!(target: "references", "{err}"))
+			.inspect_err(|err| warn!("{err}"))
 			.ok()
 			.flatten())
 	}
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
 		let uri = &params.text_document_position.text_document.uri;
-		debug!(target: "completion", "{}", uri.path());
+		debug!("{}", uri.path());
 
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
@@ -692,7 +692,7 @@ impl LanguageServer for Backend {
 	}
 	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
 		let path = params.text_document.uri.path();
-		debug!("(diagnostics) {path}");
+		debug!("{path}");
 		let mut diagnostics = vec![];
 		if let Some((_, "py")) = path.rsplit_once('.') {
 			if let Some(mut document) = self.document_map.try_get_mut(path).expect(format_loc!("deadlock")) {
@@ -730,14 +730,12 @@ async fn main() {
 		};
 		std::fs::File::create(path).unwrap()
 	});
-	env_logger::Builder::new()
-		.filter_level(log::LevelFilter::Off)
+	env_logger::Builder::from_default_env()
 		.format_timestamp(None)
 		.format_indent(Some(2))
 		.format_target(true)
 		.format_module_path(cfg!(debug_assertions))
 		.target(env_logger::Target::Pipe(Box::new(FileTee::new(outlog))))
-		.parse_default_env()
 		.init();
 
 	let args = std::env::args().collect::<Vec<_>>();

@@ -13,7 +13,7 @@ use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use tree_sitter::{Node, Parser, QueryCursor, QueryMatch, Tree};
 
-use odoo_lsp::model::{ModelName, ModelType};
+use odoo_lsp::model::{ModelName, ModelType, ResolveMappedError};
 use odoo_lsp::utils::*;
 use odoo_lsp::{format_loc, some};
 use ts_macros::query;
@@ -190,14 +190,14 @@ impl Backend {
 		rope: Rope,
 	) -> miette::Result<Option<CompletionResponse>> {
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, &rope) else {
-			warn!(target: "python_completions", "invalid position {:?}", params.text_document_position.position);
+			warn!("invalid position {:?}", params.text_document_position.position);
 			return Ok(None);
 		};
 		let Some(current_module) = self
 			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
 		else {
-			debug!(target: "python_completions", "no current module");
+			debug!("no current module");
 			return Ok(None);
 		};
 		let mut cursor = tree_sitter::QueryCursor::new();
@@ -357,7 +357,8 @@ impl Backend {
 					some!(self
 						.index
 						.models
-						.resolve_mapped(&mut model, &mut needle, Some(&mut range)));
+						.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+						.ok());
 				}
 				let model_name = interner().resolve(&model);
 				self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)
@@ -570,7 +571,8 @@ impl Backend {
 					some!(self
 						.index
 						.models
-						.resolve_mapped(&mut model, &mut needle, Some(&mut range)));
+						.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+						.ok());
 				}
 				let model = interner().resolve(&model);
 				return self.jump_def_field_name(needle, model).await;
@@ -754,7 +756,8 @@ impl Backend {
 					some!(self
 						.index
 						.models
-						.resolve_mapped(&mut model, &mut needle, Some(&mut range)));
+						.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+						.ok());
 				}
 				let model = interner().resolve(&model);
 				return self
@@ -782,7 +785,7 @@ impl Backend {
 		diagnostics: &mut Vec<Diagnostic>,
 	) {
 		let Some(ast) = self.ast_map.get(path) else {
-			warn!(target: "diagnose_python", "Did not build AST for {path}");
+			warn!("Did not build AST for {path}");
 			return;
 		};
 		let contents = Cow::from(rope.clone());
@@ -842,7 +845,7 @@ impl Backend {
 								Ordering::Equal
 							}
 						}) else {
-							debug!("(diagnose_python) binary search for top-level range failed");
+							debug!("binary search for top-level range failed");
 							continue;
 						};
 						this_model.tag_model(capture.node, &match_, top_level_ranges[idx].clone(), contents);
@@ -885,9 +888,22 @@ impl Backend {
 								range = (range.start.0..range.start.0 + dot).map_unit(ByteOffset);
 							}
 						} else {
-							self.index
+							match self
+								.index
 								.models
-								.resolve_mapped(&mut model, &mut needle, Some(&mut range));
+								.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+							{
+								Ok(()) => {}
+								Err(ResolveMappedError::NonRelational) => {
+									diagnostics.push(Diagnostic {
+										range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
+										severity: Some(DiagnosticSeverity::ERROR),
+										message: format!("`{needle}` is not a relational field"),
+										..Default::default()
+									});
+									continue;
+								}
+							}
 						}
 						if needle.is_empty() {
 							// Nothing to compare yet, keep going.
@@ -904,10 +920,9 @@ impl Backend {
 							if MAPPED_BUILTINS.contains(&needle) {
 								continue;
 							}
-							let Some(key) = interner().get(needle) else {
-								continue;
-							};
-							has_field = fields.contains_key(&key.into());
+							if let Some(key) = interner().get(needle) {
+								has_field = fields.contains_key(&key.into());
+							}
 						}
 						if !has_field {
 							diagnostics.push(Diagnostic {

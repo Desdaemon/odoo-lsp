@@ -424,7 +424,7 @@ async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> mie
 			},
 			None => break,
 			Some(Err(err)) => {
-				debug!(target: "add_root_xml", "error parsing {}:\n{err}", path.display());
+				debug!("error parsing {}:\n{err}", path.display());
 				break;
 			}
 			_ => {}
