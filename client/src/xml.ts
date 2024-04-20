@@ -8,7 +8,7 @@ interface XMLExtensionApi {
 
 export async function registerXmlFileAssociations(
 	context: vscode.ExtensionContext,
-	traceOutputChannel: vscode.OutputChannel,
+	traceOutputChannel: vscode.LogOutputChannel,
 	extensionState: State,
 ) {
 	try {
@@ -54,13 +54,13 @@ export async function registerXmlFileAssociations(
 				});
 		}
 	} catch (err) {
-		traceOutputChannel.appendLine(`Failed to register XML file associations: ${err}`);
+		traceOutputChannel.error(`Failed to register XML file associations: ${err}`);
 	}
 }
 
 export async function registerXPathSemanticTokensProvider(
 	context: vscode.ExtensionContext,
-	traceOutputChannel: vscode.OutputChannel,
+	traceOutputChannel: vscode.LogOutputChannel,
 	extensionState: State,
 ) {
 	const extension = vscode.extensions.all.find((e) => e.id === "deltaxml.xslt-xpath");
@@ -85,7 +85,7 @@ export async function registerXPathSemanticTokensProvider(
 	try {
 		module = await import(`${extension.extensionPath}/${extension.packageJSON.main}`);
 	} catch (err) {
-		traceOutputChannel.appendLine(`Failed to import XPath extension module: ${err}`);
+		traceOutputChannel.error(`Failed to import XPath extension module: ${err}`);
 		return;
 	}
 
