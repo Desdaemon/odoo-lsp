@@ -73,6 +73,7 @@ derive_more = "0.99.17"
 ignore = "0.4.22"
 fomat-macros = "0.3.2"
 num_enum = "0.7.2"
+thiserror = "1.0.58"
 
 [target.'cfg(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64"))))'.dependencies]
 self_update = { version = "0.39.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }

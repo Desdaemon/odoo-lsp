@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use futures::executor::block_on;
 use lasso::Spur;
 use log::{debug, error, info, trace, warn};
-use miette::{diagnostic, IntoDiagnostic};
+use miette::{diagnostic, Diagnostic, IntoDiagnostic};
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use tokio::sync::RwLock;
@@ -133,6 +133,12 @@ query! {
   (#match? @TYPE "^[A-Z]"))
 }
 
+#[derive(Diagnostic, thiserror::Error, Debug)]
+pub enum ResolveMappedError {
+	#[error("Tried to access a field on a non-relational field")]
+	NonRelational,
+}
+
 impl ModelIndex {
 	pub async fn append(&self, path: PathSymbol, interner: &Interner, replace: bool, items: &[Model]) {
 		let mut by_prefix = self.by_prefix.write().await;
@@ -220,7 +226,7 @@ impl ModelIndex {
 				let mut fields = vec![];
 				let fpath = location.path.as_path();
 				let contents = std::fs::read(&fpath)
-					.map_err(|err| error!(target: "populate_field_names", "Failed to read {}:\n{err}", fpath.display()))
+					.map_err(|err| error!("Failed to read {}:\n{err}", fpath.display()))
 					.ok()?;
 				let mut parser = Parser::new();
 				parser
@@ -382,21 +388,46 @@ impl ModelIndex {
 	/// - `range` spans the entire range of `foo.bar.baz`
 	///
 	/// Returns None if resolution fails before `needle` is exhausted.
-	pub fn resolve_mapped(&self, model: &mut Spur, needle: &mut &str, mut range: Option<&mut ByteRange>) -> Option<()> {
+	pub fn resolve_mapped(
+		&self,
+		model: &mut Spur,
+		needle: &mut &str,
+		mut range: Option<&mut ByteRange>,
+	) -> Result<(), ResolveMappedError> {
 		while let Some((lhs, rhs)) = needle.split_once('.') {
-			trace!("mapped `{needle}`");
+			trace!("(resolved_mapped) `{needle}` model=`{}`", interner().resolve(&model));
+			let mut normalized = interner()
+				.get(&lhs)
+				.and_then(|key| self.normalize_field_relation(key.into(), model.clone().into()));
+			if let Some(normalized) = &normalized {
+				trace!("(resolved_mapped) prenormalized: {}", interner().resolve(&normalized));
+			}
 			// lhs: foo
 			// rhs: ba
-			let fields = self.populate_field_names(model.clone().into(), &[])?;
-			let field = interner().get(&lhs);
-			let field = field.and_then(|field| fields.fields.as_ref()?.get(&field.into()));
-			let Some(FieldKind::Relational(rel)) = field.as_ref().map(|f| &f.kind) else {
+			if normalized.is_none() {
+				let Some(fields) = self.populate_field_names(model.clone().into(), &[]) else {
+					debug!("tried to resolve before fields are populated for `{}`", interner().resolve(&model));
+					return Ok(());
+				};
+				let field = interner().get(&lhs);
+				let field = field.and_then(|field| fields.fields.as_ref()?.get(&field.into()));
+				match field.as_ref().map(|f| &f.kind) {
+					Some(FieldKind::Relational(rel)) => normalized = Some(rel.clone()),
+					None | Some(FieldKind::Value) => return Err(ResolveMappedError::NonRelational),
+					Some(FieldKind::Related(..)) => {
+						drop(fields);
+						normalized = self.normalize_field_relation(interner().get(&lhs).unwrap().into(), model.clone().into());
+					}
+				}
+			}
+			let Some(rel) = normalized else {
+				warn!("unresolved field `{}`.`{lhs}`", interner().resolve(&model));
 				*needle = lhs;
 				if let Some(range) = range.as_mut() {
 					let end = range.start.0 + lhs.len();
 					**range = range.start..ByteOffset(end);
 				}
-				return None;
+				return Err(ResolveMappedError::NonRelational);
 			};
 			*needle = rhs;
 			*model = rel.clone();
@@ -407,9 +438,10 @@ impl ModelIndex {
 				**range = ByteOffset(start)..range.end;
 			}
 		}
-		Some(())
+		Ok(())
 	}
 	/// Turns related fields ([`FieldKind::Related`]) into concrete fields, and return the field's type itself.
+	#[must_use = "normalized relation might not have been updated back to the central index"]
 	pub fn normalize_field_relation(&self, field: Symbol<Field>, model: Spur) -> Option<Spur> {
 		let model_entry = self.get(&model.into())?;
 		let field_entry = model_entry.fields.as_ref()?.get(&field)?;
@@ -417,14 +449,18 @@ impl ModelIndex {
 		let mut field_model = model.clone();
 		if let FieldKind::Related(related) = &field_entry.kind {
 			trace!(
-				"related={related} field={} model={}",
+				"(normalize_field_relation) related={related} field={} model={}",
 				interner().resolve(&field),
 				interner().resolve(&model)
 			);
 			let related = related.clone();
 			let mut related = related.as_str();
 			drop(model_entry);
-			if self.resolve_mapped(&mut field_model, &mut related, None).is_some() {
+			if self.resolve_mapped(&mut field_model, &mut related, None).is_ok() {
+				// resolved_mapped took us to the final field, now we need to resolve it to a model
+				let related_key = interner().get(&related)?;
+				let field_model = self.normalize_field_relation(related_key.into(), field_model)?;
+
 				kind = FieldKind::Relational(field_model.into());
 				let mut model_entry = self.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
 				let Some(field) = Arc::get_mut(model_entry.fields.as_mut()?.get_mut(&field)?) else {
@@ -433,7 +469,7 @@ impl ModelIndex {
 				};
 				field.kind = kind.clone();
 			} else {
-				warn!("(normalize_field_kind) failed to normalize {related}");
+				warn!("failed to normalize {related}");
 			}
 		}
 
