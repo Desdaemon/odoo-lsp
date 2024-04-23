@@ -48,7 +48,7 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		return;
 	}
 
-	const archiveName = release.startsWith("nightly") ? "nightly" : release;
+	const archiveName = release.startsWith("nightly-") ? "nightly" : release;
 	const latest = `${runtimeDir}/${archiveName}${archiveExtension}`;
 	const exeExtension = isWindows ? ".exe" : "";
 	const odooLspBin = `${runtimeDir}/odoo-lsp${exeExtension}`;
@@ -126,12 +126,12 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		const releaseDate = parseNightly(release);
 		const latestStat = tryStatSync(latest);
 		if (!latestStat) return true;
-		return compareDate(latestStat.birthtime, releaseDate) < 0;
+		return compareDate(latestStat.ctime, releaseDate) < 0;
 	})();
 
 	const powershell = { shell: "powershell.exe" };
 	const sh = { shell: "sh" };
-	if (!existsSync(latest)) {
+	if (!existsSync(latest) || hasNewerNightly) {
 		await vscode.window.withProgress(
 			{ location: vscode.ProgressLocation.Notification, title: `Downloading odoo-lsp@${release}...` },
 			async () => {
@@ -279,7 +279,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		&& (latestRelease = await latestReleaseInfo(false))
 		&& latestRelease.startsWith('nightly-')
 		&& (!(vsixStat = tryStatSync(`${runtimeDir}/odoo-lsp.vsix`))
-			|| compareDate(vsixStat.birthtime, parseNightly(latestRelease)) < 0)) {
+			|| compareDate(vsixStat.ctime, parseNightly(latestRelease)) < 0)) {
 		updateExtension(context, latestRelease);
 	}
 
