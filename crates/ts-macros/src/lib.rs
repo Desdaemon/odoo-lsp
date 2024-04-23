@@ -128,6 +128,7 @@ fn tokens_to_string(tokens: TokenStream, output: &mut String) {
 				tokens_to_string(group.stream(), output);
 				output.push_str(rhs);
 			}
+			// if an identifier follows any of these punctuations, we must not add a space.
 			TokenTree::Punct(punct) if matches!(punct.as_char(), '@' | '#') => {
 				output.push(' ');
 				output.push(punct.as_char());
@@ -136,11 +137,28 @@ fn tokens_to_string(tokens: TokenStream, output: &mut String) {
 				};
 				output.push_str(&ident.to_string());
 				tokens.next();
-				let (Some(TokenTree::Punct(trailing)), '#') = (tokens.peek(), punct.as_char()) else {
-					continue;
-				};
-				output.push(trailing.as_char());
-				tokens.next();
+				let mut ident_allowed = false;
+				loop {
+					// A dash is part of a valid Scheme identifier, so it allows at most one more identifier.
+					// Any other punctuation (usually ! or ?) marks the end of the identifier.
+					match tokens.peek() {
+						Some(TokenTree::Punct(punct)) => {
+							let punct = punct.as_char();
+							output.push(punct);
+							tokens.next();
+							if punct != '-' {
+								break;
+							}
+							ident_allowed = true;
+						}
+						Some(TokenTree::Ident(ident)) if ident_allowed => {
+							output.push_str(&ident.to_string());
+							tokens.next();
+							ident_allowed = false;
+						}
+						_ => break,
+					}
+				}
 			}
 			_ => {
 				output.push(' ');

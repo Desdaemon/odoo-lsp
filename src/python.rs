@@ -65,9 +65,26 @@ query! {
   (attribute
     (identifier) @_api (identifier) @DEPENDS)]
   (argument_list (string) @MAPPED))
-  (#match? @_mapper "^(mapp|filter|sort)ed$")
+  (#any-of? @_mapper "mapped" "filtered" "sorted")
   (#eq? @_api "api")
-  (#match? @DEPENDS "^(depends|constrains|onchange)$"))
+  (#any-of? @DEPENDS "depends" "constrains" "onchange"))
+
+((call [
+  (identifier) @_Field
+  (attribute (identifier) @_fields (identifier) @_Field) ]
+  (argument_list
+    . ((comment)* . (string) @MODEL)?
+    (keyword_argument
+      (identifier) @_comodel_name (string) @MODEL)?
+    (keyword_argument
+      (identifier) @_domain
+      (list [
+        (parenthesized_expression (string) @MAPPED)
+        (tuple . (string) @MAPPED) ]))? ))
+  (#eq? @_fields "fields")
+  (#any-of? @_Field "Many2one" "One2many" "Many2many")
+  (#eq? @_comodel_name "comodel_name")
+  (#eq? @_domain "domain"))
 
 ((call
   (attribute
@@ -82,25 +99,14 @@ query! {
         (tuple . (string) @MAPPED)
         (parenthesized_expression (string) @MAPPED)]))]))
   (#eq? @_domain "domain")
-  (#match? @_search "^(search(_(read|count))?|read_group|filtered_domain)$"))
-
-((call [
-  (identifier) @_Field
-  (attribute (identifier) @_fields (identifier) @_Field) ]
-  [
-    (argument_list . (string) @MODEL)
-    (argument_list
-      (keyword_argument
-        (identifier) @_comodel_name (string) @MODEL)) ])
-  (#match? @_Field "^(Many2one|One2many|Many2many)$")
-  (#eq? @_comodel_name "comodel_name"))
+  (#any-of? @_search "search" "search_read" "search_count" "read_group" "filtered_domain"))
 
 ((call
   (attribute
     (_) @MAPPED_TARGET (identifier) @READ_FN)
   (argument_list
     (list (string) @MAPPED)))
-  (#match? @READ_FN "^read(_group)?$"))
+  (#any-of? @READ_FN "read" "read_group"))
 
 ((call
   (attribute
@@ -426,10 +432,18 @@ impl Backend {
 			return None;
 		}
 
+		log::trace!(
+			"(gather_mapped) {} matches={match_:?}",
+			String::from_utf8_lossy(&contents[range.clone()])
+		);
+
 		let model;
 		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next() {
 			let model_ = self.model_of_range(root, local_model.byte_range().map_unit(ByteOffset), &contents)?;
 			model = interner().resolve(&model_).to_string();
+		} else if let Some(field_model) = match_.nodes_for_capture_index(PyCompletions::Model as _).next() {
+			// A sibling @MODEL node; this is defined on the `fields.*(comodel_name='@MODEL', domain=[..])` pattern	
+			model = String::from_utf8_lossy(&contents[field_model.byte_range().shrink(1)]).into_owned();
 		} else if let Some(this_model) = &this_model {
 			model = String::from_utf8_lossy(this_model).to_string();
 		} else {
