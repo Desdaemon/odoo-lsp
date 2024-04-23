@@ -14,7 +14,7 @@ on:
         default: true
         description: "Is this a prerelease?"
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 5 * * *"
 
 env:
   CARGO_TERM_COLOR: always
