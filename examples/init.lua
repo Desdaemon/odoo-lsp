@@ -52,14 +52,14 @@ lspconfigs.odoo_lsp = {
 local configured_lsps = {
   odoo_lsp = {},
   -- optional but recommended, requires pyright-langserver on path
-	-- see https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#pyright
+  -- see https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#pyright
   -- pyright = {},
-	-- optional, this is the same LSP used by VSCode for XML
-	-- see https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#lemminx
-	-- lemminx = {},
-	-- optional, use `odoo-lsp tsconfig` to generate a tsconfig.json
-	-- see https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#tsserver
-	-- tsserver = {},
+  -- optional, this is the same LSP used by VSCode for XML
+  -- see https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#lemminx
+  -- lemminx = {},
+  -- optional, use `odoo-lsp tsconfig` to generate a tsconfig.json
+  -- see https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#tsserver
+  -- tsserver = {},
 }
 
 local lspconfig = require 'lspconfig'

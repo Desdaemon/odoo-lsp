@@ -127,7 +127,7 @@ query! {
         (call [
           (identifier) @TYPE
           (attribute (identifier) @_fields (identifier) @TYPE) ]
-          (argument_list . (string)? @RELATION
+          (argument_list . ((comment)* . (string) @RELATION)?
             ((keyword_argument (identifier) @ARG (_) @VALUE) ","?)*))))))
   (#eq? @_fields "fields")
   (#match? @TYPE "^[A-Z]"))
