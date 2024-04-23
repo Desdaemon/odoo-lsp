@@ -101,5 +101,5 @@ export function parseNightly(releaseName: string) {
 	const yearString = dateString.slice(0, 4);
 	const monthString = dateString.slice(4, 6);
 	const dayString = dateString.slice(6, 8);
-	return new Date(Date.UTC(+yearString, +monthString, +dayString))
+	return new Date(Date.UTC(+yearString, (+monthString)-1, (+dayString)+1))
 }

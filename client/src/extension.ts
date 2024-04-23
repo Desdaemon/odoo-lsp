@@ -41,7 +41,7 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 	if (!preferNightly && !overrideVersion) {
 		release = context.extension.packageJSON._release || `v${context.extension.packageJSON.version}`;
 	} else if (preferNightly) {
-		release = await latestReleaseInfo(release);
+		release = await latestReleaseInfo(true, release);
 	}
 	if (typeof release !== "string" || !release) {
 		vscode.window.showErrorMessage(`Bug: invalid release "${release}"`);
@@ -116,6 +116,7 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		}
 		return;
 	}
+
 	const link = `${repo}/releases/download/${release}/odoo-lsp-${target}${archiveExtension}`;
 	const shaLink = `${link}.sha256`;
 	const shaOutput = `${latest}.sha256`;
@@ -124,7 +125,7 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		if (!release.startsWith("nightly-")) return false;
 		const releaseDate = parseNightly(release);
 		const latestStat = tryStatSync(latest);
-		if (!latestStat) return false;
+		if (!latestStat) return true;
 		return compareDate(latestStat.birthtime, releaseDate) < 0;
 	})();
 
@@ -173,7 +174,7 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 	if (existsSync(odooLspBin)) return odooLspBin;
 }
 
-async function latestReleaseInfo(fallback?: string) {
+async function latestReleaseInfo(includeStable: boolean, fallback?: string) {
 	return (await new Promise<string | undefined>(resolve =>
 		get(
 			"https://api.github.com/repos/Desdaemon/odoo-lsp/releases?per_page=5",
@@ -187,9 +188,11 @@ async function latestReleaseInfo(fallback?: string) {
 				const chunks: Buffer[] = [];
 				resp.on("data", chunks.push.bind(chunks)).on("end", () => {
 					try {
-						const releases: { tag_name: string; name: string }[] = JSON.parse(Buffer.concat(chunks).toString());
-						const latest = releases.find((r) => r.name === "nightly");
-						resolve(latest?.tag_name);
+						const releases: { tag_name: string; name: string, published_at: string }[] = JSON.parse(Buffer.concat(chunks).toString());
+						const today = new Date();
+						releases.sort((a, z) => z.published_at.localeCompare(a.published_at));
+						const latest = releases.find((r) => (includeStable || r.name === "nightly") && compareDate(today, new Date(r.published_at)) >= 0);
+						resolve(latest?.tag_name || fallback);
 					} catch (err) {
 						vscode.window.showErrorMessage(`Unable to fetch nightly release: ${err}`);
 						resolve(fallback);
@@ -219,17 +222,24 @@ function updateExtension(context: vscode.ExtensionContext, release: string) {
 		else if (resp === "Never show again") extensionState.nightlyExtensionUpdates = "never";
 
 		if (resp === "Yes" || resp === "Always") {
-			await vscode.commands.executeCommand(
-				"workbench.extensions.installExtension",
-				vscode.Uri.file(`${runtimeDir}/odoo-lsp.vsix`),
-			);
+			try{
+				await vscode.commands.executeCommand(
+					"workbench.extensions.installExtension",
+					vscode.Uri.file(vsixOutput),
+				);
+			} catch (err) {
+				vscode.window.showErrorMessage(`Failed to update extension: ${err}`);
+				return;
+			}
 			vscode.window
 				.showInformationMessage(`Extension updated to ${release}. Reload to apply changes.`, "Reload now", "Later")
 				.then((resp) => {
 					if (resp === "Reload now") vscode.commands.executeCommand("workbench.action.reloadWindow");
 				});
 		}
-	});
+	}, reason => {
+		vscode.window.showErrorMessage(`Failed to download extension update: ${reason}`);
+	})
 }
 
 const makeExtensionState = (context: vscode.ExtensionContext) =>
@@ -266,7 +276,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	let vsixStat: Stats | null;
 	if (preferNightly
 		&& command === "odoo-lsp"
-		&& (latestRelease = await latestReleaseInfo())
+		&& (latestRelease = await latestReleaseInfo(false))
 		&& latestRelease.startsWith('nightly-')
 		&& (!(vsixStat = tryStatSync(`${runtimeDir}/odoo-lsp.vsix`))
 			|| compareDate(vsixStat.birthtime, parseNightly(latestRelease)) < 0)) {

@@ -722,7 +722,14 @@ impl Backend {
 				0 => {}
 				remaining => { " (+" (remaining) " modules)" }
 			}
-			if let Some(help) = &model.docstring { "  \n" (help.to_string()) }
+			if let Some(help) = &model.docstring {
+				match help.to_string() {
+					empty if empty.is_empty() => {}
+					other => {
+						"  \n" (other)
+					}
+				}
+			}
 		}
 	}
 	pub fn field_docstring(&self, name: &str, field: &Field, signature: bool) -> String {
@@ -824,7 +831,6 @@ impl Backend {
 		}
 		if !redundant.is_empty() {
 			warn!(
-				target: "ensure_nonoverlapping_roots",
 				concat!(
 					"The following configured roots are redundant: {:?}\n",
 					"Reconfigure your roots to dismiss this warning.\n",

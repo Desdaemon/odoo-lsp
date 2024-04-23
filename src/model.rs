@@ -387,7 +387,7 @@ impl ModelIndex {
 	/// - `needle` is a left-wise substring of `foo.bar.baz`
 	/// - `range` spans the entire range of `foo.bar.baz`
 	///
-	/// Returns None if resolution fails before `needle` is exhausted.
+	/// Returns an error if resolution fails before `needle` is exhausted.
 	pub fn resolve_mapped(
 		&self,
 		model: &mut Spur,
@@ -406,7 +406,10 @@ impl ModelIndex {
 			// rhs: ba
 			if normalized.is_none() {
 				let Some(fields) = self.populate_field_names(model.clone().into(), &[]) else {
-					debug!("tried to resolve before fields are populated for `{}`", interner().resolve(&model));
+					debug!(
+						"tried to resolve before fields are populated for `{}`",
+						interner().resolve(&model)
+					);
 					return Ok(());
 				};
 				let field = interner().get(&lhs);
@@ -416,7 +419,8 @@ impl ModelIndex {
 					None | Some(FieldKind::Value) => return Err(ResolveMappedError::NonRelational),
 					Some(FieldKind::Related(..)) => {
 						drop(fields);
-						normalized = self.normalize_field_relation(interner().get(&lhs).unwrap().into(), model.clone().into());
+						normalized =
+							self.normalize_field_relation(interner().get(&lhs).unwrap().into(), model.clone().into());
 					}
 				}
 			}
@@ -513,13 +517,14 @@ impl ModelEntry {
 			let query = ModelHelp::query();
 			let mut cursor = QueryCursor::new();
 			cursor.set_byte_range(byte_range.erase());
-			'docstring: for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
+			for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
 				if let Some(docstring) = match_.nodes_for_capture_index(0).next() {
 					let contents = String::from_utf8_lossy(&contents[docstring.byte_range()]);
 					self.docstring = Some(Text::try_from(contents.trim()).into_diagnostic()?);
-					break 'docstring;
+					return Ok(());
 				}
 			}
+			self.docstring = Some(Text::try_from("").unwrap());
 		}
 
 		Ok(())
