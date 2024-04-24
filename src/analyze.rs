@@ -1,7 +1,7 @@
 //! Methods related to type analysis. The two most important methods are
 //! [`Backend::model_of_range`] and [`Backend::type_of`].
 
-use std::{borrow::Borrow, collections::HashMap};
+use std::{borrow::Borrow, collections::HashMap, ops::Deref};
 
 use log::trace;
 use tree_sitter::{Node, QueryCursor};
@@ -59,6 +59,7 @@ pub struct Scope {
 	parent: Option<Box<Scope>>,
 	/// TODO: Allow super(_, \<self>)
 	super_: Option<ImStr>,
+	end: Option<u32>,
 }
 
 fn normalize<'r, 'n>(node: &'r mut Node<'n>) -> &'r mut Node<'n> {

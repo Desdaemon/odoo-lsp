@@ -1,10 +1,10 @@
+use crate::analyze::Scope;
 use crate::{Backend, Text};
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::path::Path;
 
-use dashmap::try_result::TryResult;
 use lasso::Spur;
 use log::{debug, warn};
 use miette::{diagnostic, miette};
@@ -20,7 +20,7 @@ use ts_macros::query;
 
 #[rustfmt::skip]
 query! {
-	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Access, Prop, ForXmlId);
+	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope);
 
 ((call [
   (attribute [
@@ -133,7 +133,10 @@ query! {
         (ERROR (string) @MAPPED) ]) ]) ]))
   (#eq? @DEPENDS "create"))
 
-(attribute (_) (identifier) @ACCESS)
+(class_definition
+	(block [
+		(function_definition) @SCOPE
+		(decorated_definition (function_definition) @SCOPE) ]))
 }
 
 /// (module (_)*)
@@ -298,34 +301,57 @@ impl Backend {
 								Some((EarlyReturn::Mapped { model, single_field }, needle, range, rope.clone()));
 							break 'match_;
 						}
-						Some(PyCompletions::Access) => {
-							let range = capture.node.byte_range();
-							if range.contains_end(offset) {
-								let Some(slice) = rope.get_byte_slice(range.clone()) else {
-									dbg!(&range);
-									break 'match_;
-								};
-								let lhs = some!(capture.node.prev_named_sibling());
-								let model =
-									some!(self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), &contents));
-								let model = interner().resolve(&model);
-								let needle = Cow::from(slice.byte_slice(..offset - range.start));
-								early_return = Some((
-									EarlyReturn::Access(model.to_string()),
-									needle,
-									range.map_unit(ByteOffset),
-									rope.clone(),
-								));
-								break 'match_;
-							}
-						}
+						// Some(PyCompletions::Access) => {
+						// 	let range = capture.node.byte_range();
+						// 	if range.contains_end(offset) {
+						// 		let Some(slice) = rope.get_byte_slice(range.clone()) else {
+						// 			dbg!(&range);
+						// 			break 'match_;
+						// 		};
+						// 		let lhs = some!(capture.node.prev_named_sibling());
+						// 		let model =
+						// 			some!(self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), &contents));
+						// 		let model = interner().resolve(&model);
+						// 		let needle = Cow::from(slice.byte_slice(..offset - range.start));
+						// 		early_return = Some((
+						// 			EarlyReturn::Access(model.to_string()),
+						// 			needle,
+						// 			range.map_unit(ByteOffset),
+						// 			rope.clone(),
+						// 		));
+						// 		break 'match_;
+						// 	}
+						// }
 						Some(PyCompletions::Depends)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Mapped)
 						| Some(PyCompletions::XmlId)
 						| Some(PyCompletions::Prop)
-						| Some(PyCompletions::ReadFn)
-						| None => {}
+						| Some(PyCompletions::Scope)
+						| Some(PyCompletions::ReadFn) => {}
+						None => {
+							let cursor_node = some!(root.descendant_for_byte_range(offset, offset));
+							match cursor_node.parent() {
+								Some(attribute) if attribute.kind() == "attribute" && cursor_node.kind() == "identifier" => {
+									// (attribute (_) (identifier) @cursor_node)
+									let lhs_model = some!(self.model_of_range(
+										root,
+										attribute.named_child(0).unwrap().byte_range().map_unit(ByteOffset),
+										&contents
+									));
+									let model = interner().resolve(&lhs_model);
+									let range = cursor_node.byte_range();
+									let needle = String::from_utf8_lossy(&contents[range.start..offset - range.start]);
+									early_return = Some((
+										EarlyReturn::Access(model.to_string()),
+										needle,
+										range.map_unit(ByteOffset),
+										rope.clone(),
+									));
+								}
+								_ => {}
+							}
+						}
 					}
 				}
 			}
@@ -442,7 +468,7 @@ impl Backend {
 			let model_ = self.model_of_range(root, local_model.byte_range().map_unit(ByteOffset), &contents)?;
 			model = interner().resolve(&model_).to_string();
 		} else if let Some(field_model) = match_.nodes_for_capture_index(PyCompletions::Model as _).next() {
-			// A sibling @MODEL node; this is defined on the `fields.*(comodel_name='@MODEL', domain=[..])` pattern	
+			// A sibling @MODEL node; this is defined on the `fields.*(comodel_name='@MODEL', domain=[..])` pattern
 			model = String::from_utf8_lossy(&contents[field_model.byte_range().shrink(1)]).into_owned();
 		} else if let Some(this_model) = &this_model {
 			model = String::from_utf8_lossy(this_model).to_string();
@@ -532,15 +558,15 @@ impl Backend {
 								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
 						}
-						Some(PyCompletions::Access) if range.contains_end(offset) => {
-							let lhs = some!(capture.node.prev_named_sibling());
-							let lhs = lhs.byte_range().map_unit(ByteOffset);
-							let model = some!(self.model_of_range(root, lhs, &contents));
-							let field = String::from_utf8_lossy(&contents[range]);
-							let model = interner().resolve(&model);
-							early_return = Some(EarlyReturn::Access(field, model));
-							break 'match_;
-						}
+						// Some(PyCompletions::Access) if range.contains_end(offset) => {
+						// 	let lhs = some!(capture.node.prev_named_sibling());
+						// 	let lhs = lhs.byte_range().map_unit(ByteOffset);
+						// 	let model = some!(self.model_of_range(root, lhs, &contents));
+						// 	let field = String::from_utf8_lossy(&contents[range]);
+						// 	let model = interner().resolve(&model);
+						// 	early_return = Some(EarlyReturn::Access(field, model));
+						// 	break 'match_;
+						// }
 						Some(PyCompletions::Mapped) if range.contains_end(offset) => {
 							early_return = self
 								.gather_mapped(
@@ -559,12 +585,29 @@ impl Backend {
 						| Some(PyCompletions::Mapped)
 						| Some(PyCompletions::ForXmlId)
 						| Some(PyCompletions::XmlId)
-						| Some(PyCompletions::Access)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Depends)
 						| Some(PyCompletions::Prop)
-						| Some(PyCompletions::ReadFn)
-						| None => {}
+						| Some(PyCompletions::Scope)
+						| Some(PyCompletions::ReadFn) => {}
+						None => {
+							let cursor_node = some!(root.descendant_for_byte_range(offset, offset));
+							match cursor_node.parent() {
+								Some(attribute) if attribute.kind() == "attribute" && cursor_node.kind() == "identifier" => {
+									// (attribute (_) (identifier) @cursor_node)
+									let lhs_model = some!(self.model_of_range(
+										root,
+										attribute.named_child(0).unwrap().byte_range().map_unit(ByteOffset),
+										&contents
+									));
+									let model = interner().resolve(&lhs_model);
+									let range = cursor_node.byte_range();
+									let needle = String::from_utf8_lossy(&contents[range.start..offset - range.start]);
+									early_return = Some(EarlyReturn::Access(needle, model));
+								}
+								_ => {}
+							}
+						}
 					}
 				}
 			}
@@ -649,9 +692,9 @@ impl Backend {
 					| Some(PyCompletions::Mapped)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
-					| Some(PyCompletions::Access)
 					| Some(PyCompletions::Prop)
 					| Some(PyCompletions::ReadFn)
+					| Some(PyCompletions::Scope)
 					| None => {}
 				}
 			}
@@ -703,19 +746,19 @@ impl Backend {
 								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
 						}
-						Some(PyCompletions::Access) if range.contains(&offset) => {
-							let lsp_range = ts_range_to_lsp_range(capture.node.range());
-							let lhs = some!(capture.node.prev_named_sibling());
-							let lhs = lhs.byte_range().map_unit(ByteOffset);
-							let model = some!(self.model_of_range(root, lhs, &contents));
-							let field = String::from_utf8_lossy(&contents[range]);
-							early_return = Some(EarlyReturn::Access {
-								field,
-								model,
-								lsp_range,
-							});
-							break 'match_;
-						}
+						// Some(PyCompletions::Access) if range.contains(&offset) => {
+						// 	let lsp_range = ts_range_to_lsp_range(capture.node.range());
+						// 	let lhs = some!(capture.node.prev_named_sibling());
+						// 	let lhs = lhs.byte_range().map_unit(ByteOffset);
+						// 	let model = some!(self.model_of_range(root, lhs, &contents));
+						// 	let field = String::from_utf8_lossy(&contents[range]);
+						// 	early_return = Some(EarlyReturn::Access {
+						// 		field,
+						// 		model,
+						// 		lsp_range,
+						// 	});
+						// 	break 'match_;
+						// }
 						Some(PyCompletions::Mapped) if range.contains(&offset) => {
 							early_return = self
 								.gather_mapped(
@@ -738,13 +781,34 @@ impl Backend {
 						Some(PyCompletions::Request)
 						| Some(PyCompletions::XmlId)
 						| Some(PyCompletions::Mapped)
-						| Some(PyCompletions::Access)
 						| Some(PyCompletions::ForXmlId)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Depends)
 						| Some(PyCompletions::Prop)
-						| Some(PyCompletions::ReadFn)
-						| None => {}
+						| Some(PyCompletions::Scope)
+						| Some(PyCompletions::ReadFn) => {}
+						None => {
+							let cursor_node = some!(root.descendant_for_byte_range(offset, offset));
+							match cursor_node.parent() {
+								Some(attribute) if attribute.kind() == "attribute" && cursor_node.kind() == "identifier" => {
+									// (attribute (_) (identifier) @cursor_node)
+									let model = some!(self.model_of_range(
+										root,
+										attribute.named_child(0).unwrap().byte_range().map_unit(ByteOffset),
+										&contents
+									));
+									// let model = interner().resolve(&lhs_model);
+									let range = cursor_node.byte_range();
+									let needle = String::from_utf8_lossy(&contents[range.start..offset - range.start]);
+									early_return = Some(EarlyReturn::Access {
+										field: needle,
+										model,
+										lsp_range: ts_range_to_lsp_range(cursor_node.range()),
+									});
+								}
+								_ => {}
+							}
+						}
 					}
 				}
 			}
@@ -879,7 +943,6 @@ impl Backend {
 							None,
 							capture.node.byte_range(),
 							this_model.inner,
-							// &rope,
 							contents,
 							false,
 						)
@@ -947,43 +1010,51 @@ impl Backend {
 							});
 						}
 					}
-					Some(PyCompletions::Access) => {
+					Some(PyCompletions::Scope) => {
 						if !in_active_root(capture.node.byte_range()) {
 							continue;
 						}
-						if let Some(gp) = capture.node.parent().expect("attribute").parent() {
-							if gp.kind() == "call" {
-								// TODO: Index methods
-								continue;
-							}
-						}
-						let prop = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
-						static MODEL_BUILTINS: phf::Set<&str> =
-							phf::phf_set!("env", "id", "ids", "display_name", "create_date", "write_date");
-						if prop.starts_with('_') || MODEL_BUILTINS.contains(&prop) {
-							continue;
-						}
-						let Some(obj) = capture.node.prev_named_sibling() else {
-							continue;
-						};
-						let Some(model) =
-							self.model_of_range(root, obj.byte_range().map_unit(ByteOffset), &contents[..])
-						else {
-							continue;
-						};
-						let TryResult::Present(entry) = self.index.models.try_get(&model) else {
-							continue;
-						};
-						let Some(fields) = entry.fields.as_ref() else { continue };
-						let prop_key = interner().get(&prop);
-						if !prop_key.map(|key| fields.contains_key(&key.into())).unwrap_or(true) {
-							diagnostics.push(Diagnostic {
-								range: ts_range_to_lsp_range(capture.node.range()),
-								severity: Some(DiagnosticSeverity::WARNING),
-								message: format!("Model `{}` has no field `{prop}`", interner().resolve(&model)),
-								..Default::default()
-							});
-						}
+						root.clone();
+						// In the interest of efficiency, we will build the scope ourselves and recursively walk the tree
+						// for all patterns we're interested in.
+						// let mut scope = Scope::default();
+						let ast = ast.clone();
+						let range = capture.node.byte_range();
+
+
+						// if let Some(gp) = capture.node.parent().expect("attribute").parent() {
+						// 	if gp.kind() == "call" {
+						// 		// TODO: Index methods
+						// 		continue;
+						// 	}
+						// }
+						// let prop = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+						// static MODEL_BUILTINS: phf::Set<&str> =
+						// 	phf::phf_set!("env", "id", "ids", "display_name", "create_date", "write_date");
+						// if prop.starts_with('_') || MODEL_BUILTINS.contains(&prop) {
+						// 	continue;
+						// }
+						// let Some(obj) = capture.node.prev_named_sibling() else {
+						// 	continue;
+						// };
+						// let Some(model) =
+						// 	self.model_of_range(root, obj.byte_range().map_unit(ByteOffset), &contents[..])
+						// else {
+						// 	continue;
+						// };
+						// let TryResult::Present(entry) = self.index.models.try_get(&model) else {
+						// 	continue;
+						// };
+						// let Some(fields) = entry.fields.as_ref() else { continue };
+						// let prop_key = interner().get(&prop);
+						// if !prop_key.map(|key| fields.contains_key(&key.into())).unwrap_or(true) {
+						// 	diagnostics.push(Diagnostic {
+						// 		range: ts_range_to_lsp_range(capture.node.range()),
+						// 		severity: Some(DiagnosticSeverity::WARNING),
+						// 		message: format!("Model `{}` has no field `{prop}`", interner().resolve(&model)),
+						// 		..Default::default()
+						// 	});
+						// }
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::ForXmlId)

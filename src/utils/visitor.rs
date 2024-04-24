@@ -2,6 +2,7 @@ use std::iter::FusedIterator;
 
 use tree_sitter::Node;
 
+/// Depth-first pre-order traversal of a [Node].
 pub struct PreTravel<'a> {
 	depth: u32,
 	cursor: Option<tree_sitter::TreeCursor<'a>>,
