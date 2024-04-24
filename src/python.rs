@@ -22,7 +22,7 @@ use ts_macros::query;
 query! {
 	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Access, Prop, ForXmlId);
 
-((call [
+(call [
   (attribute [
     (identifier) @_env 
     (attribute (_) (identifier) @_env)] (identifier) @_ref)
@@ -30,7 +30,7 @@ query! {
     (identifier) @REQUEST (identifier) @_render)
   (attribute
     (_) (identifier) @FOR_XML_ID) ]
-  (argument_list . (string) @XML_ID))
+  (argument_list . (string) @XML_ID)
   (#eq? @_env "env")
   (#eq? @_ref "ref")
   (#eq? @REQUEST "request")
@@ -59,15 +59,15 @@ query! {
   (#eq? @_fields "fields")
   (#eq? @_related "related"))
 
-((call [
+(call [
   (attribute
     (_) @MAPPED_TARGET (identifier) @_mapper)
   (attribute
     (identifier) @_api (identifier) @DEPENDS)]
-  (argument_list (string) @MAPPED))
-  (#any-of? @_mapper "mapped" "filtered" "sorted")
+  (argument_list (string) @MAPPED)
+  (#match? @_mapper "^(mapp|filter|sort)ed$")
   (#eq? @_api "api")
-  (#any-of? @DEPENDS "depends" "constrains" "onchange"))
+  (#match? @DEPENDS "^(depends|constrains|onchange)$"))
 
 ((call [
   (identifier) @_Field
@@ -82,7 +82,7 @@ query! {
         (parenthesized_expression (string) @MAPPED)
         (tuple . (string) @MAPPED) ]))? ))
   (#eq? @_fields "fields")
-  (#any-of? @_Field "Many2one" "One2many" "Many2many")
+  (#match? @_Field "^(Many2one|One2many|Many2many)$")
   (#eq? @_comodel_name "comodel_name")
   (#eq? @_domain "domain"))
 
@@ -99,14 +99,14 @@ query! {
         (tuple . (string) @MAPPED)
         (parenthesized_expression (string) @MAPPED)]))]))
   (#eq? @_domain "domain")
-  (#any-of? @_search "search" "search_read" "search_count" "read_group" "filtered_domain"))
+  (#match? @_search "^(search(_(read|count))?|read_group|filtered_domain)$"))
 
 ((call
   (attribute
     (_) @MAPPED_TARGET (identifier) @READ_FN)
   (argument_list
     (list (string) @MAPPED)))
-  (#any-of? @READ_FN "read" "read_group"))
+  (#match? @READ_FN "^read(_group)?$"))
 
 ((call
   (attribute
@@ -442,7 +442,7 @@ impl Backend {
 			let model_ = self.model_of_range(root, local_model.byte_range().map_unit(ByteOffset), &contents)?;
 			model = interner().resolve(&model_).to_string();
 		} else if let Some(field_model) = match_.nodes_for_capture_index(PyCompletions::Model as _).next() {
-			// A sibling @MODEL node; this is defined on the `fields.*(comodel_name='@MODEL', domain=[..])` pattern	
+			// A sibling @MODEL node; this is defined on the `fields.*(comodel_name='@MODEL', domain=[..])` pattern
 			model = String::from_utf8_lossy(&contents[field_model.byte_range().shrink(1)]).into_owned();
 		} else if let Some(this_model) = &this_model {
 			model = String::from_utf8_lossy(this_model).to_string();
@@ -1110,28 +1110,35 @@ baz = fields.Many2many(comodel_name='named')
 		let ast = parser.parse(&contents[..], None).unwrap();
 		let query = PyCompletions::query();
 		let mut cursor = QueryCursor::new();
-		let expected: &[&[&str]] = &[
-			&["env"],
-			&["ref"],
-			&["env", "ref", "'ref'"],
-			&["env", "'model'"],
-			&["render"],
-			&["request", "render", "'template'"],
-			&["Char"],
-			&["Many2one"],
-			&["fields", "Many2one", "'positional'"],
-			&["Many2many"],
-			&["fields", "Many2many", "comodel_name", "'named'"],
+		let expected = vec![
+			(9, vec!["env"]),
+			(9, vec!["ref"]),
+			(0, vec!["env", "ref", "'ref'"]),
+			(1, vec!["env", "'model'"]),
+			(9, vec!["render"]),
+			(0, vec!["request", "render", "'template'"]),
+			(9, vec!["Char"]),
+			(9, vec!["Many2one"]),
+			(4, vec!["fields", "Many2one", "'positional'"]),
+			(9, vec!["Many2many"]),
+			(4, vec!["fields", "Many2many", "comodel_name", "'named'"]),
 		];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])
 			.map(|match_| {
-				match_
-					.captures
-					.iter()
-					.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
-					.collect::<Vec<_>>()
+				(
+					match_.pattern_index,
+					match_
+						.captures
+						.iter()
+						.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
+						.collect::<Vec<_>>(),
+				)
 			})
+			.collect::<Vec<_>>();
+		let actual = actual
+			.iter()
+			.map(|(index, captures)| (*index, captures.iter().map(|x| x.as_ref()).collect::<Vec<_>>()))
 			.collect::<Vec<_>>();
 		assert_eq!(expected, actual);
 	}
