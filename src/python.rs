@@ -158,7 +158,7 @@ impl Backend {
 	pub fn on_change_python(&self, text: &Text, uri: &Url, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
-			.set_language(&tree_sitter_python::language())
+			.set_language(tree_sitter_python::language())
 			.expect("bug: failed to init python parser");
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)
 	}
@@ -1066,7 +1066,7 @@ mod tests {
 	#[test]
 	fn test_model_fields() {
 		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::language()).unwrap();
+		parser.set_language(tree_sitter_python::language()).unwrap();
 		let contents = br#"
 class Foo(models.Model):
 	foo = fields.Char('asd', help='asd')
@@ -1102,7 +1102,7 @@ class Foo(models.Model):
 	#[test]
 	fn test_py_completions() {
 		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::language()).unwrap();
+		parser.set_language(tree_sitter_python::language()).unwrap();
 		let contents = br#"
 self.env.ref('ref')
 env['model']
@@ -1150,7 +1150,7 @@ baz = fields.Many2many(comodel_name='named')
 	#[test]
 	fn test_py_completions_class_scoped() {
 		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::language()).unwrap();
+		parser.set_language(tree_sitter_python::language()).unwrap();
 		let contents = br#"
 class Foo(models.AbstractModel):
 	_name = 'foo'

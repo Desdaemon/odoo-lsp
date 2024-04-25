@@ -460,7 +460,7 @@ async fn add_root_py(root: Spur, path: PathBuf) -> miette::Result<Output> {
 
 pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 	let mut parser = tree_sitter::Parser::new();
-	parser.set_language(&tree_sitter_python::language()).into_diagnostic()?;
+	parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
 
 	let ast = parser
 		.parse(contents, None)
@@ -630,7 +630,7 @@ mod tests {
 	#[test]
 	fn test_model_query() {
 		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::language()).unwrap();
+		parser.set_language(tree_sitter_python::language()).unwrap();
 		let contents = br#"
 class Foo(models.AbstractModel):
 	_name = 'foo'

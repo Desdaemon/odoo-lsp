@@ -88,10 +88,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-multilib
 
-      - name: Setup MSVC toolchain
-        if: contains(matrix.target, 'msvc')
-        uses: ilammy/msvc-dev-cmd@v1 
-
       - name: Run unit tests
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo test

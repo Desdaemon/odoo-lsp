@@ -35,7 +35,7 @@ pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> mi
 
 	let mut parser = Parser::new();
 	parser
-		.set_language(&tree_sitter_javascript::language())
+		.set_language(tree_sitter_javascript::language())
 		.into_diagnostic()?;
 	let ast = parser.parse(&contents, None).expect("AST not parsed");
 	let query = OdooDefines::query();
