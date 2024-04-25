@@ -5,6 +5,7 @@ const { readFile, writeFile } = require("fs");
 const fileMap = {
 	"syntaxes/gen/odoo-xml.yml": "syntaxes/odoo-xml.tmLanguage.json",
 	"syntaxes/gen/odoo-owl.yml": "syntaxes/odoo-owl.tmLanguage.json",
+	"syntaxes/gen/odoo-python.yml": "syntaxes/odoo-python.tmLanguage.json",
 };
 
 const onigurumaComment = /\(\?#[^)]*\)/g;
