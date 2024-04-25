@@ -6,5 +6,5 @@ edition = "2021"
 [dependencies]
 indent = "0.1.1"
 tree-sitter.workspace = true
-tree-sitter-scheme = { git = "https://github.com/6cdh/tree-sitter-scheme", version = "0.6.0", rev = "85b6188fb77c03dfb01d13e58e2844450506860c" }
+tree-sitter-scheme = { git = "https://github.com/6cdh/tree-sitter-scheme", version = "0.6.0", rev = "8f9dff3d038f09934db5ea113cebc59c74447743" }
 ts-macros = { version = "0.4.0", path = "../ts-macros" }

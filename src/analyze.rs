@@ -479,7 +479,7 @@ mod tests {
 	#[test]
 	fn test_field_completion() {
 		let mut parser = Parser::new();
-		parser.set_language(tree_sitter_python::language()).unwrap();
+		parser.set_language(&tree_sitter_python::language()).unwrap();
 		let contents = br#"
 class Foo(models.AbstractModel):
 	_name = 'foo'

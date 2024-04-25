@@ -15,7 +15,7 @@ impl Backend {
 	pub fn on_change_js(&self, text: &Text, uri: &Url, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
-			.set_language(tree_sitter_javascript::language())
+			.set_language(&tree_sitter_javascript::language())
 			.expect("bug: failed to init js parser");
 		self.update_ast(text, uri, rope, old_rope, parser)
 	}

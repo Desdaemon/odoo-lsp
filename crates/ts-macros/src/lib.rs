@@ -240,7 +240,7 @@ impl QueryDefinition {
 					use ::std::sync::OnceLock as _OnceLock;
 					static QUERY: _OnceLock<::tree_sitter::Query> = _OnceLock::new();
 					QUERY.get_or_init(|| {
-						::tree_sitter::Query::new(#language, #query).unwrap()
+						::tree_sitter::Query::new(&#language, #query).unwrap()
 					})
 				}
 			}

@@ -34,7 +34,7 @@ require("lazy").setup({
 -- lsp-zero stanza
 local lsp = require('lsp-zero').preset({})
 lsp.on_attach(function(client, bufnr)
-	lsp.default_keymaps({buffer = bufnr})
+  lsp.default_keymaps({buffer = bufnr})
 end)
 
 local lspconfigs = require 'lspconfig.configs'
@@ -76,4 +76,4 @@ require('cmp').setup {
   }
 }
 
--- vim:ts=2:sw=2
+-- vim:expandtab:ts=2:sw=2
