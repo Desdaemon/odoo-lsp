@@ -99,14 +99,18 @@ query! {
         (tuple . (string) @MAPPED)
         (parenthesized_expression (string) @MAPPED)]))]))
   (#eq? @_domain "domain")
-  (#match? @_search "^(search(_(read|count))?|read_group|filtered_domain)$"))
+  (#match? @_search "^(search(_(read|count))?|_?read_group|filtered_domain)$"))
 
 ((call
   (attribute
     (_) @MAPPED_TARGET (identifier) @READ_FN)
-  (argument_list
-    (list (string) @MAPPED)))
-  (#match? @READ_FN "^read(_group)?$"))
+  (argument_list [
+    (list (string) @MAPPED)
+    (keyword_argument
+      (identifier) @_domain
+      (list (string) @MAPPED)) ]))
+  (#match? @_domain "^(groupby|aggregates)$")
+  (#match? @READ_FN "^_?read(_group)?$"))
 
 ((call
   (attribute
@@ -459,7 +463,7 @@ impl Backend {
 		} else if let Some(read_fn) = match_.nodes_for_capture_index(PyCompletions::ReadFn as _).next() {
 			// read or read_group, fields only
 			single_field = true;
-			if &contents[read_fn.byte_range()] == b"read_group" {
+			if contents[read_fn.byte_range()].ends_with(b"read_group") {
 				// split off aggregate functions
 				needle = match cow_split_once(needle, ":") {
 					Err(unchanged) => unchanged,
