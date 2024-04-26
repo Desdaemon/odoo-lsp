@@ -44,6 +44,7 @@ query! {
       property: (property_identifier) @_template 
       value: [ 
         (string) @TEMPLATE_NAME
+        (template_string) @TEMPLATE_NAME
         (call_expression
           (identifier) @_xml (template_string) @TEMPLATE_INLINE)])
     (field_definition . "static"
@@ -98,6 +99,7 @@ query! {
     (identifier) @NAME (property_identifier) @_template)
   right: [
     (string) @TEMPLATE_NAME
+    (template_string) @TEMPLATE_NAME
     (call_expression (identifier) @_xml (template_string) @TEMPLATE_INLINE) ])
   (#eq? @_template "template")
   (#match? @NAME "^[A-Z]"))
