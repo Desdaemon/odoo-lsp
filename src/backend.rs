@@ -346,25 +346,27 @@ impl Backend {
 		let Some(model_entry) = self.index.models.populate_field_names(model_key.into(), &[]) else {
 			return Ok(());
 		};
-		let completions = model_entry
-			.fields_set
-			.iter_prefix(needle.as_bytes())
-			.map(|(field_name, _)| {
-				// SAFETY: only utf-8 bytestrings from interner() are allowed
-				let field_name = unsafe { core::str::from_utf8_unchecked(field_name).to_string() };
-				CompletionItem {
-					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-						new_text: field_name.clone(),
-						insert: range,
-						replace: range,
-					})),
-					label: field_name,
-					kind: Some(CompletionItemKind::FIELD),
-					// TODO: Make this type-safe
-					data: Some(Value::String(model.clone())),
-					..Default::default()
-				}
-			});
+		let iter = if needle.is_empty() {
+			model_entry.fields_set.iter()
+		} else {
+			model_entry.fields_set.iter_prefix(needle.as_bytes())
+		};
+		let completions = iter.map(|(field_name, _)| {
+			// SAFETY: only utf-8 bytestrings from interner() are allowed
+			let field_name = unsafe { core::str::from_utf8_unchecked(field_name).to_string() };
+			CompletionItem {
+				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+					new_text: field_name.clone(),
+					insert: range,
+					replace: range,
+				})),
+				label: field_name,
+				kind: Some(CompletionItemKind::FIELD),
+				// TODO: Make this type-safe
+				data: Some(Value::String(model.clone())),
+				..Default::default()
+			}
+		});
 		items.extend(completions);
 		Ok(())
 	}
@@ -609,7 +611,7 @@ impl Backend {
 			Some(model) => interner().resolve(model),
 			None => "<unknown>",
 		};
-		let value = format!("<record id=\"{xml_id}\" model=\"{model}\" />");
+		let value = format!("<record id=\"{xml_id}\" model=\"{model}\"/>");
 		Ok(Some(Hover {
 			contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
 				language: "xml".to_owned(),
