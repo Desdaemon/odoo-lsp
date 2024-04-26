@@ -24,7 +24,8 @@ enum RefKind<'a> {
 	Ref(&'a str),
 	Model,
 	Id,
-	FieldName,
+	/// A list of `(start_byte, field)` which came before this field, or empty if a top-level field.
+	FieldName(Vec<(usize, &'a str)>),
 	TName,
 	TInherit,
 	TCall,
@@ -95,7 +96,7 @@ impl Backend {
 									continue;
 								}
 								record_ranges.extend(entries.into_iter().map(|entry| {
-									lsp_range_to_offset_range(entry.template.location.unwrap().range, &rope).unwrap()
+									lsp_range_to_offset_range(entry.template.location.unwrap().range, rope).unwrap()
 								}));
 								continue;
 							}
@@ -108,18 +109,18 @@ impl Backend {
 								continue;
 							}
 						};
-						let Some(range) = lsp_range_to_offset_range(record.location.range, &rope) else {
+						let Some(range) = lsp_range_to_offset_range(record.location.range, rope) else {
 							debug!("no range for {}", record.id);
 							continue;
 						};
 						record_ranges.push(range);
-						if let Some(mut prefix) = record_prefix.as_mut() {
+						if let Some(prefix) = record_prefix.as_mut() {
 							self.index
 								.records
 								.insert(
 									interner.get_or_intern(record.qualified_id(interner)).into(),
 									record,
-									Some(&mut prefix),
+									Some(prefix),
 								)
 								.await;
 						}
@@ -130,7 +131,7 @@ impl Backend {
 							continue;
 						}
 						record_ranges.extend(entries.into_iter().map(|entry| {
-							lsp_range_to_offset_range(entry.template.location.unwrap().range, &rope).unwrap()
+							lsp_range_to_offset_range(entry.template.location.unwrap().range, rope).unwrap()
 						}));
 					}
 				}
@@ -209,7 +210,7 @@ impl Backend {
 		let (Some((value, value_range)), Some(record_field)) = (ref_at_cursor, ref_kind) else {
 			return Ok(None);
 		};
-		let needle = &value[..offset_at_cursor.0 - value_range.start];
+		let mut needle = &value[..offset_at_cursor.0 - value_range.start];
 		let replace_range = value_range.map_unit(|unit| ByteOffset(unit + relative_offset));
 		match record_field {
 			RefKind::Ref(relation) => {
@@ -229,7 +230,7 @@ impl Backend {
 					needle,
 					replace_range,
 					rope.clone(),
-					Some(interner().resolve(&relation)),
+					Some(interner().resolve(relation)),
 					current_module,
 					&mut items,
 				)
@@ -239,9 +240,20 @@ impl Backend {
 				self.complete_model(needle, replace_range, rope.clone(), &mut items)
 					.await?
 			}
-			RefKind::FieldName => {
-				self.complete_field_name(needle, replace_range, some!(model_filter), rope.clone(), &mut items)
-					.await?
+			RefKind::FieldName(access) => {
+				let mut model_filter = some!(model_filter);
+				let mapped = format!(
+					"{}.{needle}",
+					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
+				);
+				if !access.is_empty() {
+					needle = mapped.as_str();
+					let mut model = interner().get_or_intern(model_filter);
+					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+					model_filter = interner().resolve(&model).to_string();
+				}
+				self.complete_field_name(needle, replace_range, model_filter, rope.clone(), &mut items)
+					.await?;
 			}
 			RefKind::TInherit | RefKind::TCall => {
 				self.complete_template_name(needle, replace_range, rope.clone(), &mut items)
@@ -282,21 +294,31 @@ impl Backend {
 			..
 		} = gather_refs(cursor_by_char, &mut reader, &slice)?;
 
-		let Some((cursor_value, _)) = ref_at_cursor else {
+		let Some((mut needle, _)) = ref_at_cursor else {
 			return Ok(None);
 		};
 		match ref_kind {
-			Some(RefKind::Ref(_)) => self.jump_def_xml_id(&cursor_value, uri),
-			Some(RefKind::Model) => self.jump_def_model(&cursor_value),
-			Some(RefKind::FieldName) => {
-				let model = some!(model_filter);
-				self.jump_def_field_name(&cursor_value, &model).await
+			Some(RefKind::Ref(_)) => self.jump_def_xml_id(needle, uri),
+			Some(RefKind::Model) => self.jump_def_model(needle),
+			Some(RefKind::FieldName(access)) => {
+				let mut model_filter = some!(model_filter);
+				let mapped = format!(
+					"{}.{needle}",
+					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
+				);
+				if !access.is_empty() {
+					needle = mapped.as_str();
+					let mut model = interner().get_or_intern(model_filter);
+					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+					model_filter = interner().resolve(&model).to_string();
+				}
+				self.jump_def_field_name(needle, &model_filter).await
 			}
 			Some(RefKind::TInherit) | Some(RefKind::TName) | Some(RefKind::TCall) => {
-				self.jump_def_template_name(&cursor_value)
+				self.jump_def_template_name(needle)
 			}
-			Some(RefKind::PropOf(component)) => self.jump_def_component_prop(component, cursor_value),
-			Some(RefKind::Id) => self.jump_def_xml_id(&cursor_value, uri),
+			Some(RefKind::PropOf(component)) => self.jump_def_component_prop(component, needle),
+			Some(RefKind::Id) => self.jump_def_xml_id(needle, uri),
 			None => Ok(None),
 		}
 	}
@@ -323,10 +345,10 @@ impl Backend {
 				let model = some!(interner().get(cursor_value));
 				self.model_references(&model.into())
 			}
-			Some(RefKind::Ref(_)) | Some(RefKind::Id) => self.record_references(&cursor_value, current_module),
-			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.template_references(&cursor_value, true),
-			Some(RefKind::TName) => self.template_references(&cursor_value, false),
-			Some(RefKind::FieldName) | Some(RefKind::PropOf(..)) | None => Ok(None),
+			Some(RefKind::Ref(_)) | Some(RefKind::Id) => self.record_references(cursor_value, current_module),
+			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.template_references(cursor_value, true),
+			Some(RefKind::TName) => self.template_references(cursor_value, false),
+			Some(RefKind::FieldName(_)) | Some(RefKind::PropOf(..)) | None => Ok(None),
 		}
 	}
 	pub async fn xml_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
@@ -341,7 +363,7 @@ impl Backend {
 			model_filter,
 		} = gather_refs(offset_at_cursor, &mut reader, &slice)?;
 
-		let Some((ref_at_cursor, ref_range)) = ref_at_cursor else {
+		let Some((mut needle, ref_range)) = ref_at_cursor else {
 			return Ok(None);
 		};
 
@@ -353,32 +375,45 @@ impl Backend {
 			.index
 			.module_of_path(Path::new(params.text_document_position_params.text_document.uri.path()));
 		match ref_kind {
-			Some(RefKind::Model) => self.hover_model(&ref_at_cursor, lsp_range, false, None),
+			Some(RefKind::Model) => self.hover_model(needle, lsp_range, false, None),
 			Some(RefKind::Ref(_)) => {
-				if ref_at_cursor.contains('.') {
-					self.hover_record(&ref_at_cursor, lsp_range)
+				if needle.contains('.') {
+					self.hover_record(needle, lsp_range)
 				} else {
 					let current_module = some!(current_module);
-					let xml_id = format!("{}.{}", interner().resolve(&current_module), ref_at_cursor);
+					let xml_id = format!("{}.{}", interner().resolve(&current_module), needle);
 					self.hover_record(&xml_id, lsp_range)
 				}
 			}
-			Some(RefKind::FieldName) => {
-				let model = some!(model_filter);
-				self.hover_field_name(&ref_at_cursor, &model, lsp_range).await
+			Some(RefKind::FieldName(access)) => {
+				// let model = some!(model_filter);
+				let mut model_filter = some!(model_filter);
+				let mapped = format!(
+					"{}.{needle}",
+					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
+				);
+				if !access.is_empty() {
+					needle = mapped.as_str();
+					let mut model = interner().get_or_intern(model_filter);
+					some!(self.index
+						.models
+						.resolve_mapped(&mut model, &mut needle, None).ok());
+					model_filter = interner().resolve(&model).to_string();
+				}
+				self.hover_field_name(needle, &model_filter, lsp_range).await
 			}
 			Some(RefKind::Id) => {
 				let current_module = some!(current_module);
-				let xml_id = if ref_at_cursor.contains('.') {
-					Cow::from(ref_at_cursor)
+				let xml_id = if needle.contains('.') {
+					Cow::from(needle)
 				} else {
-					format!("{}.{}", interner().resolve(&current_module), ref_at_cursor).into()
+					format!("{}.{}", interner().resolve(&current_module), needle).into()
 				};
 				self.hover_record(&xml_id, lsp_range)
 			}
 			Some(RefKind::TInherit)
 			| Some(RefKind::TCall) => {
-				Ok(self.hover_template(ref_at_cursor, lsp_range))
+				Ok(self.hover_template(needle, lsp_range))
 			}
 			| Some(RefKind::TName)
 			| Some(RefKind::PropOf(..))  // TODO
@@ -388,7 +423,7 @@ impl Backend {
 
 				#[cfg(debug_assertions)]
 				{
-					let contents = format!("{:#?}", (ref_at_cursor, ref_kind, model_filter));
+					let contents = format!("{:#?}", (needle, ref_kind, model_filter));
 					Ok(Some(Hover {
 						contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
 							language: "rust".to_string(),
@@ -463,6 +498,12 @@ fn gather_refs<'read>(
 	let mut depth = 0;
 	let mut expect_model_string = false;
 
+	struct FieldAccess<'a> {
+		field: StrSpan<'a>,
+		depth: u32,
+	}
+	let mut accesses: Vec<FieldAccess> = vec![];
+
 	for token in reader {
 		match token {
 			Ok(Token::ElementStart { local, .. }) => {
@@ -482,6 +523,7 @@ fn gather_refs<'read>(
 					component if template_mode && component.starts_with(|c| char::is_ascii_uppercase(&c)) => {
 						tag = Some(Tag::TComponent(component));
 					}
+					_ if arch_mode => tag = None,
 					_ => {}
 				}
 			}
@@ -492,7 +534,12 @@ fn gather_refs<'read>(
 					ref_at_cursor = Some((value.as_str(), value.range()));
 				} else if local.as_str() == "name" && value_in_range {
 					ref_at_cursor = Some((value.as_str(), value.range()));
-					ref_kind = Some(RefKind::FieldName);
+					ref_kind = Some(RefKind::FieldName(
+						accesses
+							.iter()
+							.map(|access| (access.field.start(), access.field.as_str()))
+							.collect(),
+					));
 				} else if local.as_str() == "name" && value.as_str() == "model" {
 					// contents should be a model string like res.partner
 					expect_model_string = true;
@@ -500,7 +547,11 @@ fn gather_refs<'read>(
 					arch_mode = true;
 					arch_depth = depth
 				} else if local.as_str() == "name" {
+					// <field ref=.. name=.. />
 					ref_kind = Some(RefKind::Ref(value.as_str()));
+					if arch_mode {
+						accesses.push(FieldAccess { field: value, depth });
+					}
 				} else if local.as_str() == "groups" && value_in_range {
 					ref_kind = Some(RefKind::Id);
 					model_filter = Some("res.groups".to_string());
@@ -620,10 +671,16 @@ fn gather_refs<'read>(
 			}
 			Ok(Token::ElementEnd { end, span }) => {
 				if let ElementEnd::Close(..) | ElementEnd::Empty = end {
-					depth -= 1;
 					if depth == arch_depth {
 						arch_mode = false;
 					}
+					match accesses.last() {
+						Some(access) if access.depth == depth => {
+							accesses.pop();
+						}
+						_ => {}
+					}
+					depth -= 1;
 				}
 				if template_mode
 					&& matches!(end, ElementEnd::Open | ElementEnd::Empty)
@@ -666,9 +723,9 @@ fn gather_refs<'read>(
 				// <Component prop />
 				// move one place back to get the attribute name
 				expected_eq_pos.col = expected_eq_pos.col.saturating_sub(1);
-				let start_pos = position_to_offset_slice(xml_position_to_lsp_position(start_pos), &slice).unwrap();
+				let start_pos = position_to_offset_slice(xml_position_to_lsp_position(start_pos), slice).unwrap();
 				let expected_eq_pos =
-					position_to_offset_slice(xml_position_to_lsp_position(expected_eq_pos), &slice).unwrap();
+					position_to_offset_slice(xml_position_to_lsp_position(expected_eq_pos), slice).unwrap();
 
 				// may be an invalid attribute, but no point in checking
 				let mut range = (start_pos..expected_eq_pos).erase();
