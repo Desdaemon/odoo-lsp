@@ -409,10 +409,7 @@ impl LanguageServer for Backend {
 	}
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		self.root_setup.wait().await;
-		_ = self
-			.did_save_impl(params)
-			.await
-			.inspect_err(|err| warn!("{err}"));
+		_ = self.did_save_impl(params).await.inspect_err(|err| warn!("{err}"));
 	}
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
 		let uri = &params.text_document_position_params.text_document.uri;
@@ -458,10 +455,7 @@ impl LanguageServer for Backend {
 			_ => return Ok(None),
 		};
 
-		Ok(refs
-			.inspect_err(|err| warn!("{err}"))
-			.ok()
-			.flatten())
+		Ok(refs.inspect_err(|err| warn!("{err}")).ok().flatten())
 	}
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
 		let uri = &params.text_document_position.text_document.uri;
@@ -609,12 +603,18 @@ impl LanguageServer for Backend {
 				}
 			})
 			.collect();
-		let configs = self.client.configuration(items).await.unwrap_or_default();
-		for (root, config) in self.roots.iter().zip(configs) {
-			let config = serde_json::from_value::<Config>(config);
-			// TODO: Do something with the config
-			debug!("config: {} => {:?}", root.key(), config);
-		}
+		let mut configs = self.client.configuration(items).await.unwrap_or_default();
+		// TODO: Per-folder configuration
+		let Some(mut config) = configs
+			.pop()
+			.and_then(|config| serde_json::from_value::<Config>(config).ok())
+		else {
+			return;
+		};
+		// Don't configure modules yet.
+		info!("Configuration changed, but roots not implemented yet");
+		config.module.take();
+		self.on_change_config(config).await;
 	}
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
 		for added in params.event.added {
@@ -672,7 +672,7 @@ impl LanguageServer for Backend {
 				.iter_prefix(xml_id_query.as_bytes())
 				.flat_map(|(_, keys)| {
 					keys.iter().flat_map(|key| {
-						self.index.records.get(&key).and_then(|record| {
+						self.index.records.get(key).and_then(|record| {
 							(record.module == module).then(|| to_symbol_information(&record, interner))
 						})
 					})
@@ -683,7 +683,7 @@ impl LanguageServer for Backend {
 				keys.iter().flat_map(|key| {
 					self.index
 						.records
-						.get(&key)
+						.get(key)
 						.map(|record| to_symbol_information(&record, interner))
 				})
 			});

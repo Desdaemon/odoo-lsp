@@ -85,7 +85,7 @@ impl Field {
 			FieldKind::Value | FieldKind::Related(_) => self_.kind = kind.clone(),
 			FieldKind::Relational(_) => {}
 		}
-		self_.type_ = type_.clone();
+		self_.type_ = *type_;
 		if let Some(help) = help {
 			self_.help = Some(help.clone());
 		}
@@ -156,11 +156,9 @@ impl ModelIndex {
 							},
 							item.byte_range.clone(),
 						));
-						entry.ancestors.extend(
-							ancestors
-								.iter()
-								.map(|sym| ModelName::from(interner.get_or_intern(&sym))),
-						);
+						entry
+							.ancestors
+							.extend(ancestors.iter().map(|sym| ModelName::from(interner.get_or_intern(sym))));
 					} else {
 						warn!(
 							"Conflicting bases for {}:\nfirst={}\n  new={}",
@@ -332,7 +330,7 @@ impl ModelIndex {
 			})
 			.flatten_iter();
 
-		let ancestors = entry.ancestors.iter().cloned().collect::<Vec<_>>();
+		let ancestors = entry.ancestors.to_vec();
 		let mut out = entry.fields.take().unwrap_or_default();
 		let mut fields_set = core::mem::take(&mut entry.fields_set);
 
@@ -341,10 +339,10 @@ impl ModelIndex {
 
 		// recursively get or populate ancestors' fields
 		for ancestor in ancestors {
-			if let Some(entry) = self.populate_field_names(ancestor.clone(), locations_filter) {
+			if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
 				if let Some(fields) = entry.fields.as_ref() {
 					for (name, field) in fields {
-						match out.entry(name.clone()) {
+						match out.entry(*name) {
 							Entry::Occupied(mut old_field) => {
 								old_field.get_mut().merge(field);
 							}
@@ -395,37 +393,36 @@ impl ModelIndex {
 		mut range: Option<&mut ByteRange>,
 	) -> Result<(), ResolveMappedError> {
 		while let Some((lhs, rhs)) = needle.split_once('.') {
-			trace!("(resolved_mapped) `{needle}` model=`{}`", interner().resolve(&model));
+			trace!("(resolved_mapped) `{needle}` model=`{}`", interner().resolve(model));
 			let mut normalized = interner()
-				.get(&lhs)
-				.and_then(|key| self.normalize_field_relation(key.into(), model.clone().into()));
+				.get(lhs)
+				.and_then(|key| self.normalize_field_relation(key.into(), *model));
 			if let Some(normalized) = &normalized {
-				trace!("(resolved_mapped) prenormalized: {}", interner().resolve(&normalized));
+				trace!("(resolved_mapped) prenormalized: {}", interner().resolve(normalized));
 			}
 			// lhs: foo
 			// rhs: ba
 			if normalized.is_none() {
-				let Some(fields) = self.populate_field_names(model.clone().into(), &[]) else {
+				let Some(fields) = self.populate_field_names((*model).into(), &[]) else {
 					debug!(
 						"tried to resolve before fields are populated for `{}`",
-						interner().resolve(&model)
+						interner().resolve(model)
 					);
 					return Ok(());
 				};
-				let field = interner().get(&lhs);
+				let field = interner().get(lhs);
 				let field = field.and_then(|field| fields.fields.as_ref()?.get(&field.into()));
 				match field.as_ref().map(|f| &f.kind) {
-					Some(FieldKind::Relational(rel)) => normalized = Some(rel.clone()),
+					Some(FieldKind::Relational(rel)) => normalized = Some(*rel),
 					None | Some(FieldKind::Value) => return Err(ResolveMappedError::NonRelational),
 					Some(FieldKind::Related(..)) => {
 						drop(fields);
-						normalized =
-							self.normalize_field_relation(interner().get(&lhs).unwrap().into(), model.clone().into());
+						normalized = self.normalize_field_relation(interner().get(lhs).unwrap().into(), *model);
 					}
 				}
 			}
 			let Some(rel) = normalized else {
-				warn!("unresolved field `{}`.`{lhs}`", interner().resolve(&model));
+				warn!("unresolved field `{}`.`{lhs}`", interner().resolve(model));
 				*needle = lhs;
 				if let Some(range) = range.as_mut() {
 					let end = range.start.0 + lhs.len();
@@ -434,7 +431,7 @@ impl ModelIndex {
 				return Err(ResolveMappedError::NonRelational);
 			};
 			*needle = rhs;
-			*model = rel.clone();
+			*model = rel;
 			// old range: foo.bar.baz
 			// range:         bar.baz
 			if let Some(range) = range.as_mut() {
@@ -450,7 +447,7 @@ impl ModelIndex {
 		let model_entry = self.get(&model.into())?;
 		let field_entry = model_entry.fields.as_ref()?.get(&field)?;
 		let mut kind = field_entry.kind.clone();
-		let mut field_model = model.clone();
+		let mut field_model = model;
 		if let FieldKind::Related(related) = &field_entry.kind {
 			trace!(
 				"(normalize_field_relation) related={related} field={} model={}",
@@ -462,10 +459,10 @@ impl ModelIndex {
 			drop(model_entry);
 			if self.resolve_mapped(&mut field_model, &mut related, None).is_ok() {
 				// resolved_mapped took us to the final field, now we need to resolve it to a model
-				let related_key = interner().get(&related)?;
+				let related_key = interner().get(related)?;
 				let field_model = self.normalize_field_relation(related_key.into(), field_model)?;
 
-				kind = FieldKind::Relational(field_model.into());
+				kind = FieldKind::Relational(field_model);
 				let mut model_entry = self.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
 				let Some(field) = Arc::get_mut(model_entry.fields.as_mut()?.get_mut(&field)?) else {
 					// Field is already used elsewhere, don't modify it.
@@ -478,7 +475,7 @@ impl ModelIndex {
 		}
 
 		match kind {
-			FieldKind::Relational(rel) => Some(rel.clone()),
+			FieldKind::Relational(rel) => Some(rel),
 			FieldKind::Value => None,
 			FieldKind::Related(_) => None,
 		}

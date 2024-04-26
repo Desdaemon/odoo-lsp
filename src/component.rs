@@ -31,10 +31,7 @@ impl Component {
 			ComponentTemplate::Name(name) => templates.get(name)?.location.clone(),
 			ComponentTemplate::Inline(range) => {
 				let path = self.location.as_ref()?.path;
-				Some(MinLoc {
-					path,
-					range: range.clone(),
-				})
+				Some(MinLoc { path, range: *range })
 			}
 		}
 	}

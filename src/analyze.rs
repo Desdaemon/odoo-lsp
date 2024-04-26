@@ -180,8 +180,8 @@ impl Backend {
 			self_param.into_owned(),
 			Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
 		);
-		let mut cursor = PreTravel::new(node);
-		while let Some(node) = cursor.next() {
+		let cursor = PreTravel::new(node);
+		for node in cursor {
 			if !node.is_named() {
 				continue;
 			};
@@ -362,7 +362,7 @@ impl Backend {
 					b"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
 					b"company" | b"companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
 					b"mapped" => {
-						let model = self.resolve_type(&lhs, &scope)?;
+						let model = self.resolve_type(&lhs, scope)?;
 						Some(Type::Method(model, "mapped"))
 					}
 					func if MODEL_METHODS.contains(func) => match lhs {
@@ -435,7 +435,7 @@ impl Backend {
 									}
 								}
 								let body = mapped.child_by_field_name(b"body")?;
-								self.type_of(body, &scope, &contents)
+								self.type_of(body, &scope, contents)
 							}
 							_ => None,
 						}
@@ -447,7 +447,7 @@ impl Backend {
 		}
 	}
 	fn type_of_attribute(&self, type_: &Type, attr: &[u8], scope: &Scope) -> Option<Type> {
-		let model = self.resolve_type(type_, &scope)?;
+		let model = self.resolve_type(type_, scope)?;
 		let attr = String::from_utf8_lossy(attr);
 		let attr = interner().get_or_intern(attr.as_ref());
 		self.index.models.populate_field_names(model, &[])?;

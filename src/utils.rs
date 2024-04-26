@@ -71,7 +71,7 @@ impl From<MinLoc> for Location {
 }
 
 pub fn offset_to_position(offset: ByteOffset, rope: Rope) -> Option<Position> {
-	let line = rope.try_byte_to_line(offset.0 as usize).ok()?;
+	let line = rope.try_byte_to_line(offset.0).ok()?;
 	let line_start_char = rope.try_line_to_char(line).ok()?;
 	let char_offset = rope.try_byte_to_char(offset.0).ok()?;
 	let column = char_offset - line_start_char;
@@ -120,8 +120,8 @@ pub fn offset_range_to_lsp_range(range: ByteRange, rope: Rope) -> Option<Range> 
 
 pub fn xml_position_to_lsp_position(position: TextPos) -> Position {
 	Position {
-		line: position.row - 1 as u32,
-		character: position.col - 1 as u32,
+		line: position.row - 1_u32,
+		character: position.col - 1_u32,
 	}
 }
 
@@ -219,7 +219,7 @@ pub trait Erase {
 impl Erase for ByteRange {
 	#[inline]
 	fn erase(&self) -> core::ops::Range<usize> {
-		self.clone().map_unit(|unit| unit.0 as usize)
+		self.clone().map_unit(|unit| unit.0)
 	}
 }
 

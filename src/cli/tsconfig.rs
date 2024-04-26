@@ -31,7 +31,7 @@ query! {
 pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> miette::Result<()> {
 	let contents = tokio::fs::read(&file).await.into_diagnostic()?;
 
-	let file = interner().get_or_intern(&file.to_string_lossy());
+	let file = interner().get_or_intern(file.to_string_lossy());
 
 	let mut parser = Parser::new();
 	parser

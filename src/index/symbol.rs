@@ -25,7 +25,7 @@ impl PathSymbol {
 	/// Panics if `root` is not a parent of `path`.
 	pub fn strip_root(root: Spur, path: &Path) -> Self {
 		let path = path.strip_prefix(interner().resolve(&root)).unwrap();
-		let path = interner().get_or_intern(&path.to_string_lossy());
+		let path = interner().get_or_intern(path.to_string_lossy());
 		PathSymbol(root, path)
 	}
 	pub fn empty() -> Self {

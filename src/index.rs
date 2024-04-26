@@ -164,7 +164,7 @@ impl Index {
 		let mut module_count = 0;
 		let mut outputs = tokio::task::JoinSet::new();
 		let interner = interner();
-		let root_key = interner.get_or_intern(&root);
+		let root_key = interner.get_or_intern(root);
 		for manifest in manifests {
 			let manifest = manifest.into_diagnostic()?;
 			let module_dir = manifest

@@ -3,8 +3,18 @@
 	"description": "Language server for Odoo Python/JS/XML",
 	"license": "MIT",
 	"version": "0.4.0",
-	"categories": ["Programming Languages"],
-	"keywords": ["language-server", "tower-lsp", "odoo", "python", "xml", "javascript", "intellisense"],
+	"categories": [
+		"Programming Languages"
+	],
+	"keywords": [
+		"language-server",
+		"tower-lsp",
+		"odoo",
+		"python",
+		"xml",
+		"javascript",
+		"intellisense"
+	],
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/Desdaemon/odoo-lsp.git"
@@ -12,7 +22,11 @@
 	"engines": {
 		"vscode": "^1.75.0"
 	},
-	"activationEvents": ["onLanguage:xml", "onLanguage:python", "onLanguage:javascript"],
+	"activationEvents": [
+		"onLanguage:xml",
+		"onLanguage:python",
+		"onLanguage:javascript"
+	],
 	"publisher": "Desdaemon",
 	"main": "./dist/extension.js",
 	"contributes": {
@@ -20,7 +34,9 @@
 			{
 				"path": "./syntaxes/odoo-xml.tmLanguage.json",
 				"scopeName": "text.xml.odoo",
-				"injectTo": ["text.xml"],
+				"injectTo": [
+					"text.xml"
+				],
 				"embeddedLanguages": {
 					"meta.embedded.inline.python": "python",
 					"meta.embedded.inline.javascript": "javascript",
@@ -30,7 +46,9 @@
 			{
 				"path": "./syntaxes/odoo-owl.tmLanguage.json",
 				"scopeName": "text.xml.odoo.owl",
-				"injectTo": ["text.xml"],
+				"injectTo": [
+					"text.xml"
+				],
 				"embeddedLanguages": {
 					"meta.embedded.inline.javascript": "javascript"
 				}
@@ -38,7 +56,9 @@
 			{
 				"path": "./syntaxes/odoo-python.tmLanguage.json",
 				"scopeName": "source.python.odoo",
-				"injectTo": ["source.python"],
+				"injectTo": [
+					"source.python"
+				],
 				"embeddedLanguages": {
 					"meta.embedded.expression.python": "python"
 				}
@@ -68,15 +88,29 @@
 			"properties": {
 				"odoo-lsp.trace.server": {
 					"type": "string",
-					"scope": "window",
-					"enum": ["off", "messages", "verbose"],
-					"enumDescriptions": ["No traces", "Error only", "Full log"],
+					"enum": [
+						"off",
+						"messages",
+						"verbose"
+					],
+					"enumDescriptions": [
+						"No traces",
+						"Error only",
+						"Full log"
+					],
 					"default": "off",
 					"description": "Traces the communication between VS Code and the language server."
 				},
 				"odoo-lsp.trace.binary": {
 					"type": "string",
-					"enum": ["trace", "debug", "info", "warn", "error", "off"],
+					"enum": [
+						"trace",
+						"debug",
+						"info",
+						"warn",
+						"error",
+						"off"
+					],
 					"default": "warn",
 					"markdownDescription": "Sets the level of logging done by the language server. Overridden by the [`RUST_LOG`](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) environment variable. Takes effect on extension reload."
 				},

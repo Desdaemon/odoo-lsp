@@ -329,7 +329,7 @@ pub fn self_update(nightly: bool) -> miette::Result<()> {
 			.fetch()
 			.into_diagnostic()?;
 		releases.sort_unstable_by(|a, z| z.date.cmp(&a.date));
-		if let Some(latest_nightly) = releases.iter().filter(|rel| rel.name.starts_with("nightly")).next() {
+		if let Some(latest_nightly) = releases.iter().find(|rel| rel.name.starts_with("nightly")) {
 			eprintln!("Latest nightly is {}", latest_nightly.version);
 			task = task.target_version_tag(&latest_nightly.version);
 		} else {

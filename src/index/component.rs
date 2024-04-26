@@ -285,9 +285,9 @@ impl ComponentIndex {
 		let mut by_prefix = self.by_prefix.try_write().expect(format_loc!("deadlock"));
 		let interner = interner();
 		for (name, component) in components {
-			by_prefix.insert(interner.resolve(&name).as_bytes(), name.clone());
+			by_prefix.insert(interner.resolve(&name).as_bytes(), name);
 			if let Some(ComponentTemplate::Name(template_name)) = component.template.as_ref() {
-				self.by_template.insert(template_name.clone(), name.clone());
+				self.by_template.insert(*template_name, name);
 			}
 			self.insert(name, component);
 		}

@@ -33,10 +33,7 @@ impl RecordIndex {
 			self.by_model.entry(*model).or_default().insert(qualified_id);
 		}
 		if let Some(inherit_id) = &record.inherit_id {
-			self.by_inherit_id
-				.entry(inherit_id.clone())
-				.or_default()
-				.insert(qualified_id);
+			self.by_inherit_id.entry(*inherit_id).or_default().insert(qualified_id);
 		}
 		if let Some(prefix) = prefix {
 			prefix
@@ -93,7 +90,7 @@ impl RecordIndex {
 	{
 		ids.value()
 			.iter()
-			.flat_map(|id| self.get(&id).into_iter())
+			.flat_map(|id| self.get(id).into_iter())
 			.collect::<Vec<_>>()
 	}
 }

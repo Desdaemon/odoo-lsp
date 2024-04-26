@@ -226,7 +226,7 @@ impl Backend {
 		}
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
-			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
+			'match_: for match_ in cursor.matches(query, root, contents) {
 				let mut model_filter = None;
 				for capture in match_.captures {
 					let range = capture.node.byte_range();
@@ -238,7 +238,7 @@ impl Backend {
 							let model = || {
 								let model = capture.node.prev_named_sibling()?;
 								let model =
-									self.model_of_range(root, model.byte_range().map_unit(ByteOffset), &contents)?;
+									self.model_of_range(root, model.byte_range().map_unit(ByteOffset), contents)?;
 								Some(interner().resolve(&model))
 							};
 							model_filter = model()
@@ -247,7 +247,7 @@ impl Backend {
 							let range = range.shrink(1);
 							let needle = String::from_utf8_lossy(&contents[range.start..offset]);
 							early_return = Some((
-								EarlyReturn::XmlId(model_filter, current_module.into()),
+								EarlyReturn::XmlId(model_filter, current_module),
 								needle,
 								range.map_unit(ByteOffset),
 								rope.clone(),
@@ -291,7 +291,7 @@ impl Backend {
 								Some(offset),
 								range.clone(),
 								this_model.inner,
-								&contents[..],
+								contents,
 								true,
 							)
 							else {
@@ -311,7 +311,7 @@ impl Backend {
 								};
 								let lhs = some!(capture.node.prev_named_sibling());
 								let model =
-									some!(self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), &contents));
+									some!(self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), contents));
 								let model = interner().resolve(&model);
 								let needle = Cow::from(slice.byte_slice(..offset - range.start));
 								early_return = Some((
@@ -443,7 +443,7 @@ impl Backend {
 
 		let model;
 		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next() {
-			let model_ = self.model_of_range(root, local_model.byte_range().map_unit(ByteOffset), &contents)?;
+			let model_ = self.model_of_range(root, local_model.byte_range().map_unit(ByteOffset), contents)?;
 			model = interner().resolve(&model_).to_string();
 		} else if let Some(field_model) = match_.nodes_for_capture_index(PyCompletions::Model as _).next() {
 			// A sibling @MODEL node; this is defined on the `fields.*(comodel_name='@MODEL', domain=[..])` pattern
@@ -503,7 +503,7 @@ impl Backend {
 			let query = PyCompletions::query();
 			let mut cursor = tree_sitter::QueryCursor::new();
 			let mut this_model = ThisModel::default();
-			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
+			'match_: for match_ in cursor.matches(query, root, contents) {
 				for capture in match_.captures {
 					let range = capture.node.byte_range();
 					match PyCompletions::from(capture.index) {
@@ -539,7 +539,7 @@ impl Backend {
 						Some(PyCompletions::Access) if range.contains_end(offset) => {
 							let lhs = some!(capture.node.prev_named_sibling());
 							let lhs = lhs.byte_range().map_unit(ByteOffset);
-							let model = some!(self.model_of_range(root, lhs, &contents));
+							let model = some!(self.model_of_range(root, lhs, contents));
 							let field = String::from_utf8_lossy(&contents[range]);
 							let model = interner().resolve(&model);
 							early_return = Some(EarlyReturn::Access(field, model));
@@ -553,7 +553,7 @@ impl Backend {
 									Some(offset),
 									range.clone(),
 									this_model.inner,
-									&contents,
+									contents,
 									false,
 								)
 								.map(EarlyReturn::Mapped);
@@ -616,7 +616,7 @@ impl Backend {
 		let current_module = self
 			.index
 			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
-		'match_: for match_ in cursor.matches(query, root, &contents[..]) {
+		'match_: for match_ in cursor.matches(query, root, contents) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				match PyCompletions::from(capture.index) {
@@ -689,7 +689,7 @@ impl Backend {
 			let query = PyCompletions::query();
 			let mut cursor = tree_sitter::QueryCursor::new();
 			let mut this_model = ThisModel::default();
-			'match_: for match_ in cursor.matches(query, root, &contents[..]) {
+			'match_: for match_ in cursor.matches(query, root, contents) {
 				for capture in match_.captures {
 					let range = capture.node.byte_range();
 					match PyCompletions::from(capture.index) {
@@ -711,7 +711,7 @@ impl Backend {
 							let lsp_range = ts_range_to_lsp_range(capture.node.range());
 							let lhs = some!(capture.node.prev_named_sibling());
 							let lhs = lhs.byte_range().map_unit(ByteOffset);
-							let model = some!(self.model_of_range(root, lhs, &contents));
+							let model = some!(self.model_of_range(root, lhs, contents));
 							let field = String::from_utf8_lossy(&contents[range]);
 							early_return = Some(EarlyReturn::Access {
 								field,
@@ -728,7 +728,7 @@ impl Backend {
 									Some(offset),
 									range.clone(),
 									this_model.inner,
-									&contents[..],
+									contents,
 									false,
 								)
 								.map(EarlyReturn::Mapped);
@@ -789,7 +789,7 @@ impl Backend {
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
 		let lsp_range = ts_range_to_lsp_range(needle.range());
-		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), &contents));
+		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), contents));
 		let model = interner().resolve(&model);
 		let identifier =
 			(needle.kind() == "identifier").then(|| String::from_utf8_lossy(&contents[needle.byte_range()]));
@@ -815,7 +815,7 @@ impl Backend {
 			root = top_level_stmt(root, zone.end.0).unwrap_or(root);
 			diagnostics.retain(|diag| {
 				// If we couldn't get a range here, rope has changed significantly so just toss the diag.
-				let range = lsp_range_to_offset_range(diag.range.clone(), &rope).unwrap_or_default();
+				let range = lsp_range_to_offset_range(diag.range, rope).unwrap_or_default();
 				!root.byte_range().contains(&range.start.0)
 			});
 		} else {
@@ -830,7 +830,7 @@ impl Backend {
 			.collect::<Vec<_>>();
 		let mut cursor = QueryCursor::new();
 		let mut this_model = ThisModel::default();
-		for match_ in cursor.matches(query, root, &contents[..]) {
+		for match_ in cursor.matches(query, root, contents) {
 			for capture in match_.captures {
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::XmlId) => {
@@ -935,7 +935,7 @@ impl Backend {
 							let Some(fields) = entry.fields.as_ref() else { continue };
 							static MAPPED_BUILTINS: phf::Set<&str> =
 								phf::phf_set!("id", "display_name", "create_date", "write_date");
-							if MAPPED_BUILTINS.contains(&needle) {
+							if MAPPED_BUILTINS.contains(needle) {
 								continue;
 							}
 							if let Some(key) = interner().get(needle) {
@@ -970,8 +970,7 @@ impl Backend {
 						let Some(obj) = capture.node.prev_named_sibling() else {
 							continue;
 						};
-						let Some(model) =
-							self.model_of_range(root, obj.byte_range().map_unit(ByteOffset), &contents[..])
+						let Some(model) = self.model_of_range(root, obj.byte_range().map_unit(ByteOffset), contents)
 						else {
 							continue;
 						};

@@ -7,7 +7,12 @@ import { mkdir, rm } from "node:fs/promises";
 import { type Stats, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { get } from "node:https";
-import { LanguageClient, LanguageClientOptions, RevealOutputChannelOn, ServerOptions } from "vscode-languageclient/node";
+import {
+	LanguageClient,
+	LanguageClientOptions,
+	RevealOutputChannelOn,
+	ServerOptions,
+} from "vscode-languageclient/node";
 import { registerXmlFileAssociations, registerXPathSemanticTokensProvider } from "./xml";
 import {
 	$,
@@ -175,71 +180,77 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 }
 
 async function latestReleaseInfo(includeStable: boolean, fallback?: string) {
-	return (await new Promise<string | undefined>(resolve =>
-		get(
-			"https://api.github.com/repos/Desdaemon/odoo-lsp/releases?per_page=5",
-			{
-				headers: {
-					accept: "application/vnd.github+json",
-					"user-agent": "vscode-odoo-lsp",
+	return (
+		(await new Promise<string | undefined>((resolve) =>
+			get(
+				"https://api.github.com/repos/Desdaemon/odoo-lsp/releases?per_page=5",
+				{
+					headers: {
+						accept: "application/vnd.github+json",
+						"user-agent": "vscode-odoo-lsp",
+					},
 				},
-			},
-			(resp) => {
-				const chunks: Buffer[] = [];
-				resp.on("data", chunks.push.bind(chunks)).on("end", () => {
-					try {
-						const releases: { tag_name: string; name: string, published_at: string }[] = JSON.parse(Buffer.concat(chunks).toString());
-						const today = new Date();
-						releases.sort((a, z) => z.published_at.localeCompare(a.published_at));
-						const latest = releases.find((r) => (includeStable || r.name === "nightly") && compareDate(today, new Date(r.published_at)) >= 0);
-						resolve(latest?.tag_name || fallback);
-					} catch (err) {
-						vscode.window.showErrorMessage(`Unable to fetch nightly release: ${err}`);
-						resolve(fallback);
-					}
-				});
-			},
-		),
-	)) || fallback;
+				(resp) => {
+					const chunks: Buffer[] = [];
+					resp.on("data", chunks.push.bind(chunks)).on("end", () => {
+						try {
+							const releases: { tag_name: string; name: string; published_at: string }[] = JSON.parse(
+								Buffer.concat(chunks).toString(),
+							);
+							const today = new Date();
+							releases.sort((a, z) => z.published_at.localeCompare(a.published_at));
+							const latest = releases.find(
+								(r) => (includeStable || r.name === "nightly") && compareDate(today, new Date(r.published_at)) >= 0,
+							);
+							resolve(latest?.tag_name || fallback);
+						} catch (err) {
+							vscode.window.showErrorMessage(`Unable to fetch nightly release: ${err}`);
+							resolve(fallback);
+						}
+					});
+				},
+			),
+		)) || fallback
+	);
 }
 
 function updateExtension(context: vscode.ExtensionContext, release: string) {
 	const runtimeDir = context.globalStorageUri.fsPath;
 	const vsixLink = `${repo}/releases/download/${release}/odoo-lsp-${context.extension.packageJSON.version}.vsix`;
 	const vsixOutput = `${runtimeDir}/odoo-lsp.vsix`;
-	downloadFile(vsixLink, vsixOutput).then(async () => {
-		const resp =
-			extensionState.nightlyExtensionUpdates === "always"
-				? "Yes"
-				: await vscode.window.showInformationMessage(
-					"A new nightly update for the extension is available. Install?",
-					"Yes",
-					"No",
-					"Always",
-					"Never show again",
-				);
-		if (resp === "Always") extensionState.nightlyExtensionUpdates = "always";
-		else if (resp === "Never show again") extensionState.nightlyExtensionUpdates = "never";
+	downloadFile(vsixLink, vsixOutput).then(
+		async () => {
+			const resp =
+				extensionState.nightlyExtensionUpdates === "always"
+					? "Yes"
+					: await vscode.window.showInformationMessage(
+							"A new nightly update for the extension is available. Install?",
+							"Yes",
+							"No",
+							"Always",
+							"Never show again",
+						);
+			if (resp === "Always") extensionState.nightlyExtensionUpdates = "always";
+			else if (resp === "Never show again") extensionState.nightlyExtensionUpdates = "never";
 
-		if (resp === "Yes" || resp === "Always") {
-			try{
-				await vscode.commands.executeCommand(
-					"workbench.extensions.installExtension",
-					vscode.Uri.file(vsixOutput),
-				);
-			} catch (err) {
-				vscode.window.showErrorMessage(`Failed to update extension: ${err}`);
-				return;
+			if (resp === "Yes" || resp === "Always") {
+				try {
+					await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(vsixOutput));
+				} catch (err) {
+					vscode.window.showErrorMessage(`Failed to update extension: ${err}`);
+					return;
+				}
+				vscode.window
+					.showInformationMessage(`Extension updated to ${release}. Reload to apply changes.`, "Reload now", "Later")
+					.then((resp) => {
+						if (resp === "Reload now") vscode.commands.executeCommand("workbench.action.reloadWindow");
+					});
 			}
-			vscode.window
-				.showInformationMessage(`Extension updated to ${release}. Reload to apply changes.`, "Reload now", "Later")
-				.then((resp) => {
-					if (resp === "Reload now") vscode.commands.executeCommand("workbench.action.reloadWindow");
-				});
-		}
-	}, reason => {
-		vscode.window.showErrorMessage(`Failed to download extension update: ${reason}`);
-	})
+		},
+		(reason) => {
+			vscode.window.showErrorMessage(`Failed to download extension update: ${reason}`);
+		},
+	);
 }
 
 const makeExtensionState = (context: vscode.ExtensionContext) =>
@@ -274,17 +285,19 @@ export async function activate(context: vscode.ExtensionContext) {
 	const runtimeDir = context.globalStorageUri.fsPath;
 	let latestRelease: string | undefined;
 	let vsixStat: Stats | null;
-	if (preferNightly
-		&& command === "odoo-lsp"
-		&& (latestRelease = await latestReleaseInfo(false))
-		&& latestRelease.startsWith('nightly-')
-		&& (!(vsixStat = tryStatSync(`${runtimeDir}/odoo-lsp.vsix`))
-			|| compareDate(vsixStat.ctime, parseNightly(latestRelease)) < 0)) {
+	if (
+		preferNightly &&
+		command === "odoo-lsp" &&
+		(latestRelease = await latestReleaseInfo(false)) &&
+		latestRelease.startsWith("nightly-") &&
+		(!(vsixStat = tryStatSync(`${runtimeDir}/odoo-lsp.vsix`)) ||
+			compareDate(vsixStat.ctime, parseNightly(latestRelease)) < 0)
+	) {
 		updateExtension(context, latestRelease);
 	}
 
 	const logLevel = vscode.workspace.getConfiguration("odoo-lsp.trace").get("binary");
-	const RUST_LOG_STYLE = 'never'
+	const RUST_LOG_STYLE = "never";
 	const serverOptions: ServerOptions = {
 		run: {
 			command,
@@ -305,27 +318,36 @@ export async function activate(context: vscode.ExtensionContext) {
 	const splitPattern = /^\[/gm;
 
 	const oldAppend = binaryOutputChannel.append.bind(binaryOutputChannel);
-	binaryOutputChannel.append = (function(this: vscode.LogOutputChannel, lines: string) {
+	binaryOutputChannel.append = function (this: vscode.LogOutputChannel, lines: string) {
 		if (!lines) return;
-		
+
 		for (const line of lines.split(splitPattern)) {
 			const match = logPattern.exec(line);
 			if (match) {
 				const rest = line.substring(match[0].length).trimEnd();
 				const target = match[2]!.trimStart();
-				switch (match[1])	{
-					case 'INFO': this.info(`[${target}]${rest}`); break;
-					case 'WARN': this.warn(`[${target}]${rest}`); break;
-					case 'ERROR': this.error(`[${target}]${rest}`); break;
-					case 'DEBUG': this.debug(`[${target}]${rest}`); break;
-					case 'TRACE': this.trace(`[${target}]${rest}`); break;
+				switch (match[1]) {
+					case "INFO":
+						this.info(`[${target}]${rest}`);
+						break;
+					case "WARN":
+						this.warn(`[${target}]${rest}`);
+						break;
+					case "ERROR":
+						this.error(`[${target}]${rest}`);
+						break;
+					case "DEBUG":
+						this.debug(`[${target}]${rest}`);
+						break;
+					case "TRACE":
+						this.trace(`[${target}]${rest}`);
+						break;
 				}
 				continue;
 			}
 			if (line.trim()) oldAppend(line);
 		}
-
-	}).bind(binaryOutputChannel);
+	}.bind(binaryOutputChannel);
 
 	const clientOptions = {
 		documentSelector: [

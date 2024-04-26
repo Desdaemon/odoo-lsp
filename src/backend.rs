@@ -113,7 +113,7 @@ impl Backend {
 			.expect(format_loc!("(on_change) did not build document"));
 		match &params.text {
 			Text::Full(full) => {
-				document.rope = ropey::Rope::from_str(&full);
+				document.rope = ropey::Rope::from_str(full);
 				document.damage_zone = None;
 			}
 			Text::Delta(_) => {
@@ -309,7 +309,7 @@ impl Backend {
 			};
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter().flat_map(|key| {
-					self.index.records.get(&key).and_then(|record| {
+					self.index.records.get(key).and_then(|record| {
 						(record.module == module && (model_filter.is_none() || record.model == model_filter))
 							.then(|| to_completion_items(&record, current_module, range, true, interner))
 					})
@@ -319,7 +319,7 @@ impl Backend {
 		} else {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter().flat_map(|key| {
-					self.index.records.get(&key).and_then(|record| {
+					self.index.records.get(key).and_then(|record| {
 						(model_filter.is_none() || record.model == model_filter)
 							.then(|| to_completion_items(&record, current_module, range, false, interner))
 					})
@@ -420,7 +420,7 @@ impl Backend {
 		let by_prefix = self.index.templates.by_prefix.read().await;
 		let matches = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, templates)| {
 			templates.iter().flat_map(|key| {
-				let label = interner.resolve(&*key).to_string();
+				let label = interner.resolve(key).to_string();
 				Some(CompletionItem {
 					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 						new_text: label.clone(),
@@ -514,7 +514,7 @@ impl Backend {
 		}))
 	}
 	pub fn hover_component(&self, name: &str, range: Option<Range>) -> Option<Hover> {
-		let key = interner().get(&name)?;
+		let key = interner().get(name)?;
 		let component = self.index.components.get(&key.into())?;
 		let module = component
 			.location
@@ -534,7 +534,7 @@ impl Backend {
 		})
 	}
 	pub fn hover_template(&self, name: &str, range: Option<Range>) -> Option<Hover> {
-		let key = interner().get(&name)?;
+		let key = interner().get(name)?;
 		let template = self.index.templates.get(&key.into())?;
 		let module = template
 			.location
@@ -591,8 +591,8 @@ impl Backend {
 		range: Option<Range>,
 	) -> miette::Result<Option<Hover>> {
 		let model_key = interner().get_or_intern(model);
-		let field = some!(interner().get(name));
 		let fields = some!(self.index.models.populate_field_names(model_key.into(), &[]));
+		let field = some!(interner().get(name));
 		let field = some!(fields.fields.as_ref()).get(&field.into());
 		Ok(Some(Hover {
 			range,
@@ -606,7 +606,7 @@ impl Backend {
 		let key = some!(interner().get(xml_id));
 		let record = some!(self.index.records.get(&key.into()));
 		let model = match record.model.as_ref() {
-			Some(model) => interner().resolve(&model),
+			Some(model) => interner().resolve(model),
 			None => "<unknown>",
 		};
 		let value = format!("<record id=\"{xml_id}\" model=\"{model}\" />");
