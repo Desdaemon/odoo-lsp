@@ -387,14 +387,14 @@ impl Backend {
 	///
 	/// Replacing:
 	///
-	/// 	"foo.bar.baz"
+	///     "foo.bar.baz"
 	///           ^cursor
 	///      -----------range
 	///      ------needle
 	///
 	/// Not replacing:
 	///
-	/// 	"foo.bar.baz"
+	///     "foo.bar.baz"
 	///           ^cursor
 	///      -------range
 	///      -------needle

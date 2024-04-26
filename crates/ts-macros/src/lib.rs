@@ -25,12 +25,12 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 /// Generates:
 /// ```rust,noplayground
 /// pub enum MyQuery {
-/// 	Foo = 0,
-/// 	Bar = 2,
+///     Foo = 0,
+///     Bar = 2,
 /// }
 /// impl MyQuery {
 ///     pub fn query() -> &'static Query;
-/// 	pub fn from(raw: u32) -> Option<Self>;
+///     pub fn from(raw: u32) -> Option<Self>;
 /// }
 /// ```
 /// [tree-sitter query]: https://tree-sitter.github.io/tree-sitter/using-parsers#query-syntax

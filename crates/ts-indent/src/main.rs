@@ -62,7 +62,7 @@ fn main() {
 					if contents.starts_with(' ') {
 						output.push(' ');
 					}
-					output.push_str(&trim_lines(&contents, (indent_stack.len() - 1) * num_spaces));
+					output.push_str(&trim_lines(contents, (indent_stack.len() - 1) * num_spaces));
 
 					// balance += 1;
 					output.push_str(&input[capture.node.byte_range()]);

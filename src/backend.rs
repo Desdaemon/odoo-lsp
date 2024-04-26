@@ -453,9 +453,9 @@ impl Backend {
 			.get(&component.into())
 			.ok_or_else(|| diagnostic!("component"))?;
 		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_prop_of) range"))?;
-		let completions = component.props.iter().filter_map(|(prop, desc)| {
+		let completions = component.props.iter().map(|(prop, desc)| {
 			let prop = interner().resolve(&prop);
-			Some(CompletionItem {
+			CompletionItem {
 				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 					new_text: prop.to_string(),
 					insert: range,
@@ -465,7 +465,7 @@ impl Backend {
 				kind: Some(CompletionItemKind::PROPERTY),
 				detail: Some(format!("{:?}", desc.type_)),
 				..Default::default()
-			})
+			}
 		});
 		items.extend(completions);
 		Ok(())
@@ -852,6 +852,7 @@ impl Text {
 			Self::Full(_) => return None,
 			Self::Delta(deltas) => deltas,
 		};
+		#[allow(clippy::reversed_empty_ranges)]
 		const NULL_RANGE: core::ops::Range<usize> = usize::MAX..usize::MIN;
 		let mut out = seed.clone().unwrap_or_else(|| NULL_RANGE.map_unit(ByteOffset)).erase();
 		for delta in deltas {

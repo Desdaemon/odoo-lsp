@@ -95,7 +95,7 @@ impl Interner {
 #[derive(Default)]
 pub struct Index {
 	/// root -> module key -> module's relpath to root
-	pub roots: DashMap<ImStr, SymbolMap<Module, ImStr>>,
+	pub roots: DashMap<String, SymbolMap<Module, ImStr>>,
 	pub records: record::RecordIndex,
 	pub templates: template::TemplateIndex,
 	pub models: ModelIndex,

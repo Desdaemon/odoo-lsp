@@ -142,7 +142,7 @@ impl Usage for tree_sitter::Tree {
 impl Usage for ImStr {
 	fn usage(&self) -> UsageInfo<Self> {
 		match &self.0 {
-			crate::str::Repr::Arc(value) => UsageInfo::new(core::mem::size_of_val(&value) + value.len()),
+			crate::str::Repr::Arc(value) => UsageInfo::new(core::mem::size_of_val(&**value) + value.len()),
 			crate::str::Repr::Inline(..) => UsageInfo::new(0),
 		}
 	}

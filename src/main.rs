@@ -66,6 +66,8 @@
 //! [`Spur`]: lasso::Spur
 //! [`Symbol`]: odoo_lsp::index::Symbol
 
+#![warn(clippy::cognitive_complexity)]
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;

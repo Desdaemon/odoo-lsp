@@ -230,7 +230,8 @@ impl Backend {
 					needle,
 					replace_range,
 					rope.clone(),
-					Some(interner().resolve(relation)),
+					#[allow(clippy::needless_borrow)]
+					Some(interner().resolve(&relation)),
 					current_module,
 					&mut items,
 				)

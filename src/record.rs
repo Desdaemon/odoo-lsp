@@ -233,16 +233,13 @@ impl Record {
 
 		loop {
 			match reader.next() {
-				Some(Ok(Token::Attribute { local, value, .. })) => match local.as_str() {
-					"id" => {
-						if let Some((_, xml_id)) = value.split_once('.') {
-							id = Some(xml_id.into());
-						} else {
-							id = Some(value.as_str().into());
-						}
+				Some(Ok(Token::Attribute { local, value, .. })) if local.as_str() == "id" => {
+					if let Some((_, xml_id)) = value.split_once('.') {
+						id = Some(xml_id.into());
+					} else {
+						id = Some(value.as_str().into());
 					}
-					_ => {}
-				},
+				}
 				Some(Ok(Token::ElementEnd { span, .. })) => {
 					end = Some(ByteOffset(span.end()));
 					break;
@@ -297,8 +294,5 @@ fn extract_inherit_id<'text>(reader: &mut Tokenizer<'text>, stack: i32) -> Optio
 	if !is_inherit_id || stack > 1 {
 		return None;
 	}
-	let Some(maybe_inherit_id) = maybe_inherit_id else {
-		return None;
-	};
-	Some(maybe_inherit_id)
+	maybe_inherit_id
 }

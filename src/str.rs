@@ -73,12 +73,12 @@ impl From<String> for ImStr {
 	}
 }
 
-impl std::borrow::Borrow<str> for ImStr {
-	#[inline]
-	fn borrow(&self) -> &str {
-		self.deref()
-	}
-}
+// impl std::borrow::Borrow<str> for ImStr {
+// 	#[inline]
+// 	fn borrow(&self) -> &str {
+// 		self.deref()
+// 	}
+// }
 
 impl AsRef<str> for ImStr {
 	#[inline]
