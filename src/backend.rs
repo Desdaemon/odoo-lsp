@@ -555,8 +555,8 @@ impl Backend {
 	}
 	pub async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model_key = interner().get_or_intern(model);
-		let field = some!(interner().get(field));
 		let entry = some!(self.index.models.populate_field_names(model_key.into(), &[]));
+		let field = some!(interner().get(field));
 		let field = some!(entry.fields.as_ref()).get(&field.into());
 		Ok(Some(some!(field).location.clone().into()))
 	}
