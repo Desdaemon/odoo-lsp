@@ -1188,16 +1188,10 @@ baz = fields.Many2many(comodel_name='named')
 		let query = PyCompletions::query();
 		let mut cursor = QueryCursor::new();
 		let expected = vec![
-			(9, vec!["env"]),
-			(9, vec!["ref"]),
 			(0, vec!["env", "ref", "'ref'"]),
 			(1, vec!["env", "'model'"]),
-			(9, vec!["render"]),
 			(0, vec!["request", "render", "'template'"]),
-			(9, vec!["Char"]),
-			(9, vec!["Many2one"]),
 			(4, vec!["fields", "Many2one", "'positional'"]),
-			(9, vec!["Many2many"]),
 			(4, vec!["fields", "Many2many", "comodel_name", "'named'"]),
 		];
 		let actual = cursor
@@ -1244,22 +1238,17 @@ class Foo(models.AbstractModel):
 		let query = PyCompletions::query();
 		let mut cursor = QueryCursor::new();
 		let expected: &[&[&str]] = &[
-			&["AbstractModel"],
 			&["_name", "'foo'"],
 			&["_inherit", "'inherit_foo'", "'inherit_bar'"],
-			&["Char"],
 			&["foo", "fields", "related", "'related'"],
-			&["constrains"],
 			&["api", "constrains", "'mapped'"],
 			&["api", "constrains", "'meh'"],
-			&["sudo"],
-			&["mapped"],
+			&["<scope>"],
 			&["self.sudo()", "mapped", "'ha.ha'"],
-			&["Foo"],
+			&["<scope>"],
 			&["foo", "fields"],
-			&["depends"],
 			&["api", "depends", "'mapped2'"],
-			&["depends_context"],
+			&["<scope>"],
 		];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])
@@ -1267,7 +1256,12 @@ class Foo(models.AbstractModel):
 				match_
 					.captures
 					.iter()
-					.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
+					.map(|capture| {
+						match PyCompletions::from(capture.index) {
+							Some(PyCompletions::Scope) => Cow::from("<scope>"),
+							_ => String::from_utf8_lossy(&contents[capture.node.byte_range()]),
+						}
+					})
 					.collect::<Vec<_>>()
 			})
 			.collect::<Vec<_>>();
