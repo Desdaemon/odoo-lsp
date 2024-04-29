@@ -444,8 +444,14 @@ impl ModelIndex {
 	/// Turns related fields ([`FieldKind::Related`]) into concrete fields, and return the field's type itself.
 	#[must_use = "normalized relation might not have been updated back to the central index"]
 	pub fn normalize_field_relation(&self, field: Symbol<Field>, model: Spur) -> Option<Spur> {
-		let model_entry = self.get(&model.into())?;
-		let field_entry = model_entry.fields.as_ref()?.get(&field)?;
+		// Why populate?
+		// If we came from a long chain of relations, we might encounter a field on a model
+		// that hasn't been populated yet. This is because we only populate fields when they're
+		// accessed. So we need to populate the fields of the model we're currently on.
+		// It's a no-op if the fields are already populated.
+		// If a stack overflow occurs, check populate_field_names.
+		let entry = self.populate_field_names(model.into(), &[])?;
+		let field_entry = entry.fields.as_ref()?.get(&field)?;
 		let mut kind = field_entry.kind.clone();
 		let mut field_model = model;
 		if let FieldKind::Related(related) = &field_entry.kind {
@@ -456,7 +462,7 @@ impl ModelIndex {
 			);
 			let related = related.clone();
 			let mut related = related.as_str();
-			drop(model_entry);
+			drop(entry);
 			if self.resolve_mapped(&mut field_model, &mut related, None).is_ok() {
 				// resolved_mapped took us to the final field, now we need to resolve it to a model
 				let related_key = interner().get(related)?;

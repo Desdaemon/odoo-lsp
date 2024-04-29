@@ -1,4 +1,4 @@
-#![warn(clippy::unused_async)]
+#![deny(clippy::unused_async)]
 
 pub mod config;
 pub mod index;

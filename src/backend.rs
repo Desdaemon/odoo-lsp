@@ -329,7 +329,7 @@ impl Backend {
 		}
 		Ok(())
 	}
-	pub async fn complete_field_name(
+	pub fn complete_field_name(
 		&self,
 		needle: &str,
 		range: ByteRange,
@@ -555,7 +555,7 @@ impl Backend {
 			range,
 		})
 	}
-	pub async fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
+	pub fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model_key = interner().get_or_intern(model);
 		let entry = some!(self.index.models.populate_field_names(model_key.into(), &[]));
 		let field = some!(interner().get(field));
@@ -586,12 +586,7 @@ impl Backend {
 		}
 		None
 	}
-	pub async fn hover_field_name(
-		&self,
-		name: &str,
-		model: &str,
-		range: Option<Range>,
-	) -> miette::Result<Option<Hover>> {
+	pub fn hover_field_name(&self, name: &str, model: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
 		let model_key = interner().get_or_intern(model);
 		let fields = some!(self.index.models.populate_field_names(model_key.into(), &[]));
 		let field = some!(interner().get(name));
@@ -684,6 +679,7 @@ impl Backend {
 		}
 		Ok(Some(locations))
 	}
+	/// Returns a Markdown-formatted docstring for a model.
 	pub fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>, identifier: Option<&str>) -> String {
 		let module = model
 			.base
@@ -790,6 +786,7 @@ impl Backend {
 		}
 		// self.added_roots_root.store(true, Relaxed);
 	}
+	#[allow(clippy::unused_async)] // reason: custom method
 	pub async fn statistics(&self) -> tower_lsp::jsonrpc::Result<Value> {
 		let Self {
 			client: _,

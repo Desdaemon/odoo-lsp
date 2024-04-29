@@ -351,8 +351,7 @@ impl Backend {
 				})));
 			}
 			Some((EarlyReturn::Access(model), needle, range, rope)) => {
-				self.complete_field_name(&needle, range, model, rope.clone(), &mut items)
-					.await?;
+				self.complete_field_name(&needle, range, model, rope.clone(), &mut items)?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
 					is_incomplete: !items.has_space(),
 					items: items.into_inner(),
@@ -362,7 +361,7 @@ impl Backend {
 				// range:  foo.bar.baz
 				// needle: foo.ba
 				let mut needle = needle.as_ref();
-				let mut model = some!(interner().get(&model));
+				let mut model = some!(interner().get(model));
 				if !single_field {
 					some!(self
 						.index
@@ -371,8 +370,7 @@ impl Backend {
 						.ok());
 				}
 				let model_name = interner().resolve(&model);
-				self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)
-					.await?;
+				self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
 					is_incomplete: !items.has_space(),
 					items: items.into_inner(),
@@ -482,7 +480,7 @@ impl Backend {
 			range: range.map_unit(ByteOffset),
 		})
 	}
-	pub async fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
+	pub fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
@@ -570,7 +568,7 @@ impl Backend {
 		}
 		match early_return {
 			Some(EarlyReturn::Access(field, model)) => {
-				return self.jump_def_field_name(&field, model).await;
+				return self.jump_def_field_name(&field, model);
 			}
 			Some(EarlyReturn::Mapped(Mapped {
 				needle,
@@ -579,7 +577,7 @@ impl Backend {
 				mut range,
 			})) => {
 				let mut needle = needle.as_ref();
-				let mut model = interner().get_or_intern(&model);
+				let mut model = interner().get_or_intern(model);
 				if !single_field {
 					some!(self
 						.index
@@ -588,23 +586,51 @@ impl Backend {
 						.ok());
 				}
 				let model = interner().resolve(&model);
-				return self.jump_def_field_name(needle, model).await;
+				return self.jump_def_field_name(needle, model);
 			}
 			None => {}
 		}
 		Ok(None)
 	}
+	/// Resolves the attribute and the object's model at the cursor offset
+	/// using [`model_of_range`][Backend::model_of_range].
+	///
+	/// Returns `(model, field, range)`.
 	fn attribute_at_offset<'out>(
 		&'out self,
 		offset: usize,
-		root: Node,
+		root: Node<'out>,
 		contents: &'out [u8],
 	) -> Option<(&str, Cow<str>, core::ops::Range<usize>)> {
-		let cursor_node = root.descendant_for_byte_range(offset, offset)?;
+		let (lhs, field, range) = self.attribute_node_at_offset(offset, root, contents)?;
+		let model = self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), contents)?;
+		let model = interner().resolve(&model);
+		Some((model, field, range))
+	}
+	/// Resolves the attribute at the cursor offset.
+	/// Returns `(object, field, range)`
+	pub fn attribute_node_at_offset<'out>(
+		&'out self,
+		mut offset: usize,
+		root: Node<'out>,
+		contents: &'out [u8],
+	) -> Option<(Node, Cow<str>, core::ops::Range<usize>)> {
+		if contents.is_empty() {
+			return None;
+		}
+		offset = offset.clamp(0, contents.len() - 1);
+		let mut cursor_node = root.descendant_for_byte_range(offset, offset)?;
+		if cursor_node == root {
+			// We got our cursor left in the middle of nowhere.
+			offset = offset.saturating_sub(1);
+			cursor_node = root.descendant_for_byte_range(offset, offset)?;
+		}
 		trace!(
-			"(attribute_to_offset) {} cursor={}",
+			"(attribute_node_to_offset) {} cursor={}\n  root={}\n  sexp={}",
 			String::from_utf8_lossy(&contents[cursor_node.byte_range()]),
-			contents[offset] as char
+			contents[offset] as char,
+			root.to_sexp(),
+			cursor_node.to_sexp(),
 		);
 		let lhs;
 		let rhs;
@@ -615,37 +641,48 @@ impl Backend {
 			lhs = dot.prev_named_sibling()?;
 			rhs = dot.next_named_sibling().and_then(|attr| match attr.kind() {
 				"identifier" => Some(attr),
+				// TODO: Unwrap all layers of attributes
 				"attribute" => attr
 					.child_by_field_name("object")
 					.and_then(|obj| (obj.kind() == "identifier").then_some(obj)),
 				_ => None,
-			})?;
+			});
+		} else if cursor_node.kind() == "attribute" {
+			lhs = cursor_node.child_by_field_name("object")?;
+			rhs = cursor_node.child_by_field_name("attribute");
 		} else {
 			lhs = match cursor_node.parent() {
 				Some(parent) if parent.kind() == "attribute" => parent.child_by_field_name("object")?,
 				_ => return None,
 			};
-			rhs = cursor_node;
+			rhs = Some(cursor_node);
 		}
 		trace!(
-			"(attribute_to_offset) lhs={} rhs={}",
+			"(attribute_node_to_offset) lhs={} rhs={:?}",
 			String::from_utf8_lossy(&contents[lhs.byte_range()]),
-			String::from_utf8_lossy(&contents[rhs.byte_range()])
+			rhs.as_ref()
+				.map(|rhs| String::from_utf8_lossy(&contents[rhs.byte_range()])),
 		);
-		// let range = rhs.byte_range();
 		if lhs == cursor_node {
+			// We shouldn't recurse into cursor_node itself.
 			return None;
 		}
-		let model = self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), contents)?;
-		let model = interner().resolve(&model);
+		let Some(rhs) = rhs else {
+			// In single-expression mode, rhs could be empty in which case
+			// we return an empty needle/range.
+			return Some((lhs, Cow::from(""), offset + 1..offset + 1));
+		};
 		let (field, range) = if rhs.range().start_point.row != lhs.range().end_point.row {
-			// Empty
+			// tree-sitter has an issue with attributes spanning multiple lines
+			// which is NOT valid Python, but allows it anyways because tree-sitter's
+			// use cases don't require strict syntax trees.
 			(Cow::from(""), offset + 1..offset + 1)
 		} else {
 			let range = rhs.byte_range();
 			(String::from_utf8_lossy(&contents[range.clone()]), range)
 		};
-		Some((model, field, range))
+
+		Some((lhs, field, range))
 	}
 	pub fn python_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, &rope) else {
@@ -711,7 +748,7 @@ impl Backend {
 		Ok(None)
 	}
 
-	pub async fn python_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
+	pub fn python_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
@@ -807,7 +844,7 @@ impl Backend {
 				lsp_range,
 			}) => {
 				let model = interner().resolve(&model);
-				return self.hover_field_name(&field, model, Some(lsp_range)).await;
+				return self.hover_field_name(&field, model, Some(lsp_range));
 			}
 			Some(EarlyReturn::Mapped(Mapped {
 				needle,
@@ -816,7 +853,7 @@ impl Backend {
 				mut range,
 			})) => {
 				let mut needle = needle.as_ref();
-				let mut model = interner().get_or_intern(&model);
+				let mut model = interner().get_or_intern(model);
 				if !single_field {
 					some!(self
 						.index
@@ -825,9 +862,7 @@ impl Backend {
 						.ok());
 				}
 				let model = interner().resolve(&model);
-				return self
-					.hover_field_name(needle, model, offset_range_to_lsp_range(range, rope.clone()))
-					.await;
+				return self.hover_field_name(needle, model, offset_range_to_lsp_range(range, rope.clone()));
 			}
 			None => {}
 		}
@@ -1019,11 +1054,11 @@ impl Backend {
 						);
 						let scope_end = fn_scope.end_byte();
 						self.walk_scope(fn_scope, Some(scope), |scope, node| {
-							self.build_scope(scope, node, scope_end, contents)?;
+							let entered = self.build_scope(scope, node, scope_end, contents)?;
 
 							let attribute = node.child_by_field_name("attribute");
 							if node.kind() != "attribute" || attribute.as_ref().unwrap().kind() != "identifier" {
-								return ControlFlow::Continue(false);
+								return ControlFlow::Continue(entered);
 							}
 
 							let attribute = attribute.unwrap();
@@ -1031,21 +1066,21 @@ impl Backend {
 								phf::phf_set!("env", "id", "ids", "display_name", "create_date", "write_date");
 							let prop = String::from_utf8_lossy(&contents[attribute.byte_range()]);
 							if prop.starts_with(' ') || MODEL_BUILTINS.contains(&prop) {
-								return ControlFlow::Continue(false);
+								return ControlFlow::Continue(entered);
 							}
 
 							let Some(lhs_t) =
 								self.type_of(node.child_by_field_name("object").unwrap(), scope, contents)
 							else {
-								return ControlFlow::Continue(false);
+								return ControlFlow::Continue(entered);
 							};
 
 							let Some(model_name) = self.resolve_type(&lhs_t, scope) else {
-								return ControlFlow::Continue(false);
+								return ControlFlow::Continue(entered);
 							};
 
 							if self.has_attribute(&lhs_t, &contents[attribute.byte_range()], scope) {
-								return ControlFlow::Continue(false);
+								return ControlFlow::Continue(entered);
 							}
 
 							diagnostics.push(Diagnostic {
@@ -1059,7 +1094,7 @@ impl Backend {
 								..Default::default()
 							});
 
-							ControlFlow::Continue(false)
+							ControlFlow::Continue(entered)
 						});
 					}
 					Some(PyCompletions::Request)
@@ -1256,11 +1291,9 @@ class Foo(models.AbstractModel):
 				match_
 					.captures
 					.iter()
-					.map(|capture| {
-						match PyCompletions::from(capture.index) {
-							Some(PyCompletions::Scope) => Cow::from("<scope>"),
-							_ => String::from_utf8_lossy(&contents[capture.node.byte_range()]),
-						}
+					.map(|capture| match PyCompletions::from(capture.index) {
+						Some(PyCompletions::Scope) => Cow::from("<scope>"),
+						_ => String::from_utf8_lossy(&contents[capture.node.byte_range()]),
 					})
 					.collect::<Vec<_>>()
 			})

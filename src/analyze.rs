@@ -1,7 +1,7 @@
 //! Methods related to type analysis. The two most important methods are
 //! [`Backend::model_of_range`] and [`Backend::type_of`].
 
-use std::{borrow::Borrow, collections::HashMap, ops::ControlFlow};
+use std::{borrow::Borrow, collections::HashMap, iter::FusedIterator, ops::ControlFlow};
 
 use log::trace;
 use tree_sitter::{Node, QueryCursor};
@@ -50,6 +50,8 @@ pub enum Type {
 	Record(ImStr),
 	Super,
 	Method(ModelName, &'static str),
+	/// Can never be resolved, useful for non-model bindings.
+	Value,
 }
 
 /// The current environment, populated from the AST statement by statement.
@@ -61,9 +63,16 @@ pub struct Scope {
 	pub super_: Option<ImStr>,
 }
 
-fn normalize<'r, 'n>(node: &'r mut Node<'n>) -> &'r mut Node<'n> {
-	while matches!(node.kind(), "expression_statement" | "parenthesized_expression") {
-		*node = node.named_child(0).unwrap();
+pub fn normalize<'r, 'n>(node: &'r mut Node<'n>) -> &'r mut Node<'n> {
+	let mut cursor = node.walk();
+	while matches!(
+		node.kind(),
+		"expression_statement" | "parenthesized_expression" | "module"
+	) {
+		let Some(child) = node.named_children(&mut cursor).find(|child| child.kind() != "comment") else {
+			break;
+		};
+		*node = child;
 	}
 	node
 }
@@ -94,6 +103,37 @@ impl Scope {
 		if let Some(parent) = self.parent.take() {
 			*self = *parent;
 		}
+	}
+	/// Iterates over the current scope and its parents.
+	/// If the same variable is defined multiple times in the tree,
+	/// each definition is returned from innermost to outermost.
+	pub fn iter(&self) -> impl Iterator<Item = (&str, &Type)> {
+		Iter {
+			variables: self.variables.iter(),
+			parent: self.parent.as_deref(),
+		}
+	}
+}
+
+struct Iter<'a> {
+	variables: std::collections::hash_map::Iter<'a, String, Type>,
+	parent: Option<&'a Scope>,
+}
+
+impl FusedIterator for Iter<'_> {}
+
+impl<'a> Iterator for Iter<'a> {
+	type Item = (&'a str, &'a Type);
+	fn next(&mut self) -> Option<Self::Item> {
+		if let Some((key, value)) = self.variables.next() {
+			return Some((key.as_str(), value));
+		}
+
+		let parent = self.parent.take()?;
+		self.parent = parent.parent.as_deref();
+		self.variables = parent.variables.iter();
+		let (key, value) = self.variables.next()?;
+		Some((key.as_str(), value))
 	}
 }
 
@@ -160,6 +200,13 @@ impl Backend {
 		let type_at_cursor = self.type_of(node_at_cursor, &scope, contents)?;
 		self.resolve_type(&type_at_cursor, &scope)
 	}
+	/// Builds the scope up to `offset`.
+	///
+	/// ###### About [ScopeControlFlow]
+	/// This is one of the rare occasions where [ControlFlow] is used. It is similar to
+	/// [Result] in that the try-operator (?) can be used to end iteration on a
+	/// [ControlFlow::Break]. Otherwise, [ControlFlow::Continue] has a continuation value
+	/// that must be passed up the chain, since it indicates whether [Scope::enter] was called.
 	pub fn build_scope(&self, scope: &mut Scope, node: Node, offset: usize, contents: &[u8]) -> ScopeControlFlow {
 		if node.start_byte() > offset {
 			return ControlFlow::Break(Some(core::mem::take(scope)));
@@ -272,6 +319,7 @@ impl Backend {
 
 		ControlFlow::Continue(false)
 	}
+	/// [Type::Value] is not returned by this method.
 	pub fn type_of(&self, mut node: Node, scope: &Scope, contents: &[u8]) -> Option<Type> {
 		// What contributes to value types?
 		// 1. *.env['foo'] => Model('foo')
@@ -411,7 +459,7 @@ impl Backend {
 							_ => None,
 						}
 					}
-					Type::Env | Type::Record(..) | Type::Method(..) | Type::Model(..) => None,
+					Type::Env | Type::Record(..) | Type::Method(..) | Type::Model(..) | Type::Value => None,
 				}
 			}
 			_ => None,
@@ -456,6 +504,8 @@ impl Backend {
 	/// Iterates depth-first over `node` using [PreTravel]. Automatically calls [`Scope::exit`] at suitable points.
 	///
 	/// [`ControlFlow::Continue`] accepts a boolean to indicate whether [`Scope::enter`] was called.
+	///
+	/// To accumulate bindings into a scope, use [`Backend::build_scope`].
 	pub fn walk_scope<T>(
 		&self,
 		node: Node,

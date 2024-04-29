@@ -1,3 +1,4 @@
+use crate::analyze::{normalize, Scope, Type};
 use crate::{Backend, Text};
 
 use std::borrow::Cow;
@@ -13,10 +14,11 @@ use odoo_lsp::model::{Field, FieldKind};
 use odoo_lsp::template::gather_templates;
 use ropey::{Rope, RopeSlice};
 use tower_lsp::lsp_types::*;
+use tree_sitter::Parser;
 use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
 
 use odoo_lsp::record::Record;
-use odoo_lsp::{some, utils::*};
+use odoo_lsp::{some, utils::*, ImStr};
 
 #[derive(Debug)]
 enum RefKind<'a> {
@@ -31,6 +33,9 @@ enum RefKind<'a> {
 	TCall,
 	/// ref'd value is a prop of this component.
 	PropOf(&'a str),
+	/// An arbitrary Python expression.
+	/// Includes the relative offset of where the cursor is.
+	PyExpr(usize),
 }
 
 enum Tag<'a> {
@@ -205,13 +210,13 @@ impl Backend {
 			ref_at_cursor,
 			ref_kind,
 			model_filter,
-			..
-		} = gather_refs(offset_at_cursor, &mut reader, &slice)?;
+			scope,
+		} = self.gather_refs(offset_at_cursor, &mut reader, &slice)?;
 		let (Some((value, value_range)), Some(record_field)) = (ref_at_cursor, ref_kind) else {
 			return Ok(None);
 		};
 		let mut needle = &value[..offset_at_cursor.0 - value_range.start];
-		let replace_range = value_range.map_unit(|unit| ByteOffset(unit + relative_offset));
+		let replace_range = value_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset));
 		match record_field {
 			RefKind::Ref(relation) => {
 				let model_key = some!(model_filter);
@@ -253,8 +258,7 @@ impl Backend {
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 					model_filter = interner().resolve(&model).to_string();
 				}
-				self.complete_field_name(needle, replace_range, model_filter, rope.clone(), &mut items)
-					.await?;
+				self.complete_field_name(needle, replace_range, model_filter, rope.clone(), &mut items)?;
 			}
 			RefKind::TInherit | RefKind::TCall => {
 				self.complete_template_name(needle, replace_range, rope.clone(), &mut items)
@@ -274,6 +278,55 @@ impl Backend {
 				)
 				.await?;
 			}
+			RefKind::PyExpr(py_offset) => 'expr: {
+				let mut parser = Parser::new();
+				parser.set_language(tree_sitter_python::language()).unwrap();
+				let ast = some!(parser.parse(value, None));
+				let contents = value.as_bytes();
+				let Some((object, field, range)) = self.attribute_node_at_offset(py_offset, ast.root_node(), contents)
+				else {
+					// Suggest items in the current scope
+					items.extend(scope.iter().map(|(ident, model)| {
+						let Some(model) = self.resolve_type(model, &scope) else {
+							return CompletionItem {
+								label: ident.to_string(),
+								kind: Some(CompletionItemKind::VARIABLE),
+								..Default::default()
+							};
+						};
+						let model_name = interner().resolve(&model);
+						let documentation = self.index.models.get(&model).map(|model| {
+							Documentation::MarkupContent(MarkupContent {
+								kind: MarkupKind::Markdown,
+								value: self.model_docstring(&model, Some(model_name), Some(ident)),
+							})
+						});
+						CompletionItem {
+							label: ident.to_string(),
+							kind: Some(CompletionItemKind::VARIABLE),
+							detail: Some(model_name.to_string()),
+							documentation,
+							..Default::default()
+						}
+					}));
+					break 'expr;
+				};
+				let model = some!(self.type_of(object, &scope, contents));
+				let model = some!(self.resolve_type(&model, &scope));
+				let needle_end = py_offset.saturating_sub(range.start);
+				let mut needle = field.as_ref();
+				if !needle.is_empty() && needle_end < needle.len() {
+					needle = &needle[..needle_end];
+				}
+				let anchor = value_range.start + relative_offset;
+				self.complete_field_name(
+					needle,
+					range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)),
+					interner().resolve(&model).to_string(),
+					rope.clone(),
+					&mut items,
+				)?;
+			}
 			RefKind::TName => return Ok(None),
 		}
 
@@ -282,7 +335,7 @@ impl Backend {
 			items: items.into_inner(),
 		})))
 	}
-	pub async fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
+	pub fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
@@ -292,8 +345,8 @@ impl Backend {
 			ref_at_cursor,
 			ref_kind,
 			model_filter,
-			..
-		} = gather_refs(cursor_by_char, &mut reader, &slice)?;
+			scope,
+		} = self.gather_refs(cursor_by_char, &mut reader, &slice)?;
 
 		let Some((mut needle, _)) = ref_at_cursor else {
 			return Ok(None);
@@ -313,13 +366,23 @@ impl Backend {
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 					model_filter = interner().resolve(&model).to_string();
 				}
-				self.jump_def_field_name(needle, &model_filter).await
+				self.jump_def_field_name(needle, &model_filter)
 			}
 			Some(RefKind::TInherit) | Some(RefKind::TName) | Some(RefKind::TCall) => {
 				self.jump_def_template_name(needle)
 			}
 			Some(RefKind::PropOf(component)) => self.jump_def_component_prop(component, needle),
 			Some(RefKind::Id) => self.jump_def_xml_id(needle, uri),
+			Some(RefKind::PyExpr(py_offset)) => {
+				let mut parser = Parser::new();
+				parser.set_language(tree_sitter_python::language()).unwrap();
+				let contents = needle.as_bytes();
+				let ast = some!(parser.parse(contents, None));
+				let (object, field, _) = some!(self.attribute_node_at_offset(py_offset, ast.root_node(), contents));
+				let model = some!(self.type_of(object, &scope, contents));
+				let model = some!(self.resolve_type(&model, &Scope::default()));
+				self.jump_def_field_name(&field, interner().resolve(&model))
+			}
 			None => Ok(None),
 		}
 	}
@@ -333,7 +396,7 @@ impl Backend {
 			ref_at_cursor: cursor_value,
 			ref_kind,
 			..
-		} = gather_refs(cursor_by_char, &mut reader, &slice)?;
+		} = self.gather_refs(cursor_by_char, &mut reader, &slice)?;
 
 		let Some((cursor_value, _)) = cursor_value else {
 			return Ok(None);
@@ -349,10 +412,10 @@ impl Backend {
 			Some(RefKind::Ref(_)) | Some(RefKind::Id) => self.record_references(cursor_value, current_module),
 			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.template_references(cursor_value, true),
 			Some(RefKind::TName) => self.template_references(cursor_value, false),
-			Some(RefKind::FieldName(_)) | Some(RefKind::PropOf(..)) | None => Ok(None),
+			Some(RefKind::PyExpr(_)) | Some(RefKind::FieldName(_)) | Some(RefKind::PropOf(..)) | None => Ok(None),
 		}
 	}
-	pub async fn xml_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
+	pub fn xml_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let (slice, offset_at_cursor, relative_offset) = self.record_slice(&rope, uri, position)?;
@@ -362,14 +425,15 @@ impl Backend {
 			ref_at_cursor,
 			ref_kind,
 			model_filter,
-		} = gather_refs(offset_at_cursor, &mut reader, &slice)?;
+			scope,
+		} = self.gather_refs(offset_at_cursor, &mut reader, &slice)?;
 
 		let Some((mut needle, ref_range)) = ref_at_cursor else {
 			return Ok(None);
 		};
 
 		let lsp_range = offset_range_to_lsp_range(
-			ref_range.map_unit(|unit| ByteOffset(unit + relative_offset)),
+			ref_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset)),
 			rope.clone(),
 		);
 		let current_module = self
@@ -396,12 +460,10 @@ impl Backend {
 				if !access.is_empty() {
 					needle = mapped.as_str();
 					let mut model = interner().get_or_intern(model_filter);
-					some!(self.index
-						.models
-						.resolve_mapped(&mut model, &mut needle, None).ok());
+					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 					model_filter = interner().resolve(&model).to_string();
 				}
-				self.hover_field_name(needle, &model_filter, lsp_range).await
+				self.hover_field_name(needle, &model_filter, lsp_range)
 			}
 			Some(RefKind::Id) => {
 				let current_module = some!(current_module);
@@ -412,13 +474,45 @@ impl Backend {
 				};
 				self.hover_record(&xml_id, lsp_range)
 			}
-			Some(RefKind::TInherit)
-			| Some(RefKind::TCall) => {
-				Ok(self.hover_template(needle, lsp_range))
+			Some(RefKind::TInherit) | Some(RefKind::TCall) => Ok(self.hover_template(needle, lsp_range)),
+			Some(RefKind::PyExpr(py_offset)) => {
+				let mut parser = Parser::new();
+				parser.set_language(tree_sitter_python::language()).unwrap();
+				let contents = needle.as_bytes();
+				let ast = some!(parser.parse(contents, None));
+				let Some((object, field, range)) = self.attribute_node_at_offset(py_offset, ast.root_node(), contents)
+				else {
+					let cursor_node = some!(ast.root_node().named_descendant_for_byte_range(py_offset, py_offset));
+					let needle = String::from_utf8_lossy(&contents[cursor_node.byte_range()]);
+					let scope_type = some!(scope.get(needle.as_ref()));
+					let lsp_range = offset_range_to_lsp_range(
+						cursor_node
+							.byte_range()
+							.clone()
+							.map_unit(|unit| ByteOffset(unit + ref_range.start + relative_offset)),
+						rope.clone(),
+					);
+					if let Some(model) = self.resolve_type(scope_type, &scope) {
+						return self.hover_model(interner().resolve(&model), lsp_range, true, Some(&needle));
+					}
+					return Ok(Some(Hover {
+						range: lsp_range,
+						contents: HoverContents::Scalar(MarkedString::from_language_code(
+							"python".to_string(),
+							format!("(local) {needle}: Any"),
+						)),
+					}));
+				};
+				let model = some!(self.type_of(object, &scope, contents));
+				let model = some!(self.resolve_type(&model, &scope));
+				let anchor = ref_range.start + relative_offset;
+				self.hover_field_name(
+					&field,
+					interner().resolve(&model),
+					offset_range_to_lsp_range(range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)), rope.clone()),
+				)
 			}
-			| Some(RefKind::TName)
-			| Some(RefKind::PropOf(..))  // TODO
-			| None => {
+			Some(RefKind::TName) | Some(RefKind::PropOf(..)) | None => {
 				#[cfg(not(debug_assertions))]
 				return Ok(None);
 
@@ -436,12 +530,365 @@ impl Backend {
 			}
 		}
 	}
+	/// The main function that determines all the information needed
+	/// to resolve the symbol at the cursor.
+	fn gather_refs<'read>(
+		&self,
+		offset_at_cursor: ByteOffset,
+		reader: &mut Tokenizer<'read>,
+		slice: &'read RopeSlice<'read>,
+	) -> miette::Result<XmlRefs<'read>> {
+		let mut tag = None;
+		let mut ref_at_cursor = None::<(&str, core::ops::Range<usize>)>;
+		let mut ref_kind = None;
+		let mut model_filter = None;
+		let mut template_mode = false;
+		let offset_at_cursor = offset_at_cursor.0;
+
+		let mut arch_model = None;
+		// <field name="arch">..</field>
+		let mut arch_mode = false;
+		let mut arch_depth = 0;
+		let mut depth = 0;
+		let mut expect_model_string = false;
+
+		let mut scope = Scope::default();
+		let mut parser = Parser::new();
+		parser.set_language(tree_sitter_python::language()).unwrap();
+
+		let mut foreach_as = attr_pair("t-foreach", "t-as");
+		let mut set_value = attr_pair("t-set", "t-value");
+
+		struct FieldAccess<'a> {
+			field: StrSpan<'a>,
+			depth: u32,
+		}
+		let mut accesses: Vec<FieldAccess> = vec![];
+
+		for token in reader {
+			match token {
+				Ok(Token::ElementStart { local, .. }) => {
+					expect_model_string = false;
+					depth += 1;
+					match local.as_str() {
+						"field" => tag = Some(Tag::Field),
+						"template" => {
+							tag = Some(Tag::Template);
+							model_filter = Some("ir.ui.view".to_string());
+						}
+						"record" => tag = Some(Tag::Record),
+						"menuitem" => tag = Some(Tag::Menuitem),
+						"templates" => {
+							template_mode = true;
+						}
+						component if template_mode && component.starts_with(|c| char::is_ascii_uppercase(&c)) => {
+							tag = Some(Tag::TComponent(component));
+						}
+						_ if arch_mode => tag = None,
+						_ => {}
+					}
+				}
+				// <field name=.. ref=.. />
+				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
+					let value_in_range = value.range().contains_end(offset_at_cursor);
+					if local.as_str() == "ref" && value_in_range {
+						ref_at_cursor = Some((value.as_str(), value.range()));
+					} else if local.as_str() == "name" && value_in_range {
+						ref_at_cursor = Some((value.as_str(), value.range()));
+						ref_kind = Some(RefKind::FieldName(
+							accesses
+								.iter()
+								.map(|access| (access.field.start(), access.field.as_str()))
+								.collect(),
+						));
+					} else if local.as_str() == "name" && value.as_str() == "model" {
+						// contents should be a model string like res.partner
+						expect_model_string = true;
+					} else if local.as_str() == "name" && value.as_str() == "arch" {
+						arch_mode = true;
+						arch_depth = depth
+					} else if local.as_str() == "name" {
+						// <field ref=.. name=.. />
+						ref_kind = Some(RefKind::Ref(value.as_str()));
+						if arch_mode {
+							accesses.push(FieldAccess { field: value, depth });
+						}
+					} else if local.as_str() == "groups" && value_in_range {
+						ref_kind = Some(RefKind::Id);
+						model_filter = Some("res.groups".to_string());
+						arch_model = None;
+						determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
+					}
+				}
+				// <template inherit_id=.. />
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Template))
+						&& value.range().contains_end(offset_at_cursor)
+						&& matches!(local.as_str(), "inherit_id" | "t-call") =>
+				{
+					ref_at_cursor = Some((value.as_str(), value.range()));
+					ref_kind = Some(RefKind::Ref("inherit_id"));
+				}
+				// <record model=.. />
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>
+				{
+					if value.range().contains_end(offset_at_cursor) {
+						ref_at_cursor = Some((value.as_str(), value.range()));
+						ref_kind = Some(RefKind::Model);
+					} else {
+						model_filter = Some(value.as_str().to_string());
+					}
+				}
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Record | Tag::Template | Tag::Menuitem))
+						&& local == "id" && value.range().contains_end(offset_at_cursor) =>
+				{
+					ref_at_cursor = Some((value.as_str(), value.range()));
+					ref_kind = Some(RefKind::Id);
+					arch_model = None;
+					match tag {
+						Some(Tag::Template) => {
+							model_filter = Some("ir.ui.view".to_string());
+						}
+						Some(Tag::Menuitem) => {
+							model_filter = Some("ir.ui.menu".to_string());
+						}
+						_ => {}
+					}
+				}
+				// <menuitem parent=.. action=.. />
+				Ok(Token::Attribute { local, value, .. })
+					if matches!(tag, Some(Tag::Menuitem)) && value.range().contains_end(offset_at_cursor) =>
+				{
+					match local.as_str() {
+						"parent" => {
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::Ref("parent_id"));
+							model_filter = Some("ir.ui.menu".to_string());
+						}
+						"action" => {
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::Ref("action"));
+							model_filter = Some("ir.ui.menu".to_string());
+						}
+						"groups" => {
+							ref_kind = Some(RefKind::Id);
+							arch_model = None;
+							model_filter = Some("res.groups".to_string());
+							determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
+						}
+						_ => {}
+					}
+				}
+				// <Component prop=.. />
+				Ok(Token::Attribute { local, .. })
+					if matches!(tag, Some(Tag::TComponent(..))) && local.range().contains_end(offset_at_cursor) =>
+				{
+					let Some(Tag::TComponent(component)) = tag else {
+						unreachable!()
+					};
+					ref_at_cursor = Some((local.as_str(), local.range()));
+					ref_kind = Some(RefKind::PropOf(component));
+				}
+				// catchall cases
+				Ok(Token::Attribute { local, value, .. }) if value.range().contains_end(offset_at_cursor) => {
+					match local.as_str() {
+						"t-name" => {
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::TName);
+						}
+						"t-inherit" => {
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::TInherit);
+						}
+						"t-call" => {
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::TCall);
+						}
+						// TODO: Add more cases
+						"t-out" | "t-esc" | "t-foreach" | "t-value" => {
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::PyExpr(offset_at_cursor.saturating_sub(value.start())))
+						}
+						"groups" => {
+							ref_kind = Some(RefKind::Id);
+							model_filter = Some("res.groups".to_string());
+							arch_model = None;
+							determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
+						}
+						_ => {}
+					}
+				}
+				// general bookkeeping
+				Ok(Token::Attribute { local, value, .. }) => {
+					(foreach_as.accept(local.as_str(), value)).and_then(|((foreach, _), (as_, _))| {
+						let contents = foreach.as_bytes();
+						let ast = parser.parse(contents, None)?;
+						self.insert_in_scope(&mut scope, &as_, ast.root_node(), contents)
+							.inspect_err(|err| {
+								debug!("(gather_refs) foreach_as failed: {err}");
+							})
+							.ok()
+					});
+					(set_value.accept(local.as_str(), value)).and_then(|((set, _), (value, _))| {
+						let contents = value.as_bytes();
+						let ast = parser.parse(contents, None)?;
+						self.insert_in_scope(&mut scope, &set, ast.root_node(), contents)
+							.inspect_err(|err| {
+								debug!("(gather_refs) set_value failed: {err}");
+							})
+							.ok()
+					});
+					if local.as_str() == "t-name" && !template_mode {
+						template_mode = true;
+					}
+				}
+				Ok(Token::Text { text }) if expect_model_string => {
+					expect_model_string = false;
+					if text.range().contains_end(offset_at_cursor) {
+						ref_at_cursor = Some((text.as_str(), text.range()));
+						ref_kind = Some(RefKind::Model);
+					} else {
+						arch_model = Some(text);
+					}
+				}
+				Ok(Token::ElementEnd { end, span }) => {
+					foreach_as.reset();
+					set_value.reset();
+					if let ElementEnd::Close(..) | ElementEnd::Empty = end {
+						if depth == arch_depth {
+							arch_mode = false;
+						}
+						match accesses.last() {
+							Some(access) if access.depth == depth => {
+								accesses.pop();
+							}
+							_ => {}
+						}
+						depth -= 1;
+					}
+					if template_mode
+						&& matches!(end, ElementEnd::Open | ElementEnd::Empty)
+						&& span.start() > offset_at_cursor
+						&& slice
+							.get_byte(offset_at_cursor)
+							.map(|c| c.is_ascii_whitespace())
+							.unwrap()
+					{
+						if let Some(Tag::TComponent(component)) = tag {
+							// edge case: completion trigger in the middle of tag start
+							ref_at_cursor = Some(("", offset_at_cursor..offset_at_cursor));
+							ref_kind = Some(RefKind::PropOf(component));
+						}
+					}
+					if ref_at_cursor.is_some() {
+						break;
+					}
+					if let Some(Tag::TComponent(..)) = &tag {
+						_ = tag.take();
+					}
+					// no need to turn off template mode yet
+					// match end {
+					// 	ElementEnd::Open => depth += 1,
+					// 	ElementEnd::Close(..) => {
+					// 		depth = depth.saturating_sub(1);
+					// 		if depth <= 1 {
+					// 			template_mode = false;
+					// 		}
+					// 	}
+					// 	_ => {}
+					// }
+				}
+				Ok(Token::Comment { text, .. }) if text.trim_start().starts_with("@type") => {
+					let annotation = text.trim().strip_prefix("@type").unwrap();
+					let Some((identifier, model)) = annotation.trim().split_once(|c: char| c.is_ascii_whitespace())
+					else {
+						continue;
+					};
+					scope.insert(identifier.trim().to_string(), Type::Model(model.trim().into()));
+				}
+				// HACK: The lexer can't deal with naked attributes, so we try to parse them manually.
+				Err(Error::InvalidAttribute(StreamError::InvalidChar(_, b'=', mut expected_eq_pos), start_pos)) => {
+					let Some(Tag::TComponent(component)) = tag else {
+						break;
+					};
+
+					// <Component prop />
+					// move one place back to get the attribute name
+					expected_eq_pos.col = expected_eq_pos.col.saturating_sub(1);
+					let start_pos = position_to_offset_slice(xml_position_to_lsp_position(start_pos), slice).unwrap();
+					let expected_eq_pos =
+						position_to_offset_slice(xml_position_to_lsp_position(expected_eq_pos), slice).unwrap();
+
+					// may be an invalid attribute, but no point in checking
+					let mut range = (start_pos..expected_eq_pos).erase();
+					if !range.contains_end(offset_at_cursor) {
+						break;
+					}
+					let Cow::Borrowed(mut attr) = Cow::from(slice.byte_slice(range.clone())) else {
+						panic!("(gather_refs) doesn't support cross-chunked boundaries");
+					};
+					let trimmed = attr.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+					if trimmed != attr {
+						attr = trimmed;
+						range = range.start..range.start + trimmed.len();
+					}
+					let trimmed = attr.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+					if trimmed != attr {
+						range = range.start + (attr.len() - trimmed.len())..range.end;
+						attr = trimmed;
+					}
+
+					ref_at_cursor = Some((attr, range));
+					ref_kind = Some(RefKind::PropOf(component));
+					break;
+				}
+				Err(_) => break,
+				Ok(token) => {
+					if token_span(&token).start() > offset_at_cursor {
+						break;
+					}
+				}
+			}
+		}
+		let model_filter = if arch_mode {
+			arch_model.map(|span| span.to_string()).or(model_filter)
+		} else {
+			model_filter
+		};
+		Ok(XmlRefs {
+			ref_at_cursor,
+			ref_kind,
+			model_filter,
+			scope,
+		})
+	}
+	/// [Type::Value] may be inserted by this method.
+	fn insert_in_scope(
+		&self,
+		scope: &mut Scope,
+		identifier: &str,
+		mut root: tree_sitter::Node,
+		contents: &[u8],
+	) -> miette::Result<()> {
+		normalize(&mut root);
+		let type_ = self.type_of(root, scope, contents).unwrap_or(Type::Value);
+		let type_ = self
+			.resolve_type(&type_, scope)
+			.map(|model| Type::Model(interner().resolve(&model).into()))
+			.unwrap_or(type_);
+		scope.insert(identifier.to_string(), type_);
+		Ok(())
+	}
 }
 
 struct XmlRefs<'a> {
 	ref_at_cursor: Option<(&'a str, core::ops::Range<usize>)>,
 	ref_kind: Option<RefKind<'a>>,
 	model_filter: Option<String>,
+	/// used for Python inline expressions
+	scope: Scope,
 }
 
 fn determine_csv_xmlid_subgroup<'text>(
@@ -479,294 +926,38 @@ fn determine_csv_xmlid_subgroup<'text>(
 	}
 }
 
-/// `contents` is used for error recovery.
-fn gather_refs<'read>(
-	offset_at_cursor: ByteOffset,
-	reader: &mut Tokenizer<'read>,
-	slice: &'read RopeSlice<'read>,
-) -> miette::Result<XmlRefs<'read>> {
-	let mut tag = None;
-	let mut ref_at_cursor = None::<(&str, core::ops::Range<usize>)>;
-	let mut ref_kind = None;
-	let mut model_filter = None;
-	let mut template_mode = false;
-	let offset_at_cursor = offset_at_cursor.0;
-
-	let mut arch_model = None;
-	// <field name="arch">..</field>
-	let mut arch_mode = false;
-	let mut arch_depth = 0;
-	let mut depth = 0;
-	let mut expect_model_string = false;
-
-	struct FieldAccess<'a> {
-		field: StrSpan<'a>,
-		depth: u32,
+struct AttrPair<'a> {
+	lhs: &'a str,
+	rhs: &'a str,
+	lhs_val: Option<(ImStr, usize)>,
+	rhs_val: Option<(ImStr, usize)>,
+}
+fn attr_pair<'a>(lhs: &'a str, rhs: &'a str) -> AttrPair<'a> {
+	AttrPair {
+		lhs,
+		rhs,
+		lhs_val: None,
+		rhs_val: None,
 	}
-	let mut accesses: Vec<FieldAccess> = vec![];
+}
 
-	for token in reader {
-		match token {
-			Ok(Token::ElementStart { local, .. }) => {
-				expect_model_string = false;
-				depth += 1;
-				match local.as_str() {
-					"field" => tag = Some(Tag::Field),
-					"template" => {
-						tag = Some(Tag::Template);
-						model_filter = Some("ir.ui.view".to_string());
-					}
-					"record" => tag = Some(Tag::Record),
-					"menuitem" => tag = Some(Tag::Menuitem),
-					"templates" => {
-						template_mode = true;
-					}
-					component if template_mode && component.starts_with(|c| char::is_ascii_uppercase(&c)) => {
-						tag = Some(Tag::TComponent(component));
-					}
-					_ if arch_mode => tag = None,
-					_ => {}
-				}
-			}
-			// <field name=.. ref=.. />
-			Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
-				let value_in_range = value.range().contains_end(offset_at_cursor);
-				if local.as_str() == "ref" && value_in_range {
-					ref_at_cursor = Some((value.as_str(), value.range()));
-				} else if local.as_str() == "name" && value_in_range {
-					ref_at_cursor = Some((value.as_str(), value.range()));
-					ref_kind = Some(RefKind::FieldName(
-						accesses
-							.iter()
-							.map(|access| (access.field.start(), access.field.as_str()))
-							.collect(),
-					));
-				} else if local.as_str() == "name" && value.as_str() == "model" {
-					// contents should be a model string like res.partner
-					expect_model_string = true;
-				} else if local.as_str() == "name" && value.as_str() == "arch" {
-					arch_mode = true;
-					arch_depth = depth
-				} else if local.as_str() == "name" {
-					// <field ref=.. name=.. />
-					ref_kind = Some(RefKind::Ref(value.as_str()));
-					if arch_mode {
-						accesses.push(FieldAccess { field: value, depth });
-					}
-				} else if local.as_str() == "groups" && value_in_range {
-					ref_kind = Some(RefKind::Id);
-					model_filter = Some("res.groups".to_string());
-					arch_model = None;
-					determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
-				}
-			}
-			// <template inherit_id=.. />
-			Ok(Token::Attribute { local, value, .. })
-				if matches!(tag, Some(Tag::Template))
-					&& value.range().contains_end(offset_at_cursor)
-					&& matches!(local.as_str(), "inherit_id" | "t-call") =>
-			{
-				ref_at_cursor = Some((value.as_str(), value.range()));
-				ref_kind = Some(RefKind::Ref("inherit_id"));
-			}
-			// <record model=.. />
-			Ok(Token::Attribute { local, value, .. })
-				if matches!(tag, Some(Tag::Record)) && local.as_str() == "model" =>
-			{
-				if value.range().contains_end(offset_at_cursor) {
-					ref_at_cursor = Some((value.as_str(), value.range()));
-					ref_kind = Some(RefKind::Model);
-				} else {
-					model_filter = Some(value.as_str().to_string());
-				}
-			}
-			Ok(Token::Attribute { local, value, .. })
-				if matches!(tag, Some(Tag::Record | Tag::Template | Tag::Menuitem))
-					&& local == "id" && value.range().contains_end(offset_at_cursor) =>
-			{
-				ref_at_cursor = Some((value.as_str(), value.range()));
-				ref_kind = Some(RefKind::Id);
-				arch_model = None;
-				match tag {
-					Some(Tag::Template) => {
-						model_filter = Some("ir.ui.view".to_string());
-					}
-					Some(Tag::Menuitem) => {
-						model_filter = Some("ir.ui.menu".to_string());
-					}
-					_ => {}
-				}
-			}
-			// <menuitem parent=.. action=.. />
-			Ok(Token::Attribute { local, value, .. })
-				if matches!(tag, Some(Tag::Menuitem)) && value.range().contains_end(offset_at_cursor) =>
-			{
-				match local.as_str() {
-					"parent" => {
-						ref_at_cursor = Some((value.as_str(), value.range()));
-						ref_kind = Some(RefKind::Ref("parent_id"));
-						model_filter = Some("ir.ui.menu".to_string());
-					}
-					"action" => {
-						ref_at_cursor = Some((value.as_str(), value.range()));
-						ref_kind = Some(RefKind::Ref("action"));
-						model_filter = Some("ir.ui.menu".to_string());
-					}
-					"groups" => {
-						ref_kind = Some(RefKind::Id);
-						arch_model = None;
-						model_filter = Some("res.groups".to_string());
-						determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
-					}
-					_ => {}
-				}
-			}
-			// <Component prop=.. />
-			Ok(Token::Attribute { local, .. })
-				if matches!(tag, Some(Tag::TComponent(..))) && local.range().contains_end(offset_at_cursor) =>
-			{
-				let Some(Tag::TComponent(component)) = tag else {
-					unreachable!()
-				};
-				ref_at_cursor = Some((local.as_str(), local.range()));
-				ref_kind = Some(RefKind::PropOf(component));
-			}
-			// catchall cases
-			Ok(Token::Attribute { local, value, .. }) if value.range().contains_end(offset_at_cursor) => {
-				match local.as_str() {
-					"t-name" => {
-						ref_at_cursor = Some((value.as_str(), value.range()));
-						ref_kind = Some(RefKind::TName);
-					}
-					"t-inherit" => {
-						ref_at_cursor = Some((value.as_str(), value.range()));
-						ref_kind = Some(RefKind::TInherit);
-					}
-					"t-call" => {
-						ref_at_cursor = Some((value.as_str(), value.range()));
-						ref_kind = Some(RefKind::TCall);
-					}
-					"groups" => {
-						ref_kind = Some(RefKind::Id);
-						model_filter = Some("res.groups".to_string());
-						arch_model = None;
-						determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
-					}
-					_ => {}
-				}
-			}
-			// general bookkeeping
-			Ok(Token::Attribute { local, .. }) => {
-				if local.as_str() == "t-name" && !template_mode {
-					template_mode = true;
-				}
-			}
-			Ok(Token::Text { text }) if expect_model_string => {
-				expect_model_string = false;
-				if text.range().contains_end(offset_at_cursor) {
-					ref_at_cursor = Some((text.as_str(), text.range()));
-					ref_kind = Some(RefKind::Model);
-				} else {
-					arch_model = Some(text);
-				}
-			}
-			Ok(Token::ElementEnd { end, span }) => {
-				if let ElementEnd::Close(..) | ElementEnd::Empty = end {
-					if depth == arch_depth {
-						arch_mode = false;
-					}
-					match accesses.last() {
-						Some(access) if access.depth == depth => {
-							accesses.pop();
-						}
-						_ => {}
-					}
-					depth -= 1;
-				}
-				if template_mode
-					&& matches!(end, ElementEnd::Open | ElementEnd::Empty)
-					&& span.start() > offset_at_cursor
-					&& slice
-						.get_byte(offset_at_cursor)
-						.map(|c| c.is_ascii_whitespace())
-						.unwrap()
-				{
-					if let Some(Tag::TComponent(component)) = tag {
-						// edge case: completion trigger in the middle of tag start
-						ref_at_cursor = Some(("", offset_at_cursor..offset_at_cursor));
-						ref_kind = Some(RefKind::PropOf(component));
-					}
-				}
-				if ref_at_cursor.is_some() {
-					break;
-				}
-				if let Some(Tag::TComponent(..)) = &tag {
-					_ = tag.take();
-				}
-				// no need to turn off template mode yet
-				// match end {
-				// 	ElementEnd::Open => depth += 1,
-				// 	ElementEnd::Close(..) => {
-				// 		depth = depth.saturating_sub(1);
-				// 		if depth <= 1 {
-				// 			template_mode = false;
-				// 		}
-				// 	}
-				// 	_ => {}
-				// }
-			}
-			// HACK: The lexer can't deal with naked attributes, so we try to parse them manually.
-			Err(Error::InvalidAttribute(StreamError::InvalidChar(_, b'=', mut expected_eq_pos), start_pos)) => {
-				let Some(Tag::TComponent(component)) = tag else {
-					break;
-				};
-
-				// <Component prop />
-				// move one place back to get the attribute name
-				expected_eq_pos.col = expected_eq_pos.col.saturating_sub(1);
-				let start_pos = position_to_offset_slice(xml_position_to_lsp_position(start_pos), slice).unwrap();
-				let expected_eq_pos =
-					position_to_offset_slice(xml_position_to_lsp_position(expected_eq_pos), slice).unwrap();
-
-				// may be an invalid attribute, but no point in checking
-				let mut range = (start_pos..expected_eq_pos).erase();
-				if !range.contains_end(offset_at_cursor) {
-					break;
-				}
-				let Cow::Borrowed(mut attr) = Cow::from(slice.byte_slice(range.clone())) else {
-					panic!("(gather_refs) doesn't support cross-chunked boundaries");
-				};
-				let trimmed = attr.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
-				if trimmed != attr {
-					attr = trimmed;
-					range = range.start..range.start + trimmed.len();
-				}
-				let trimmed = attr.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
-				if trimmed != attr {
-					range = range.start + (attr.len() - trimmed.len())..range.end;
-					attr = trimmed;
-				}
-
-				ref_at_cursor = Some((attr, range));
-				ref_kind = Some(RefKind::PropOf(component));
-				break;
-			}
-			Err(_) => break,
-			Ok(token) => {
-				if token_span(&token).start() > offset_at_cursor {
-					break;
-				}
-			}
+impl AttrPair<'_> {
+	#[must_use]
+	fn accept(&mut self, local: &str, value: StrSpan) -> Option<((ImStr, usize), (ImStr, usize))> {
+		if local == self.lhs {
+			self.lhs_val = Some((value.as_str().into(), value.start()));
+		} else if local == self.rhs {
+			self.rhs_val = Some((value.as_str().into(), value.start()));
 		}
+		if let (Some((lhs, lhs_start)), Some((rhs, rhs_start))) = (&self.lhs_val, &self.rhs_val) {
+			let res = Some(((lhs.clone(), *lhs_start), (rhs.clone(), *rhs_start)));
+			self.reset();
+			return res;
+		}
+		None
 	}
-	let model_filter = if arch_mode {
-		arch_model.map(|span| span.to_string()).or(model_filter)
-	} else {
-		model_filter
-	};
-	Ok(XmlRefs {
-		ref_at_cursor,
-		ref_kind,
-		model_filter,
-	})
+	fn reset(&mut self) {
+		self.lhs_val = None;
+		self.rhs_val = None;
+	}
 }

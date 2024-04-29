@@ -67,6 +67,7 @@
 //! [`Symbol`]: odoo_lsp::index::Symbol
 
 #![warn(clippy::cognitive_complexity)]
+#![deny(clippy::unused_async)]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
@@ -424,8 +425,8 @@ impl LanguageServer for Backend {
 			panic!("Bug: did not build a document for {}", uri.path());
 		};
 		let location = match ext {
-			"xml" => self.xml_jump_def(params, document.rope.clone()).await,
-			"py" => self.python_jump_def(params, document.rope.clone()).await,
+			"xml" => self.xml_jump_def(params, document.rope.clone()),
+			"py" => self.python_jump_def(params, document.rope.clone()),
 			"js" => self.js_jump_def(params, &document.rope),
 			_ => {
 				debug!("(goto_definition) unsupported: {}", uri.path());
@@ -577,8 +578,8 @@ impl LanguageServer for Backend {
 		let document = some!(self.document_map.get(uri.path()));
 		let (_, ext) = some!(uri.path().rsplit_once('.'));
 		let hover = match ext {
-			"py" => self.python_hover(params, document.rope.clone()).await,
-			"xml" => self.xml_hover(params, document.rope.clone()).await,
+			"py" => self.python_hover(params, document.rope.clone()),
+			"xml" => self.xml_hover(params, document.rope.clone()),
 			"js" => self.js_hover(params, document.rope.clone()),
 			_ => {
 				debug!("(hover) unsupported {}", uri.path());

@@ -6,7 +6,8 @@
 			"type": "lldb",
 			"request": "attach",
 			"name": "Attach",
-			"program": "odoo-lsp"
+			"program": "odoo-lsp",
+			"sourceLanguages": ["rust"]
 		},
 		{
 			"type": "extensionHost",

@@ -161,7 +161,7 @@
 		"package": "vsce package --no-dependencies",
 		"publish": "vsce publish --no-dependencies",
 		"miri": "cargo +nightly miri test",
-		"changelog": "conventional-changelog -p angular -i CHANGELOG.md -s"
+		"changelog": "conventional-changelog -p conventionalcommits -i CHANGELOG.md -s"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.5.3",
