@@ -620,7 +620,7 @@ impl Backend {
 		}
 		offset = offset.clamp(0, contents.len() - 1);
 		let mut cursor_node = root.descendant_for_byte_range(offset, offset)?;
-		if cursor_node == root {
+		if !matches!(cursor_node.kind(), "attribute" | "identifier") {
 			// We got our cursor left in the middle of nowhere.
 			offset = offset.saturating_sub(1);
 			cursor_node = root.descendant_for_byte_range(offset, offset)?;

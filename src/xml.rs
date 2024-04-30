@@ -706,8 +706,8 @@ impl Backend {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::TCall);
 						}
-						// TODO: Add more cases
-						"t-out" | "t-esc" | "t-foreach" | "t-value" => {
+						// TODO: Limit cases of Python expressions
+						t_attr if t_attr.starts_with("t-") => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::PyExpr(offset_at_cursor.saturating_sub(value.start())))
 						}
