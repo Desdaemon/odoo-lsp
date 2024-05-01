@@ -131,7 +131,7 @@ query! {
     (dictionary [
       (pair key: (string) @MAPPED)
       (ERROR (string) @MAPPED) ])
-    (list [
+    (_ [
       (set (string) @MAPPED)
       (dictionary [
         (pair key: (string) @MAPPED)
