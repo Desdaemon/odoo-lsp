@@ -318,14 +318,7 @@ impl Backend {
 				}
 			}
 			if early_return.is_none() {
-				// If the offset doesn't land on the attribute but right at the end,
-				// move one place back to get the attribute.
-				let identifier_offset = if contents[offset].is_ascii_alphanumeric() {
-					offset
-				} else {
-					offset - 1
-				};
-				let (model, needle, range) = some!(self.attribute_at_offset(identifier_offset, root, contents));
+				let (model, needle, range) = some!(self.attribute_at_offset(offset, root, contents));
 				early_return = Some((
 					EarlyReturn::Access(model.to_string()),
 					needle,
