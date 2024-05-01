@@ -1,18 +1,29 @@
-# [0.4.0](https://github.com/Desdaemon/odoo-lsp/compare/v0.3.1...v0.4.0) (2024-04-20)
+## [0.4.1](https://github.com/Desdaemon/odoo-lsp/compare/v0.4.0...v0.4.1) (2024-05-01)
+
+### Features
+
+- allow <code>$.template = \`..`</code> ([7f53e84](https://github.com/Desdaemon/odoo-lsp/commit/7f53e843e4a9f4c45b0876d180f3e36af7b37752))
+- allow named groupby and aggregate parameters ([d961032](https://github.com/Desdaemon/odoo-lsp/commit/d9610325b444d5f27c4a76b9b3a5e143a849b494))
+- complete domain=.. for relational fields ([dcf8fc8](https://github.com/Desdaemon/odoo-lsp/commit/dcf8fc8b39fc0429d1a54234c238884edb0148d9))
+- completion at attribute commas ([acec172](https://github.com/Desdaemon/odoo-lsp/commit/acec172f52bdbeeaf4e961e18f5162c919106710))
+- nested XML fields ([2b629e0](https://github.com/Desdaemon/odoo-lsp/commit/2b629e02798f6fdf437aa205455b0214d4ecffc1))
+- **python:** analyze comprehensions in create() ([fe151b5](https://github.com/Desdaemon/odoo-lsp/commit/fe151b50549b8d5ada820a98c350faa6c394c916))
+- **python:** reveal types of binary expressions ([85a3d83](https://github.com/Desdaemon/odoo-lsp/commit/85a3d835bfdc3e99122738c0ed6dd643d4a6e0ed))
+- syntax highlighting for domain='..' ([34ee224](https://github.com/Desdaemon/odoo-lsp/commit/34ee2243b8f62f52da1b41aa2a212901ea1b3a82))
+- template annotations and completions ([74b74eb](https://github.com/Desdaemon/odoo-lsp/commit/74b74ebaac92a66d3e7f2c37e2100aa6e202a9c1))
+- **xml:** allow res_model as model string ([1394c9c](https://github.com/Desdaemon/odoo-lsp/commit/1394c9c45943c901bcd7ba859991621cef1e2512))
 
 ### Bug Fixes
 
-- attempt to remove duplicate diags ([f5cd4a2](https://github.com/Desdaemon/odoo-lsp/commit/f5cd4a20a501bb326177706606c34b2418d7267d))
-- correct conditions for new nightlies ([498bb81](https://github.com/Desdaemon/odoo-lsp/commit/498bb8176faf4a3fc03ff789c65931c6430cdb99))
-- do not update records on change ([ccc9559](https://github.com/Desdaemon/odoo-lsp/commit/ccc955966998e27b456d21dc4a72082243a496d5))
-- **extension:** compare dates for nightly updates ([876f9eb](https://github.com/Desdaemon/odoo-lsp/commit/876f9eb88faf249bd5360102779e04614d2f2546))
-- greedy parsing of xml attribute name ([94b02f4](https://github.com/Desdaemon/odoo-lsp/commit/94b02f47594bb0c69efd45c8b8a44ea2db5deb8c))
-- inherit_ids not resolving ([625db08](https://github.com/Desdaemon/odoo-lsp/commit/625db08aca9d54cbe4dae4d0cf48233a43871a5e))
-- make logs more visible ([daf05f5](https://github.com/Desdaemon/odoo-lsp/commit/daf05f5b91b4b9d4e555ce71843c13cd851c979f))
-- missing menuitem groups completions ([4f43c62](https://github.com/Desdaemon/odoo-lsp/commit/4f43c622016797b7dd0795eeb19e36c2e8dbf279))
-- **python:** correctly resolve mapped relations ([115aea5](https://github.com/Desdaemon/odoo-lsp/commit/115aea5eab626274f67d226c71eb5b8fb166dd43))
-- store inherit_id as full XML ID ([c09a54b](https://github.com/Desdaemon/odoo-lsp/commit/c09a54bc0b50ec4f14803f8e0f2f08371230d695))
-- wrong import path for xpath extension ([d663e6e](https://github.com/Desdaemon/odoo-lsp/commit/d663e6e5c6c4c060c7207091e21691dfe71bc22a))
+- detect more inline Python in XML ([168edb7](https://github.com/Desdaemon/odoo-lsp/commit/168edb73ad04fa88e0b61485d4aff617157d28fb))
+- edge case with model fields ([342239e](https://github.com/Desdaemon/odoo-lsp/commit/342239e264a80c165668e53f89603615646dc606))
+- **extension:** nightly installation flow ([0068984](https://github.com/Desdaemon/odoo-lsp/commit/0068984883c348e0309a304bdf57dfc843ec166e))
+- **extension:** wrong comparison with birthtime ([7db6521](https://github.com/Desdaemon/odoo-lsp/commit/7db6521fc4b41007ed40beaa558eba4226e11ca5))
+- populate XML fields on demand ([973a6ee](https://github.com/Desdaemon/odoo-lsp/commit/973a6ee492da7fbf007cae1e61cade4cd62e3d03))
+- prevent completion OOB ([fdb3f4b](https://github.com/Desdaemon/odoo-lsp/commit/fdb3f4bef41b668d4e314438787f958acfdcf6c8))
+- revert to `#match?` ([eda9111](https://github.com/Desdaemon/odoo-lsp/commit/eda9111542cfdc9fa944b1b53cd92458e3afaaeb))
+
+## [0.4.0](https://github.com/Desdaemon/odoo-lsp/compare/v0.3.1...v0.4.0) (2024-04-20)
 
 ### Features
 
@@ -34,20 +45,21 @@
 - warn when duplicate base modules are found ([66df773](https://github.com/Desdaemon/odoo-lsp/commit/66df77372762fde5ea12fbc19347e652770d2bce))
 - xpath semantic tokens ([b665779](https://github.com/Desdaemon/odoo-lsp/commit/b665779d7ba482bae2b7bb970ab9572455811c80))
 
-## [0.3.1](https://github.com/Desdaemon/odoo-lsp/compare/v0.3.0...v0.3.1) (2024-03-06)
-
-Fixes a major issue with the extension not being able to download nightly binaries by default.
-
 ### Bug Fixes
 
-- **ci:** failed to cross-compile Linux targets ([ba41685](https://github.com/Desdaemon/odoo-lsp/commit/ba41685c42889c781c6b3727b81c144cb7bb8dfa))
-- issue with wrong download link for nightlies ([9235ef9](https://github.com/Desdaemon/odoo-lsp/commit/9235ef9d744a610262a91cf92648f0a867671d75))
-- limit diagnostics range based on edits ([06f6dd2](https://github.com/Desdaemon/odoo-lsp/commit/06f6dd2ff351c110d81b2833bb55c932366ad47e))
-- prevent panic when clearing oob'd diags ([7bf2b03](https://github.com/Desdaemon/odoo-lsp/commit/7bf2b0391cbcd4322458bd25456ecabca059cb29))
-- skip attribute diagnostics if not modified ([f2a7adb](https://github.com/Desdaemon/odoo-lsp/commit/f2a7adb5afc4e4437f24bafb0579678a86515621))
-- **tsconfig:** Correct path for recursive modules ([ad253f7](https://github.com/Desdaemon/odoo-lsp/commit/ad253f775ae10120cde1d87a8e53a24afb107a7b))
-- wait for initialization before first requests ([813c2a8](https://github.com/Desdaemon/odoo-lsp/commit/813c2a8a58a0a053f38d1f65d0b00e4fc2db4fac))
-- wrong paths for tsconfig ([239802e](https://github.com/Desdaemon/odoo-lsp/commit/239802e7fa128967671bab0b05752c19f77d1df1))
+- attempt to remove duplicate diags ([f5cd4a2](https://github.com/Desdaemon/odoo-lsp/commit/f5cd4a20a501bb326177706606c34b2418d7267d))
+- correct conditions for new nightlies ([498bb81](https://github.com/Desdaemon/odoo-lsp/commit/498bb8176faf4a3fc03ff789c65931c6430cdb99))
+- do not update records on change ([ccc9559](https://github.com/Desdaemon/odoo-lsp/commit/ccc955966998e27b456d21dc4a72082243a496d5))
+- **extension:** compare dates for nightly updates ([876f9eb](https://github.com/Desdaemon/odoo-lsp/commit/876f9eb88faf249bd5360102779e04614d2f2546))
+- greedy parsing of xml attribute name ([94b02f4](https://github.com/Desdaemon/odoo-lsp/commit/94b02f47594bb0c69efd45c8b8a44ea2db5deb8c))
+- inherit_ids not resolving ([625db08](https://github.com/Desdaemon/odoo-lsp/commit/625db08aca9d54cbe4dae4d0cf48233a43871a5e))
+- make logs more visible ([daf05f5](https://github.com/Desdaemon/odoo-lsp/commit/daf05f5b91b4b9d4e555ce71843c13cd851c979f))
+- missing menuitem groups completions ([4f43c62](https://github.com/Desdaemon/odoo-lsp/commit/4f43c622016797b7dd0795eeb19e36c2e8dbf279))
+- **python:** correctly resolve mapped relations ([115aea5](https://github.com/Desdaemon/odoo-lsp/commit/115aea5eab626274f67d226c71eb5b8fb166dd43))
+- store inherit_id as full XML ID ([c09a54b](https://github.com/Desdaemon/odoo-lsp/commit/c09a54bc0b50ec4f14803f8e0f2f08371230d695))
+- wrong import path for xpath extension ([d663e6e](https://github.com/Desdaemon/odoo-lsp/commit/d663e6e5c6c4c060c7207091e21691dfe71bc22a))
+
+## [0.3.1](https://github.com/Desdaemon/odoo-lsp/compare/v0.3.0...v0.3.1) (2024-03-06)
 
 ### Features
 
@@ -64,25 +76,18 @@ Fixes a major issue with the extension not being able to download nightly binari
 - support for read and read_group fields ([bae66d8](https://github.com/Desdaemon/odoo-lsp/commit/bae66d8f0c3ec048c82078d2420171feaa27801f))
 - xml hovers ([2fc9a22](https://github.com/Desdaemon/odoo-lsp/commit/2fc9a2280b90bdcb6432f9df5b83f3fe8dd45f56))
 
-# [0.3.0](https://github.com/Desdaemon/odoo-lsp/compare/v0.2.1...v0.3.0) (2023-12-18)
-
 ### Bug Fixes
 
-- allow duplicate module declarations ([f542bc1](https://github.com/Desdaemon/odoo-lsp/commit/f542bc1b4baa946c5fb80fc11f3129d76ae3b40b))
-- allow more model builtins ([3b0e4b3](https://github.com/Desdaemon/odoo-lsp/commit/3b0e4b334003fbfc7b45da6a68533985c17ccbd5))
-- clear diagnostics on close ([235f3bd](https://github.com/Desdaemon/odoo-lsp/commit/235f3bd5e4048e8397c3ecc0284cbb963fda3d0c))
-- confusion between character and byte offsets ([2daa160](https://github.com/Desdaemon/odoo-lsp/commit/2daa16029f7b3ca5002811e6d0d21096f5d7b7af))
-- deadlock when completing fields for self ([5cbf44c](https://github.com/Desdaemon/odoo-lsp/commit/5cbf44cd39e59e387cdff98b5275f37a2fc9156c))
-- deadlock when completing related= ([729ae55](https://github.com/Desdaemon/odoo-lsp/commit/729ae551ccf53ace79eaaab920f2744163a41626))
-- don't include definition in template refs ([4e20ba3](https://github.com/Desdaemon/odoo-lsp/commit/4e20ba37172f1bcd4927e40c319facfbc2044508))
-- edge case with base class fields not resolved ([9d0429d](https://github.com/Desdaemon/odoo-lsp/commit/9d0429d6a749f491f3b49b2796062ea8026d7a8a))
-- fallback to clients not supporting pull-diags ([33dc4e6](https://github.com/Desdaemon/odoo-lsp/commit/33dc4e6db2f56011778103d28fe96785966c6d02))
-- include identifier name in hover ([b2d45cd](https://github.com/Desdaemon/odoo-lsp/commit/b2d45cd8a8a39f61c29a78d8b546c7f96d35f76a))
-- module detection from path ([265fa2f](https://github.com/Desdaemon/odoo-lsp/commit/265fa2fccf56479d76c000d8df48f8332fa8ff30))
-- preserve fields after saving ([c77d0d0](https://github.com/Desdaemon/odoo-lsp/commit/c77d0d0e97de29d9b0b221020dc6e44ca95e3767))
-- properly parse module aliases ([82f25c1](https://github.com/Desdaemon/odoo-lsp/commit/82f25c1e85f05b5b87ea4c95a1bd40aa64c3f6e9))
-- relax \_name requirement for completion ([65d2990](https://github.com/Desdaemon/odoo-lsp/commit/65d29909814b66cc0c8dc409f3e605989577fd2b))
-- revert root scanning mechanism ([1bee611](https://github.com/Desdaemon/odoo-lsp/commit/1bee611b44bf3315e2cd6b41fa985a8109d64a63))
+- **ci:** failed to cross-compile Linux targets ([ba41685](https://github.com/Desdaemon/odoo-lsp/commit/ba41685c42889c781c6b3727b81c144cb7bb8dfa))
+- issue with wrong download link for nightlies ([9235ef9](https://github.com/Desdaemon/odoo-lsp/commit/9235ef9d744a610262a91cf92648f0a867671d75))
+- limit diagnostics range based on edits ([06f6dd2](https://github.com/Desdaemon/odoo-lsp/commit/06f6dd2ff351c110d81b2833bb55c932366ad47e))
+- prevent panic when clearing oob'd diags ([7bf2b03](https://github.com/Desdaemon/odoo-lsp/commit/7bf2b0391cbcd4322458bd25456ecabca059cb29))
+- skip attribute diagnostics if not modified ([f2a7adb](https://github.com/Desdaemon/odoo-lsp/commit/f2a7adb5afc4e4437f24bafb0579678a86515621))
+- **tsconfig:** Correct path for recursive modules ([ad253f7](https://github.com/Desdaemon/odoo-lsp/commit/ad253f775ae10120cde1d87a8e53a24afb107a7b))
+- wait for initialization before first requests ([813c2a8](https://github.com/Desdaemon/odoo-lsp/commit/813c2a8a58a0a053f38d1f65d0b00e4fc2db4fac))
+- wrong paths for tsconfig ([239802e](https://github.com/Desdaemon/odoo-lsp/commit/239802e7fa128967671bab0b05752c19f77d1df1))
+
+## [0.3.0](https://github.com/Desdaemon/odoo-lsp/compare/v0.2.1...v0.3.0) (2023-12-18)
 
 ### Features
 
@@ -104,30 +109,32 @@ Fixes a major issue with the extension not being able to download nightly binari
 - template refs, goto-defs for components ([ccb2346](https://github.com/Desdaemon/odoo-lsp/commit/ccb23463b7e96013c6742f4ca6dc8f554242393b))
 - tsconfig command ([1445da7](https://github.com/Desdaemon/odoo-lsp/commit/1445da75a5b0ecb83d57d02d531c276bf9c5b580))
 
-## [0.2.2](https://github.com/Desdaemon/odoo-lsp/compare/v0.2.1...v0.2.2) (2023-12-02)
-
 ### Bug Fixes
 
+- allow duplicate module declarations ([f542bc1](https://github.com/Desdaemon/odoo-lsp/commit/f542bc1b4baa946c5fb80fc11f3129d76ae3b40b))
+- allow more model builtins ([3b0e4b3](https://github.com/Desdaemon/odoo-lsp/commit/3b0e4b334003fbfc7b45da6a68533985c17ccbd5))
+- clear diagnostics on close ([235f3bd](https://github.com/Desdaemon/odoo-lsp/commit/235f3bd5e4048e8397c3ecc0284cbb963fda3d0c))
+- confusion between character and byte offsets ([2daa160](https://github.com/Desdaemon/odoo-lsp/commit/2daa16029f7b3ca5002811e6d0d21096f5d7b7af))
 - deadlock when completing fields for self ([5cbf44c](https://github.com/Desdaemon/odoo-lsp/commit/5cbf44cd39e59e387cdff98b5275f37a2fc9156c))
 - deadlock when completing related= ([729ae55](https://github.com/Desdaemon/odoo-lsp/commit/729ae551ccf53ace79eaaab920f2744163a41626))
+- don't include definition in template refs ([4e20ba3](https://github.com/Desdaemon/odoo-lsp/commit/4e20ba37172f1bcd4927e40c319facfbc2044508))
+- edge case with base class fields not resolved ([9d0429d](https://github.com/Desdaemon/odoo-lsp/commit/9d0429d6a749f491f3b49b2796062ea8026d7a8a))
+- fallback to clients not supporting pull-diags ([33dc4e6](https://github.com/Desdaemon/odoo-lsp/commit/33dc4e6db2f56011778103d28fe96785966c6d02))
+- include identifier name in hover ([b2d45cd](https://github.com/Desdaemon/odoo-lsp/commit/b2d45cd8a8a39f61c29a78d8b546c7f96d35f76a))
 - module detection from path ([265fa2f](https://github.com/Desdaemon/odoo-lsp/commit/265fa2fccf56479d76c000d8df48f8332fa8ff30))
+- preserve fields after saving ([c77d0d0](https://github.com/Desdaemon/odoo-lsp/commit/c77d0d0e97de29d9b0b221020dc6e44ca95e3767))
 - properly parse module aliases ([82f25c1](https://github.com/Desdaemon/odoo-lsp/commit/82f25c1e85f05b5b87ea4c95a1bd40aa64c3f6e9))
+- relax \_name requirement for completion ([65d2990](https://github.com/Desdaemon/odoo-lsp/commit/65d29909814b66cc0c8dc409f3e605989577fd2b))
 - revert root scanning mechanism ([1bee611](https://github.com/Desdaemon/odoo-lsp/commit/1bee611b44bf3315e2cd6b41fa985a8109d64a63))
+
+## [0.2.1](https://github.com/Desdaemon/odoo-lsp/compare/v0.2.0...v0.2.1) (2023-11-07)
 
 ### Features
 
-- basic support for fields in domains ([a9fcbb5](https://github.com/Desdaemon/odoo-lsp/commit/a9fcbb5a1a0fdc77c3e8613eb2474cb8016e5fbc))
-- complete mixins' fields ([49f721e](https://github.com/Desdaemon/odoo-lsp/commit/49f721e61d36d66252af7cb7dd04243cb9e2b6c6))
-- completion for fields in write(), create() ([dd40f0b](https://github.com/Desdaemon/odoo-lsp/commit/dd40f0b426ff86d745b53a0751c979df5ebaeada))
-- component references for t-name, t-inherit ([1584003](https://github.com/Desdaemon/odoo-lsp/commit/1584003ca520e0f50c12171c0db00c494af85f74))
-- field hover for mapped access ([25ef8fe](https://github.com/Desdaemon/odoo-lsp/commit/25ef8fe69491e801b8c5f346a5277b893725c4dd))
-- generate tsconfig for legacy modules ([30dc1a1](https://github.com/Desdaemon/odoo-lsp/commit/30dc1a115b4964417963657e10efa38dea81ff67))
-- index owl components ([e849d7a](https://github.com/Desdaemon/odoo-lsp/commit/e849d7af83831ec16a275c43d8c34ed6c2901a57))
-- init command ([3871f1f](https://github.com/Desdaemon/odoo-lsp/commit/3871f1f7616b5fd82987c57bf95f12020f6b6d68))
-- optimize fields completion ([aeec586](https://github.com/Desdaemon/odoo-lsp/commit/aeec586b0ce5c9f99a8ea50ea5933acfca277b70))
-- tsconfig command ([1445da7](https://github.com/Desdaemon/odoo-lsp/commit/1445da75a5b0ecb83d57d02d531c276bf9c5b580))
-
-## [0.2.1](https://github.com/Desdaemon/odoo-lsp/compare/v0.2.0...v0.2.1) (2023-11-07)
+- mapped access (api.depends etc.) ([5c20257](https://github.com/Desdaemon/odoo-lsp/commit/5c2025742ffa83f2acb4a8e612f26a584ae1dae5))
+- Mapper functions (mapped, filtered etc.) ([d35008d](https://github.com/Desdaemon/odoo-lsp/commit/d35008d5dbcd10a11dd112dc02394b242db6265f))
+- menuitem ([2d51e8b](https://github.com/Desdaemon/odoo-lsp/commit/2d51e8bbe669ccec8c85dfbb41a9a06f6067b5aa))
+- qweb templates ([71dc1f0](https://github.com/Desdaemon/odoo-lsp/commit/71dc1f05d7794061e94fe2992bd3e95b4d526b4b))
 
 ### Bug Fixes
 
@@ -138,14 +145,13 @@ Fixes a major issue with the extension not being able to download nightly binari
 - **analyze:** out-of-order meta fields ([326ace2](https://github.com/Desdaemon/odoo-lsp/commit/326ace25b828e818e82861edd654703e54497322))
 - **index:** out-of-order \_name and \_inherit ([54d7623](https://github.com/Desdaemon/odoo-lsp/commit/54d762384ff8deeaca5682eff38511fe6ee27950))
 
+## [0.2.0](https://github.com/Desdaemon/odoo-lsp/compare/v0.1.2...v0.2.0) (2023-10-04)
+
 ### Features
 
-- mapped access (api.depends etc.) ([5c20257](https://github.com/Desdaemon/odoo-lsp/commit/5c2025742ffa83f2acb4a8e612f26a584ae1dae5))
-- Mapper functions (mapped, filtered etc.) ([d35008d](https://github.com/Desdaemon/odoo-lsp/commit/d35008d5dbcd10a11dd112dc02394b242db6265f))
-- menuitem ([2d51e8b](https://github.com/Desdaemon/odoo-lsp/commit/2d51e8bbe669ccec8c85dfbb41a9a06f6067b5aa))
-- qweb templates ([71dc1f0](https://github.com/Desdaemon/odoo-lsp/commit/71dc1f05d7794061e94fe2992bd3e95b4d526b4b))
-
-# [0.2.0](https://github.com/Desdaemon/odoo-lsp/compare/v0.1.2...v0.2.0) (2023-10-04)
+- hover arbitrary expressions ([e39e649](https://github.com/Desdaemon/odoo-lsp/commit/e39e649b5d268d057d208a575060059b8a7aebbf))
+- resolve types of `super()` ([ef98f6b](https://github.com/Desdaemon/odoo-lsp/commit/ef98f6bb932c94c5427e69c883075d7e44a694ab))
+- update models on save ([30f1687](https://github.com/Desdaemon/odoo-lsp/commit/30f16873d5bbf1f5f1d44192890733bad00d4555))
 
 ### Bug Fixes
 
@@ -157,12 +163,6 @@ Fixes a major issue with the extension not being able to download nightly binari
 - open/close capabilities ([6b259f6](https://github.com/Desdaemon/odoo-lsp/commit/6b259f65afad502c3e9f1c4c1d817db6bf802451))
 - remove block_on and make all futures Send ([118664d](https://github.com/Desdaemon/odoo-lsp/commit/118664d0c6e8bb41f800f028c065a6cbcbf59f30))
 - wrong path splitting ([8444188](https://github.com/Desdaemon/odoo-lsp/commit/84441880a690da8a15fc14696da086c2d022764f))
-
-### Features
-
-- hover arbitrary expressions ([e39e649](https://github.com/Desdaemon/odoo-lsp/commit/e39e649b5d268d057d208a575060059b8a7aebbf))
-- resolve types of `super()` ([ef98f6b](https://github.com/Desdaemon/odoo-lsp/commit/ef98f6bb932c94c5427e69c883075d7e44a694ab))
-- update models on save ([30f1687](https://github.com/Desdaemon/odoo-lsp/commit/30f16873d5bbf1f5f1d44192890733bad00d4555))
 
 ## [0.1.2](https://github.com/Desdaemon/odoo-lsp/compare/v0.1.1...v0.1.2) (2023-09-07)
 
@@ -184,7 +184,7 @@ Fixes a major issue with the extension not being able to download nightly binari
 - wrong binding for list comprehension ([75c9ca5](https://github.com/Desdaemon/odoo-lsp/commit/75c9ca572c3f6dd0d850b8a22bb6bcda7a824fd7))
 - wrong capture indices ([c4e12d4](https://github.com/Desdaemon/odoo-lsp/commit/c4e12d445e142cf2c06503517f273fde412571ee))
 
-## [0.1.1](https://github.com/Desdaemon/odoo-lsp/compare/004d33ceb0d67650c19762db40c0968e0d9532db...v0.1.1) (2023-08-31)
+## [0.1.1](https://github.com/Desdaemon/odoo-lsp/compare/v0.1.0-dev.3...v0.1.1) (2023-08-31)
 
 ### Features
 
@@ -201,7 +201,7 @@ Fixes a major issue with the extension not being able to download nightly binari
 - inheritance with mixins ([1f911f0](https://github.com/Desdaemon/odoo-lsp/commit/1f911f02adc04b75c303e421f93e93ece01ad1b0))
 - propery parse base classes ([43af733](https://github.com/Desdaemon/odoo-lsp/commit/43af733525dcbcf4b397633f45380a0fc1d499b3))
 
-## 0.1.0-dev.3 (2023-08-27)
+## [0.1.0-dev.3](https://github.com/Desdaemon/odoo-lsp/compare/91bd2a6614b9f07c733e3441459b38fe0e406722...v0.1.0-dev.3) (2023-08-27)
 
 ### Features
 

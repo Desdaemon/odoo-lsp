@@ -229,7 +229,7 @@ function updateExtension(context: vscode.ExtensionContext, release: string) {
 							"No",
 							"Always",
 							"Never show again",
-						);
+					  );
 			if (resp === "Always") extensionState.nightlyExtensionUpdates = "always";
 			else if (resp === "Never show again") extensionState.nightlyExtensionUpdates = "never";
 

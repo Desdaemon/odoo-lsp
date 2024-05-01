@@ -462,7 +462,7 @@ impl Backend {
 			}
 			"binary_operator" | "boolean_operator" => {
 				// (_ left right)
-				self.type_of(node.child_by_field_name("left")?, &scope, contents)
+				self.type_of(node.child_by_field_name("left")?, scope, contents)
 			}
 			_ => None,
 		}

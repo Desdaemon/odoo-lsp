@@ -1,6 +1,6 @@
 [package]
 name = "odoo-lsp"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 authors = ["Viet Dinh <54ckb0y789@gmail.com>"]
 description = "Language server for Odoo Python/JS/XML"
@@ -65,7 +65,7 @@ lasso = { version = "0.7.2", features = ["multi-threaded"] }
 intmap = "2.0.0"
 libflate = "2.0.0"
 phf = { version = "0.11.2", features = ["macros"] }
-ts-macros = { version = "0.4.0", path = "crates/ts-macros" }
+ts-macros = { version = "0.4.1", path = "crates/ts-macros" }
 bitflags = "2.4.1"
 pathdiff = "0.2.1"
 rayon = "1.8.0"

@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "odoo-lsp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "bitflags 2.5.0",
  "dashmap",
@@ -2349,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "ts-macros"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "heck",
  "proc-macro2",
