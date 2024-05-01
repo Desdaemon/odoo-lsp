@@ -601,8 +601,9 @@ impl Backend {
 								.map(|access| (access.field.start(), access.field.as_str()))
 								.collect(),
 						));
-					} else if local.as_str() == "name" && value.as_str() == "model" {
+					} else if local.as_str() == "name" && matches!(value.as_str(), "model" | "res_model") {
 						// contents should be a model string like res.partner
+						// `res_model` is on ir.actions.act_window
 						expect_model_string = true;
 					} else if local.as_str() == "name" && value.as_str() == "arch" {
 						arch_mode = true;
