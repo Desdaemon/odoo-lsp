@@ -620,7 +620,7 @@ impl Backend {
 		}
 		offset = offset.clamp(0, contents.len() - 1);
 		let mut cursor_node = root.descendant_for_byte_range(offset, offset)?;
-		if !matches!(cursor_node.kind(), "attribute" | "identifier") {
+		if cursor_node.is_named() && !matches!(cursor_node.kind(), "attribute" | "identifier") {
 			// We got our cursor left in the middle of nowhere.
 			offset = offset.saturating_sub(1);
 			cursor_node = root.descendant_for_byte_range(offset, offset)?;
@@ -651,11 +651,18 @@ impl Backend {
 			lhs = cursor_node.child_by_field_name("object")?;
 			rhs = cursor_node.child_by_field_name("attribute");
 		} else {
-			lhs = match cursor_node.parent() {
-				Some(parent) if parent.kind() == "attribute" => parent.child_by_field_name("object")?,
+			match cursor_node.parent() {
+				Some(parent) if parent.kind() == "attribute" => {
+					lhs = parent.child_by_field_name("object")?;
+					rhs = Some(cursor_node);
+				}
+				Some(parent) if parent.kind() == "ERROR" => {
+					// (ERROR (_) @cursor_node)
+					lhs = cursor_node;
+					rhs = None;
+				}
 				_ => return None,
-			};
-			rhs = Some(cursor_node);
+			}
 		}
 		trace!(
 			"(attribute_node_to_offset) lhs={} rhs={:?}",

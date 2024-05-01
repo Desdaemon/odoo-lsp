@@ -356,16 +356,14 @@ impl Backend {
 		let interner = interner();
 		match normalize(&mut node).kind() {
 			"subscript" => {
-				let rhs = node.named_child(1)?;
-				let rhs_range = rhs.byte_range().shrink(1);
-				if rhs.kind() != "string" {
-					return None;
-				}
-				let lhs = node.named_child(0)?;
+				let lhs = node.child_by_field_name("value")?;
+				let rhs = node.child_by_field_name("subscript")?;
 				let obj_ty = self.type_of(lhs, scope, contents)?;
 				match obj_ty {
-					Type::Env => Some(Type::Model(
-						String::from_utf8_lossy(&contents[rhs_range]).as_ref().into(),
+					Type::Env if rhs.kind() == "string" => Some(Type::Model(
+						String::from_utf8_lossy(&contents[rhs.byte_range().shrink(1)])
+							.as_ref()
+							.into(),
 					)),
 					Type::Model(_) | Type::Record(_) => Some(obj_ty),
 					_ => None,
@@ -461,6 +459,10 @@ impl Backend {
 					}
 					Type::Env | Type::Record(..) | Type::Method(..) | Type::Model(..) | Type::Value => None,
 				}
+			}
+			"binary_operator" | "boolean_operator" => {
+				// (_ left right)
+				self.type_of(node.child_by_field_name("left")?, &scope, contents)
 			}
 			_ => None,
 		}
