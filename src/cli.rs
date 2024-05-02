@@ -312,6 +312,13 @@ pub fn init(addons_path: &[&str], output: Option<&str>) -> miette::Result<()> {
 }
 
 pub fn self_update(nightly: bool) -> miette::Result<()> {
+	const GIT_VERSION: &str = git_version::git_version!(args = ["--tags", "--candidates=0"], fallback = "");
+	const _: () = {
+		if option_env!("CI").is_some() {
+			assert!(!GIT_VERSION.is_empty(), "Git tag must be present when running in CI");
+		}
+	};
+
 	let mut task = github::Update::configure();
 	let mut task = task
 		.repo_owner("Desdaemon")
@@ -329,6 +336,9 @@ pub fn self_update(nightly: bool) -> miette::Result<()> {
 			.fetch()
 			.into_diagnostic()?;
 		releases.sort_unstable_by(|a, z| z.date.cmp(&a.date));
+		if GIT_VERSION.starts_with("nightly") {
+			releases.retain(|rel| rel.name.as_str() > GIT_VERSION);
+		}
 		if let Some(latest_nightly) = releases.iter().find(|rel| rel.name.starts_with("nightly")) {
 			eprintln!("Latest nightly is {}", latest_nightly.version);
 			task = task.target_version_tag(&latest_nightly.version);
