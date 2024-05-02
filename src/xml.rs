@@ -614,6 +614,16 @@ impl Backend {
 						if arch_mode {
 							accesses.push(FieldAccess { field: value, depth });
 						}
+					} else if local.as_str() == "position" {
+						// in <field name=.. position=.. />
+						// don't register as access
+						// TODO: If position comes first, this does not work.
+						match accesses.last() {
+							Some(access) if depth == access.depth => {
+								accesses.pop();
+							}
+							_ => {}
+						}
 					} else if local.as_str() == "groups" && value_in_range {
 						ref_kind = Some(RefKind::Id);
 						model_filter = Some("res.groups".to_string());
