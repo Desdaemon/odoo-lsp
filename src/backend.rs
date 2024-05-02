@@ -21,7 +21,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
 use tree_sitter::{Parser, Tree};
 
-use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
+use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{interner, Component, Index, Interner, ModuleName, RecordId, Symbol, SymbolSet};
 use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName};
 use odoo_lsp::record::Record;
@@ -38,6 +38,7 @@ pub struct Backend {
 	pub root_setup: CondVar,
 	pub symbols_limit: AtomicUsize,
 	pub references_limit: AtomicUsize,
+	pub completions_limit: AtomicUsize,
 }
 
 #[derive(Debug, Default)]
@@ -87,8 +88,6 @@ impl Document {
 }
 
 impl Backend {
-	pub const LIMIT: usize = 80;
-
 	/// Maximum number of descendants to show in docstring.
 	const INHERITS_LIMIT: usize = 3;
 
@@ -752,13 +751,22 @@ impl Backend {
 		}
 	}
 	pub async fn on_change_config(&self, config: Config) {
-		if let Some(SymbolsConfig { limit: Some(limit) }) = config.symbols {
+		let Config {
+			symbols,
+			references,
+			module,
+			completions,
+		} = config;
+		if let Some(SymbolsConfig { limit: Some(limit) }) = symbols {
 			self.symbols_limit.store(limit as usize, Relaxed);
 		}
-		if let Some(ReferencesConfig { limit: Some(limit) }) = config.references {
+		if let Some(ReferencesConfig { limit: Some(limit) }) = references {
 			self.references_limit.store(limit as usize, Relaxed);
 		}
-		let Some(ModuleConfig { roots: Some(roots), .. }) = config.module else {
+		if let Some(CompletionsConfig { limit: Some(limit) }) = completions {
+			self.completions_limit.store(limit as usize, Relaxed);
+		}
+		let Some(ModuleConfig { roots: Some(roots), .. }) = module else {
 			return;
 		};
 		if !roots.is_empty() {
@@ -799,6 +807,7 @@ impl Backend {
 			root_setup: _,
 			symbols_limit: _,
 			references_limit: _,
+			completions_limit: _,
 		} = self;
 		let interner = interner();
 		let symbols_len = interner.len();

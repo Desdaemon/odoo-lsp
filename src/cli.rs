@@ -3,7 +3,7 @@ use std::{env::current_dir, fs::canonicalize, io::stdout, path::Path, process::e
 use globwalk::FileType;
 use log::{debug, warn};
 use miette::{diagnostic, IntoDiagnostic};
-use odoo_lsp::config::{Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
+use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{interner, Index};
 use self_update::{backends::github, Status};
 use serde_json::Value;
@@ -294,6 +294,7 @@ pub fn init(addons_path: &[&str], output: Option<&str>) -> miette::Result<()> {
 		}),
 		symbols: Some(SymbolsConfig { limit: Some(80) }),
 		references: Some(ReferencesConfig { limit: Some(80) }),
+		completions: Some(CompletionsConfig { limit: Some(200) }),
 	};
 	let output = output.unwrap_or(".odoo_lsp");
 	if output == "-" {

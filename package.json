@@ -124,6 +124,11 @@
 					"default": 80,
 					"description": "Maximum amount of model/record references to retrieve at once."
 				},
+				"odoo-lsp.completions.limit": {
+					"type": "number",
+					"default": 200,
+					"description": "Maximum amount of completions to retrieve at once."
+				},
 				"odoo-lsp.module.roots": {
 					"type": "array",
 					"scope": "resource",

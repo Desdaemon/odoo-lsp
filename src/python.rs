@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ops::ControlFlow;
 use std::path::Path;
+use std::sync::atomic::Ordering::Relaxed;
 
 use lasso::Spur;
 use log::{debug, trace, warn};
@@ -218,7 +219,7 @@ impl Backend {
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
 		let query = PyCompletions::query();
-		let mut items = MaxVec::new(Self::LIMIT);
+		let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
 		let mut early_return = None;
 		let mut this_model = ThisModel::default();
 		// FIXME: This hack is necessary to drop !Send locals before await points.

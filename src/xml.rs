@@ -4,6 +4,7 @@ use crate::{Backend, Text};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::path::Path;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 
 use lasso::Spur;
@@ -205,7 +206,7 @@ impl Backend {
 			.module_of_path(Path::new(uri.path()))
 			.expect("must be in a module");
 
-		let mut items = MaxVec::new(Self::LIMIT);
+		let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
 		let XmlRefs {
 			ref_at_cursor,
 			ref_kind,

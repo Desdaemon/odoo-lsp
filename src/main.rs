@@ -210,6 +210,7 @@ impl LanguageServer for Backend {
 			root_setup: _,
 			symbols_limit: _,
 			references_limit: _,
+			completions_limit: _,
 		} = self;
 		document_map.remove(path);
 		record_ranges.remove(path);
@@ -782,8 +783,9 @@ async fn main() {
 		capabilities: Default::default(),
 		root_setup: Default::default(),
 		ast_map: DashMap::new(),
-		symbols_limit: AtomicUsize::new(100),
-		references_limit: AtomicUsize::new(100),
+		symbols_limit: AtomicUsize::new(80),
+		references_limit: AtomicUsize::new(80),
+		completions_limit: AtomicUsize::new(200),
 	})
 	.custom_method("odoo-lsp/statistics", Backend::statistics)
 	.custom_method("odoo-lsp/debug/usage", |_: &Backend| async move {
