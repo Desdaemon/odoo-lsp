@@ -552,6 +552,7 @@ impl Backend {
 		let mut arch_depth = 0;
 		let mut depth = 0;
 		let mut expect_model_string = false;
+		let mut expect_template_string = false;
 
 		let mut scope = Scope::default();
 		let mut parser = Parser::new();
@@ -592,44 +593,57 @@ impl Backend {
 				// <field name=.. ref=.. />
 				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Field)) => {
 					let value_in_range = value.range().contains_end(offset_at_cursor);
-					if local.as_str() == "ref" && value_in_range {
-						ref_at_cursor = Some((value.as_str(), value.range()));
-					} else if local.as_str() == "name" && value_in_range {
-						ref_at_cursor = Some((value.as_str(), value.range()));
-						ref_kind = Some(RefKind::FieldName(
-							accesses
-								.iter()
-								.map(|access| (access.field.start(), access.field.as_str()))
-								.collect(),
-						));
-					} else if local.as_str() == "name" && matches!(value.as_str(), "model" | "res_model") {
-						// contents should be a model string like res.partner
-						// `res_model` is on ir.actions.act_window
-						expect_model_string = true;
-					} else if local.as_str() == "name" && value.as_str() == "arch" {
-						arch_mode = true;
-						arch_depth = depth
-					} else if local.as_str() == "name" {
-						// <field ref=.. name=.. />
-						ref_kind = Some(RefKind::Ref(value.as_str()));
-						if arch_mode {
-							accesses.push(FieldAccess { field: value, depth });
+					match local.as_str() {
+						"ref" if value_in_range => {
+							ref_at_cursor = Some((value.as_str(), value.range()));
 						}
-					} else if local.as_str() == "position" {
-						// in <field name=.. position=.. />
-						// don't register as access
-						// TODO: If position comes first, this does not work.
-						match accesses.last() {
-							Some(access) if depth == access.depth => {
-								accesses.pop();
+						"name" if value_in_range => {
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::FieldName(
+								accesses
+									.iter()
+									.map(|access| (access.field.start(), access.field.as_str()))
+									.collect(),
+							));
+						}
+						"name" if matches!(value.as_str(), "model" | "res_model") => {
+							// contents should be a model string like res.partner
+							// `res_model` is on ir.actions.act_window
+							expect_model_string = true;
+						}
+						"name" if value.as_str() == "report_name" => {
+							// string reference to a template (ir.ui.view)
+							expect_template_string = true;
+						}
+						"name" if value.as_str() == "arch" => {
+							arch_mode = true;
+							arch_depth = depth
+						}
+						"name" => {
+							// <field ref=.. name=.. />
+							ref_kind = Some(RefKind::Ref(value.as_str()));
+							if arch_mode {
+								accesses.push(FieldAccess { field: value, depth });
 							}
-							_ => {}
 						}
-					} else if local.as_str() == "groups" && value_in_range {
-						ref_kind = Some(RefKind::Id);
-						model_filter = Some("res.groups".to_string());
-						arch_model = None;
-						determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
+						"position" => {
+							// in <field name=.. position=.. />
+							// don't register as access
+							// TODO: If position comes first, this does not work.
+							match accesses.last() {
+								Some(access) if depth == access.depth => {
+									accesses.pop();
+								}
+								_ => {}
+							}
+						}
+						"groups" if value_in_range => {
+							ref_kind = Some(RefKind::Id);
+							model_filter = Some("res.groups".to_string());
+							arch_model = None;
+							determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
+						}
+						_ => {}
 					}
 				}
 				// <template inherit_id=.. />
@@ -763,6 +777,14 @@ impl Backend {
 						ref_kind = Some(RefKind::Model);
 					} else {
 						arch_model = Some(text);
+					}
+				}
+				Ok(Token::Text { text }) if expect_template_string => {
+					expect_template_string = false;
+					if text.range().contains_end(offset_at_cursor) {
+						ref_at_cursor = Some((text.as_str(), text.range()));
+						ref_kind = Some(RefKind::Ref("inherit_id"));
+						model_filter = Some("ir.ui.view".to_string());
 					}
 				}
 				Ok(Token::ElementEnd { end, span }) => {

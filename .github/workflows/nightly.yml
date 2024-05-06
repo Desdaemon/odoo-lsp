@@ -167,7 +167,7 @@ jobs:
 
   untag:
     needs: [build, build-extension, tag]
-    if: always() && (needs.build.result != 'success' || needs.build-extension.result != 'success')
+    if: always() && (needs.build.result != 'success' || needs.build-extension.result != 'success') && needs.check.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
