@@ -11,6 +11,7 @@ use serde_json::Value;
 mod tsconfig;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_VERSION: &str = git_version::git_version!(args = ["--tags", "--candidates=0"], fallback = "");
 
 #[derive(Default)]
 pub struct Args<'a> {
@@ -82,7 +83,7 @@ pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
 				exit(0);
 			}
 			["-v" | "--version", ..] => {
-				eprintln!("odoo-lsp v{VERSION}");
+				eprintln!("odoo-lsp v{VERSION} git:{GIT_VERSION}");
 				exit(0);
 			}
 			["--addons-path", path, rest @ ..] => {
@@ -313,7 +314,6 @@ pub fn init(addons_path: &[&str], output: Option<&str>) -> miette::Result<()> {
 }
 
 pub fn self_update(nightly: bool) -> miette::Result<()> {
-	const GIT_VERSION: &str = git_version::git_version!(args = ["--tags", "--candidates=0"], fallback = "");
 	const _: () = {
 		if option_env!("CI").is_some() {
 			assert!(!GIT_VERSION.is_empty(), "Git tag must be present when running in CI");
