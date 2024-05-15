@@ -24,6 +24,9 @@ impl Record {
 	pub fn qualified_id(&self, interner: &ThreadedRodeo) -> String {
 		format!("{}.{}", interner.resolve(&self.module), self.id)
 	}
+	pub fn inverted_id(&self) -> String {
+		format!("{}.{}", self.id, interner().resolve(&self.module))
+	}
 	pub fn from_reader(
 		offset: ByteOffset,
 		module: ModuleName,

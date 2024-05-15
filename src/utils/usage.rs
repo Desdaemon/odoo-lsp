@@ -228,11 +228,14 @@ impl<K: Borrow<[u8]> + Usage, V: Usage> Usage for qp_trie::Trie<K, V> {
 		}
 		let mut usage_by_entries = 0;
 		let mut len = 0;
+		let mut key_lengths = 0;
 		for (key, value) in self.iter() {
 			len += 1;
+			key_lengths += key.borrow().len();
 			usage_by_entries += key.usage().0 + value.usage().0;
 		}
-
+		let average_length = (key_lengths as f64 / len as f64).ceil() as usize;
+		let len = (self.count() * average_length).next_power_of_two();
 		const BRANCHING_FACTOR: usize = 16;
 		let branches = len / BRANCHING_FACTOR;
 		let usage_per_branch = Layout::array::<Tree<K, V>>(BRANCHING_FACTOR).unwrap().size();

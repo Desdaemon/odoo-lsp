@@ -274,7 +274,7 @@ impl Backend {
 			return Ok(());
 		}
 		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_xml_id) range"))?;
-		let by_prefix = self.index.records.by_prefix.read().await;
+		let by_prefix = self.index.records.by_inverted_prefix.read().await;
 		let model_filter = model_filter.and_then(|model| interner().get(model).map(ModelName::from));
 		fn to_completion_items(
 			record: &Record,
@@ -306,23 +306,27 @@ impl Backend {
 			let Some(module) = interner.get(module).map(Into::into) else {
 				return Ok(());
 			};
-			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
-				keys.iter().flat_map(|key| {
-					self.index.records.get(key).and_then(|record| {
+			let completions = by_prefix.find_all_with_prefix(needle).iter().flat_map(|key| {
+				let (id, key_module) = key.split_once('.')?;
+				self.index
+					.records
+					.get(&interner.get(&format!("{key_module}.{id}"))?.into())
+					.and_then(|record| {
 						(record.module == module && (model_filter.is_none() || record.model == model_filter))
 							.then(|| to_completion_items(&record, current_module, range, true, interner))
 					})
-				})
 			});
 			items.extend(completions);
 		} else {
-			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
-				keys.iter().flat_map(|key| {
-					self.index.records.get(key).and_then(|record| {
+			let completions = by_prefix.find_all_with_prefix(needle).iter().flat_map(|key| {
+				let (id, key_module) = key.split_once('.')?;
+				self.index
+					.records
+					.get(&interner.get(&format!("{key_module}.{id}"))?.into())
+					.and_then(|record| {
 						(model_filter.is_none() || record.model == model_filter)
 							.then(|| to_completion_items(&record, current_module, range, false, interner))
 					})
-				})
 			});
 			items.extend(completions);
 		}
@@ -812,7 +816,16 @@ impl Backend {
 		let interner = interner();
 		let symbols_len = interner.len();
 		let symbols_usage = interner.current_memory_usage();
+		let mem_stats = memory_stats::memory_stats()
+			.map(|info| {
+				serde_json::json! {{
+						"physical": info.physical_mem,
+						"virtual": info.virtual_mem,
+				}}
+			})
+			.unwrap_or(Value::Null);
 		Ok(serde_json::json! {{
+			"mem": mem_stats,
 			"debug": cfg!(debug_assertions),
 			"documents": document_map.usage(),
 			"records": record_ranges.usage(),

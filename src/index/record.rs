@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 
 use crate::{model::ModelName, record::Record};
 
-use super::Symbol;
+use super::{interner, Symbol};
 
 #[derive(SmartDefault, Deref)]
 pub struct RecordIndex {
@@ -22,14 +22,16 @@ pub struct RecordIndex {
 	by_model: DashMap<ModelName, HashSet<RecordId>>,
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	by_inherit_id: DashMap<RecordId, HashSet<RecordId>>,
-	/// unqualified XML ID -> RecordID
-	pub by_prefix: RwLock<RecordPrefixTrie>,
+	pub by_inverted_prefix: RwLock<RecordPrefixTrie>,
 }
 
 pub type RecordId = Symbol<Record>;
-pub type RecordPrefixTrie = qp_trie::Trie<ImStr, HashSet<RecordId>>;
+// pub type RecordPrefixTrie = qp_trie::Trie<ImStr, HashSet<RecordId>>;
+pub type RecordPrefixTrie = prefix_array::PrefixArraySet<String>;
 
 impl RecordIndex {
+	/// If `prefix` is not specified, it will NOT be updated for performance reasons. If inserting items into
+	/// the prefix tree in a batch, use `append` instead.
 	pub async fn insert(&self, qualified_id: RecordId, record: Record, prefix: Option<&mut RecordPrefixTrie>) {
 		if let Some(model) = &record.model {
 			self.by_model.entry(*model).or_default().insert(qualified_id);
@@ -38,17 +40,7 @@ impl RecordIndex {
 			self.by_inherit_id.entry(*inherit_id).or_default().insert(qualified_id);
 		}
 		if let Some(prefix) = prefix {
-			prefix
-				.entry(record.id.clone())
-				.or_insert_with(Default::default)
-				.insert(qualified_id);
-		} else {
-			self.by_prefix
-				.write()
-				.await
-				.entry(record.id.clone())
-				.or_insert_with(Default::default)
-				.insert(qualified_id);
+			prefix.insert(record.inverted_id());
 		}
 		self.inner.insert(qualified_id, record);
 	}
@@ -58,17 +50,21 @@ impl RecordIndex {
 		records: impl IntoIterator<Item = Record>,
 		interner: &ThreadedRodeo,
 	) {
+		let mut inverted_prefixes = vec![];
 		if let Some(prefix) = prefix {
 			for record in records {
 				let id = interner.get_or_intern(record.qualified_id(interner));
-				self.insert(id.into(), record, Some(prefix)).await;
+				inverted_prefixes.push(record.inverted_id());
+				self.insert(id.into(), record, None).await;
 			}
+			prefix.extend(inverted_prefixes);
 		} else {
-			let mut prefix = self.by_prefix.write().await;
 			for record in records {
 				let id = interner.get_or_intern(record.qualified_id(interner));
-				self.insert(id.into(), record, Some(&mut prefix)).await;
+				inverted_prefixes.push(record.inverted_id());
+				self.insert(id.into(), record, None).await;
 			}
+			self.by_inverted_prefix.write().await.extend(inverted_prefixes);
 		}
 	}
 	pub fn by_model(&self, model: &ModelName) -> impl Iterator<Item = Ref<RecordId, Record>> {
@@ -201,13 +197,14 @@ impl RecordIndex {
 			inner,
 			by_model,
 			by_inherit_id,
-			by_prefix,
+			by_inverted_prefix,
 		} = self;
 		serde_json::json! {{
 			"entries": inner.usage(),
 			"by_model": by_model.usage(),
 			"by_inherit_id": by_inherit_id.usage(),
-			"by_prefix": block_on(by_prefix.read()).usage(),
+			// "by_prefix": block_on(by_inverted_prefix.read()).usage(),
+			"by_prefix": ()
 		}}
 	}
 }

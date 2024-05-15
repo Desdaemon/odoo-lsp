@@ -69,7 +69,7 @@ impl Backend {
 			.module_of_path(Path::new(uri.path()))
 			.ok_or_else(|| diagnostic!("module_of_path for {} failed", uri.path()))?;
 		let mut record_prefix = if did_save {
-			Some(self.index.records.by_prefix.write().await)
+			Some(self.index.records.by_inverted_prefix.write().await)
 		} else {
 			None
 		};
