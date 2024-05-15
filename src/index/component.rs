@@ -5,6 +5,7 @@ use dashmap::DashMap;
 use futures::executor::block_on;
 use lasso::{Key, Spur};
 use miette::diagnostic;
+use smart_default::SmartDefault;
 use tokio::sync::RwLock;
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
@@ -260,9 +261,11 @@ fn parse_prop_type(node: Node, contents: &[u8], seed: Option<PropType>) -> PropT
 
 pub type ComponentPrefixTrie = qp_trie::Trie<&'static [u8], ComponentName>;
 
-#[derive(Default)]
+#[derive(SmartDefault)]
 pub struct ComponentIndex {
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	inner: DashMap<ComponentName, Component>,
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub by_template: DashMap<TemplateName, ComponentName>,
 	pub by_prefix: RwLock<ComponentPrefixTrie>,
 }

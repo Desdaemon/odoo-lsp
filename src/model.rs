@@ -13,6 +13,7 @@ use log::{debug, error, info, trace, warn};
 use miette::{diagnostic, Diagnostic, IntoDiagnostic};
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+use smart_default::SmartDefault;
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
 use tree_sitter::{Node, Parser, QueryCursor};
@@ -36,8 +37,9 @@ pub enum ModelType {
 	Inherit(Vec<ImStr>),
 }
 
-#[derive(Default)]
+#[derive(SmartDefault)]
 pub struct ModelIndex {
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	inner: DashMap<ModelName, ModelEntry>,
 	pub by_prefix: RwLock<Trie<ImStr, ModelName>>,
 }

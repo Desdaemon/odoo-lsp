@@ -1,3 +1,4 @@
+use core::mem::size_of;
 use std::borrow::{Borrow, Cow};
 use std::fmt::{Debug, Display};
 use std::io::{Read, Write};
@@ -154,8 +155,13 @@ pub struct Text(TextRepr);
 enum TextRepr {
 	Inline(u23, [u8; INLINE_BYTES]),
 	Arc(Arc<str>),
-	Compressed(u32, Arc<[u8]>),
+	Compressed(Arc<[u8]>),
 }
+
+const _: () = {
+	assert!(size_of::<ImStr>() == size_of::<String>());
+	assert!(size_of::<Text>() == size_of::<String>());
+};
 
 impl Debug for Text {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -183,7 +189,7 @@ impl TryFrom<&str> for Text {
 		if data.len() >= bytes.len() {
 			Ok(Self(TextRepr::Arc(value.into())))
 		} else {
-			Ok(Self(TextRepr::Compressed(bytes.len() as u32, data.into())))
+			Ok(Self(TextRepr::Compressed(data.into())))
 		}
 	}
 }
@@ -197,8 +203,8 @@ impl Text {
 				Cow::Borrowed(slice)
 			}
 			TextRepr::Arc(ptr) => Cow::Borrowed(ptr),
-			TextRepr::Compressed(len, encoded) => {
-				let mut buf = Vec::with_capacity(*len as usize);
+			TextRepr::Compressed(encoded) => {
+				let mut buf = vec![];
 				let mut dec = Decoder::new(&encoded[..]);
 				dec.read_to_end(&mut buf).expect("decoding error");
 				// SAFETY: As long as the decoder returns valid UTF-8.
@@ -214,7 +220,7 @@ impl Usage for Text {
 		match &self.0 {
 			TextRepr::Inline(_, _) => UsageInfo::new(0),
 			TextRepr::Arc(ptr) => UsageInfo::new(ptr.len()),
-			TextRepr::Compressed(_, ptr) => UsageInfo::new(ptr.len()),
+			TextRepr::Compressed(ptr) => UsageInfo::new(ptr.len()),
 		}
 	}
 }

@@ -6,19 +6,21 @@ use derive_more::{Deref, DerefMut};
 use futures::executor::block_on;
 use intmap::IntMap;
 use lasso::{Key, Spur, ThreadedRodeo};
+use smart_default::SmartDefault;
 use tokio::sync::RwLock;
 
 use crate::{model::ModelName, record::Record};
 
 use super::Symbol;
 
-#[derive(Default, Deref)]
+#[derive(SmartDefault, Deref)]
 pub struct RecordIndex {
 	#[deref]
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	inner: DashMap<RecordId, Record>,
-	// by_model: DashMap<ModelName, SymbolSet<Record>>,
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	by_model: DashMap<ModelName, HashSet<RecordId>>,
-	// by_inherit_id: DashMap<RecordId, SymbolSet<Record>>,
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	by_inherit_id: DashMap<RecordId, HashSet<RecordId>>,
 	/// unqualified XML ID -> RecordID
 	pub by_prefix: RwLock<RecordPrefixTrie>,

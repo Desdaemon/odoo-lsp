@@ -11,6 +11,7 @@ use lasso::{Key, Spur, ThreadedRodeo};
 use log::{debug, info, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
+use smart_default::SmartDefault;
 use tower_lsp::lsp_types::notification::Progress;
 use tower_lsp::lsp_types::request::{ShowDocument, ShowMessageRequest};
 use tower_lsp::lsp_types::*;
@@ -51,7 +52,7 @@ impl Deref for Interner {
 impl Interner {
 	fn get_counter(&self) -> &'static DashMap<Spur, u32> {
 		static COUNTER: std::sync::OnceLock<DashMap<Spur, u32>> = std::sync::OnceLock::new();
-		COUNTER.get_or_init(Default::default)
+		COUNTER.get_or_init(|| DashMap::with_shard_amount(4))
 	}
 	pub fn get_or_intern<T: AsRef<str>>(&self, value: T) -> Spur {
 		let out = self.0.get_or_intern(value);
@@ -92,9 +93,10 @@ impl Interner {
 	}
 }
 
-#[derive(Default)]
+#[derive(SmartDefault)]
 pub struct Index {
 	/// root -> module key -> module's relpath to root
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub roots: DashMap<String, SymbolMap<Module, ImStr>>,
 	pub records: record::RecordIndex,
 	pub templates: template::TemplateIndex,

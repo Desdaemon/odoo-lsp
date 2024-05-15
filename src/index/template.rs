@@ -4,15 +4,17 @@ use derive_more::Deref;
 
 use dashmap::DashMap;
 use futures::executor::block_on;
+use smart_default::SmartDefault;
 use tokio::sync::RwLock;
 
 use crate::{template::NewTemplate, utils::Usage};
 
 use super::{interner, Template, TemplateName};
 
-#[derive(Default, Deref)]
+#[derive(SmartDefault, Deref)]
 pub struct TemplateIndex {
 	#[deref]
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	inner: DashMap<TemplateName, Template>,
 	pub by_prefix: RwLock<TemplatePrefixTrie>,
 }
