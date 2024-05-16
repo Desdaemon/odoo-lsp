@@ -71,22 +71,22 @@ query! {
   (#eq? @_api "api")
   (#match? @DEPENDS "^(depends|constrains|onchange)$"))
 
-((call [
+(call [
   (identifier) @_Field
   (attribute (identifier) @_fields (identifier) @_Field) ]
   (argument_list
     . ((comment)* . (string) @MODEL)?
-    (keyword_argument
-      (identifier) @_comodel_name (string) @MODEL)?
-    (keyword_argument
-      (identifier) @_domain
-      (list [
-        (parenthesized_expression (string) @MAPPED)
-        (tuple . (string) @MAPPED) ]))? ))
+    (keyword_argument [
+      ((identifier) @_comodel_name (string) @MODEL
+        (#eq? @_comodel_name "comodel_name"))
+      ((identifier) @_domain [
+        (list [
+          (parenthesized_expression (string) @MAPPED)
+          (tuple . (string) @MAPPED) ])
+        _ ]
+        (#eq? @_domain "domain")) ])?)
   (#eq? @_fields "fields")
-  (#match? @_Field "^(Many2one|One2many|Many2many)$")
-  (#eq? @_comodel_name "comodel_name")
-  (#eq? @_domain "domain"))
+  (#match? @_Field "^(Many2one|One2many|Many2many)$"))
 
 ((call
   (attribute
@@ -1217,7 +1217,7 @@ self.env.ref('ref')
 env['model']
 request.render('template')
 foo = fields.Char()
-bar = fields.Many2one('positional')
+bar = fields.Many2one('positional', string='blah', domain="[('foo', '=', 'bar')]")
 baz = fields.Many2many(comodel_name='named')
 "#;
 		let ast = parser.parse(&contents[..], None).unwrap();
@@ -1227,7 +1227,7 @@ baz = fields.Many2many(comodel_name='named')
 			(0, vec!["env", "ref", "'ref'"]),
 			(1, vec!["env", "'model'"]),
 			(0, vec!["request", "render", "'template'"]),
-			(4, vec!["fields", "Many2one", "'positional'"]),
+			(4, vec!["fields", "Many2one", "'positional'", "domain"]),
 			(4, vec!["fields", "Many2many", "comodel_name", "'named'"]),
 		];
 		let actual = cursor
