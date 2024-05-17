@@ -6,6 +6,7 @@ use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 
+use const_format::assertcp_eq;
 use libflate::deflate::{Decoder, Encoder};
 use num_enum::IntoPrimitive;
 use num_enum::TryFromPrimitive;
@@ -16,7 +17,7 @@ use crate::utils::{Usage, UsageInfo};
 #[derive(Clone)]
 pub struct ImStr(pub(crate) Repr);
 
-const INLINE_BYTES: usize = 23;
+const INLINE_BYTES: usize = if cfg!(target_pointer_width = "64") { 23 } else { 11 };
 #[derive(Clone)]
 pub(crate) enum Repr {
 	Arc(Arc<str>),
@@ -159,8 +160,16 @@ enum TextRepr {
 }
 
 const _: () = {
-	assert!(size_of::<ImStr>() == size_of::<String>());
-	assert!(size_of::<Text>() == size_of::<String>());
+	assertcp_eq!(
+		size_of::<ImStr>(),
+		size_of::<String>(),
+		"ImStr must be as large as String"
+	);
+	assertcp_eq!(
+		size_of::<Text>(),
+		size_of::<String>(),
+		"Text must be as large as String"
+	);
 };
 
 impl Debug for Text {

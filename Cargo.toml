@@ -76,6 +76,7 @@ num_enum = "0.7.2"
 thiserror = "1.0.58"
 git-version = "0.3.9"
 smart-default = "0.7.1"
+const_format = { version = "0.2.32", features = ["assertcp"] }
 
 [target.'cfg(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64"))))'.dependencies]
 self_update = { version = "0.39.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }
