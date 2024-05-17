@@ -795,7 +795,7 @@ async fn main() {
 
 	let service = ServiceBuilder::new()
 		.layer_fn(CatchPanic)
-		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(15)))
+		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(25)))
 		.service(service);
 	Server::new(stdin, stdout, socket).serve(service).await;
 }

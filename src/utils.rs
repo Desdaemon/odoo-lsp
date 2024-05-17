@@ -2,11 +2,14 @@ use core::ops::{Add, Sub};
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::fs::File;
+use std::future::Future;
 use std::io::BufWriter;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::try_result::TryResult;
+use futures::future::BoxFuture;
 use ropey::{Rope, RopeSlice};
+use smart_default::SmartDefault;
 use tower_lsp::lsp_types::*;
 use xmlparser::{StrSpan, TextPos, Token};
 
@@ -41,6 +44,33 @@ macro_rules! ok {
     ($res:expr, $($tt:tt)+) => {
     	miette::WrapErr::wrap_err_with(miette::IntoDiagnostic::into_diagnostic($res), || format_loc!($($tt)+))?
     }
+}
+
+#[repr(transparent)]
+#[derive(SmartDefault)]
+pub struct EarlyReturn<'a, T>(
+	// By default, trait objects are bound to a 'static lifetime.
+	// This allows closures to capture references instead.
+	// However, any values must still be Send.
+	#[default(None)] Option<Box<dyn FnOnce() -> BoxFuture<'a, T> + 'a + Send>>,
+);
+
+impl<'a, T> EarlyReturn<'a, T> {
+	/// Lifts a certain async computation out of the current scope to be executed later.
+	pub fn lift<F, Fut>(&mut self, closure: F)
+	where
+		F: FnOnce() -> Fut + 'a + Send,
+		Fut: Future<Output = T> + 'a + Send,
+	{
+		self.0 = Some(Box::new(move || Box::pin(async move { closure().await })));
+	}
+	#[inline]
+	pub fn is_none(&self) -> bool {
+		self.0.is_none()
+	}
+	pub fn call(self) -> Option<BoxFuture<'a, T>> {
+		Some(self.0?())
+	}
 }
 
 /// A more economical version of [Location].
