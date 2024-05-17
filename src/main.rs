@@ -724,7 +724,7 @@ impl LanguageServer for Backend {
 	}
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
 	let outlog = std::env::var("ODOO_LSP_LOG").ok().map(|var| {
 		let path = match var.as_str() {
