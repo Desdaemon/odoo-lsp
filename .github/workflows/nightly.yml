@@ -169,6 +169,8 @@ jobs:
     needs: [build, build-extension, tag]
     if: always() && (needs.build.result != 'success' || needs.build-extension.result != 'success') && needs.check.outputs.skip != 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
