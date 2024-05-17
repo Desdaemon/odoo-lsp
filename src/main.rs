@@ -114,7 +114,6 @@ impl LanguageServer for Backend {
 			match params.initialization_options.map(serde_json::from_value::<Config>) {
 				Some(Ok(config)) => {
 					self.on_change_config(config).await;
-					break 'root;
 				}
 				Some(Err(err)) => {
 					error!("could not parse provided config:\n{err}");
@@ -125,8 +124,9 @@ impl LanguageServer for Backend {
 				let config_file = 'find_root: {
 					for choice in [".odoo_lsp", ".odoo_lsp.json"] {
 						let path = root.join(choice);
-						if let Ok(file) = tokio::fs::read(&path).await {
-							break 'find_root Some((path, file));
+						match tokio::fs::read(&path).await {
+							Ok(file) => break 'find_root Some((path, file)),
+							Err(err) => error!("(initialize) could not read {path:?}: {err}"),
 						}
 					}
 					None
