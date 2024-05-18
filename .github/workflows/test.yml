@@ -1,0 +1,58 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e-testing:
+    strategy:
+      fail-fast: false
+      matrix:
+        runs-on:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Create dummy tag
+        run: git tag -f CI
+
+      - name: Run unit tests
+        id: cargo-test
+        continue-on-error: true
+        run: cargo test
+
+      - name: Run tests
+        working-directory: testing
+        run: |
+          pip install uv
+          uv venv
+          . ${{ matrix.runs-on == 'windows-latest' && '.venv/Scripts/activate' || '.venv/bin/activate'}}
+          uv pip sync requirements.txt
+          pytest -vv --junit-xml=.results.xml --color=yes
+
+      - name: Report failures
+        if: always()
+        uses: pmeier/pytest-results-action@main
+        with:
+          path: testing/.results.xml
+          summary: true
+          fail-on-empty: true
+          title: E2E Test Results
+
+      - name: Fail if unit tests failed
+        if: steps.cargo-test.outcome == 'failure'
+        run: exit 1

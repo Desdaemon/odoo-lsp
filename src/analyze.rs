@@ -629,8 +629,8 @@ class Foo(models.AbstractModel):
 			matches!(
 				&actual[..],
 				[
-					[None, None, Some(T::Name), Some(T::SelfParam), Some(T::Scope)],
-					[None, None, Some(T::Name), Some(T::SelfParam), Some(T::Scope)]
+					[None, None, Some(T::Name), Some(T::Def), Some(T::SelfParam), Some(T::Scope)],
+					[None, None, Some(T::Name), Some(T::Def), Some(T::SelfParam), Some(T::Scope)]
 				]
 			),
 			"{actual:?}"
