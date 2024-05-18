@@ -47,7 +47,7 @@ pub struct PropDescriptor {
 }
 
 bitflags::bitflags! {
-	#[derive(Default, Copy, Clone, Debug)]
+	#[derive(Default, Copy, Clone, Debug, PartialEq, Eq)]
 	pub struct PropType: u8 {
 		const  Unknown = 0;
 		const Optional = 1 << 0;

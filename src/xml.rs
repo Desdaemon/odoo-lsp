@@ -7,10 +7,11 @@ use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 
+use fomat_macros::fomat;
 use lasso::Spur;
 use log::{debug, warn};
 use miette::diagnostic;
-use odoo_lsp::component::ComponentTemplate;
+use odoo_lsp::component::{ComponentTemplate, PropType};
 use odoo_lsp::index::{interner, PathSymbol};
 use odoo_lsp::model::{Field, FieldKind};
 use odoo_lsp::template::gather_templates;
@@ -375,7 +376,12 @@ impl Backend {
 			Some(RefKind::TInherit) | Some(RefKind::TName) | Some(RefKind::TCall) => {
 				self.jump_def_template_name(needle)
 			}
-			Some(RefKind::PropOf(component)) => self.jump_def_component_prop(component, needle),
+			Some(RefKind::PropOf(component)) => {
+				if let Some((handler, _)) = needle.split_once('.') {
+					needle = handler;
+				}
+				self.jump_def_component_prop(component, needle)
+			}
 			Some(RefKind::Id) => self.jump_def_xml_id(needle, uri),
 			Some(RefKind::PyExpr(py_offset)) => {
 				let mut parser = Parser::new();
@@ -448,7 +454,7 @@ impl Backend {
 			return Ok(None);
 		};
 
-		let lsp_range = offset_range_to_lsp_range(
+		let mut lsp_range = offset_range_to_lsp_range(
 			ref_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset)),
 			rope.clone(),
 		);
@@ -528,7 +534,48 @@ impl Backend {
 					offset_range_to_lsp_range(range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)), rope.clone()),
 				)
 			}
-			Some(RefKind::TName) | Some(RefKind::PropOf(..)) | Some(RefKind::Component) | None => {
+			Some(RefKind::Component) => Ok(self.hover_component(needle, lsp_range)),
+			Some(RefKind::PropOf(component_key)) => {
+				if let Some((handler, _)) = needle.split_once('.') {
+					// accept handler.bind syntax as well
+					if let Some(lsp_range) = lsp_range.as_mut() {
+						lsp_range.end.character = lsp_range.start.character + handler.len() as u32;
+					}
+					needle = handler;
+				}
+				let prop = some!(interner().get(needle));
+				let component = some!(interner().get(component_key));
+				let component = some!(self.index.components.get(&component.into()));
+				let field = some!(component.props.get(&prop.into()));
+				let type_descriptor = field.type_ & !(PropType::Optional | PropType::Array);
+				let needs_paren = field.type_.contains(PropType::Array) && type_descriptor.iter().count() > 1;
+				let contents = fomat! {
+					"(property) " (component_key) "." (needle)
+					if field.type_.contains(PropType::Optional) { "?" } ": "
+					if needs_paren { "(" }
+					for type_ in type_descriptor.iter() {
+						match type_ {
+							PropType::String => { "string" }
+							PropType::Number => { "number" }
+							PropType::Boolean => { "boolean" }
+							PropType::Object => { "object" }
+							PropType::Function => { "Function" }
+							_ => { "unknown" }
+						}
+					}
+					separated { " | " }
+					if needs_paren { ")" }
+					if field.type_.contains(PropType::Array) { "[]" }
+				};
+				Ok(Some(Hover {
+					range: lsp_range,
+					contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
+						language: "ts".to_string(),
+						value: contents,
+					})),
+				}))
+			}
+			Some(RefKind::TName) | None => {
 				#[cfg(not(debug_assertions))]
 				return Ok(None);
 

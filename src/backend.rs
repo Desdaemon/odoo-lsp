@@ -522,7 +522,7 @@ impl Backend {
 			.and_then(|loc| self.index.module_of_path(&loc.path.to_path()));
 		let value = fomat!(
 			"```js\n"
-			"(component) class " (name) ";\n"
+			"(component) class " (name) "\n"
 			"```"
 			if let Some(module) = module {
 				"\n*Defined in:* `" (interner().resolve(&module)) "`"
