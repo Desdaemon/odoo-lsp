@@ -12,7 +12,7 @@ use dashmap::{DashMap, DashSet};
 use fomat_macros::fomat;
 use globwalk::FileType;
 use lasso::Spur;
-use log::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 use miette::{diagnostic, miette};
 use odoo_lsp::component::{Prop, PropDescriptor};
 use ropey::Rope;
@@ -47,6 +47,8 @@ pub struct Capabilities {
 	pub dynamic_config: AtomicBool,
 	/// Whether the client is expected to explicitly request for diagnostics.
 	pub pull_diagnostics: AtomicBool,
+	/// Whether workspace/workspaceFolders can be called.
+	pub workspace_folders: AtomicBool,
 }
 
 pub struct TextDocumentItem {
@@ -103,7 +105,7 @@ impl Backend {
 		}
 		None
 	}
-
+	#[instrument(skip_all)]
 	pub async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
 		let split_uri = params.uri.path().rsplit_once('.');
 		let mut document = self
@@ -206,6 +208,7 @@ impl Backend {
 	pub fn eager_diagnostics(&self, open: bool, rope: &Rope) -> bool {
 		!self.capabilities.pull_diagnostics.load(Relaxed) && (open || rope.len_lines() < Self::DIAGNOSTICS_LINE_LIMIT)
 	}
+	#[instrument(skip_all, fields(uri))]
 	pub fn update_ast(
 		&self,
 		text: &Text,

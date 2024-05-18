@@ -8,11 +8,11 @@ use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
 
 use lasso::Spur;
-use log::{debug, trace, warn};
 use miette::{diagnostic, miette};
 use odoo_lsp::index::{index_models, interner, PathSymbol};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
+use tracing::{debug, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor, QueryMatch, Tree};
 
 use odoo_lsp::model::{ModelName, ModelType, ResolveMappedError};
@@ -160,6 +160,7 @@ struct Mapped<'text> {
 }
 
 impl Backend {
+	#[tracing::instrument(skip_all, fields(uri))]
 	pub fn on_change_python(&self, text: &Text, uri: &Url, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
@@ -274,8 +275,13 @@ impl Backend {
 								let rope = rope.clone();
 								early_return.lift(|| async move {
 									let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
-									self.complete_model(&needle, range.map_unit(ByteOffset), rope.clone(), &mut items)
-										.await?;
+									self.complete_model(
+										&needle,
+										range.shrink(1).map_unit(ByteOffset),
+										rope.clone(),
+										&mut items,
+									)
+									.await?;
 									Ok(Some(CompletionResponse::List(CompletionList {
 										is_incomplete: !items.has_space(),
 										items: items.into_inner(),
@@ -401,7 +407,7 @@ impl Backend {
 			return None;
 		}
 
-		log::trace!(
+		tracing::trace!(
 			"(gather_mapped) {} matches={match_:?}",
 			String::from_utf8_lossy(&contents[range.clone()])
 		);

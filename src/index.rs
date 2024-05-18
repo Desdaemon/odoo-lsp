@@ -8,7 +8,7 @@ use globwalk::FileType;
 use ignore::gitignore::Gitignore;
 use ignore::Match;
 use lasso::{Key, Spur, ThreadedRodeo};
-use log::{debug, info, warn};
+use tracing::{debug, info, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use smart_default::SmartDefault;

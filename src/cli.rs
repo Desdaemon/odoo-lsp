@@ -1,7 +1,7 @@
 use std::{env::current_dir, fs::canonicalize, io::stdout, path::Path, process::exit, sync::Arc};
 
 use globwalk::FileType;
-use log::{debug, warn};
+use tracing::{debug, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{interner, Index};

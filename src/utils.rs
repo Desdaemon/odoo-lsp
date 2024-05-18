@@ -28,7 +28,7 @@ macro_rules! some {
 		match $opt {
 			Some(it) => it,
 			None => {
-				log::trace!("{}", $crate::format_loc!("{}", concat!(stringify!($opt), " = None")));
+				tracing::trace!("{}", $crate::format_loc!("{}", concat!(stringify!($opt), " = None")));
 				return Ok(None);
 			}
 		}
@@ -362,7 +362,7 @@ impl<T: Sized> TryResultExt for TryResult<T> {
 
 #[cfg(test)]
 pub fn init_for_test() {
-	env_logger::builder().parse_filters("info,odoo_lsp=trace").init();
+	// env_logger::builder().parse_filters("info,odoo_lsp=trace").init();
 }
 
 #[derive(Default)]

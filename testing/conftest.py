@@ -1,0 +1,43 @@
+# pyright: strict
+
+from lsprotocol.types import ClientCapabilities, CompletionClientCapabilities, InitializeParams, PublishDiagnosticsClientCapabilities, TextDocumentClientCapabilities, WindowClientCapabilities
+
+import pytest
+import pytest_lsp
+import os
+import subprocess
+from pytest_lsp import ClientServerConfig
+from pytest_lsp import LanguageClient
+from shutil import which
+
+
+__dirname = os.path.dirname(os.path.realpath(__file__))
+
+if lsp_devtools := which('lsp-devtools'):
+    odoocmd = [lsp_devtools, "agent", "--", f"{__dirname}/../target/debug/odoo-lsp"]
+else:
+    odoocmd = [f"{__dirname}/../target/debug/odoo-lsp"]
+ODOO_ENV = {"RUST_LOG": "info,odoo_lsp=trace"}
+
+@pytest.fixture
+def rootdir():
+    return __dirname
+
+@pytest.fixture(autouse=True, scope='session')
+def setup():
+    subprocess.run(['cargo', 'build'], env=dict(os.environ, CARGO_TERM_COLOR='always'))
+
+assert os.getcwd().startswith(__dirname), 'Tests must be executed from within /testing'
+
+@pytest_lsp.fixture(scope='module', config=ClientServerConfig(server_command=odoocmd, server_env=ODOO_ENV))
+async def client(lsp_client: LanguageClient, rootdir: str):
+    params = InitializeParams(root_uri=f"file://{rootdir}", capabilities=ClientCapabilities(
+        window=WindowClientCapabilities(work_done_progress=True),
+        text_document=TextDocumentClientCapabilities(
+            publish_diagnostics=PublishDiagnosticsClientCapabilities(),
+            completion=CompletionClientCapabilities(),
+        )
+    ))
+    await lsp_client.initialize_session(params)
+    yield
+    await lsp_client.shutdown_session()
