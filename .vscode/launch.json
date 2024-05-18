@@ -9,29 +9,25 @@
 			"program": ".venv/bin/pytest",
 			"args": ["-v"],
 			"cwd": "${workspaceFolder}/testing",
-			"console": "integratedTerminal"
+			"console": "integratedTerminal",
+			"windows": {
+				"program": ".venv/Scripts/pytest.exe"
+			}
 		},
 		{
 			"type": "lldb",
 			"request": "attach",
 			"name": "Attach",
 			"program": "odoo-lsp",
-			"sourceLanguages": [
-				"rust"
-			]
+			"sourceLanguages": ["rust"]
 		},
 		{
 			"type": "extensionHost",
 			"request": "launch",
 			"name": "Launch Client",
 			"runtimeExecutable": "${execPath}",
-			"args": [
-				"--extensionDevelopmentPath=${workspaceRoot}",
-				"${workspaceRoot}/examples"
-			],
-			"outFiles": [
-				"${workspaceRoot}/dist/*.js"
-			],
+			"args": ["--extensionDevelopmentPath=${workspaceRoot}", "${workspaceRoot}/examples"],
+			"outFiles": ["${workspaceRoot}/dist/*.js"],
 			"preLaunchTask": {
 				"type": "npm",
 				"script": "watch"
@@ -47,13 +43,8 @@
 			"request": "launch",
 			"name": "Launch Client (Production Flow)",
 			"runtimeExecutable": "${execPath}",
-			"args": [
-				"--extensionDevelopmentPath=${workspaceRoot}",
-				"${workspaceRoot}/examples"
-			],
-			"outFiles": [
-				"${workspaceRoot}/dist/*.js"
-			],
+			"args": ["--extensionDevelopmentPath=${workspaceRoot}", "${workspaceRoot}/examples"],
+			"outFiles": ["${workspaceRoot}/dist/*.js"],
 			"preLaunchTask": {
 				"type": "npm",
 				"script": "watch"
@@ -73,9 +64,7 @@
 				"--extensionTestsPath=${workspaceRoot}/client/out/test/index",
 				"${workspaceRoot}/client/testFixture"
 			],
-			"outFiles": [
-				"${workspaceRoot}/client/out/test/**/*.js"
-			]
+			"outFiles": ["${workspaceRoot}/client/out/test/**/*.js"]
 		},
 		{
 			"name": "Attach to LSP",
@@ -87,10 +76,7 @@
 	"compounds": [
 		{
 			"name": "Client + Server",
-			"configurations": [
-				"Launch Client",
-				"Attach to Server"
-			]
+			"configurations": ["Launch Client", "Attach to Server"]
 		}
 	]
 }

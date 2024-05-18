@@ -23,7 +23,7 @@ if len(args) < 1:
 fixture_dir = Path(args.pop(0))
 os.makedirs(fixture_dir, exist_ok=True)
 copyfile("template.py", fixture_dir.joinpath("test_main.py"))
-with open(fixture_dir.joinpath('.odoo_lsp'), "w+") as config:
+with open(fixture_dir.joinpath(".odoo_lsp"), "w+") as config:
     config.write('{"module":{"roots":["."]}}')
 for addon in args:
     os.mkdir(fixture_dir.joinpath(addon))

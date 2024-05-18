@@ -3,13 +3,11 @@ use crate::{Backend, Text};
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 
 use fomat_macros::fomat;
 use lasso::Spur;
-use tracing::{debug, warn};
 use miette::diagnostic;
 use odoo_lsp::component::{ComponentTemplate, PropType};
 use odoo_lsp::index::{interner, PathSymbol};
@@ -17,6 +15,7 @@ use odoo_lsp::model::{Field, FieldKind};
 use odoo_lsp::template::gather_templates;
 use ropey::{Rope, RopeSlice};
 use tower_lsp::lsp_types::*;
+use tracing::{debug, warn};
 use tree_sitter::Parser;
 use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
 
@@ -68,16 +67,18 @@ impl Backend {
 		let mut reader = Tokenizer::from(text.as_ref());
 		let mut record_ranges = vec![];
 		let interner = interner();
+		let path = uri.to_file_path().map_err(|_| diagnostic!("uri.to_file_path failed"))?;
 		let current_module = self
 			.index
-			.module_of_path(Path::new(uri.path()))
+			.module_of_path(&path)
 			.ok_or_else(|| diagnostic!("module_of_path for {} failed", uri.path()))?;
 		let mut record_prefix = if did_save {
 			Some(self.index.records.by_prefix.write().await)
 		} else {
 			None
 		};
-		let path_uri = PathSymbol::strip_root(root, Path::new(uri.path()));
+		let path = uri.to_file_path().unwrap();
+		let path_uri = PathSymbol::strip_root(root, &path);
 		loop {
 			match reader.next() {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
@@ -204,11 +205,9 @@ impl Backend {
 		let (slice, offset_at_cursor, relative_offset) = self.record_slice(&rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
+		let path = some!(uri.to_file_path().ok());
 
-		let current_module = self
-			.index
-			.module_of_path(Path::new(uri.path()))
-			.expect("must be in a module");
+		let current_module = self.index.module_of_path(&path).expect("must be in a module");
 
 		let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
 		let XmlRefs {
@@ -407,6 +406,7 @@ impl Backend {
 	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
+		let path = some!(uri.to_file_path().ok());
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
@@ -416,12 +416,8 @@ impl Backend {
 			..
 		} = self.gather_refs(cursor_by_char, &mut reader, &slice)?;
 
-		let Some((cursor_value, _)) = cursor_value else {
-			return Ok(None);
-		};
-		let current_module = self
-			.index
-			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
+		let (cursor_value, _) = some!(cursor_value);
+		let current_module = self.index.module_of_path(&path);
 		match ref_kind {
 			Some(RefKind::Model) => {
 				let model = some!(interner().get(cursor_value));
@@ -440,6 +436,7 @@ impl Backend {
 	pub fn xml_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
+		let path = some!(uri.to_file_path().ok());
 		let (slice, offset_at_cursor, relative_offset) = self.record_slice(&rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
@@ -450,17 +447,13 @@ impl Backend {
 			scope,
 		} = self.gather_refs(offset_at_cursor, &mut reader, &slice)?;
 
-		let Some((mut needle, ref_range)) = ref_at_cursor else {
-			return Ok(None);
-		};
+		let (mut needle, ref_range) = some!(ref_at_cursor);
 
 		let mut lsp_range = offset_range_to_lsp_range(
 			ref_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset)),
 			rope.clone(),
 		);
-		let current_module = self
-			.index
-			.module_of_path(Path::new(params.text_document_position_params.text_document.uri.path()));
+		let current_module = self.index.module_of_path(&path);
 		match ref_kind {
 			Some(RefKind::Model) => self.hover_model(needle, lsp_range, false, None),
 			Some(RefKind::Ref(_)) => {

@@ -1,7 +1,15 @@
 import pytest
 from pathlib import Path
 from pytest_lsp import LanguageClient
-from lsprotocol.types import DidOpenTextDocumentParams, TextDocumentItem, CompletionParams, TextDocumentIdentifier, Position, CompletionList, Diagnostic
+from lsprotocol.types import (
+    DidOpenTextDocumentParams,
+    TextDocumentItem,
+    CompletionParams,
+    TextDocumentIdentifier,
+    Position,
+    CompletionList,
+    Diagnostic,
+)
 
 
 @pytest.mark.asyncio(scope="module")
@@ -18,7 +26,7 @@ async def test_completions(client: LanguageClient, rootdir: str):
             )
         )
     )
-    await client.wait_for_notification('textDocument/publishDiagnostics')
+    await client.wait_for_notification("textDocument/publishDiagnostics")
 
     results = await client.text_document_completion_async(
         CompletionParams(
@@ -29,10 +37,21 @@ async def test_completions(client: LanguageClient, rootdir: str):
     if isinstance(results, CompletionList):
         results = results.items
     assert results
-    assert [e.label for e in results] == ['bar', 'derived.bar', 'foo', 'foob']
+    assert [e.label for e in results] == ["bar", "derived.bar", "foo", "foob"]
+
 
 def splay_diag(diags: list[Diagnostic]):
-    return ((d.range.start.line, d.range.start.character, d.range.end.line, d.range.end.character, d.message) for d in diags)
+    return (
+        (
+            d.range.start.line,
+            d.range.start.character,
+            d.range.end.line,
+            d.range.end.character,
+            d.message,
+        )
+        for d in diags
+    )
+
 
 @pytest.mark.asyncio(scope="module")
 async def test_diagnostics(client: LanguageClient, rootdir: str):
@@ -46,8 +65,8 @@ async def test_diagnostics(client: LanguageClient, rootdir: str):
             )
         )
     )
-    await client.wait_for_notification('textDocument/publishDiagnostics')
-    diagnostics = client.diagnostics[f"file://{rootdir}/foo/models.py"]
+    await client.wait_for_notification("textDocument/publishDiagnostics")
+    diagnostics = client.diagnostics[Path(f"{rootdir}/foo/models.py").as_uri()]
     assert list(splay_diag(diagnostics)) == [
         (7, 13, 7, 16, "Model `foo` has no field `foo`"),
         (8, 24, 8, 27, "Model `foo` has no field `foo`"),

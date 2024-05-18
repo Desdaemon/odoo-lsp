@@ -1,5 +1,3 @@
 {
-  "strict": [
-    "**/test_*.py"
-  ]
+	"strict": ["**/test_*.py"]
 }

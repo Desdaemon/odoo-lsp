@@ -9,13 +9,13 @@ use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
 use futures::executor::block_on;
 use lasso::Spur;
-use tracing::{debug, error, info, trace, warn};
 use miette::{diagnostic, Diagnostic, IntoDiagnostic};
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use smart_default::SmartDefault;
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
+use tracing::{debug, error, info, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 

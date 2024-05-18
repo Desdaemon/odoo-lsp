@@ -2,9 +2,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 use lasso::Spur;
-use tracing::debug;
 use miette::IntoDiagnostic;
 use odoo_lsp::{index::interner, utils::RangeExt, ImStr};
+use tracing::debug;
 use tree_sitter::{Parser, QueryCursor};
 use ts_macros::query;
 

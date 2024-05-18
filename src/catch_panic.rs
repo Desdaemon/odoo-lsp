@@ -7,9 +7,9 @@ use std::task::{ready, Context, Poll};
 
 use futures::FutureExt;
 use futures::{future::CatchUnwind, Future};
-use tracing::{error, warn};
 use tower::Service;
 use tower_lsp::jsonrpc::{Error, ErrorCode, Id, Response};
+use tracing::{error, warn};
 
 pub struct CatchPanic<S>(pub S);
 impl<S> Service<tower_lsp::jsonrpc::Request> for CatchPanic<S>
