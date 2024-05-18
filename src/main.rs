@@ -170,6 +170,12 @@ impl LanguageServer for Backend {
 				references_provider: Some(OneOf::Left(true)),
 				workspace_symbol_provider: Some(OneOf::Left(true)),
 				diagnostic_provider: Some(DiagnosticServerCapabilities::Options(Default::default())),
+				// XML code actions are done in 1 pass only
+				code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+				execute_command_provider: Some(ExecuteCommandOptions {
+					commands: vec!["goto_owl".to_string()],
+					..Default::default()
+				}),
 				text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
 					change: Some(TextDocumentSyncKind::INCREMENTAL),
 					save: Some(TextDocumentSyncSaveOptions::Supported(true)),
@@ -636,9 +642,6 @@ impl LanguageServer for Backend {
 		}
 		self.index.mark_n_sweep();
 	}
-	async fn execute_command(&self, _: ExecuteCommandParams) -> Result<Option<Value>> {
-		Ok(None)
-	}
 	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
 		let query = &params.query;
 
@@ -709,7 +712,7 @@ impl LanguageServer for Backend {
 					damage_zone,
 					&mut document.diagnostics_cache,
 				);
-				diagnostics = document.diagnostics_cache.clone();
+				diagnostics.clone_from(&document.diagnostics_cache);
 			}
 		}
 		Ok(DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
@@ -721,6 +724,43 @@ impl LanguageServer for Backend {
 				},
 			},
 		)))
+	}
+	async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+		let Some((_, "xml")) = params.text_document.uri.path().rsplit_once('.') else {
+			return Ok(None);
+		};
+
+		let document = some!(self.document_map.get(params.text_document.uri.path()));
+
+		Ok(self
+			.xml_code_actions(params, document.rope.clone())
+			.inspect_err(|err| {
+				error!("(code_lens) {err}");
+			})
+			.unwrap_or(None))
+	}
+	async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
+		match (params.command.as_str(), params.arguments.as_slice()) {
+			("goto_owl", [Value::String(_), Value::String(subcomponent)]) => {
+				// FIXME: Subcomponents should not just depend on the component's name,
+				// since users can readjust subcomponents' names at will.
+				let component = some!(interner().get(subcomponent));
+				let component = some!(self.index.components.get(&component.into()));
+				let location = some!(component.location.as_ref());
+				_ = self
+					.client
+					.show_document(ShowDocumentParams {
+						uri: Url::from_file_path(location.path.as_string()).unwrap(),
+						external: Some(false),
+						take_focus: Some(true),
+						selection: Some(location.range),
+					})
+					.await;
+			}
+			_ => {}
+		}
+
+		Ok(None)
 	}
 }
 

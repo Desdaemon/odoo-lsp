@@ -10,6 +10,7 @@ use std::sync::Arc;
 use lasso::Spur;
 use log::{debug, warn};
 use miette::diagnostic;
+use odoo_lsp::component::ComponentTemplate;
 use odoo_lsp::index::{interner, PathSymbol};
 use odoo_lsp::model::{Field, FieldKind};
 use odoo_lsp::template::gather_templates;
@@ -37,6 +38,8 @@ enum RefKind<'a> {
 	/// An arbitrary Python expression.
 	/// Includes the relative offset of where the cursor is.
 	PyExpr(usize),
+	/// `<Component />`
+	Component,
 }
 
 enum Tag<'a> {
@@ -328,7 +331,7 @@ impl Backend {
 					&mut items,
 				)?;
 			}
-			RefKind::TName => return Ok(None),
+			RefKind::TName | RefKind::Component => return Ok(None),
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
@@ -384,6 +387,14 @@ impl Backend {
 				let model = some!(self.resolve_type(&model, &Scope::default()));
 				self.jump_def_field_name(&field, interner().resolve(&model))
 			}
+			Some(RefKind::Component) => {
+				let component = some!(interner().get(needle));
+				let component = some!(self.index.components.get(&component.into()));
+				let Some(ComponentTemplate::Name(template)) = component.template.as_ref() else {
+					return Ok(None);
+				};
+				self.jump_def_template_name(interner().resolve(template))
+			}
 			None => Ok(None),
 		}
 	}
@@ -413,7 +424,11 @@ impl Backend {
 			Some(RefKind::Ref(_)) | Some(RefKind::Id) => self.record_references(cursor_value, current_module),
 			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.template_references(cursor_value, true),
 			Some(RefKind::TName) => self.template_references(cursor_value, false),
-			Some(RefKind::PyExpr(_)) | Some(RefKind::FieldName(_)) | Some(RefKind::PropOf(..)) | None => Ok(None),
+			Some(RefKind::PyExpr(_))
+			| Some(RefKind::FieldName(_))
+			| Some(RefKind::PropOf(..))
+			| Some(RefKind::Component)
+			| None => Ok(None),
 		}
 	}
 	pub fn xml_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
@@ -513,7 +528,7 @@ impl Backend {
 					offset_range_to_lsp_range(range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)), rope.clone()),
 				)
 			}
-			Some(RefKind::TName) | Some(RefKind::PropOf(..)) | None => {
+			Some(RefKind::TName) | Some(RefKind::PropOf(..)) | Some(RefKind::Component) | None => {
 				#[cfg(not(debug_assertions))]
 				return Ok(None);
 
@@ -530,6 +545,28 @@ impl Backend {
 				}
 			}
 		}
+	}
+	pub fn xml_code_actions(&self, params: CodeActionParams, rope: Rope) -> miette::Result<Option<CodeActionResponse>> {
+		let uri = &params.text_document.uri;
+		let position = params.range.start;
+		let (slice, offset_at_cursor, _) = self.record_slice(&rope, uri, position)?;
+		let slice_str = Cow::from(slice);
+		let mut reader = Tokenizer::from(slice_str.as_ref());
+
+		let XmlRefs {
+			ref_at_cursor,
+			ref_kind,
+			..
+		} = self.gather_refs(offset_at_cursor, &mut reader, &slice)?;
+		let (Some((value, _)), Some(RefKind::Component)) = (ref_at_cursor, ref_kind) else {
+			return Ok(None);
+		};
+
+		Ok(Some(vec![CodeActionOrCommand::Command(Command {
+			title: "Go to Owl component".to_string(),
+			command: "goto_owl".to_string(),
+			arguments: Some(vec![String::new().into(), value.into()]),
+		})]))
 	}
 	/// The main function that determines all the information needed
 	/// to resolve the symbol at the cursor.
@@ -569,7 +606,7 @@ impl Backend {
 
 		for token in reader {
 			match token {
-				Ok(Token::ElementStart { local, .. }) => {
+				Ok(Token::ElementStart { local, prefix, .. }) => {
 					expect_model_string = false;
 					depth += 1;
 					match local.as_str() {
@@ -585,6 +622,10 @@ impl Backend {
 						}
 						component if template_mode && component.starts_with(|c| char::is_ascii_uppercase(&c)) => {
 							tag = Some(Tag::TComponent(component));
+							if prefix.is_empty() && local.range().contains_end(offset_at_cursor) {
+								ref_at_cursor = Some((local.as_str(), local.range()));
+								ref_kind = Some(RefKind::Component);
+							}
 						}
 						_ if arch_mode => tag = None,
 						_ => {}

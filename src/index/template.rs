@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use derive_more::Deref;
 
 use dashmap::DashMap;
@@ -19,7 +17,7 @@ pub struct TemplateIndex {
 	pub by_prefix: RwLock<TemplatePrefixTrie>,
 }
 
-pub type TemplatePrefixTrie = qp_trie::Trie<&'static [u8], HashSet<TemplateName>>;
+pub type TemplatePrefixTrie = qp_trie::Trie<&'static [u8], TemplateName>;
 
 impl TemplateIndex {
 	pub async fn append(&self, entries: Vec<NewTemplate>) {
@@ -38,10 +36,7 @@ impl TemplateIndex {
 				self.entry(entry.name).or_default().descendants.push(entry.template);
 			}
 			let raw = interner().resolve(&entry.name);
-			prefix
-				.entry(raw.as_bytes())
-				.or_insert_with(Default::default)
-				.insert(entry.name);
+			prefix.insert(raw.as_bytes(), entry.name);
 		}
 	}
 	pub(super) fn statistics(&self) -> serde_json::Value {

@@ -32,9 +32,13 @@ impl PathSymbol {
 		let empty = interner().get_or_intern_static(".");
 		PathSymbol(empty, empty)
 	}
-	pub fn as_path(&self) -> PathBuf {
+	pub fn to_path(&self) -> PathBuf {
 		let root = Path::new(interner().resolve(&self.0));
 		root.join(interner().resolve(&self.1))
+	}
+	pub fn as_string(&self) -> String {
+		let path = self.to_path();
+		path.to_string_lossy().into_owned()
 	}
 }
 

@@ -29,6 +29,7 @@ use odoo_lsp::{format_loc, some, utils::*};
 
 pub struct Backend {
 	pub client: Client,
+	/// fs path -> rope, diagnostics etc.
 	pub document_map: DashMap<String, Document>,
 	pub record_ranges: DashMap<String, Box<[ByteRange]>>,
 	pub ast_map: DashMap<String, Tree>,
@@ -387,7 +388,7 @@ impl Backend {
 			.map(|model| {
 				let label = interner().resolve(model.key()).to_string();
 				let module = model.base.as_ref().and_then(|base| {
-					let module = self.index.module_of_path(&base.0.path.as_path())?;
+					let module = self.index.module_of_path(&base.0.path.to_path())?;
 					Some(interner().resolve(&module).to_string())
 				});
 				CompletionItem {
@@ -419,20 +420,18 @@ impl Backend {
 			offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_template_name) range"))?;
 		let interner = interner();
 		let by_prefix = self.index.templates.by_prefix.read().await;
-		let matches = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, templates)| {
-			templates.iter().flat_map(|key| {
-				let label = interner.resolve(key).to_string();
-				Some(CompletionItem {
-					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-						new_text: label.clone(),
-						insert: range,
-						replace: range,
-					})),
-					label,
-					kind: Some(CompletionItemKind::REFERENCE),
-					..Default::default()
-				})
-			})
+		let matches = by_prefix.iter_prefix(needle.as_bytes()).map(|(_, key)| {
+			let label = interner.resolve(key).to_string();
+			CompletionItem {
+				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+					new_text: label.clone(),
+					insert: range,
+					replace: range,
+				})),
+				label,
+				kind: Some(CompletionItemKind::REFERENCE),
+				..Default::default()
+			}
 		});
 		items.extend(matches);
 		Ok(())
@@ -520,7 +519,7 @@ impl Backend {
 		let module = component
 			.location
 			.as_ref()
-			.and_then(|loc| self.index.module_of_path(&loc.path.as_path()));
+			.and_then(|loc| self.index.module_of_path(&loc.path.to_path()));
 		let value = fomat!(
 			"```js\n"
 			"(component) class " (name) ";\n"
@@ -540,7 +539,7 @@ impl Backend {
 		let module = template
 			.location
 			.as_ref()
-			.and_then(|loc| self.index.module_of_path(&loc.path.as_path()));
+			.and_then(|loc| self.index.module_of_path(&loc.path.to_path()));
 		let value = fomat!(
 			"```xml\n"
 			"<t t-name=\"" (name) "\"/>\n"
@@ -683,13 +682,13 @@ impl Backend {
 		let module = model
 			.base
 			.as_ref()
-			.and_then(|base| self.index.module_of_path(&base.0.path.as_path()));
+			.and_then(|base| self.index.module_of_path(&base.0.path.to_path()));
 		let mut descendants = model
 			.descendants
 			.iter()
 			.map(|loc| &loc.0)
 			.scan(SymbolSet::default(), |mods, loc| {
-				let Some(module) = self.index.module_of_path(&loc.path.as_path()) else {
+				let Some(module) = self.index.module_of_path(&loc.path.to_path()) else {
 					return Some(None);
 				};
 				if mods.insert(module) {
@@ -743,7 +742,7 @@ impl Backend {
 			}
 			if let Some(module) = self
 				.index
-				.module_of_path(&field.location.path.as_path())
+				.module_of_path(&field.location.path.to_path())
 			{
 				"*Defined in:* `" (interner().resolve(&module)) "`  \n"
 			}

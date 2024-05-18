@@ -224,7 +224,7 @@ impl ModelIndex {
 					return None;
 				}
 				let mut fields = vec![];
-				let fpath = location.path.as_path();
+				let fpath = location.path.to_path();
 				let contents = std::fs::read(&fpath)
 					.map_err(|err| error!("Failed to read {}:\n{err}", fpath.display()))
 					.ok()?;
@@ -513,7 +513,7 @@ impl ModelEntry {
 			return Ok(());
 		};
 		if self.docstring.is_none() {
-			let contents = tokio::fs::read(loc.path.as_path()).await.into_diagnostic()?;
+			let contents = tokio::fs::read(loc.path.to_path()).await.into_diagnostic()?;
 			let mut parser = Parser::new();
 			parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
 			let ast = parser
