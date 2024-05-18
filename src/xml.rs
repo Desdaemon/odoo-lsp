@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use fomat_macros::fomat;
 use lasso::Spur;
-use log::{debug, warn};
+use tracing::{debug, warn};
 use miette::diagnostic;
 use odoo_lsp::component::{ComponentTemplate, PropType};
 use odoo_lsp::index::{interner, PathSymbol};

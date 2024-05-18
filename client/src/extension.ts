@@ -298,24 +298,25 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	const logLevel = vscode.workspace.getConfiguration("odoo-lsp.trace").get("binary");
 	const RUST_LOG_STYLE = "never";
+	const NO_COLOR = "1";
 	const serverOptions: ServerOptions = {
 		run: {
 			command,
 			options: {
-				env: { ...process.env, RUST_LOG: process.env.RUST_LOG || `info,odoo_lsp=${logLevel}`, RUST_LOG_STYLE },
+				env: { ...process.env, RUST_LOG: process.env.RUST_LOG || `info,odoo_lsp=${logLevel}`, RUST_LOG_STYLE, NO_COLOR },
 			},
 		},
 		debug: {
 			command,
 			options: {
-				env: { ...process.env, RUST_LOG: process.env.RUST_LOG || `debug,odoo_lsp=${logLevel}`, RUST_LOG_STYLE },
+				env: { ...process.env, RUST_LOG: process.env.RUST_LOG || `debug,odoo_lsp=${logLevel}`, RUST_LOG_STYLE, NO_COLOR },
 			},
 		},
 	};
 
 	const binaryOutputChannel = vscode.window.createOutputChannel("Odoo LSP", { log: true });
-	const logPattern = /^(INFO|WARN|DEBUG|ERROR|TRACE)([^\]]*?)\]/;
-	const splitPattern = /^\[/gm;
+	const logPattern = /^  (INFO|WARN|DEBUG|ERROR|TRACE) ([^\n]*)$/;
+	const splitPattern = /\n/gm;
 
 	const oldAppend = binaryOutputChannel.append.bind(binaryOutputChannel);
 	binaryOutputChannel.append = function (this: vscode.LogOutputChannel, lines: string) {

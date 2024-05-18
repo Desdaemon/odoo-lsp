@@ -43,14 +43,12 @@ pkg-fmt = "zip"
 tree-sitter = "0.20.10"
 
 [dependencies]
-env_logger = "0.11.3"
 ropey = "1.5.0"
 serde_json = "1.0.108"
 tokio = { version = "1.17.0", features = ["macros", "rt", "fs", "io-std"] }
 tower-lsp = { version = "0.20.0", features = ["proposed"] }
 serde = { version = "1.0", features = ["derive"] }
 dashmap = "5.1.0"
-log = "0.4.14"
 globwalk = "0.9.1"
 miette = { version = "7.2.0", features = ["fancy"] }
 futures = "0.3.28"
@@ -77,6 +75,8 @@ thiserror = "1.0.58"
 git-version = "0.3.9"
 smart-default = "0.7.1"
 const_format = { version = "0.2.32", features = ["assertcp"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [target.'cfg(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64"))))'.dependencies]
 self_update = { version = "0.39.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }

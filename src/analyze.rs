@@ -3,7 +3,7 @@
 
 use std::{borrow::Borrow, collections::HashMap, iter::FusedIterator, ops::ControlFlow};
 
-use log::trace;
+use tracing::trace;
 use tree_sitter::{Node, QueryCursor};
 
 use odoo_lsp::{

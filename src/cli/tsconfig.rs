@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 use lasso::Spur;
-use log::debug;
+use tracing::debug;
 use miette::IntoDiagnostic;
 use odoo_lsp::{index::interner, utils::RangeExt, ImStr};
 use tree_sitter::{Parser, QueryCursor};

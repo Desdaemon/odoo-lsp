@@ -76,7 +76,6 @@ use std::time::Duration;
 
 use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
-use log::{debug, error, info, warn};
 use ropey::Rope;
 use serde_json::Value;
 use tower::ServiceBuilder;
@@ -85,6 +84,7 @@ use tower_lsp::lsp_types::notification::{DidChangeConfiguration, Notification, P
 use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{LanguageServer, LspService, Server};
+use tracing::{debug, error, info, instrument, warn};
 
 use odoo_lsp::config::Config;
 use odoo_lsp::index::{interner, Interner};
@@ -102,9 +102,14 @@ mod xml;
 pub use odoo_lsp::*;
 
 use backend::{Backend, Document, Language, Text};
+use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
+	#[instrument(skip_all)]
 	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
 		let root = params.root_uri.and_then(|uri| uri.to_file_path().ok()).or_else(
 			#[allow(deprecated)]
@@ -148,9 +153,16 @@ impl LanguageServer for Backend {
 					dynamic_registration: Some(true),
 				}),
 			..
-		}) = params.capabilities.workspace
+		}) = params.capabilities.workspace.as_ref()
 		{
 			self.capabilities.dynamic_config.store(true, Relaxed);
+		}
+		if let Some(WorkspaceClientCapabilities {
+			workspace_folders: Some(true),
+			..
+		}) = params.capabilities.workspace.as_ref()
+		{
+			self.capabilities.workspace_folders.store(true, Relaxed);
 		}
 
 		if let Some(TextDocumentClientCapabilities {
@@ -200,9 +212,11 @@ impl LanguageServer for Backend {
 			},
 		})
 	}
+	#[instrument(skip_all)]
 	async fn shutdown(&self) -> Result<()> {
 		Ok(())
 	}
+	#[instrument(skip_all)]
 	async fn did_close(&self, params: DidCloseTextDocumentParams) {
 		let path = params.text_document.uri.path();
 		let Self {
@@ -226,31 +240,38 @@ impl LanguageServer for Backend {
 			.publish_diagnostics(params.text_document.uri, vec![], None)
 			.await;
 	}
+	#[instrument(skip_all)]
 	async fn initialized(&self, _: InitializedParams) {
 		let blocker = self.root_setup.block();
 
 		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
-		self.client
+		let mut progress = None;
+		if self
+			.client
 			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
 			.await
-			.expect("Could not create WDP");
-		_ = self
-			.client
-			.send_notification::<Progress>(ProgressParams {
-				token: token.clone(),
-				value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
-					title: "Indexing".to_string(),
-					..Default::default()
-				})),
-			})
-			.await;
-		let progress = Some((&self.client, token.clone()));
+			.is_ok()
+		{
+			_ = self
+				.client
+				.send_notification::<Progress>(ProgressParams {
+					token: token.clone(),
+					value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
+						title: "Indexing".to_string(),
+						..Default::default()
+					})),
+				})
+				.await;
+			progress = Some((&self.client, token.clone()));
+		}
 
-		for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
-			let Ok(file_path) = workspace.uri.to_file_path() else {
-				continue;
-			};
-			self.roots.insert(file_path.to_string_lossy().into_owned());
+		if self.capabilities.workspace_folders.load(Relaxed) {
+			for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
+				let Ok(file_path) = workspace.uri.to_file_path() else {
+					continue;
+				};
+				self.roots.insert(file_path.to_string_lossy().into_owned());
+			}
 		}
 		self.ensure_nonoverlapping_roots();
 
@@ -276,13 +297,15 @@ impl LanguageServer for Backend {
 			}
 		}
 
-		_ = self
-			.client
-			.send_notification::<Progress>(ProgressParams {
-				token,
-				value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
-			})
-			.await;
+		if progress.is_some() {
+			_ = self
+				.client
+				.send_notification::<Progress>(ProgressParams {
+					token,
+					value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
+				})
+				.await;
+		}
 
 		drop(blocker);
 
@@ -297,9 +320,9 @@ impl LanguageServer for Backend {
 				.await;
 		}
 	}
+	#[instrument(skip_all, fields(uri=params.text_document.uri.path()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
-		self.root_setup.wait().await;
-
+		info!("(did_open) {}", params.text_document.uri.path());
 		let language_id = params.text_document.language_id.as_str();
 		let split_uri = params.text_document.uri.path().rsplit_once('.');
 		let language = match (language_id, split_uri) {
@@ -316,6 +339,7 @@ impl LanguageServer for Backend {
 		self.document_map
 			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()));
 
+		self.root_setup.wait().await;
 		if self
 			.index
 			.module_of_path(Path::new(params.text_document.uri.path()))
@@ -360,6 +384,7 @@ impl LanguageServer for Backend {
 			.await
 			.inspect_err(|err| warn!("{err}"));
 	}
+	#[instrument(skip_all)]
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
 		self.root_setup.wait().await;
 		if let [TextDocumentContentChangeEvent {
@@ -417,10 +442,12 @@ impl LanguageServer for Backend {
 			.await
 			.inspect_err(|err| warn!("{err}"));
 	}
+	#[instrument(skip_all)]
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		self.root_setup.wait().await;
 		_ = self.did_save_impl(params).await.inspect_err(|err| warn!("{err}"));
 	}
+	#[instrument(skip_all)]
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		debug!("goto_definition {}", uri.path());
@@ -447,6 +474,7 @@ impl LanguageServer for Backend {
 			.flatten();
 		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}
+	#[instrument(skip_all)]
 	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
 		let uri = &params.text_document_position.text_document.uri;
 		debug!("references {}", uri.path());
@@ -467,18 +495,20 @@ impl LanguageServer for Backend {
 
 		Ok(refs.inspect_err(|err| warn!("{err}")).ok().flatten())
 	}
+	#[instrument(skip_all)]
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
 		let uri = &params.text_document_position.text_document.uri;
-		debug!("{}", uri.path());
+		debug!("(completion) {}", uri.path());
 
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
+
+		self.root_setup.wait().await;
 		let Some(document) = self.document_map.get(uri.path()) else {
 			debug!("Bug: did not build a document for {}", uri.path());
 			return Ok(None);
 		};
-		self.root_setup.wait().await;
 		if ext == "xml" {
 			let completions = self.xml_completions(params, document.rope.clone()).await;
 			match completions {
@@ -512,6 +542,7 @@ impl LanguageServer for Backend {
 			Ok(None)
 		}
 	}
+	#[instrument(skip_all)]
 	async fn completion_resolve(&self, mut completion: CompletionItem) -> Result<CompletionItem> {
 		'resolve: {
 			match &completion.kind {
@@ -580,6 +611,7 @@ impl LanguageServer for Backend {
 		}
 		Ok(completion)
 	}
+	#[instrument(skip_all)]
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let document = some!(self.document_map.get(uri.path()));
@@ -601,6 +633,7 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
+	#[instrument(skip_all)]
 	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
 		let items = self
 			.roots
@@ -626,6 +659,7 @@ impl LanguageServer for Backend {
 		config.module.take();
 		self.on_change_config(config).await;
 	}
+	#[instrument(skip_all)]
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
 		for added in params.event.added {
 			let file_path = added.uri.to_file_path().expect("not a file path");
@@ -642,6 +676,7 @@ impl LanguageServer for Backend {
 		}
 		self.index.mark_n_sweep();
 	}
+	#[instrument(skip_all)]
 	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
 		let query = &params.query;
 
@@ -697,6 +732,7 @@ impl LanguageServer for Backend {
 			Ok(Some(models.chain(records).take(limit).collect()))
 		}
 	}
+	#[instrument(skip_all)]
 	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
 		let path = params.text_document.uri.path();
 		debug!("{path}");
@@ -725,6 +761,7 @@ impl LanguageServer for Backend {
 			},
 		)))
 	}
+	#[instrument(skip_all)]
 	async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
 		let Some((_, "xml")) = params.text_document.uri.path().rsplit_once('.') else {
 			return Ok(None);
@@ -739,6 +776,7 @@ impl LanguageServer for Backend {
 			})
 			.unwrap_or(None))
 	}
+	#[instrument(skip_all)]
 	async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
 		match (params.command.as_str(), params.arguments.as_slice()) {
 			("goto_owl", [Value::String(_), Value::String(subcomponent)]) => {
@@ -774,13 +812,19 @@ async fn main() {
 		};
 		std::fs::File::create(path).unwrap()
 	});
-	env_logger::Builder::from_default_env()
-		.format_timestamp(None)
-		.format_indent(Some(2))
-		.format_target(true)
-		.format_module_path(cfg!(debug_assertions))
-		.target(env_logger::Target::Pipe(Box::new(FileTee::new(outlog))))
-		.init();
+	let registry = tracing_subscriber::registry().with(EnvFilter::from_default_env());
+	let layer = tracing_subscriber::fmt::layer()
+		.compact()
+		.without_time()
+		.with_writer(std::io::stderr)
+		.with_file(true)
+		.with_line_number(true)
+		.with_target(cfg!(debug_assertions));
+	if let Some(outlog) = outlog {
+		registry.with(layer.map_writer(|stderr| stderr.and(outlog))).init();
+	} else {
+		registry.with(layer).init();
+	}
 
 	let args = std::env::args().collect::<Vec<_>>();
 	let args = args.iter().skip(1).map(String::as_str).collect::<Vec<_>>();

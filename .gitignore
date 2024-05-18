@@ -7,3 +7,6 @@ out/
 dist/*
 *.vsix
 syntaxes/*.json
+.venv
+__pycache__
+.*_cache

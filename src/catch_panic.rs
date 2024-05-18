@@ -7,7 +7,7 @@ use std::task::{ready, Context, Poll};
 
 use futures::FutureExt;
 use futures::{future::CatchUnwind, Future};
-use log::{error, warn};
+use tracing::{error, warn};
 use tower::Service;
 use tower_lsp::jsonrpc::{Error, ErrorCode, Id, Response};
 

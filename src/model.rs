@@ -9,7 +9,7 @@ use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
 use futures::executor::block_on;
 use lasso::Spur;
-use log::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use miette::{diagnostic, Diagnostic, IntoDiagnostic};
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
