@@ -106,8 +106,7 @@ pub fn gather_templates(
 				}
 				"t-inherit" => {
 					t_inherit = Some(value.as_str());
-					// TODO: What is the default value of t-inherit-mode?
-					base = false;
+					base = true;
 				}
 				"t-inherit-mode" => {
 					base = value == "primary";
