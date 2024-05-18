@@ -140,7 +140,7 @@ impl<'a> Iterator for Iter<'a> {
 #[rustfmt::skip]
 query! {
 	#[derive(Debug)]
-	FieldCompletion(Name, SelfParam, Scope);
+	FieldCompletion(Name, SelfParam, Scope, Def);
 ((class_definition
   (block
     (expression_statement
@@ -150,7 +150,7 @@ query! {
       (decorated_definition
         (function_definition
           (parameters . (identifier) @SELF_PARAM) (block) @SCOPE) .)
-      (function_definition (parameters . (identifier) @SELF_PARAM) (block) @SCOPE) ])) @class
+      (function_definition (parameters . (identifier) @SELF_PARAM) (block) @SCOPE)] @DEF)) @class
   (#match? @_name "^_(name|inherit)$"))
 }
 
@@ -520,6 +520,7 @@ impl Backend {
 			if !node.is_named() {
 				continue;
 			}
+			let _test = node.to_sexp();
 			if let Some(end) = scope_ends.last() {
 				if node.start_byte() > *end {
 					scope.exit();
@@ -564,12 +565,19 @@ pub fn determine_scope<'out, 'node>(
 				Some(FieldCompletion::SelfParam) => {
 					self_param = Some(capture.node);
 				}
-				Some(FieldCompletion::Scope) if capture.node.byte_range().contains_end(offset) => {
-					fn_scope = Some(capture.node);
-					break 'scoping;
+				Some(FieldCompletion::Def) => {
+					if !capture.node.byte_range().contains_end(offset) {
+						continue 'scoping;
+					}
 				}
-				Some(FieldCompletion::Scope) | None => {}
+				Some(FieldCompletion::Scope) => {
+					fn_scope = Some(capture.node);
+				}
+				None => {}
 			}
+		}
+		if fn_scope.is_some() {
+			break 'scoping;
 		}
 	}
 	let fn_scope = fn_scope?;
@@ -579,6 +587,9 @@ pub fn determine_scope<'out, 'node>(
 
 #[cfg(test)]
 mod tests {
+	use odoo_lsp::utils::position_to_offset;
+	use ropey::Rope;
+	use tower_lsp::lsp_types::Position;
 	use tree_sitter::{Parser, QueryCursor};
 
 	use crate::analyze::FieldCompletion;
@@ -624,5 +635,25 @@ class Foo(models.AbstractModel):
 			),
 			"{actual:?}"
 		)
+	}
+
+	#[test]
+	fn test_determine_scope() {
+		let mut parser = Parser::new();
+		parser.set_language(tree_sitter_python::language()).unwrap();
+		let contents = r#"
+class Foo(models.Model):
+	_name = 'foo'
+	def scope(self):
+		pass
+"#;
+		let ast = parser.parse(&contents, None).unwrap();
+		let rope = Rope::from(&contents[..]);
+		let fn_start = position_to_offset(Position { line: 3, character: 1 }, &rope).unwrap();
+		let fn_scope = ast
+			.root_node()
+			.named_descendant_for_byte_range(fn_start.0, fn_start.0)
+			.unwrap();
+		super::determine_scope(ast.root_node(), contents.as_bytes(), fn_start.0).expect(&fn_scope.to_sexp());
 	}
 }

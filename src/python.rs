@@ -141,8 +141,8 @@ query! {
 
 (class_definition
   (block [
-    (function_definition) @SCOPE
-    (decorated_definition (function_definition) @SCOPE) ]))
+    (function_definition (block) @SCOPE)
+    (decorated_definition (function_definition (block) @SCOPE)) ]))
 }
 
 /// (module (_)*)
@@ -848,6 +848,25 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::Model) => {
+						match capture.node.parent() {
+							Some(subscript) if subscript.kind() == "subscript" => {
+								// diagnose only, do not tag
+								let range = capture.node.byte_range().shrink(1);
+								let model = String::from_utf8_lossy(&contents[range.clone()]);
+								let model_key = interner().get(&model);
+								let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
+								if !has_model.unwrap_or(false) {
+									diagnostics.push(Diagnostic {
+										range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
+										message: format!("`{model}` is not a valid model name"),
+										severity: Some(DiagnosticSeverity::ERROR),
+										..Default::default()
+									})
+								}
+								continue;
+							}
+							_ => {}
+						}
 						let Ok(idx) = top_level_ranges.binary_search_by(|range| {
 							let needle = capture.node.end_byte();
 							if needle < range.start {
@@ -939,7 +958,7 @@ impl Backend {
 						if !has_field {
 							diagnostics.push(Diagnostic {
 								range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
-								severity: Some(DiagnosticSeverity::WARNING),
+								severity: Some(DiagnosticSeverity::ERROR),
 								message: format!("Model `{}` has no field `{needle}`", interner().resolve(&model)),
 								..Default::default()
 							});
@@ -972,6 +991,13 @@ impl Backend {
 							if node.kind() != "attribute" || attribute.as_ref().unwrap().kind() != "identifier" {
 								return ControlFlow::Continue(entered);
 							}
+							match node.parent() {
+								Some(parent) if parent.kind() == "call" => {
+									// We don't handle methods yet, so don't diagnose them.
+									return ControlFlow::Continue(entered);
+								}
+								_ => {}
+							}
 
 							let attribute = attribute.unwrap();
 							static MODEL_BUILTINS: phf::Set<&str> =
@@ -999,7 +1025,7 @@ impl Backend {
 								range: ts_range_to_lsp_range(attribute.range()),
 								severity: Some(DiagnosticSeverity::ERROR),
 								message: format!(
-									"Model `{}` has no field `{}",
+									"Model `{}` has no field `{}`",
 									interner().resolve(&model_name),
 									String::from_utf8_lossy(&contents[attribute.byte_range()]),
 								),
