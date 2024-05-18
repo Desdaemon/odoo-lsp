@@ -49,8 +49,8 @@ async def test_diagnostics(client: LanguageClient, rootdir: str):
     await client.wait_for_notification('textDocument/publishDiagnostics')
     diagnostics = client.diagnostics[f"file://{rootdir}/foo/models.py"]
     assert list(splay_diag(diagnostics)) == [
-        "Model `foo` has no field `foo`",
-        "Model `foo` has no field `foo`",
+        (7, 13, 7, 16, "Model `foo` has no field `foo`"),
+        (8, 24, 8, 27, "Model `foo` has no field `foo`"),
         (9, 21, 9, 24, "Model `foo` has no field `foo`"),
-        "`fo` is not a valid model name",
+        (10, 18, 10, 20, "`fo` is not a valid model name"),
     ]

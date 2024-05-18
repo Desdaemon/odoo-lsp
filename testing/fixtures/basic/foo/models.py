@@ -2,7 +2,7 @@ class Foo(Model):
     _name = "foo"
 
     def test(self):
-        self.env['quux']
+        self.env['bar']
 
     def diagnostics(self):
         self.foo
