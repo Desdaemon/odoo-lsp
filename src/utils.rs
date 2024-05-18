@@ -362,7 +362,12 @@ impl<T: Sized> TryResultExt for TryResult<T> {
 
 #[cfg(test)]
 pub fn init_for_test() {
-	// env_logger::builder().parse_filters("info,odoo_lsp=trace").init();
+	use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+	tracing_subscriber::registry()
+		.with(tracing_subscriber::fmt::layer())
+		.with(EnvFilter::from("info,odoo_lsp=trace"))
+		.init();
 }
 
 #[derive(Default)]

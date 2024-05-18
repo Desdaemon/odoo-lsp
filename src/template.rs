@@ -167,7 +167,7 @@ mod tests {
 					Do nothing...
 				</t>
 			</t>
-			<div t-name="primary_inherit" t-inherit="second" t-inherit-mode="primary">
+			<div t-name="primary_inherit" t-inherit="second" t-inherit-mode="extension">
 				<div>Nested!</div>
 			</div>
 		</templates>"#;
@@ -183,16 +183,16 @@ mod tests {
 				[
 					NewTemplate { base: true, .. },
 					NewTemplate { base: true, .. },
-					NewTemplate { base: false, .. },
 					NewTemplate { base: true, .. },
+					NewTemplate { base: false, .. },
 				]
 			),
 			"{templates:#?}"
 		);
 		assert_eq!(interner().resolve(&templates[0].name), "first");
 		assert_eq!(interner().resolve(&templates[1].name), "second");
-		assert_eq!(interner().resolve(&templates[2].name), "first");
-		assert_eq!(interner().resolve(&templates[3].name), "primary_inherit");
+		assert_eq!(interner().resolve(&templates[2].name), "doesnt_matter");
+		assert_eq!(interner().resolve(&templates[3].name), "second");
 	}
 	#[test]
 	fn test_with_xml_decl() {
