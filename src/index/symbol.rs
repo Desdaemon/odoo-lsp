@@ -19,7 +19,7 @@ pub struct Symbol<T> {
 
 /// An interned path split into (root, subpath) to save memory.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct PathSymbol(pub Spur, pub Spur);
+pub struct PathSymbol(Spur, Spur);
 
 impl PathSymbol {
 	/// Panics if `root` is not a parent of `path`.

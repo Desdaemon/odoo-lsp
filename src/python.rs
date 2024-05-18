@@ -168,14 +168,14 @@ impl Backend {
 			.expect("bug: failed to init python parser");
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)
 	}
-	pub async fn update_models(&self, text: Text, path: &str, root: Spur, rope: Rope) -> miette::Result<()> {
+	pub async fn update_models(&self, text: Text, path: &Path, root: Spur, rope: Rope) -> miette::Result<()> {
 		let text = match text {
 			Text::Full(text) => Cow::from(text),
 			// TODO: Limit range of possible updates based on delta
 			Text::Delta(_) => Cow::from(rope.slice(..)),
 		};
 		let models = index_models(text.as_bytes())?;
-		let path = PathSymbol::strip_root(root, Path::new(path));
+		let path = PathSymbol::strip_root(root, path);
 		self.index.models.append(path, interner(), true, &models).await;
 		for model in models {
 			match model.type_ {
@@ -209,10 +209,8 @@ impl Backend {
 			warn!("invalid position {:?}", params.text_document_position.position);
 			return Ok(None);
 		};
-		let Some(current_module) = self
-			.index
-			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()))
-		else {
+		let path = some!(params.text_document_position.text_document.uri.to_file_path().ok());
+		let Some(current_module) = self.index.module_of_path(&path) else {
 			debug!("no current module");
 			return Ok(None);
 		};
@@ -636,9 +634,7 @@ impl Backend {
 		Some((lhs, field, range))
 	}
 	pub fn python_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, &rope) else {
-			return Ok(None);
-		};
+		let ByteOffset(offset) = some!(position_to_offset(params.text_document_position.position, &rope));
 		let uri = &params.text_document_position.text_document.uri;
 		let ast = self
 			.ast_map
@@ -649,9 +645,8 @@ impl Backend {
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
 		let mut cursor = tree_sitter::QueryCursor::new();
-		let current_module = self
-			.index
-			.module_of_path(Path::new(params.text_document_position.text_document.uri.path()));
+		let path = some!(params.text_document_position.text_document.uri.to_file_path().ok());
+		let current_module = self.index.module_of_path(&path);
 		'match_: for match_ in cursor.matches(query, root, contents) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
@@ -857,7 +852,8 @@ impl Backend {
 								let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 								if !has_model.unwrap_or(false) {
 									diagnostics.push(Diagnostic {
-										range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
+										range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone())
+											.unwrap(),
 										message: format!("`{model}` is not a valid model name"),
 										severity: Some(DiagnosticSeverity::ERROR),
 										..Default::default()

@@ -1,12 +1,12 @@
-use std::{env::current_dir, fs::canonicalize, io::stdout, path::Path, process::exit, sync::Arc};
+use std::{env::current_dir, fs::canonicalize, io::stdout, process::exit, sync::Arc};
 
 use globwalk::FileType;
-use tracing::{debug, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{interner, Index};
 use self_update::{backends::github, Status};
 use serde_json::Value;
+use tracing::{debug, warn};
 
 mod tsconfig;
 
@@ -126,8 +126,8 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 	let index = Index::default();
 
 	for addons in &addons_path {
-		let path = addons.to_string_lossy();
-		index.add_root(&path, None, true).await?;
+		// let path = addons.to_string_lossy();
+		index.add_root(addons, None, true).await?;
 	}
 
 	let mut ts_paths = serde_json::Map::new();
@@ -142,8 +142,8 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 	let mut outputs = tokio::task::JoinSet::new();
 
 	for entry in &index.roots {
-		let root = pathdiff::diff_paths(Path::new(entry.key().as_str()), &pwd)
-			.ok_or_else(|| diagnostic!("Cannot diff {} to pwd", entry.key()))?;
+		let root = pathdiff::diff_paths(entry.key(), &pwd)
+			.ok_or_else(|| diagnostic!("Cannot diff {:?} to pwd", entry.key()))?;
 
 		includes.push(Value::String(root.join("**/static/src").to_string_lossy().into_owned()));
 		type_roots.push(Value::String(
@@ -163,7 +163,7 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 						.into(),
 				);
 		}
-		let scripts = globwalk::glob_builder(format!("{}/**/*.js", entry.key()))
+		let scripts = globwalk::glob_builder(entry.key().join("**/*.js").to_string_lossy())
 			.file_type(FileType::FILE | FileType::SYMLINK)
 			.follow_links(true)
 			.build()

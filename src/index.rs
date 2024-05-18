@@ -8,20 +8,20 @@ use globwalk::FileType;
 use ignore::gitignore::Gitignore;
 use ignore::Match;
 use lasso::{Key, Spur, ThreadedRodeo};
-use tracing::{debug, info, warn};
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use smart_default::SmartDefault;
 use tower_lsp::lsp_types::notification::Progress;
 use tower_lsp::lsp_types::request::{ShowDocument, ShowMessageRequest};
 use tower_lsp::lsp_types::*;
+use tracing::{debug, info, warn};
 use tree_sitter::QueryCursor;
 use ts_macros::query;
 use xmlparser::{Token, Tokenizer};
 
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
-use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, RangeExt, Usage};
+use crate::utils::{path_contains, ts_range_to_lsp_range, ByteOffset, ByteRange, RangeExt, Usage};
 use crate::{format_loc, ok, ImStr};
 
 mod record;
@@ -58,6 +58,9 @@ impl Interner {
 		let out = self.0.get_or_intern(value);
 		*self.get_counter().entry(out).or_default().value_mut() += 1;
 		out
+	}
+	pub fn get_or_intern_path(&self, path: &Path) -> Spur {
+		self.get_or_intern(path.to_string_lossy())
 	}
 	pub fn report_usage(&self) -> serde_json::Value {
 		let items = self
@@ -97,7 +100,7 @@ impl Interner {
 pub struct Index {
 	/// root -> module key -> module's relpath to root
 	#[default(_code = "DashMap::with_shard_amount(4)")]
-	pub roots: DashMap<String, SymbolMap<Module, ImStr>>,
+	pub roots: DashMap<PathBuf, SymbolMap<Module, ImStr>>,
 	pub records: record::RecordIndex,
 	pub templates: template::TemplateIndex,
 	pub models: ModelIndex,
@@ -137,7 +140,7 @@ impl Index {
 	}
 	pub async fn add_root(
 		&self,
-		root: &str,
+		root: &Path,
 		progress: Option<(&tower_lsp::Client, ProgressToken)>,
 		tsconfig: bool,
 	) -> miette::Result<Option<AddRootResults>> {
@@ -146,27 +149,28 @@ impl Index {
 		}
 
 		let t0 = tokio::time::Instant::now();
+		// let root = root.display();
 		let manifests = ok!(
-			globwalk::glob_builder(format!("{root}/**/__manifest__.py"))
+			globwalk::glob_builder(root.join("**/__manifest__.py").to_string_lossy())
 				.file_type(FileType::FILE | FileType::SYMLINK)
 				.follow_links(true)
 				.build(),
-			"Could not glob into {}",
+			"Could not glob into {:?}",
 			root
 		);
 		let mut gitignore = ignore::gitignore::GitignoreBuilder::new(root);
 		gitignore
 			.add(".gitignore")
-			.inspect(|err| warn!("error adding {root}/.gitignore: {err:?}"));
+			.inspect(|err| warn!("error adding {root:?}/.gitignore: {err:?}"));
 		let gitignore = gitignore
 			.build()
-			.inspect_err(|err| warn!("gitignore error for {root}: {err:?}"))
+			.inspect_err(|err| warn!("gitignore error for {root:?}: {err:?}"))
 			.ok();
 
 		let mut module_count = 0;
 		let mut outputs = tokio::task::JoinSet::new();
 		let interner = interner();
-		let root_key = interner.get_or_intern(root);
+		let root_key = interner.get_or_intern(root.to_string_lossy());
 		for manifest in manifests {
 			let manifest = manifest.into_diagnostic()?;
 			let module_dir = manifest
@@ -204,7 +208,7 @@ impl Index {
 			let module_key = interner.get_or_intern(&module_name);
 			let module_path = ok!(
 				module_dir.strip_prefix(root),
-				"module_dir={:?} is not a subpath of root={}",
+				"module_dir={:?} is not a subpath of root={:?}",
 				module_dir,
 				root
 			);
@@ -346,11 +350,11 @@ impl Index {
 			elapsed: t0.elapsed(),
 		}))
 	}
-	pub fn remove_root(&self, root: &str) {
+	pub fn remove_root(&self, root: &Path) {
 		self.roots.remove(root);
 		for mut entry in self.records.iter_mut() {
 			let module = interner().resolve(&entry.module);
-			if root.contains(module) {
+			if path_contains(root, module) {
 				entry.deleted = true;
 			}
 		}

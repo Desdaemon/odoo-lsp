@@ -1,9 +1,9 @@
 use core::ops::{Add, Sub};
 use std::borrow::Cow;
+use std::ffi::OsStr;
 use std::fmt::Display;
-use std::fs::File;
 use std::future::Future;
-use std::io::BufWriter;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::try_result::TryResult;
@@ -463,30 +463,6 @@ impl DisplayExt for std::fmt::Arguments<'_> {
 	}
 }
 
-pub struct FileTee {
-	file: Option<BufWriter<File>>,
-}
-
-impl FileTee {
-	pub fn new(file: Option<File>) -> Self {
-		Self {
-			file: file.map(BufWriter::new),
-		}
-	}
-}
-
-impl std::io::Write for FileTee {
-	fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-		if let Some(file) = &mut self.file {
-			_ = file.write(buf);
-		}
-		std::io::stderr().write(buf)
-	}
-	fn flush(&mut self) -> std::io::Result<()> {
-		if let Some(file) = &mut self.file {
-			file.flush()?;
-		}
-
-		Ok(())
-	}
+pub fn path_contains(path: impl AsRef<Path>, needle: impl AsRef<OsStr>) -> bool {
+	path.as_ref().components().any(|c| c.as_os_str() == needle.as_ref())
 }

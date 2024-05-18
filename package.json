@@ -159,7 +159,7 @@
 		"test-compile": "tsc -p ./",
 		"compile": "cross-env NODE_ENV=production tsc -b",
 		"watch": "rm -rf dist && tsc -b -w",
-		"lint": "prettier --write . && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged",
+		"lint": "prettier --write . && ruff format && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged",
 		"pretest": "npm run compile && npm run lint",
 		"test": "node ./out/test/runTest.js",
 		"build": "webpack --config webpack.config.js",

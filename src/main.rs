@@ -111,6 +111,7 @@ use tracing_subscriber::EnvFilter;
 impl LanguageServer for Backend {
 	#[instrument(skip_all)]
 	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+		let _blocker = self.root_setup.block();
 		let root = params.root_uri.and_then(|uri| uri.to_file_path().ok()).or_else(
 			#[allow(deprecated)]
 			|| params.root_path.map(PathBuf::from),
@@ -137,12 +138,20 @@ impl LanguageServer for Backend {
 					None
 				};
 				let Some((path, config)) = &config_file else {
-					self.roots.insert(root.to_string_lossy().to_string());
+					self.roots.insert(root.clone());
 					break 'root;
 				};
 				match serde_json::from_slice::<Config>(config) {
 					Ok(config) => self.on_change_config(config).await,
 					Err(err) => error!("could not parse {:?}:\n{err}", path),
+				}
+			}
+			for ws_dir in params.workspace_folders.unwrap_or_default() {
+				match ws_dir.uri.to_file_path() {
+					Ok(path) => drop(self.roots.insert(path)),
+					Err(()) => {
+						error!("not a file path: {}", ws_dir.uri);
+					}
 				}
 			}
 		}
@@ -171,6 +180,61 @@ impl LanguageServer for Backend {
 		{
 			debug!("Client supports pull diagnostics");
 			self.capabilities.pull_diagnostics.store(true, Relaxed);
+		}
+
+		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
+		let mut progress = None;
+		if self
+			.client
+			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
+			.await
+			.is_ok()
+		{
+			_ = self
+				.client
+				.send_notification::<Progress>(ProgressParams {
+					token: token.clone(),
+					value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
+						title: "Indexing".to_string(),
+						..Default::default()
+					})),
+				})
+				.await;
+			progress = Some((&self.client, token.clone()));
+		}
+
+		self.ensure_nonoverlapping_roots();
+
+		for root in self.roots.iter() {
+			match self.index.add_root(&root, progress.clone(), false).await {
+				Ok(Some(results)) => {
+					info!(
+						target: "initialized",
+						"{} | {} modules | {} records | {} templates | {} models | {} components | {:.2}s",
+						root.display(),
+						results.module_count,
+						results.record_count,
+						results.template_count,
+						results.model_count,
+						results.component_count,
+						results.elapsed.as_secs_f64()
+					);
+				}
+				Err(err) => {
+					error!("could not add root {}:\n{err}", root.display());
+				}
+				_ => {}
+			}
+		}
+
+		if progress.is_some() {
+			_ = self
+				.client
+				.send_notification::<Progress>(ProgressParams {
+					token,
+					value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
+				})
+				.await;
 		}
 
 		Ok(InitializeResult {
@@ -216,7 +280,7 @@ impl LanguageServer for Backend {
 	async fn shutdown(&self) -> Result<()> {
 		Ok(())
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip(self))]
 	async fn did_close(&self, params: DidCloseTextDocumentParams) {
 		let path = params.text_document.uri.path();
 		let Self {
@@ -242,73 +306,6 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn initialized(&self, _: InitializedParams) {
-		let blocker = self.root_setup.block();
-
-		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
-		let mut progress = None;
-		if self
-			.client
-			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
-			.await
-			.is_ok()
-		{
-			_ = self
-				.client
-				.send_notification::<Progress>(ProgressParams {
-					token: token.clone(),
-					value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
-						title: "Indexing".to_string(),
-						..Default::default()
-					})),
-				})
-				.await;
-			progress = Some((&self.client, token.clone()));
-		}
-
-		if self.capabilities.workspace_folders.load(Relaxed) {
-			for workspace in self.client.workspace_folders().await.unwrap().unwrap_or_default() {
-				let Ok(file_path) = workspace.uri.to_file_path() else {
-					continue;
-				};
-				self.roots.insert(file_path.to_string_lossy().into_owned());
-			}
-		}
-		self.ensure_nonoverlapping_roots();
-
-		for root in self.roots.iter() {
-			match self.index.add_root(root.as_str(), progress.clone(), false).await {
-				Ok(Some(results)) => {
-					info!(
-						target: "initialized",
-						"{} | {} modules | {} records | {} templates | {} models | {} components | {:.2}s",
-						root.as_str(),
-						results.module_count,
-						results.record_count,
-						results.template_count,
-						results.model_count,
-						results.component_count,
-						results.elapsed.as_secs_f64()
-					);
-				}
-				Err(err) => {
-					error!("could not add root {}:\n{err}", root.as_str());
-				}
-				_ => {}
-			}
-		}
-
-		if progress.is_some() {
-			_ = self
-				.client
-				.send_notification::<Progress>(ProgressParams {
-					token,
-					value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
-				})
-				.await;
-		}
-
-		drop(blocker);
-
 		if self.capabilities.dynamic_config.load(Relaxed) {
 			_ = self
 				.client
@@ -320,9 +317,9 @@ impl LanguageServer for Backend {
 				.await;
 		}
 	}
-	#[instrument(skip_all, fields(uri=params.text_document.uri.path()))]
+	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
-		info!("(did_open) {}", params.text_document.uri.path());
+		info!("{}", params.text_document.uri.path());
 		let language_id = params.text_document.language_id.as_str();
 		let split_uri = params.text_document.uri.path().rsplit_once('.');
 		let language = match (language_id, split_uri) {
@@ -340,35 +337,27 @@ impl LanguageServer for Backend {
 			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()));
 
 		self.root_setup.wait().await;
-		if self
-			.index
-			.module_of_path(Path::new(params.text_document.uri.path()))
-			.is_none()
-		{
+		let path = params.text_document.uri.to_file_path().unwrap();
+		if self.index.module_of_path(&path).is_none() {
 			// outside of root?
 			debug!("oob: {}", params.text_document.uri.path());
-			'oob: {
-				let Ok(path) = params.text_document.uri.to_file_path() else {
-					break 'oob;
-				};
-				let mut path = Some(path.as_path());
-				while let Some(path_) = path {
-					if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
-						.await
-						.unwrap_or(false)
-					{
-						if let Some(file_path) = path_.parent() {
-							let file_path = file_path.to_string_lossy();
-							_ = self
-								.index
-								.add_root(&file_path, None, false)
-								.await
-								.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path));
-							break;
-						}
+			let path = params.text_document.uri.to_file_path().ok();
+			let mut path = path.as_deref();
+			while let Some(path_) = path {
+				if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
+					.await
+					.unwrap_or(false)
+				{
+					if let Some(file_path) = path_.parent() {
+						_ = self
+							.index
+							.add_root(file_path, None, false)
+							.await
+							.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
+						break;
 					}
-					path = path_.parent();
 				}
+				path = path_.parent();
 			}
 		}
 
@@ -639,7 +628,7 @@ impl LanguageServer for Backend {
 			.roots
 			.iter()
 			.map(|entry| {
-				let scope_uri = Some(format!("file://{}", entry.key()).parse().unwrap());
+				let scope_uri = Url::from_file_path(entry.key()).ok();
 				ConfigurationItem {
 					section: Some("odoo-lsp".into()),
 					scope_uri,
@@ -662,17 +651,23 @@ impl LanguageServer for Backend {
 	#[instrument(skip_all)]
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
 		for added in params.event.added {
-			let file_path = added.uri.to_file_path().expect("not a file path");
-			let file_path = file_path.as_os_str().to_string_lossy();
-			_ = self.index.add_root(&file_path, None, false).await.inspect_err(|err| {
-				warn!(
-					"(did_change_workspace_folders) failed to add root {}:\n{err}",
-					file_path
-				)
-			});
+			// let file_path = added.uri.path();
+			let Ok(file_path) = added.uri.to_file_path() else {
+				error!("not a file path: {}", added.uri);
+				continue;
+			};
+			_ = self
+				.index
+				.add_root(&file_path, None, false)
+				.await
+				.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
 		}
 		for removed in params.event.removed {
-			self.index.remove_root(removed.uri.path());
+			let Ok(file_path) = removed.uri.to_file_path() else {
+				error!("not a file path: {}", removed.uri);
+				continue;
+			};
+			self.index.remove_root(&file_path);
 		}
 		self.index.mark_n_sweep();
 	}
@@ -802,7 +797,7 @@ impl LanguageServer for Backend {
 	}
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(worker_threads = 2)]
 async fn main() {
 	let outlog = std::env::var("ODOO_LSP_LOG").ok().map(|var| {
 		let path = match var.as_str() {

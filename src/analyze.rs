@@ -629,8 +629,22 @@ class Foo(models.AbstractModel):
 			matches!(
 				&actual[..],
 				[
-					[None, None, Some(T::Name), Some(T::Def), Some(T::SelfParam), Some(T::Scope)],
-					[None, None, Some(T::Name), Some(T::Def), Some(T::SelfParam), Some(T::Scope)]
+					[
+						None,
+						None,
+						Some(T::Name),
+						Some(T::Def),
+						Some(T::SelfParam),
+						Some(T::Scope)
+					],
+					[
+						None,
+						None,
+						Some(T::Name),
+						Some(T::Def),
+						Some(T::SelfParam),
+						Some(T::Scope)
+					]
 				]
 			),
 			"{actual:?}"
@@ -647,13 +661,14 @@ class Foo(models.Model):
 	def scope(self):
 		pass
 "#;
-		let ast = parser.parse(&contents, None).unwrap();
-		let rope = Rope::from(&contents[..]);
+		let ast = parser.parse(contents, None).unwrap();
+		let rope = Rope::from(contents);
 		let fn_start = position_to_offset(Position { line: 3, character: 1 }, &rope).unwrap();
 		let fn_scope = ast
 			.root_node()
 			.named_descendant_for_byte_range(fn_start.0, fn_start.0)
 			.unwrap();
-		super::determine_scope(ast.root_node(), contents.as_bytes(), fn_start.0).expect(&fn_scope.to_sexp());
+		super::determine_scope(ast.root_node(), contents.as_bytes(), fn_start.0)
+			.unwrap_or_else(|| panic!("{}", fn_scope.to_sexp()));
 	}
 }

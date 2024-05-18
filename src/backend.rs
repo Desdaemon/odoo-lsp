@@ -4,7 +4,7 @@
 //! This is the final destination in the flowchart.
 
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
@@ -12,13 +12,13 @@ use dashmap::{DashMap, DashSet};
 use fomat_macros::fomat;
 use globwalk::FileType;
 use lasso::Spur;
-use tracing::{debug, info, instrument, warn};
 use miette::{diagnostic, miette};
 use odoo_lsp::component::{Prop, PropDescriptor};
 use ropey::Rope;
 use serde_json::Value;
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
+use tracing::{debug, info, instrument, warn};
 use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
@@ -34,7 +34,7 @@ pub struct Backend {
 	pub record_ranges: DashMap<String, Box<[ByteRange]>>,
 	pub ast_map: DashMap<String, Tree>,
 	pub index: Index,
-	pub roots: DashSet<String>,
+	pub roots: DashSet<PathBuf>,
 	pub capabilities: Capabilities,
 	pub root_setup: CondVar,
 	pub symbols_limit: AtomicUsize,
@@ -97,10 +97,10 @@ impl Backend {
 	/// Maximum file line count to process diagnostics each on_change
 	pub const DIAGNOSTICS_LINE_LIMIT: usize = 1200;
 
-	pub fn find_root_of(&self, path: &str) -> Option<String> {
+	pub fn find_root_of(&self, path: &Path) -> Option<PathBuf> {
 		for root_ in self.roots.iter() {
 			if path.starts_with(root_.key()) {
-				return Some(root_.key().to_string());
+				return Some(root_.key().to_owned());
 			}
 		}
 		None
@@ -122,10 +122,11 @@ impl Backend {
 				// Rope updates are handled by did_change
 			}
 		}
+		let path = params.uri.to_file_path().unwrap();
 		let root = self
-			.find_root_of(params.uri.path())
+			.find_root_of(&path)
 			.ok_or_else(|| miette!("file not under any root"))?;
-		let root = interner().get_or_intern(&root);
+		let root = interner().get_or_intern_path(&root);
 		let rope = document.rope.clone();
 		let eager_diagnostics = self.eager_diagnostics(params.open, &rope);
 		match (split_uri, params.language) {
@@ -164,10 +165,9 @@ impl Backend {
 		let uri = params.text_document.uri;
 		debug!("{}", uri.path());
 		let (_, extension) = uri.path().rsplit_once('.').ok_or_else(|| diagnostic!("no extension"))?;
-		let root = self
-			.find_root_of(uri.path())
-			.ok_or_else(|| diagnostic!("out of root"))?;
-		let root = interner().get_or_intern(&root);
+		let path = uri.to_file_path().unwrap();
+		let root = self.find_root_of(&path).ok_or_else(|| diagnostic!("out of root"))?;
+		let root = interner().get_or_intern_path(&root);
 
 		let mut document = self
 			.document_map
@@ -183,17 +183,22 @@ impl Backend {
 		Ok(())
 	}
 	pub async fn did_save_python(&self, uri: Url, root: Spur, document: &mut Document) {
-		let path = uri.path();
+		let path = uri.to_file_path().unwrap();
 		let zone = document.damage_zone.take();
 		let rope = &document.rope;
 		let text = Cow::from(rope);
 		_ = self
-			.update_models(Text::Full(text.into_owned()), path, root, rope.clone())
+			.update_models(Text::Full(text.into_owned()), &path, root, rope.clone())
 			.await
 			.inspect_err(|err| warn!("{err:?}"));
 		if zone.is_some() {
 			debug!("diagnostics");
-			self.diagnose_python(path, &document.rope.clone(), zone, &mut document.diagnostics_cache);
+			self.diagnose_python(
+				uri.path(),
+				&document.rope.clone(),
+				zone,
+				&mut document.diagnostics_cache,
+			);
 			self.client
 				.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
 				.await;
@@ -475,9 +480,10 @@ impl Backend {
 	}
 	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
 		let mut value = Cow::from(cursor_value);
+		let path = some!(uri.to_file_path().ok());
 		if !value.contains('.') {
 			'unscoped: {
-				if let Some(module) = self.index.module_of_path(Path::new(uri.path())) {
+				if let Some(module) = self.index.module_of_path(&path) {
 					value = format!("{}.{value}", interner().resolve(&module)).into();
 					break 'unscoped;
 				}
@@ -788,10 +794,10 @@ impl Backend {
 				};
 				for dir_entry in glob {
 					let Ok(root) = dir_entry else { continue };
-					self.roots.insert(root.path().to_string_lossy().to_string());
+					self.roots.insert(root.path().to_owned());
 				}
 			} else if tokio::fs::try_exists(&root).await.unwrap_or(false) {
-				self.roots.insert(root_display.to_string());
+				self.roots.insert(root.clone());
 			}
 		}
 		// self.added_roots_root.store(true, Relaxed);
@@ -828,8 +834,8 @@ impl Backend {
 	}
 	pub fn ensure_nonoverlapping_roots(&self) {
 		let mut redundant = vec![];
-		let mut roots = self.roots.iter().map(|r| r.to_string()).collect::<Vec<_>>();
-		roots.sort_unstable_by_key(|root| root.len());
+		let mut roots = self.roots.iter().map(|r| r.as_path().to_owned()).collect::<Vec<_>>();
+		roots.sort_unstable_by_key(|root| root.as_os_str().len());
 		info!("{roots:?}");
 		for lhs in 1..roots.len() {
 			for rhs in 0..lhs {
@@ -850,7 +856,7 @@ impl Backend {
 			);
 		}
 		for root in redundant {
-			self.roots.remove(root);
+			self.roots.remove(Path::new(root));
 		}
 	}
 }

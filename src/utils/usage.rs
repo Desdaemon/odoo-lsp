@@ -19,6 +19,7 @@ use std::{
 	hash::Hash,
 	marker::PhantomData,
 	ops::Add,
+	path::PathBuf,
 	sync::Arc,
 };
 
@@ -401,5 +402,11 @@ impl Usage for tower_lsp::lsp_types::Diagnostic {
 impl<T: Usage> Usage for Arc<T> {
 	fn usage(&self) -> UsageInfo<Self> {
 		UsageInfo::new(self.as_ref().usage().0)
+	}
+}
+
+impl Usage for PathBuf {
+	fn usage(&self) -> UsageInfo<Self> {
+		UsageInfo::new(self.capacity())
 	}
 }

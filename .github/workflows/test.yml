@@ -42,7 +42,7 @@ jobs:
           uv venv
           . ${{ matrix.runs-on == 'windows-latest' && '.venv/Scripts/activate' || '.venv/bin/activate'}}
           uv pip sync requirements.txt
-          pytest -vv --junit-xml=.results.xml --color=yes
+          pytest -vv --junitxml=.results.xml --color=yes
 
       - name: Report failures
         if: always()

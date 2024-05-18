@@ -303,13 +303,23 @@ export async function activate(context: vscode.ExtensionContext) {
 		run: {
 			command,
 			options: {
-				env: { ...process.env, RUST_LOG: process.env.RUST_LOG || `info,odoo_lsp=${logLevel}`, RUST_LOG_STYLE, NO_COLOR },
+				env: {
+					...process.env,
+					RUST_LOG: process.env.RUST_LOG || `info,odoo_lsp=${logLevel}`,
+					RUST_LOG_STYLE,
+					NO_COLOR,
+				},
 			},
 		},
 		debug: {
 			command,
 			options: {
-				env: { ...process.env, RUST_LOG: process.env.RUST_LOG || `debug,odoo_lsp=${logLevel}`, RUST_LOG_STYLE, NO_COLOR },
+				env: {
+					...process.env,
+					RUST_LOG: process.env.RUST_LOG || `debug,odoo_lsp=${logLevel}`,
+					RUST_LOG_STYLE,
+					NO_COLOR,
+				},
 			},
 		},
 	};
