@@ -10,3 +10,4 @@ syntaxes/*.json
 .venv
 __pycache__
 .*_cache
+testing/requirements.txt

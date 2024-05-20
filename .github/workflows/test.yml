@@ -38,9 +38,10 @@ jobs:
       - name: Run tests
         working-directory: testing
         run: |
-          pip install uv
+          pip install -U uv
           uv venv
           . ${{ matrix.runs-on == 'windows-latest' && '.venv/Scripts/activate' || '.venv/bin/activate'}}
+          uv pip compile requirements.in -o requirements.txt
           uv pip sync requirements.txt
           pytest -vv --junitxml=.results.xml --color=yes
 

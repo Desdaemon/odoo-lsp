@@ -15,7 +15,7 @@ use odoo_lsp::model::{Field, FieldKind};
 use odoo_lsp::template::gather_templates;
 use ropey::{Rope, RopeSlice};
 use tower_lsp::lsp_types::*;
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 use tree_sitter::Parser;
 use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
 
@@ -610,6 +610,7 @@ impl Backend {
 	}
 	/// The main function that determines all the information needed
 	/// to resolve the symbol at the cursor.
+	#[instrument(level = "trace", skip_all, ret)]
 	fn gather_refs<'read>(
 		&self,
 		offset_at_cursor: ByteOffset,
@@ -998,6 +999,7 @@ impl Backend {
 	}
 }
 
+#[derive(Debug)]
 struct XmlRefs<'a> {
 	ref_at_cursor: Option<(&'a str, core::ops::Range<usize>)>,
 	ref_kind: Option<RefKind<'a>>,

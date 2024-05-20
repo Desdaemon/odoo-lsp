@@ -7,4 +7,4 @@ class DerivedBar(models.Model):
     _inherit = "bar"
 
     def test(self):
-        self.env["bar"]
+        pass

@@ -1017,6 +1017,11 @@ impl Backend {
 								return ControlFlow::Continue(entered);
 							}
 
+							// HACK: fix this issue where the model name is just empty
+							if interner().resolve(&model_name).is_empty() {
+								return ControlFlow::Continue(entered);
+							}
+
 							diagnostics.push(Diagnostic {
 								range: ts_range_to_lsp_range(attribute.range()),
 								severity: Some(DiagnosticSeverity::ERROR),
