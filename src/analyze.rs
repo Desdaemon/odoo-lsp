@@ -3,7 +3,7 @@
 
 use std::{borrow::Borrow, collections::HashMap, fmt::Debug, iter::FusedIterator, ops::ControlFlow};
 
-use tracing::trace;
+use tracing::{instrument, trace};
 use tree_sitter::{Node, QueryCursor};
 
 use odoo_lsp::{
@@ -146,7 +146,7 @@ impl<'a> Iterator for Iter<'a> {
 #[rustfmt::skip]
 query! {
 	#[derive(Debug)]
-	FieldCompletion(Name, SelfParam, Scope, Def);
+	FieldCompletion(Name, SelfParam, Scope);
 ((class_definition
   (block
     (expression_statement
@@ -155,8 +155,8 @@ query! {
     [
       (decorated_definition
         (function_definition
-          (parameters . (identifier) @SELF_PARAM) (block) @SCOPE) .)
-      (function_definition (parameters . (identifier) @SELF_PARAM) (block) @SCOPE)] @DEF)) @class
+          (parameters . (identifier) @SELF_PARAM)) @SCOPE)
+      (function_definition (parameters . (identifier) @SELF_PARAM)) @SCOPE])) @class
   (#match? @_name "^_(name|inherit)$"))
 }
 
@@ -547,6 +547,7 @@ impl Backend {
 }
 
 /// Returns `(self_type, fn_scope, self_param)`
+#[instrument(level = "trace", skip_all, ret)]
 pub fn determine_scope<'out, 'node>(
 	node: Node<'node>,
 	contents: &'out [u8],
@@ -571,19 +572,17 @@ pub fn determine_scope<'out, 'node>(
 				Some(FieldCompletion::SelfParam) => {
 					self_param = Some(capture.node);
 				}
-				Some(FieldCompletion::Def) => {
+				Some(FieldCompletion::Scope) => {
 					if !capture.node.byte_range().contains_end(offset) {
 						continue 'scoping;
 					}
-				}
-				Some(FieldCompletion::Scope) => {
 					fn_scope = Some(capture.node);
 				}
 				None => {}
 			}
 		}
 		if fn_scope.is_some() {
-			break 'scoping;
+			break;
 		}
 	}
 	let fn_scope = fn_scope?;
@@ -617,7 +616,6 @@ class Foo(models.AbstractModel):
 		let ast = parser.parse(&contents[..], None).unwrap();
 		let query = FieldCompletion::query();
 		let mut cursor = QueryCursor::new();
-		// let expected: &[&[u32]] = &[];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])
 			.map(|match_| {
@@ -635,22 +633,8 @@ class Foo(models.AbstractModel):
 			matches!(
 				&actual[..],
 				[
-					[
-						None,
-						None,
-						Some(T::Name),
-						Some(T::Def),
-						Some(T::SelfParam),
-						Some(T::Scope)
-					],
-					[
-						None,
-						None,
-						Some(T::Name),
-						Some(T::Def),
-						Some(T::SelfParam),
-						Some(T::Scope)
-					]
+					[None, None, Some(T::Name), Some(T::Scope), Some(T::SelfParam)],
+					[None, None, Some(T::Name), Some(T::Scope), Some(T::SelfParam)]
 				]
 			),
 			"{actual:?}"

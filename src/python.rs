@@ -12,7 +12,7 @@ use miette::{diagnostic, miette};
 use odoo_lsp::index::{index_models, interner, PathSymbol};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
-use tracing::{debug, trace, warn};
+use tracing::{debug, instrument, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor, QueryMatch, Tree};
 
 use odoo_lsp::model::{ModelName, ModelType, ResolveMappedError};
@@ -551,6 +551,7 @@ impl Backend {
 	}
 	/// Resolves the attribute at the cursor offset.
 	/// Returns `(object, field, range)`
+	#[instrument(level = "trace", skip_all, ret)]
 	pub fn attribute_node_at_offset<'out>(
 		&'out self,
 		mut offset: usize,
@@ -562,8 +563,10 @@ impl Backend {
 		}
 		offset = offset.clamp(0, contents.len() - 1);
 		let mut cursor_node = root.descendant_for_byte_range(offset, offset)?;
+		let mut real_offset = None;
 		if cursor_node.is_named() && !matches!(cursor_node.kind(), "attribute" | "identifier") {
 			// We got our cursor left in the middle of nowhere.
+			real_offset = Some(offset);
 			offset = offset.saturating_sub(1);
 			cursor_node = root.descendant_for_byte_range(offset, offset)?;
 		}
@@ -578,15 +581,12 @@ impl Backend {
 		let rhs;
 		if !cursor_node.is_named() {
 			// We landed on one of the punctuations inside the attribute.
-			// Need to determine which one is it.
+			// Need to determine which one it is.
 			let dot = cursor_node.descendant_for_byte_range(offset, offset)?;
 			lhs = dot.prev_named_sibling()?;
 			rhs = dot.next_named_sibling().and_then(|attr| match attr.kind() {
 				"identifier" => Some(attr),
-				// TODO: Unwrap all layers of attributes
-				"attribute" => attr
-					.child_by_field_name("object")
-					.and_then(|obj| (obj.kind() == "identifier").then_some(obj)),
+				"attribute" => attr.child_by_field_name("attribute"),
 				_ => None,
 			});
 		} else if cursor_node.kind() == "attribute" {
@@ -619,13 +619,15 @@ impl Backend {
 		let Some(rhs) = rhs else {
 			// In single-expression mode, rhs could be empty in which case
 			// we return an empty needle/range.
-			return Some((lhs, Cow::from(""), offset + 1..offset + 1));
+			let offset = real_offset.unwrap_or(offset);
+			return Some((lhs, Cow::from(""), offset..offset));
 		};
 		let (field, range) = if rhs.range().start_point.row != lhs.range().end_point.row {
 			// tree-sitter has an issue with attributes spanning multiple lines
 			// which is NOT valid Python, but allows it anyways because tree-sitter's
 			// use cases don't require strict syntax trees.
-			(Cow::from(""), offset + 1..offset + 1)
+			let offset = real_offset.unwrap_or(offset);
+			(Cow::from(""), offset..offset)
 		} else {
 			let range = rhs.byte_range();
 			(String::from_utf8_lossy(&contents[range.clone()]), range)

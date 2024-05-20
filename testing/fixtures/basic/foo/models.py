@@ -6,6 +6,9 @@ class Foo(Model):
     def completions(self):
         self.env["bar"]
         #         ^complete bar derived.bar foo foob
+        for foo in self:
+            foo.
+        #       ^complete bar
 
     def diagnostics(self):
         self.foo
@@ -16,7 +19,6 @@ class Foo(Model):
         #            ^diag Model `foo` has no field `foo`
         self.env["fo"]
         #         ^diag `fo` is not a valid model name
-
 
 class Foob(Model):
     _name = "foob"

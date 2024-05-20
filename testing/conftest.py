@@ -48,7 +48,9 @@ assert os.getcwd().startswith(__dirname), "Tests must be executed from within /t
 )
 async def client(lsp_client: LanguageClient, rootdir: str):
     params = InitializeParams(
-        workspace_folders=[WorkspaceFolder(uri=Path(rootdir).as_uri(), name="odoo-lsp")],
+        workspace_folders=[
+            WorkspaceFolder(uri=Path(rootdir).as_uri(), name="odoo-lsp")
+        ],
         capabilities=ClientCapabilities(
             window=WindowClientCapabilities(work_done_progress=True),
             text_document=TextDocumentClientCapabilities(

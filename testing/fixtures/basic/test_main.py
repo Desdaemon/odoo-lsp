@@ -42,7 +42,9 @@ class Expected:
 
 @pytest.mark.asyncio(scope="module")
 async def test_python(client: LanguageClient, rootdir: str):
-    files = {file: file.read_text() for file in Path(rootdir).joinpath("foo").rglob("*.py")}
+    files = {
+        file: file.read_text() for file in Path(rootdir).joinpath("foo").rglob("*.py")
+    }
     expected = defaultdict[Path, Expected](Expected)
     asts = dict[Path, Tree]()
     for file, text in files.items():
@@ -54,11 +56,15 @@ async def test_python(client: LanguageClient, rootdir: str):
             text = text.decode()
             if (offset := text.find("^diag ")) != -1:
                 msg = text[offset + 6 :].strip()
-                pos = Position(node.start_point.row - 1, node.start_point.column + offset)
+                pos = Position(
+                    node.start_point.row - 1, node.start_point.column + offset
+                )
                 expected[file].diag.append((pos, msg))
             elif (offset := text.find("^complete ")) != -1:
                 completions = text[offset + 10 :].strip().split(" ")
-                pos = Position(node.start_point.row - 1, node.start_point.column + offset)
+                pos = Position(
+                    node.start_point.row - 1, node.start_point.column + offset
+                )
                 expected[file].complete.append((pos, completions))
 
     unexpected: list[str] = []
@@ -81,7 +87,9 @@ async def test_python(client: LanguageClient, rootdir: str):
             for missing in diff.pop("iterable_item_removed", {}).values():  # type: ignore
                 unexpected.append(f"diag: missing {missing}\n  at {file}")
             for mismatch in diff.pop("values_changed", {}).values():  # type: ignore
-                unexpected.append(f"diag: expected={mismatch['old_value']!r} actual={mismatch['new_value']!r}\n  at {file}")
+                unexpected.append(
+                    f"diag: expected={mismatch['old_value']!r} actual={mismatch['new_value']!r}\n  at {file}"
+                )
             if diff:
                 unexpected.append(f"diag: unexpected {diff}\n  at {file}")
 
@@ -95,13 +103,17 @@ async def test_python(client: LanguageClient, rootdir: str):
             assert isinstance(results, CompletionList)
             actual = [e.label for e in results.items]
             if actual != expected_completion:
-                node = asts[file].root_node.named_descendant_for_point_range((pos.line, pos.character), (pos.line, 9999))
+                node = asts[file].root_node.named_descendant_for_point_range(
+                    (pos.line, pos.character), (pos.line, 9999)
+                )
                 assert node
                 if text := node.text:
                     node_text = text.decode()
                 else:
                     node_text = ""
-                unexpected.append(f"complete: actual={' '.join(actual)}\n  at {file}:{pos}\n{' ' * node.start_point.column}{node_text}")
+                unexpected.append(
+                    f"complete: actual={' '.join(actual)}\n  at {file}:{pos}\n{' ' * node.start_point.column}{node_text}"
+                )
     unexpected_len = len(unexpected)
     assert not unexpected_len, "\n".join(unexpected)
 
