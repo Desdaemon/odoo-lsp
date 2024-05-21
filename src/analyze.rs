@@ -33,8 +33,10 @@ static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
 	b"with_env",
 	b"sudo",
 	b"_for_xml_id",
+	b"exists",
 	// TODO: Limit to Forms only
 	b"new",
+	b"save",
 );
 
 /// The subset of types that may resolve to a model.

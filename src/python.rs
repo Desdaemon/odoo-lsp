@@ -998,10 +998,18 @@ impl Backend {
 							}
 
 							let attribute = attribute.unwrap();
-							static MODEL_BUILTINS: phf::Set<&str> =
-								phf::phf_set!("env", "id", "ids", "display_name", "create_date", "write_date");
+							static MODEL_BUILTINS: phf::Set<&str> = phf::phf_set!(
+								"env",
+								"id",
+								"ids",
+								"display_name",
+								"create_date",
+								"write_date",
+								"pool",
+								"record"
+							);
 							let prop = String::from_utf8_lossy(&contents[attribute.byte_range()]);
-							if prop.starts_with(' ') || MODEL_BUILTINS.contains(&prop) {
+							if prop.starts_with('_') || MODEL_BUILTINS.contains(&prop) {
 								return ControlFlow::Continue(entered);
 							}
 
