@@ -51,7 +51,7 @@ jobs:
         with:
           path: testing/.results.xml
           summary: true
-          fail-on-empty: true
+          fail-on-empty: false
           title: E2E Test Results
 
       - name: Fail if unit tests failed

@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+git cliff -l --tag-pattern '(nightly-.*|v[0-9].*)' -s header

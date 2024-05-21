@@ -194,11 +194,22 @@ jobs:
           for file in odoo-lsp-*/odoo-lsp-*; do
             openssl dgst -sha256 -r "$file" | awk '{print $1}' > "${file}.sha256";
           done
+      - name: Setup git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+      - name: Generate release notes
+        run: |
+          if [[ '${{ needs.tag.outputs.tag }}' == 'nightly-'* ]]; then
+            ./scripts/nightly-changelog > ${{ github.workspace }}-CHANGELOG.txt
+          else
+            git cliff -l > ${{ github.workspace }}-CHANGELOG.txt
+          fi
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
           files: odoo-lsp-*/odoo-lsp-*
           name: ${{ inputs.release_name || 'nightly' }}
           tag_name: ${{ needs.tag.outputs.tag }}
-          generate_release_notes: true
+          body_path: ${{ github.workspace }}-CHANGELOG.txt
           prerelease: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
