@@ -111,7 +111,6 @@ use tracing_subscriber::EnvFilter;
 impl LanguageServer for Backend {
 	#[instrument(skip_all)]
 	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-		let _blocker = self.root_setup.block();
 		let root = params.root_uri.and_then(|uri| uri.to_file_path().ok()).or_else(
 			#[allow(deprecated)]
 			|| params.root_path.map(PathBuf::from),
@@ -182,60 +181,6 @@ impl LanguageServer for Backend {
 			self.capabilities.pull_diagnostics.store(true, Relaxed);
 		}
 
-		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
-		let mut progress = None;
-		if self
-			.client
-			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
-			.await
-			.is_ok()
-		{
-			_ = self
-				.client
-				.send_notification::<Progress>(ProgressParams {
-					token: token.clone(),
-					value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
-						title: "Indexing".to_string(),
-						..Default::default()
-					})),
-				})
-				.await;
-			progress = Some((&self.client, token.clone()));
-		}
-
-		self.ensure_nonoverlapping_roots();
-
-		for root in self.roots.iter() {
-			match self.index.add_root(&root, progress.clone(), false).await {
-				Ok(Some(results)) => {
-					info!(
-						target: "initialized",
-						"{} | {} modules | {} records | {} templates | {} models | {} components | {:.2}s",
-						root.display(),
-						results.module_count,
-						results.record_count,
-						results.template_count,
-						results.model_count,
-						results.component_count,
-						results.elapsed.as_secs_f64()
-					);
-				}
-				Err(err) => {
-					error!("could not add root {}:\n{err}", root.display());
-				}
-				_ => {}
-			}
-		}
-
-		if progress.is_some() {
-			_ = self
-				.client
-				.send_notification::<Progress>(ProgressParams {
-					token,
-					value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
-				})
-				.await;
-		}
 
 		Ok(InitializeResult {
 			server_info: None,
@@ -314,6 +259,62 @@ impl LanguageServer for Backend {
 					method: DidChangeConfiguration::METHOD.to_string(),
 					register_options: None,
 				}])
+				.await;
+		}
+
+		let _blocker = self.root_setup.block();
+		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
+		let mut progress = None;
+		if self
+			.client
+			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
+			.await
+			.is_ok()
+		{
+			_ = self
+				.client
+				.send_notification::<Progress>(ProgressParams {
+					token: token.clone(),
+					value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
+						title: "Indexing".to_string(),
+						..Default::default()
+					})),
+				})
+				.await;
+			progress = Some((&self.client, token.clone()));
+		}
+
+		self.ensure_nonoverlapping_roots();
+
+		for root in self.roots.iter() {
+			match self.index.add_root(&root, progress.clone(), false).await {
+				Ok(Some(results)) => {
+					info!(
+						target: "initialized",
+						"{} | {} modules | {} records | {} templates | {} models | {} components | {:.2}s",
+						root.display(),
+						results.module_count,
+						results.record_count,
+						results.template_count,
+						results.model_count,
+						results.component_count,
+						results.elapsed.as_secs_f64()
+					);
+				}
+				Err(err) => {
+					error!("could not add root {}:\n{err}", root.display());
+				}
+				_ => {}
+			}
+		}
+
+		if progress.is_some() {
+			_ = self
+				.client
+				.send_notification::<Progress>(ProgressParams {
+					token,
+					value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
+				})
 				.await;
 		}
 	}

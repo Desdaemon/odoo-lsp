@@ -4,6 +4,8 @@ from pathlib import Path
 from pytest_lsp import LanguageClient
 from tree_sitter import Parser, Query, Tree
 from deepdiff import DeepDiff  # type: ignore
+from deepdiff.diff import DiffLevel
+from deepdiff.operator import BaseOperator
 from tree_sitter import Language
 import tree_sitter_python as tspython
 from lsprotocol.types import (
@@ -39,6 +41,16 @@ class Expected:
         self.diag = []
         self.complete = []
 
+class PositionOperator(BaseOperator):
+    def give_up_diffing(self, level: DiffLevel, diff_instance: DeepDiff) -> bool:
+        if isinstance(level.t1, Position) and isinstance(level.t2, Position):
+            if level.t1 != level.t2:
+                diff_instance.custom_report_result('values_changed', level)  # type: ignore
+            return True
+        return False
+
+def inc(position: Position):
+    return Position(position.line + 1, position.character + 1)
 
 @pytest.mark.asyncio(scope="module")
 async def test_python(client: LanguageClient, rootdir: str):
@@ -81,11 +93,11 @@ async def test_python(client: LanguageClient, rootdir: str):
         )
         await client.wait_for_notification("textDocument/publishDiagnostics")
         actual_diagnostics = list(splay_diag(client.diagnostics[file.as_uri()]))
-        if diff := DeepDiff(expected[file].diag, actual_diagnostics):
+        if diff := DeepDiff(expected[file].diag, actual_diagnostics, custom_operators=[PositionOperator(types=[Position])], ignore_order=True):
             for extra in diff.pop("iterable_item_added", {}).values():  # type: ignore
-                unexpected.append(f"diag: extra {extra}\n  at {file}")
+                unexpected.append(f"diag: extra {extra}\n  at {file}:{inc(extra[0])}")  # type: ignore
             for missing in diff.pop("iterable_item_removed", {}).values():  # type: ignore
-                unexpected.append(f"diag: missing {missing}\n  at {file}")
+                unexpected.append(f"diag: missing {missing}\n  at {file}:{inc(missing[0])}")  # type: ignore
             for mismatch in diff.pop("values_changed", {}).values():  # type: ignore
                 unexpected.append(
                     f"diag: expected={mismatch['old_value']!r} actual={mismatch['new_value']!r}\n  at {file}"
@@ -112,7 +124,7 @@ async def test_python(client: LanguageClient, rootdir: str):
                 else:
                     node_text = ""
                 unexpected.append(
-                    f"complete: actual={' '.join(actual)}\n  at {file}:{pos}\n{' ' * node.start_point.column}{node_text}"
+                    f"complete: actual={' '.join(actual)}\n  at {file}:{inc(pos)}\n{' ' * node.start_point.column}{node_text}"
                 )
     unexpected_len = len(unexpected)
     assert not unexpected_len, "\n".join(unexpected)

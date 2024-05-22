@@ -26,7 +26,7 @@ if lsp_devtools := which("lsp-devtools"):
     odoocmd = [lsp_devtools, "agent", "--", f"{__dirname}/../target/debug/odoo-lsp"]
 else:
     odoocmd = [f"{__dirname}/../target/debug/odoo-lsp"]
-ODOO_ENV = {"RUST_LOG": "info,odoo_lsp=trace"}
+ODOO_ENV = {"RUST_LOG": "info,odoo_lsp=trace", "ODOO_LSP_LOG": "1"}
 
 
 @pytest.fixture

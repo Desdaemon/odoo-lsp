@@ -141,8 +141,20 @@ query! {
 
 (class_definition
   (block [
-    (function_definition (block) @SCOPE)
-    (decorated_definition (function_definition (block) @SCOPE)) ]))
+    (function_definition) @SCOPE
+    (decorated_definition
+      (decorator
+        (call
+          (attribute (identifier) @_api (#eq? @_api "api") (identifier) @_depends (#eq? @_depends "depends"))
+          (argument_list ((string) @MAPPED ","?)*)))
+      (function_definition) @SCOPE) ]))
+
+(class_definition
+  (block
+    (decorated_definition
+      (decorator (_) @_)
+      (function_definition) @SCOPE)*)
+  (#not-match? @_ "^api.depends"))
 }
 
 /// (module (_)*)
@@ -1206,16 +1218,21 @@ baz = fields.Many2many(comodel_name='named')
 class Foo(models.AbstractModel):
 	_name = 'foo'
 	_inherit = ['inherit_foo', 'inherit_bar']
+
 	foo = fields.Char(related='related')
+
 	@api.constrains('mapped', 'meh')
 	def foo(self):
 		what = self.sudo().mapped('ha.ha')
-	def bar(self):
-		pass
+
 	foo = fields.Foo()
-	@api.depends('mapped2')
+
 	@api.depends_context('uid')
+	@api.depends('mapped2', 'mapped3')
 	def another(self):
+		pass
+
+	def no_decorators(self):
 		pass
 "#;
 		let ast = parser.parse(&contents[..], None).unwrap();
@@ -1225,13 +1242,20 @@ class Foo(models.AbstractModel):
 			&["_name", "'foo'"],
 			&["_inherit", "'inherit_foo'", "'inherit_bar'"],
 			&["foo", "fields", "related", "'related'"],
+			// api.constrains('mapped', 'meh')
 			&["api", "constrains", "'mapped'"],
 			&["api", "constrains", "'meh'"],
-			&["<scope>"],
+			// scope detection with no .depends
+			// note that it goes later
 			&["self.sudo()", "mapped", "'ha.ha'"],
-			&["<scope>"],
+			&["api.constrains('mapped', 'meh')", "<scope>"],
 			&["foo", "fields"],
+			// scope detection with both .depends and non-.depends
+			// first, each of the original MAPPED rules are triggered
 			&["api", "depends", "'mapped2'"],
+			&["api", "depends", "'mapped3'"],
+			&["api", "depends", "'mapped2'", "'mapped3'", "<scope>"],
+			// no decorators
 			&["<scope>"],
 		];
 		let actual = cursor
