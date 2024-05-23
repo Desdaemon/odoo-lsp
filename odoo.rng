@@ -25,19 +25,435 @@
 		</data>
 	</define>
 
-	<define name="any">
-		<element>
-			<anyName />
+	<define name="oe_class">
+		<attribute name="class">
+			<choice>
+				<text/>
+				<value>oe_inline</value>
+				<value>oe_left</value>
+				<value>oe_right</value>
+				<value>oe_read_only</value>
+				<value>oe_edit_only</value>
+				<value>oe_avatar</value>
+				<value>oe_stat_button</value>
+			</choice>
+			<a:documentation>
+				HTML classes. Some helper classes starting with `oe_` provide
+				useful styling for common use cases.
+			</a:documentation>
+		</attribute>
+	</define>
+
+	<define name="decoration">
+		<choice>
+			<attribute name="decoration-info" a:defaultValue="False">
+				<a:documentation>
+					Apply a blue decoration to matching records. Takes a Python expression.
+				</a:documentation>
+			</attribute>
+			<attribute name="decoration-warning" a:defaultValue="False">
+				<a:documentation>
+					Apply a yellow decoration to matching records. Takes a Python expression.
+				</a:documentation>
+			</attribute>
+			<attribute name="decoration-danger" a:defaultValue="False">
+				<a:documentation>
+					Apply a red decoration to matching records. Takes a Python expression.
+				</a:documentation>
+			</attribute>
+			<attribute name="decoration-muted" a:defaultValue="False">
+				<a:documentation>
+					Apply a muted decoration to matching records. Takes a Python expression.
+				</a:documentation>
+			</attribute>
+			<attribute name="decoration-primary" a:defaultValue="False">
+				<a:documentation>
+					Apply a prominent decoration to matching records. Takes a Python expression.
+				</a:documentation>
+			</attribute>
+			<attribute name="decoration-success" a:defaultValue="False">
+				<a:documentation>
+					Apply a green decoration to matching records. Takes a Python expression.
+				</a:documentation>
+			</attribute>
+			<attribute name="decoration-bf" a:defaultValue="False">
+				<a:documentation>
+					Apply **bold text** to matching records. Takes a Python expression.
+				</a:documentation>
+			</attribute>
+			<attribute name="decoration-it" a:defaultValue="False">
+				<a:documentation>
+					Apply *italic text* to matching records. Takes a Python expression.
+				</a:documentation>
+			</attribute>
+		</choice>
+	</define>
+
+	<define name="tree_button">
+		<element name="button">
+			<a:documentation>
+				A button that will be displayed in the view.
+			</a:documentation>
+			<ref name="tree_button_attrs"/>
+		</element>
+	</define>
+
+	<define name="tree_button_attrs">
+		<optional>
+			<attribute name="type">
+				<choice>
+					<value>object</value>
+					<value>action</value>
+				</choice>
+				<a:documentation xml:space="preserve">
+					What should happen when the button is clicked.<br/>
+					- `object`: Call a method on the view's model.<br/>
+					- `action`: Execute an action.
+				</a:documentation>
+			</attribute>
+			<attribute name="name">
+				<a:documentation xml:space="preserve">
+					What to invoke when the button is clicked.<br/>
+					- When `type` is `object`, this is the method to call.<br/>
+					- When `type` is `action`, this is the external ID of the action to execute.
+						Either an integer ID or a string format `%(xmlid)d`.
+				</a:documentation>
+			</attribute>
+		</optional>
+		<zeroOrMore>
+			<choice>
+				<attribute name="string">
+					<a:documentation>
+						The button's text, or alt-text if `icon` is specified.
+					</a:documentation>
+				</attribute>
+				<attribute name="icon">
+					<a:documentation xml:space="preserve">
+						The icon to display on the button.<br/>
+						See https://www.odoo.com/documentation/latest/developer/reference/user_interface/icons.html#reference-user-interface-ui-icons
+					</a:documentation>
+				</attribute>
+				<attribute name="help">
+					<a:documentation>
+						A tooltip to display upon hovering.
+					</a:documentation>
+				</attribute>
+				<attribute name="context" a:defaultValue="{}">
+					<a:documentation>
+						Additional context to pass to the method or action.
+						Accepts a Python dictionary.
+					</a:documentation>
+				</attribute>
+				<attribute name="groups">
+					<a:documentation>
+						A comma-separated list of `res.groups` that are allowed to see this button.
+					</a:documentation>
+				</attribute>
+				<attribute name="invisible" a:defaultValue="False">
+					<a:documentation>
+						Whether the button is visible. Takes a Python expression.
+					</a:documentation>
+				</attribute>
+				<attribute name="column_invisible" a:defaultValue="False">
+					<a:documentation>
+						Whether this button's column should be hidden. Takes a Python expression.
+					</a:documentation>
+				</attribute>
+			</choice>
+		</zeroOrMore>
+	</define>
+
+	<define name="tree_field">
+		<element name="field">
+			<a:documentation>
+				A field that will be displayed in the list view.
+			</a:documentation>
+			<attribute name="name">
+				<a:documentation>
+					The name of the field that will be displayed.
+				</a:documentation>
+			</attribute>
 			<zeroOrMore>
 				<choice>
-					<attribute>
-						<anyName />
+					<ref name="decoration"/>
+					<attribute name="string">
+						<a:documentation>
+							The title of the field that will be displayed.
+						</a:documentation>
 					</attribute>
-					<text />
-					<ref name="any" />
+					<attribute name="optional">
+						<choice>
+							<value>show</value>
+							<value>hide</value>
+						</choice>
+						<a:documentation>
+							Allows the field to be shown/hidden by the user, and whether to show it by default.
+						</a:documentation>
+					</attribute>
+					<attribute name="readonly" a:defaultValue="False">
+						<a:documentation>
+							Whether the field is read-only. Takes a Python expression.
+						</a:documentation>
+					</attribute>
+					<attribute name="required" a:defaultValue="False">
+						<a:documentation>
+							Whether the field is required. Takes a Python expression.
+						</a:documentation>
+					</attribute>
+					<attribute name="invisible" a:defaultValue="False">
+						<a:documentation>
+							Whether the field is required. Takes a Python expression.
+						</a:documentation>
+					</attribute>
+					<attribute name="column_invisible" a:defaultValue="False">
+						<a:documentation>
+							Whether the entire column shoud be hidden. Takes a Python expression.
+						</a:documentation>
+					</attribute>
+					<attribute name="groups">
+						<a:documentation xml:space="preserve">
+							A comma-separated list of `res.groups` that are allowed to see this column.
+							Prefix with `!` to specify disallowed groups. 
+						</a:documentation>
+					</attribute>
+					<attribute name="widget">
+						<a:documentation xml:space="preserve">
+							The widget used to display the field.<br/>
+							See https://www.odoo.com/documentation/latest/developer/reference/frontend/javascript_reference.html#fields
+							for a non-exhaustive listing of Javascript fields.
+						</a:documentation>
+					</attribute>
+					<attribute name="options" a:defaultValue="{}">
+						<a:documentation>
+							A JSON object containing additional options for the widget.
+						</a:documentation>
+					</attribute>
+					<attribute name="sum">
+						<a:documentation>
+							Display a sum of this column, with the specified title.
+						</a:documentation>
+					</attribute>
+					<attribute name="avg">
+						<a:documentation>
+							Display an average of this column, with the specified title.
+						</a:documentation>
+					</attribute>
+					<attribute name="width">
+						<a:documentation>
+							THe CSS width of the column, when there are no records in the list.
+						</a:documentation>
+					</attribute>
+					<attribute name="nolabel">
+						<value>1</value>
+						<a:documentation>
+							Whether to hide the label of the field.
+						</a:documentation>
+					</attribute>
 				</choice>
 			</zeroOrMore>
 		</element>
+	</define>
+
+	<define name="tree">
+		<element name="tree">
+			<a:documentation xml:space="preserve">
+				Define a list view. <br/>
+				See https://www.odoo.com/documentation/latest/developer/reference/user_interface/view_architectures.html#list
+			</a:documentation>
+			<zeroOrMore>
+				<choice>
+					<ref name="decoration"/>
+					<attribute name="string">
+						<a:documentation>
+							The title of the list view, displayed if corresponding action has no name and target is `new`.
+						</a:documentation>
+					</attribute>
+					<attribute name="create" a:defaultValue="True">
+						<a:documentation>
+							Disable/enable record creation on this view.
+						</a:documentation>
+					</attribute>
+					<attribute name="edit" a:defaultValue="True">
+						<a:documentation>
+							Disable/enable record editing on this view.
+						</a:documentation>
+					</attribute>
+					<attribute name="delete" a:defaultValue="True">
+						<a:documentation>
+							Disable/enable record deletion through the **Action** dropdown.
+						</a:documentation>
+					</attribute>
+					<attribute name="import" a:defaultValue="True">
+						<a:documentation>
+							Disable/enable record deletion through the **Action** dropdown.
+						</a:documentation>
+					</attribute>
+					<attribute name="export_xlsx" a:defaultValue="True">
+						<a:documentation>
+							Disable/enable record exporting on this view.
+						</a:documentation>
+					</attribute>
+					<attribute name="editable">
+						<choice>
+							<value>top</value>
+							<value>bottom</value>
+						</choice>
+						<a:documentation>
+							Allow in-place record editing, and specifies whether new records
+							are inserted at the top or bottom of the list.
+						</a:documentation>
+					</attribute>
+					<attribute name="multi_edit">
+						<value>1</value>
+						<a:documentation>
+							Allow updating multiple records' fields to the same value.
+						</a:documentation>
+					</attribute>
+					<attribute name="open_form_view" a:defaultValue="False">
+						<a:documentation>
+							Display a button at each row's end to open the form view.
+						</a:documentation>
+					</attribute>
+					<attribute name="default_group_by">
+						<a:documentation>
+							Default field to group by, if none is specified on the action or the search filters.
+						</a:documentation>
+					</attribute>
+					<attribute name="default_order">
+						<a:documentation>
+							Comma-separated list of fields to order records, overriding the model's default `_order`.
+							To sort a field in decreasing order, specify `$field desc`.
+						</a:documentation>
+					</attribute>
+					<attribute name="limit" a:defaultValue="80">
+						<data type="nonNegativeInteger"/>
+						<a:documentation>
+							The default size of a page.
+						</a:documentation>
+					</attribute>
+					<attribute name="groups_limit" a:defaultValue="80">
+						<data type="nonNegativeInteger"/>
+						<a:documentation>
+							The default number of groups.
+						</a:documentation>
+					</attribute>
+					<attribute name="expand" a:defaultValue="False">
+						<a:documentation>
+							Whether to expand the first level of groups by default.
+						</a:documentation>
+					</attribute>
+					<attribute name="sample" a:defaultValue="False">
+						<a:documentation>
+							Populate the view with sample data if it's empty.
+						</a:documentation>
+					</attribute>
+					<attribute name="banner_route">
+						<a:documentation>
+							A route to fetch a banner HTML from. The corresponding handler must return a JSON
+							response in the shape of `{"html": ".."}`
+						</a:documentation>
+					</attribute>
+					<ref name="tree_field"/>
+					<ref name="tree_button"/>
+					<element name="groupby">
+						<a:documentation>
+							Define a group-by header for `Many2one` fields.
+						</a:documentation>
+						<attribute name="name">
+							<a:documentation>
+								The name of a `Many2one` field by which to group records.
+							</a:documentation>
+							<oneOrMore>
+								<choice>
+									<ref name="tree_field"/>
+									<ref name="tree_button"/>
+								</choice>
+							</oneOrMore>
+						</attribute>
+					</element>
+				</choice>
+			</zeroOrMore>
+			<optional>
+				<element name="header">
+					<a:documentation>
+						A header displayed above the list view.
+					</a:documentation>
+					<oneOrMore>
+						<element name="button">
+							<a:documentation>
+								A button inside the header. Accepts the same attributes as button columns.
+							</a:documentation>
+							<ref name="tree_button_attrs"/>
+							<optional>
+								<attribute name="display">
+									<value>always</value>
+									<a:documentation>
+										Show this button even if no records are selected.
+									</a:documentation>
+								</attribute>
+							</optional>
+						</element>
+					</oneOrMore>
+				</element>
+			</optional>
+			<optional>
+				<element name="control">
+					<a:documentation xml:space="preserve">
+						Create a "control row" that accepts different ways to create records
+						a la Sales Order's "Add a section", "Add a note" etc.<br/>
+						Overrides the default "Add a line" button if specified.
+					</a:documentation>
+					<oneOrMore>
+						<oneOrMore>
+							<choice>
+								<element name="create">
+									<a:documentation>
+										A button to create a new record, with optional context.
+									</a:documentation>
+									<attribute name="string" a:defaultValue="Add a line">
+										<a:documentation>
+											The text of the button.
+										</a:documentation>
+									</attribute>
+									<optional>
+										<attribute name="context" a:defaultValue="{}">
+											<a:documentation xml:space="preserve">
+												Additional context to pass before creating a record.<br/>
+												Useful for passing default values i.e. `{"default_field": ..}`
+											</a:documentation>
+										</attribute>
+									</optional>
+								</element>
+								<element name="button">
+									<a:documentation>
+										A button inside the control row. Accepts the same attributes as button columns.
+									</a:documentation>
+									<ref name="tree_button_attrs"/>
+								</element>
+							</choice>
+						</oneOrMore>
+					</oneOrMore>
+				</element>
+			</optional>
+		</element>
+	</define>
+
+	<define name="any">
+		<choice>
+			<ref name="tree"/>
+			<element>
+				<anyName/>
+				<zeroOrMore>
+					<choice>
+						<attribute>
+							<anyName/>
+						</attribute>
+						<text/>
+						<ref name="any"/>
+					</choice>
+				</zeroOrMore>
+			</element>
+		</choice>
 	</define>
 
 	<define name="value">
@@ -72,11 +488,11 @@
 				</attribute>
 				<group>
 					<optional>
-						<attribute name="type" />
+						<attribute name="type"/>
 					</optional>
 					<choice>
-						<attribute name="file" />
-						<text />
+						<attribute name="file"/>
+						<text/>
 					</choice>
 				</group>
 			</choice>
@@ -105,7 +521,7 @@
 					The name of the function that will be called.
 				</a:documentation>
 			</attribute>
-			<ref name="env" />
+			<ref name="env"/>
 			<optional>
 				<choice>
 					<attribute name="eval">
@@ -115,8 +531,8 @@
 					</attribute>
 					<oneOrMore>
 						<choice>
-							<ref name="value" />
-							<ref name="function" />
+							<ref name="value"/>
+							<ref name="function"/>
 						</choice>
 					</oneOrMore>
 				</choice>
@@ -130,43 +546,43 @@
 				A report that will be available in the Odoo system.
 			</a:documentation>
 			<optional>
-				<attribute name="id" />
+				<attribute name="id"/>
 			</optional>
-			<attribute name="string" />
-			<attribute name="model" />
-			<attribute name="name" />
+			<attribute name="string"/>
+			<attribute name="model"/>
+			<attribute name="name"/>
 			<optional>
-				<attribute name="print_report_name" />
-			</optional>
-			<optional>
-				<attribute name="report_type" />
+				<attribute name="print_report_name"/>
 			</optional>
 			<optional>
-				<attribute name="multi" />
+				<attribute name="report_type"/>
 			</optional>
 			<optional>
-				<attribute name="menu" />
+				<attribute name="multi"/>
 			</optional>
 			<optional>
-				<attribute name="keyword" />
+				<attribute name="menu"/>
 			</optional>
 			<optional>
-				<attribute name="file" />
+				<attribute name="keyword"/>
 			</optional>
 			<optional>
-				<attribute name="xml" />
+				<attribute name="file"/>
 			</optional>
 			<optional>
-				<attribute name="parser" />
+				<attribute name="xml"/>
 			</optional>
 			<optional>
-				<attribute name="auto" />
+				<attribute name="parser"/>
 			</optional>
 			<optional>
-				<attribute name="header" />
+				<attribute name="auto"/>
 			</optional>
 			<optional>
-				<attribute name="attachment" />
+				<attribute name="header"/>
+			</optional>
+			<optional>
+				<attribute name="attachment"/>
 			</optional>
 			<optional>
 				<attribute name="attachment_use">
@@ -177,17 +593,15 @@
 			</optional>
 			<optional>
 				<attribute name="groups">
-					<a:documentation>
-						A comma-separated list of <code>res.groups</code> that are allowed to see this report.
-					</a:documentation>
+					<a:documentation> A comma-separated list of <code>res.groups</code> that are allowed to see this report. </a:documentation>
 				</attribute>
 			</optional>
 			<optional>
-				<attribute name="paperformat" />
+				<attribute name="paperformat"/>
 			</optional>
 			<!-- `Usage` may help identify the best report for a certain task,
-                 for example usage="default" for reports that are attached by
-                 default in EDI exports -->
+								 for example usage="default" for reports that are attached by
+								 default in EDI exports -->
 			<optional>
 				<attribute name="usage">
 					<a:documentation>
@@ -195,7 +609,7 @@
 					</a:documentation>
 				</attribute>
 			</optional>
-			<empty />
+			<empty/>
 		</element>
 	</define>
 
@@ -211,13 +625,16 @@
 			</attribute>
 			<choice>
 				<group>
-					<attribute name="type">
-						<a:documentation> The type of the field that this value will be set to.<p /> - For binary fields, either
-							provide the path to `file=` or the contents to the body of the tag.<p /> - For numeric fields, provide the
-							value directly in the body of the tag.<p /> - For `list` and `tuple` fields, provide one or more
-							`&lt;value />` tags.<p /> - For `html` and `xml` fields, provide the contents directly in the body of the
-							tag. Each tag must be a well-formed XML fragment, i.e. empty attributes must have a value, like `&lt;img
-							contenteditable="" />`. </a:documentation>
+					<attribute name="type" xml:space="preserve">
+						<a:documentation>
+							The type of the field that this value will be set to.<br/>
+							- For binary fields, either provide the path to `file=`
+								or the contents to the body of the tag.<br/>
+							- For numeric fields, provide the value directly in the body of the tag.<br/>
+							- For `list` and `tuple` fields, provide one or more `&lt;value />` tags.<br/>
+							- For `html` and `xml` fields, provide the contents directly in the body of the tag.
+								Each tag must be a well-formed XML fragment, i.e. empty attributes must have a value,
+								like `&lt;img contenteditable="" />`. </a:documentation>
 						<choice>
 							<value>base64</value>
 							<value>char</value>
@@ -231,9 +648,9 @@
 									The path to the file that will be attached to the field.
 								</a:documentation>
 							</attribute>
-							<empty />
+							<empty/>
 						</group>
-						<text />
+						<text/>
 					</choice>
 				</group>
 				<group>
@@ -241,7 +658,7 @@
 						<value>int</value>
 					</attribute>
 					<choice>
-						<data type="int" />
+						<data type="int"/>
 						<value>None</value>
 					</choice>
 				</group>
@@ -249,7 +666,7 @@
 					<attribute name="type">
 						<value>float</value>
 					</attribute>
-					<data type="float" />
+					<data type="float"/>
 				</group>
 				<group>
 					<attribute name="type">
@@ -259,7 +676,7 @@
 						</choice>
 					</attribute>
 					<oneOrMore>
-						<ref name="value" />
+						<ref name="value"/>
 					</oneOrMore>
 				</group>
 				<group>
@@ -270,7 +687,7 @@
 						</choice>
 					</attribute>
 					<oneOrMore>
-						<ref name="any" />
+						<ref name="any"/>
 					</oneOrMore>
 				</group>
 				<group>
@@ -279,7 +696,7 @@
 							The external ID of the record that this field will be set to.
 						</a:documentation>
 					</attribute>
-					<empty />
+					<empty/>
 				</group>
 				<group>
 					<attribute name="eval">
@@ -289,23 +706,23 @@
 						</a:documentation>
 					</attribute>
 					<optional>
-						<attribute name="model" />
+						<attribute name="model"/>
 					</optional>
-					<empty />
+					<empty/>
 				</group>
 				<group>
-					<attribute name="search" />
+					<attribute name="search"/>
 					<optional>
-						<attribute name="model" />
+						<attribute name="model"/>
 						<optional>
-							<attribute name="use" />
+							<attribute name="use"/>
 						</optional>
 					</optional>
-					<empty />
+					<empty/>
 				</group>
-				<text />
+				<text/>
 				<zeroOrMore>
-					<ref name="record" />
+					<ref name="record"/>
 				</zeroOrMore>
 			</choice>
 		</element>
@@ -320,14 +737,14 @@
 			<optional>
 				<attribute name="id">
 					<a:documentation>
-						The external ID of this record. If not set, this record cannot be referenced via ref().
+						The external ID of this record. If not set, this record cannot be referenced via `ref()`.
 					</a:documentation>
 				</attribute>
 			</optional>
 			<optional>
 				<attribute name="forcecreate">
 					<a:documentation>
-						If set to "True", the record will be created even if it already exists in the database.
+						If set to `True`, the record will be created even if it already exists in the database.
 					</a:documentation>
 				</attribute>
 			</optional>
@@ -336,23 +753,23 @@
 					The name of the model that this record will act on, e.g. `res.partner`.
 				</a:documentation>
 			</attribute>
-			<ref name="env" />
+			<ref name="env"/>
 			<zeroOrMore>
-				<ref name="field" />
+				<ref name="field"/>
 			</zeroOrMore>
 		</element>
 	</define>
 
 	<define name="template">
 		<element name="template">
-			<a:documentation>
+			<a:documentation xml:space="preserve">
 				A template that will be used to render a report in the Odoo system.
 				Internally, this is used to create a <code>ir.ui.view</code> record.
 			</a:documentation>
 			<optional>
 				<attribute name="id">
 					<a:documentation>
-						The external ID of this template. If not set, this template cannot be referenced via ref().
+						The external ID of this template. If not set, this template cannot be referenced via `ref()`.
 					</a:documentation>
 				</attribute>
 			</optional>
@@ -392,7 +809,7 @@
 				</attribute>
 			</optional>
 			<optional>
-				<attribute name="key" />
+				<attribute name="key"/>
 			</optional>
 			<optional>
 				<attribute name="website_id">
@@ -423,13 +840,13 @@
 				</optional>
 				<optional>
 					<attribute name="groups">
-						<a:documentation>
-							A comma-separated list of <code>res.groups</code> allowed to see this template.
+						<a:documentation xml:space="preserve">
+							A comma-separated list of `res.groups` allowed to see this template.
 						</a:documentation>
 					</attribute>
 				</optional>
 				<optional>
-					<attribute name="active" />
+					<attribute name="active"/>
 				</optional>
 				<optional>
 					<attribute name="customize_show">
@@ -441,8 +858,8 @@
 			</group>
 			<zeroOrMore>
 				<choice>
-					<text />
-					<ref name="any" />
+					<text/>
+					<ref name="any"/>
 				</choice>
 			</zeroOrMore>
 		</element>
@@ -453,10 +870,10 @@
 			<a:documentation>
 				A record that will be deleted from the Odoo system.
 			</a:documentation>
-			<attribute name="model" />
+			<attribute name="model"/>
 			<choice>
-				<attribute name="id" />
-				<attribute name="search" />
+				<attribute name="id"/>
+				<attribute name="search"/>
 			</choice>
 		</element>
 	</define>
@@ -479,31 +896,31 @@
 				<a:documentation>
 					A hint to the order in which the menu items should be displayed.
 				</a:documentation>
-				<data type="int" />
+				<data type="int"/>
 			</attribute>
 		</optional>
 		<optional>
 			<attribute name="groups">
-				<a:documentation>
-					A comma-separated list of <code>res.groups</code> allowed to see this menu item.
+				<a:documentation xml:space="preserve">
+					A comma-separated list of `res.groups` allowed to see this menu item.
 				</a:documentation>
 			</attribute>
 		</optional>
 		<optional>
-			<attribute name="active" />
+			<attribute name="active"/>
 		</optional>
 	</define>
 	<define name="submenuitem_contents">
 		<optional>
 			<choice>
 				<attribute name="action">
-					<a:documentation>
-						The external ID to an <code>ir.actions.actions</code> record to execute when the menu item is clicked.<p>
-						For menuitems, this is usually <code>ir.actions.act_window</code>.</p>
+					<a:documentation xml:space="preserve">
+						The external ID to an `ir.actions.actions` record to execute when the menu item is clicked.<br/>
+						For menuitems, this is usually `ir.actions.act_window`.
 					</a:documentation>
 				</attribute>
 				<oneOrMore>
-					<ref name="submenuitem" />
+					<ref name="submenuitem"/>
 				</oneOrMore>
 			</choice>
 		</optional>
@@ -513,12 +930,12 @@
 			<a:documentation>
 				A menu item that will be displayed in the Odoo system.
 			</a:documentation>
-			<ref name="menuitem_attrs" />
+			<ref name="menuitem_attrs"/>
 			<choice>
 				<!-- a root menu can have a web_icon, an action and children -->
 				<group>
 					<optional>
-						<attribute name="web_icon" />
+						<attribute name="web_icon"/>
 					</optional>
 					<optional>
 						<attribute name="action">
@@ -528,7 +945,7 @@
 						</attribute>
 					</optional>
 					<zeroOrMore>
-						<ref name="submenuitem" />
+						<ref name="submenuitem"/>
 					</zeroOrMore>
 				</group>
 				<!-- a non-root menu can have a parent and either an action or submenus -->
@@ -538,7 +955,7 @@
 							The name of the parent menu item.
 						</a:documentation>
 					</attribute>
-					<ref name="submenuitem_contents" />
+					<ref name="submenuitem_contents"/>
 				</group>
 			</choice>
 		</element>
@@ -548,8 +965,8 @@
 			<a:documentation>
 				A menu item that is a child of another menu item.
 			</a:documentation>
-			<ref name="menuitem_attrs" />
-			<ref name="submenuitem_contents" />
+			<ref name="menuitem_attrs"/>
+			<ref name="submenuitem_contents"/>
 		</element>
 	</define>
 
@@ -563,7 +980,7 @@
 					The external ID of this action. If not set, this action cannot be referenced via ref().
 				</a:documentation>
 			</attribute>
-			<attribute name="name" />
+			<attribute name="name"/>
 			<attribute name="res_model">
 				<a:documentation>
 					The name of the model that this action will act on.
@@ -584,10 +1001,10 @@
 				</attribute>
 			</optional>
 			<optional>
-				<attribute name="view_id" />
+				<attribute name="view_id"/>
 			</optional>
 			<optional>
-				<attribute name="view_mode" />
+				<attribute name="view_mode"/>
 			</optional>
 			<optional>
 				<attribute name="target">
@@ -598,8 +1015,8 @@
 			</optional>
 			<optional>
 				<attribute name="groups">
-					<a:documentation>
-						A comma-separated list of <code>res.groups</code> that are allowed to see this action.
+					<a:documentation xml:space="preserve">
+						A comma-separated list of `res.groups` that are allowed to see this action.
 					</a:documentation>
 				</attribute>
 			</optional>
@@ -611,7 +1028,7 @@
 				</attribute>
 			</optional>
 			<optional>
-				<attribute name="usage" />
+				<attribute name="usage"/>
 			</optional>
 			<optional>
 				<attribute name="binding_model">
@@ -635,11 +1052,11 @@
 						<a:documentation>
 							A comma-separated list of view names that this action will be bound to.
 						</a:documentation>
-						<ref name="views" />
+						<ref name="views"/>
 					</attribute>
 				</optional>
 			</optional>
-			<empty />
+			<empty/>
 		</element>
 	</define>
 
@@ -660,20 +1077,20 @@
 				</a:documentation>
 			</attribute>
 		</optional>
-		<ref name="env" />
+		<ref name="env"/>
 		<zeroOrMore>
 			<choice>
-				<text />
-				<ref name="odoo" />
-				<ref name="openerp" />
-				<ref name="data" />
-				<ref name="menuitem" />
-				<ref name="record" />
-				<ref name="template" />
-				<ref name="delete" />
-				<ref name="act_window" />
-				<ref name="report" />
-				<ref name="function" />
+				<text/>
+				<ref name="odoo"/>
+				<ref name="openerp"/>
+				<ref name="data"/>
+				<ref name="menuitem"/>
+				<ref name="record"/>
+				<ref name="template"/>
+				<ref name="delete"/>
+				<ref name="act_window"/>
+				<ref name="report"/>
+				<ref name="function"/>
 			</choice>
 		</zeroOrMore>
 	</define>
@@ -683,7 +1100,7 @@
 			<a:documentation>
 				The root element of an XML file that can be imported into Odoo.
 			</a:documentation>
-			<ref name="odoo_openerp_data" />
+			<ref name="odoo_openerp_data"/>
 		</element>
 	</define>
 
@@ -692,7 +1109,7 @@
 			<a:documentation>
 				The root element of an XML file that can be imported into Odoo. Legacy syntax.
 			</a:documentation>
-			<ref name="odoo_openerp_data" />
+			<ref name="odoo_openerp_data"/>
 		</element>
 	</define>
 
@@ -701,15 +1118,15 @@
 			<a:documentation>
 				The root element of an XML file that can be imported into Odoo. Legacy syntax.
 			</a:documentation>
-			<ref name="odoo_openerp_data" />
+			<ref name="odoo_openerp_data"/>
 		</element>
 	</define>
 
 	<start>
 		<choice>
-			<ref name="odoo" />
-			<ref name="data" />
-			<ref name="openerp" />
+			<ref name="odoo"/>
+			<ref name="data"/>
+			<ref name="openerp"/>
 		</choice>
 	</start>
 </grammar>
