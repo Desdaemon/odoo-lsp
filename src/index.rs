@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use globwalk::FileType;
 use ignore::gitignore::Gitignore;
 use ignore::Match;
-use lasso::{Key, Spur, ThreadedRodeo};
+use lasso::{Spur, ThreadedRodeo};
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use smart_default::SmartDefault;
@@ -100,7 +100,7 @@ impl Interner {
 pub struct Index {
 	/// root -> module key -> module's relpath to root
 	#[default(_code = "DashMap::with_shard_amount(4)")]
-	pub roots: DashMap<PathBuf, SymbolMap<Module, ImStr>>,
+	pub roots: DashMap<PathBuf, HashMap<Symbol<Module>, ImStr>>,
 	pub records: record::RecordIndex,
 	pub templates: template::TemplateIndex,
 	pub models: ModelIndex,
@@ -212,11 +212,13 @@ impl Index {
 				module_dir,
 				root
 			);
-			if !self.roots.entry(root.into()).or_default().insert_checked(
-				module_key.into_usize() as _,
-				module_path.to_str().expect("non-utf8 path").into(),
-			) {
-				warn!("duplicate module {module_name} path={module_path:?}");
+			if let Some(duplicate) = self
+				.roots
+				.entry(root.into())
+				.or_default()
+				.insert(module_key.into(), module_path.to_str().expect("non-utf8 path").into())
+			{
+				warn!(old = %duplicate, new = ?module_path, "duplicate module {module_name}");
 				if let (Some((client, _)), "base") = (&progress, module_name.as_str()) {
 					let resp = client
 						.send_request::<ShowMessageRequest>(ShowMessageRequestParams {
@@ -366,7 +368,7 @@ impl Index {
 				for component in path.components() {
 					if let Component::Normal(norm) = component {
 						if let Some(module) = interner().get(&norm.to_string_lossy()) {
-							if entry.value().contains_key(module.into_usize() as _) {
+							if entry.value().contains_key(&module.into()) {
 								return Some(module.into());
 							}
 						}

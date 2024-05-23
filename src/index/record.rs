@@ -31,6 +31,9 @@ pub type RecordPrefixTrie = qp_trie::Trie<ImStr, HashSet<RecordId>>;
 
 impl RecordIndex {
 	pub async fn insert(&self, qualified_id: RecordId, record: Record, prefix: Option<&mut RecordPrefixTrie>) {
+		if self.inner.contains_key(&qualified_id) {
+			return;
+		}
 		if let Some(model) = &record.model {
 			self.by_model.entry(*model).or_default().insert(qualified_id);
 		}
