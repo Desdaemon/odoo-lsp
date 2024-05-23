@@ -338,7 +338,7 @@ pub fn self_update(nightly: bool) -> miette::Result<()> {
 			.into_diagnostic()?;
 		releases.sort_unstable_by(|a, z| z.date.cmp(&a.date));
 		if GIT_VERSION.starts_with("nightly") {
-			releases.retain(|rel| rel.name.as_str() > GIT_VERSION);
+			releases.retain(|rel| rel.version.as_str() > GIT_VERSION);
 		}
 		if let Some(latest_nightly) = releases.iter().find(|rel| rel.name.starts_with("nightly")) {
 			eprintln!("Latest nightly is {}", latest_nightly.version);
