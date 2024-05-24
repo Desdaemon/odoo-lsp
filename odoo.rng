@@ -36,10 +36,18 @@
 				<value>oe_edit_only</value>
 				<value>oe_avatar</value>
 				<value>oe_stat_button</value>
+				<value>oe_chatter</value>
+				<value>o_attachment_preview</value>
+				<value>oe_title</value>
 			</choice>
-			<a:documentation>
+			<a:documentation xml:space="preserve">
 				HTML classes. Some helper classes starting with `oe_` provide
-				useful styling for common use cases.
+				useful styling for common use cases.<br/>
+				- `oe_chatter`: Used with `&lt;div>` to define a chatter widget. 
+					The model must also inherit the `mail.thread` mixin.<br/>
+				- `o_attachment_preview`: Used with an empty `&lt;div>` to define a preview widget for attachments.<br/>
+				- `oe_stat_button`: Used to style a "smart button" which displays a count of related records
+					and opens a new action when clicked.
 			</a:documentation>
 		</attribute>
 	</define>
@@ -107,26 +115,7 @@
 			<zeroOrMore>
 				<choice>
 					<ref name="decoration"/>
-					<attribute name="string">
-						<a:documentation>
-							The title of the list view, displayed if corresponding action has no name and target is `new`.
-						</a:documentation>
-					</attribute>
-					<attribute name="create" a:defaultValue="True">
-						<a:documentation>
-							Disable/enable record creation on this view.
-						</a:documentation>
-					</attribute>
-					<attribute name="edit" a:defaultValue="True">
-						<a:documentation>
-							Disable/enable record editing on this view.
-						</a:documentation>
-					</attribute>
-					<attribute name="delete" a:defaultValue="True">
-						<a:documentation>
-							Disable/enable record deletion through the **Action** dropdown.
-						</a:documentation>
-					</attribute>
+					<ref name="view_attrs"/>
 					<attribute name="import" a:defaultValue="True">
 						<a:documentation>
 							Disable/enable record deletion through the **Action** dropdown.
@@ -189,12 +178,6 @@
 					<attribute name="sample" a:defaultValue="False">
 						<a:documentation>
 							Populate the view with sample data if it's empty.
-						</a:documentation>
-					</attribute>
-					<attribute name="banner_route">
-						<a:documentation>
-							A route to fetch a banner HTML from. The corresponding handler must return a JSON
-							response in the shape of `{"html": ".."}`
 						</a:documentation>
 					</attribute>
 					<ref name="tree_field"/>
@@ -282,25 +265,93 @@
 				Define a form view. <br/>
 				See https://www.odoo.com/documentation/latest/developer/reference/user_interface/view_architectures.html#form
 			</a:documentation>
-			<!-- TODO: form attributes -->
 			<oneOrMore>
-				<ref name="form_children"/>
+				<choice>
+					<ref name="view_attrs"/>
+					<ref name="form_children"/>
+					<attribute name="duplicate" a:defaultValue="True">
+						<a:documentation>
+							Allow duplicating records through the **Action** dropdown. Takes a Python expression.
+						</a:documentation>
+					</attribute>
+					<attribute name="disable_autofocus" a:defaultValue="False">
+						<a:documentation>
+							Disable autofocus on the first field. Takes a Python expression.
+						</a:documentation>
+					</attribute>
+				</choice>
 			</oneOrMore>
 		</element>
+	</define>
+
+	<define name="view_attrs">
+		<choice>
+			<attribute name="string">
+				<a:documentation>
+					The title of the list view, displayed if corresponding action has no name and target is `new`.
+				</a:documentation>
+			</attribute>
+			<attribute name="create" a:defaultValue="True">
+				<a:documentation>
+					Disable/enable record creation on this view.
+				</a:documentation>
+			</attribute>
+			<attribute name="edit" a:defaultValue="True">
+				<a:documentation>
+					Disable/enable record editing on this view.
+				</a:documentation>
+			</attribute>
+			<attribute name="delete" a:defaultValue="True">
+				<a:documentation>
+					Disable/enable record deletion through the **Action** dropdown.
+				</a:documentation>
+			</attribute>
+			<attribute name="js_class">
+				<a:documentation>
+					The name of the Javascript component class used instead of the form view.
+					Corresponds to views registered using `registry.category("views").add("...")`.
+				</a:documentation>
+			</attribute>
+			<attribute name="banner_route">
+				<a:documentation>
+					A route to fetch a banner HTML from. The corresponding handler must return a JSON
+					response in the shape of `{"html": ".."}`
+				</a:documentation>
+			</attribute>
+		</choice>
 	</define>
 
 	<define name="form_children">
 		<choice>
 			<text/>
 			<ref name="form_field"/>
-			<!-- TODO: make form_button -->
-			<ref name="tree_button"/>
+			<ref name="form_button"/>
 			<ref name="sheet"/>
 			<ref name="page"/>
 			<ref name="group"/>
 			<ref name="notebook"/>
 			<element name="div">
-				<ref name="form_html"/>
+				<zeroOrMore>
+					<choice>
+						<ref name="invisible"/>
+						<ref name="groups"/>
+						<ref name="oe_class"/>
+						<attribute name="name">
+							<choice>
+								<text/>
+								<value>button_box</value>
+							</choice>
+							<a:documentation xml:space="preserve">
+								Names for semantic `&lt;div>` elements.<br/>
+								- `button_box`: A row for smart buttons, usually at the top of the form.
+							</a:documentation>
+						</attribute>
+						<attribute>
+							<anyName/>
+						</attribute>
+						<ref name="form_children"/>
+					</choice>
+				</zeroOrMore>
 			</element>
 			<element name="span">
 				<ref name="form_html"/>
@@ -343,7 +394,8 @@
 	<define name="sheet">
 		<element name="sheet">
 			<a:documentation>
-				Provides a container for fields and markup.
+				Provides a responsive layout for fields and markup, as a direct child of a
+				`&lt;form>` element. Typically contains `group` elements.
 			</a:documentation>
 			<zeroOrMore>
 				<ref name="form_children"/>
@@ -354,10 +406,18 @@
 	<define name="page">
 		<element name="page">
 			<a:documentation>
-				A page in a notebook (`sheet`). Visually represented as a folder tab.
+				A page in a `&lt;notebook>`. Visually represented as a folder tab.
 			</a:documentation>
 			<zeroOrMore>
-				<ref name="form_children"/>
+				<choice>
+					<ref name="form_children"/>
+					<ref name="invisible"/>
+					<attribute name="string">
+						<a:documentation>
+							The title of the page.
+						</a:documentation>
+					</attribute>
+				</choice>
 			</zeroOrMore>
 		</element>
 	</define>
@@ -370,6 +430,7 @@
 			<zeroOrMore>
 				<choice>
 					<ref name="form_children"/>
+					<ref name="invisible"/>
 					<attribute name="string">
 						<a:documentation>
 							The title of the group.
@@ -390,6 +451,25 @@
 					<attribute>
 						<anyName/>
 					</attribute>
+					<element name="newline">
+						<a:documentation>
+							Force subsequent groups to start on a new line.
+						</a:documentation>
+						<empty/>
+					</element>
+					<element name="separator">
+						<optional>
+							<attribute name="string">
+								<a:documentation>
+									The title of the separator.
+								</a:documentation>
+							</attribute>
+						</optional>
+						<a:documentation>
+							Insert vertical spacing within groups.
+						</a:documentation>
+						<empty/>
+					</element>
 				</choice>
 			</zeroOrMore>
 		</element>
@@ -398,7 +478,7 @@
 	<define name="notebook">
 		<element name="notebook">
 			<a:documentation>
-				A notebook-like container for pages.
+				A notebook-like tabbed container for `&lt;page>`s.
 			</a:documentation>
 			<zeroOrMore>
 				<ref name="form_children"/>
@@ -430,6 +510,84 @@
 					<attribute name="placeholder">
 						<a:documentation>
 							The placeholder text for the field. Useful for hints to text fields.
+						</a:documentation>
+					</attribute>
+					<attribute name="help">
+						<a:documentation>
+							A tooltip to display upon hovering.
+						</a:documentation>
+					</attribute>
+					<attribute name="mode">
+						<choice>
+							<text/>
+							<value>tree</value>
+							<value>form</value>
+							<value>kanban</value>
+							<value>graph</value>
+						</choice>
+						<a:documentation>
+							A comma-separated list of subview modes for a relational field.
+						</a:documentation>
+					</attribute>
+					<attribute name="filename">
+						<a:documentation>
+							The name of a `Char` field that specifies a `Binary` field's file name.
+						</a:documentation>
+					</attribute>
+					<attribute name="password" a:defaultValue="False">
+						<a:documentation>
+							Whether to mask this field's data.
+						</a:documentation>
+					</attribute>
+					<attribute name="kanban_view_ref">
+						<a:documentation>
+							The external ID of a kanban view to display for this field.
+						</a:documentation>
+					</attribute>
+					<attribute name="default_focus" a:defaultValue="False">
+						<a:documentation>
+							Whether this field should be focused when the form is opened.
+							Only one field can have this attribute set to `True` per view (excluding subviews).
+						</a:documentation>
+					</attribute>
+				</choice>
+			</zeroOrMore>
+		</element>
+	</define>
+
+	<define name="form_button">
+		<element name="button">
+			<a:documentation>
+				A button that will be displayed in the form view.
+			</a:documentation>
+			<choice>
+				<ref name="view_button_attrs_required"/>
+				<group>
+					<optional>
+						<ref name="view_button_attrs_required"/>
+					</optional>
+					<attribute name="special">
+						<choice>
+							<value>save</value>
+							<value>cancel</value>
+						</choice>
+						<a:documentation>
+							What clicking this button should do. `type` and `name` are ignored if this is specified.
+						</a:documentation>
+					</attribute>
+				</group>
+			</choice>
+			<zeroOrMore>
+				<choice>
+					<ref name="view_button_attrs"/>
+					<attribute name="confirm">
+						<a:documentation>
+							A confirmation message to display before executing the action.
+						</a:documentation>
+					</attribute>
+					<attribute name="data-hotkey">
+						<a:documentation>
+							Assign a hotkey to this button. Can be a single character, or `shift+$KEY`.
 						</a:documentation>
 					</attribute>
 				</choice>
@@ -464,6 +622,11 @@
 			<attribute name="string">
 				<a:documentation>
 					The title of the field that will be displayed.
+				</a:documentation>
+			</attribute>
+			<attribute name="id">
+				<a:documentation>
+					Specify this when including the same field multiple times in a view.
 				</a:documentation>
 			</attribute>
 			<attribute name="optional">
@@ -529,6 +692,20 @@
 	</define>
 
 	<define name="tree_button_attrs">
+		<ref name="view_button_attrs_required"/>
+		<zeroOrMore>
+			<choice>
+				<ref name="view_button_attrs"/>
+				<attribute name="column_invisible" a:defaultValue="False">
+					<a:documentation>
+						Whether this button's column should be hidden. Takes a Python expression.
+					</a:documentation>
+				</attribute>
+			</choice>
+		</zeroOrMore>
+	</define>
+
+	<define name="view_button_attrs_required">
 		<attribute name="type">
 			<choice>
 				<value>object</value>
@@ -548,40 +725,36 @@
 					Either an integer ID or a string format `%(xmlid)d`.
 			</a:documentation>
 		</attribute>
-		<zeroOrMore>
-			<choice>
-				<ref name="oe_class"/>
-				<ref name="invisible"/>
-				<ref name="groups"/>
-				<attribute name="string">
-					<a:documentation>
-						The button's text, or alt-text if `icon` is specified.
-					</a:documentation>
-				</attribute>
-				<attribute name="icon">
-					<a:documentation xml:space="preserve">
-						The icon to display on the button.<br/>
-						See https://www.odoo.com/documentation/latest/developer/reference/user_interface/icons.html#reference-user-interface-ui-icons
-					</a:documentation>
-				</attribute>
-				<attribute name="help">
-					<a:documentation>
-						A tooltip to display upon hovering.
-					</a:documentation>
-				</attribute>
-				<attribute name="context" a:defaultValue="{}">
-					<a:documentation>
-						Additional context to pass to the method or action.
-						Accepts a Python dictionary.
-					</a:documentation>
-				</attribute>
-				<attribute name="column_invisible" a:defaultValue="False">
-					<a:documentation>
-						Whether this button's column should be hidden. Takes a Python expression.
-					</a:documentation>
-				</attribute>
-			</choice>
-		</zeroOrMore>
+	</define>
+
+	<define name="view_button_attrs">
+		<choice>
+			<ref name="oe_class"/>
+			<ref name="invisible"/>
+			<ref name="groups"/>
+			<attribute name="string">
+				<a:documentation>
+					The button's text, or alt-text if `icon` is specified.
+				</a:documentation>
+			</attribute>
+			<attribute name="icon">
+				<a:documentation xml:space="preserve">
+					The icon to display on the button.<br/><br/>
+					See https://www.odoo.com/documentation/latest/developer/reference/user_interface/icons.html#reference-user-interface-ui-icons
+				</a:documentation>
+			</attribute>
+			<attribute name="help">
+				<a:documentation>
+					A tooltip to display upon hovering.
+				</a:documentation>
+			</attribute>
+			<attribute name="context" a:defaultValue="{}">
+				<a:documentation>
+					Additional context to pass to the method or action.
+					Accepts a Python dictionary.
+				</a:documentation>
+			</attribute>
+		</choice>
 	</define>
 
 	<define name="tree_field">
