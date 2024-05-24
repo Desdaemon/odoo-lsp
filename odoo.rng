@@ -98,162 +98,6 @@
 		</element>
 	</define>
 
-	<define name="tree_button_attrs">
-		<optional>
-			<attribute name="type">
-				<choice>
-					<value>object</value>
-					<value>action</value>
-				</choice>
-				<a:documentation xml:space="preserve">
-					What should happen when the button is clicked.<br/>
-					- `object`: Call a method on the view's model.<br/>
-					- `action`: Execute an action.
-				</a:documentation>
-			</attribute>
-			<attribute name="name">
-				<a:documentation xml:space="preserve">
-					What to invoke when the button is clicked.<br/>
-					- When `type` is `object`, this is the method to call.<br/>
-					- When `type` is `action`, this is the external ID of the action to execute.
-						Either an integer ID or a string format `%(xmlid)d`.
-				</a:documentation>
-			</attribute>
-		</optional>
-		<zeroOrMore>
-			<choice>
-				<attribute name="string">
-					<a:documentation>
-						The button's text, or alt-text if `icon` is specified.
-					</a:documentation>
-				</attribute>
-				<attribute name="icon">
-					<a:documentation xml:space="preserve">
-						The icon to display on the button.<br/>
-						See https://www.odoo.com/documentation/latest/developer/reference/user_interface/icons.html#reference-user-interface-ui-icons
-					</a:documentation>
-				</attribute>
-				<attribute name="help">
-					<a:documentation>
-						A tooltip to display upon hovering.
-					</a:documentation>
-				</attribute>
-				<attribute name="context" a:defaultValue="{}">
-					<a:documentation>
-						Additional context to pass to the method or action.
-						Accepts a Python dictionary.
-					</a:documentation>
-				</attribute>
-				<attribute name="groups">
-					<a:documentation>
-						A comma-separated list of `res.groups` that are allowed to see this button.
-					</a:documentation>
-				</attribute>
-				<attribute name="invisible" a:defaultValue="False">
-					<a:documentation>
-						Whether the button is visible. Takes a Python expression.
-					</a:documentation>
-				</attribute>
-				<attribute name="column_invisible" a:defaultValue="False">
-					<a:documentation>
-						Whether this button's column should be hidden. Takes a Python expression.
-					</a:documentation>
-				</attribute>
-			</choice>
-		</zeroOrMore>
-	</define>
-
-	<define name="tree_field">
-		<element name="field">
-			<a:documentation>
-				A field that will be displayed in the list view.
-			</a:documentation>
-			<attribute name="name">
-				<a:documentation>
-					The name of the field that will be displayed.
-				</a:documentation>
-			</attribute>
-			<zeroOrMore>
-				<choice>
-					<ref name="decoration"/>
-					<attribute name="string">
-						<a:documentation>
-							The title of the field that will be displayed.
-						</a:documentation>
-					</attribute>
-					<attribute name="optional">
-						<choice>
-							<value>show</value>
-							<value>hide</value>
-						</choice>
-						<a:documentation>
-							Allows the field to be shown/hidden by the user, and whether to show it by default.
-						</a:documentation>
-					</attribute>
-					<attribute name="readonly" a:defaultValue="False">
-						<a:documentation>
-							Whether the field is read-only. Takes a Python expression.
-						</a:documentation>
-					</attribute>
-					<attribute name="required" a:defaultValue="False">
-						<a:documentation>
-							Whether the field is required. Takes a Python expression.
-						</a:documentation>
-					</attribute>
-					<attribute name="invisible" a:defaultValue="False">
-						<a:documentation>
-							Whether the field is required. Takes a Python expression.
-						</a:documentation>
-					</attribute>
-					<attribute name="column_invisible" a:defaultValue="False">
-						<a:documentation>
-							Whether the entire column shoud be hidden. Takes a Python expression.
-						</a:documentation>
-					</attribute>
-					<attribute name="groups">
-						<a:documentation xml:space="preserve">
-							A comma-separated list of `res.groups` that are allowed to see this column.
-							Prefix with `!` to specify disallowed groups. 
-						</a:documentation>
-					</attribute>
-					<attribute name="widget">
-						<a:documentation xml:space="preserve">
-							The widget used to display the field.<br/>
-							See https://www.odoo.com/documentation/latest/developer/reference/frontend/javascript_reference.html#fields
-							for a non-exhaustive listing of Javascript fields.
-						</a:documentation>
-					</attribute>
-					<attribute name="options" a:defaultValue="{}">
-						<a:documentation>
-							A JSON object containing additional options for the widget.
-						</a:documentation>
-					</attribute>
-					<attribute name="sum">
-						<a:documentation>
-							Display a sum of this column, with the specified title.
-						</a:documentation>
-					</attribute>
-					<attribute name="avg">
-						<a:documentation>
-							Display an average of this column, with the specified title.
-						</a:documentation>
-					</attribute>
-					<attribute name="width">
-						<a:documentation>
-							THe CSS width of the column, when there are no records in the list.
-						</a:documentation>
-					</attribute>
-					<attribute name="nolabel">
-						<value>1</value>
-						<a:documentation>
-							Whether to hide the label of the field.
-						</a:documentation>
-					</attribute>
-				</choice>
-			</zeroOrMore>
-		</element>
-	</define>
-
 	<define name="tree">
 		<element name="tree">
 			<a:documentation xml:space="preserve">
@@ -363,47 +207,41 @@
 							<a:documentation>
 								The name of a `Many2one` field by which to group records.
 							</a:documentation>
-							<oneOrMore>
-								<choice>
-									<ref name="tree_field"/>
-									<ref name="tree_button"/>
-								</choice>
-							</oneOrMore>
 						</attribute>
+						<oneOrMore>
+							<choice>
+								<ref name="tree_field"/>
+								<ref name="tree_button"/>
+							</choice>
+						</oneOrMore>
 					</element>
-				</choice>
-			</zeroOrMore>
-			<optional>
-				<element name="header">
-					<a:documentation>
-						A header displayed above the list view.
-					</a:documentation>
-					<oneOrMore>
-						<element name="button">
-							<a:documentation>
-								A button inside the header. Accepts the same attributes as button columns.
-							</a:documentation>
-							<ref name="tree_button_attrs"/>
-							<optional>
-								<attribute name="display">
-									<value>always</value>
-									<a:documentation>
-										Show this button even if no records are selected.
-									</a:documentation>
-								</attribute>
-							</optional>
-						</element>
-					</oneOrMore>
-				</element>
-			</optional>
-			<optional>
-				<element name="control">
-					<a:documentation xml:space="preserve">
-						Create a "control row" that accepts different ways to create records
-						a la Sales Order's "Add a section", "Add a note" etc.<br/>
-						Overrides the default "Add a line" button if specified.
-					</a:documentation>
-					<oneOrMore>
+					<element name="header">
+						<a:documentation>
+							A header displayed above the list view.
+						</a:documentation>
+						<oneOrMore>
+							<element name="button">
+								<a:documentation>
+									A button inside the header. Accepts the same attributes as button columns.
+								</a:documentation>
+								<ref name="tree_button_attrs"/>
+								<optional>
+									<attribute name="display">
+										<value>always</value>
+										<a:documentation>
+											Show this button even if no records are selected.
+										</a:documentation>
+									</attribute>
+								</optional>
+							</element>
+						</oneOrMore>
+					</element>
+					<element name="control">
+						<a:documentation xml:space="preserve">
+							Create a "control row" that accepts different ways to create records
+							a la Sales Order's "Add a section", "Add a note" etc.<br/>
+							Overrides the default "Add a line" button if specified.
+						</a:documentation>
 						<oneOrMore>
 							<choice>
 								<element name="create">
@@ -432,17 +270,364 @@
 								</element>
 							</choice>
 						</oneOrMore>
-					</oneOrMore>
-				</element>
-			</optional>
+					</element>
+				</choice>
+			</zeroOrMore>
+		</element>
+	</define>
+
+	<define name="form">
+		<element name="form">
+			<a:documentation xml:space="preserve">
+				Define a form view. <br/>
+				See https://www.odoo.com/documentation/latest/developer/reference/user_interface/view_architectures.html#form
+			</a:documentation>
+			<!-- TODO: form attributes -->
+			<oneOrMore>
+				<ref name="form_children"/>
+			</oneOrMore>
+		</element>
+	</define>
+
+	<define name="form_children">
+		<choice>
+			<text/>
+			<ref name="form_field"/>
+			<!-- TODO: make form_button -->
+			<ref name="tree_button"/>
+			<ref name="sheet"/>
+			<ref name="page"/>
+			<ref name="group"/>
+			<ref name="notebook"/>
+			<element name="div">
+				<ref name="form_html"/>
+			</element>
+			<element name="span">
+				<ref name="form_html"/>
+			</element>
+			<element name="p">
+				<ref name="form_html"/>
+			</element>
+			<element name="header">
+				<ref name="form_html"/>
+			</element>
+			<element>
+				<anyName>
+					<except>
+						<name>field</name>
+						<name>sheet</name>
+						<name>page</name>
+						<name>group</name>
+						<name>notebook</name>
+					</except>
+				</anyName>
+				<ref name="form_html"/>
+			</element>
+		</choice>
+	</define>
+
+	<define name="form_html">
+		<zeroOrMore>
+			<choice>
+				<ref name="invisible"/>
+				<ref name="groups"/>
+				<ref name="oe_class"/>
+				<attribute>
+					<anyName/>
+				</attribute>
+				<ref name="form_children"/>
+			</choice>
+		</zeroOrMore>
+	</define>
+
+	<define name="sheet">
+		<element name="sheet">
+			<a:documentation>
+				Provides a container for fields and markup.
+			</a:documentation>
+			<zeroOrMore>
+				<ref name="form_children"/>
+			</zeroOrMore>
+		</element>
+	</define>
+
+	<define name="page">
+		<element name="page">
+			<a:documentation>
+				A page in a notebook (`sheet`). Visually represented as a folder tab.
+			</a:documentation>
+			<zeroOrMore>
+				<ref name="form_children"/>
+			</zeroOrMore>
+		</element>
+	</define>
+
+	<define name="group">
+		<element name="group">
+			<a:documentation>
+				A grouping of field elements.
+			</a:documentation>
+			<zeroOrMore>
+				<choice>
+					<ref name="form_children"/>
+					<attribute name="string">
+						<a:documentation>
+							The title of the group.
+						</a:documentation>
+					</attribute>
+					<attribute name="col" a:defaultValue="2">
+						<data type="nonNegativeInteger"/>
+						<a:documentation>
+							The number of columns in this group.
+						</a:documentation>
+					</attribute>
+					<attribute name="colspan" a:defaultValue="1">
+						<data type="nonNegativeInteger"/>
+						<a:documentation>
+							How many columns should child elements take.
+						</a:documentation>
+					</attribute>
+					<attribute>
+						<anyName/>
+					</attribute>
+				</choice>
+			</zeroOrMore>
+		</element>
+	</define>
+
+	<define name="notebook">
+		<element name="notebook">
+			<a:documentation>
+				A notebook-like container for pages.
+			</a:documentation>
+			<zeroOrMore>
+				<ref name="form_children"/>
+			</zeroOrMore>
+		</element>
+	</define>
+
+	<define name="form_field">
+		<element name="field">
+			<a:documentation>
+				A field displayed in the form view.
+			</a:documentation>
+			<attribute name="name">
+				<a:documentation>
+					The name of the field that will be displayed.
+				</a:documentation>
+			</attribute>
+			<zeroOrMore>
+				<choice>
+					<ref name="view_field_attrs"/>
+					<ref name="tree"/>
+					<ref name="form"/>
+					<attribute name="colspan" a:defaultValue="1">
+						<data type="nonNegativeInteger"/>
+						<a:documentation>
+							The number of columns this field should span.
+						</a:documentation>
+					</attribute>
+					<attribute name="placeholder">
+						<a:documentation>
+							The placeholder text for the field. Useful for hints to text fields.
+						</a:documentation>
+					</attribute>
+				</choice>
+			</zeroOrMore>
+		</element>
+	</define>
+
+	<define name="invisible">
+		<attribute name="invisible" a:defaultValue="False">
+			<a:documentation>
+				Whether the element is invisible. Takes a Python expression.
+			</a:documentation>
+		</attribute>
+	</define>
+
+	<define name="groups">
+		<attribute name="groups">
+			<a:documentation>
+				A comma-separated list of `res.groups` that are allowed to see this element.
+				Prefix a group with `!` to negate it.
+			</a:documentation>
+		</attribute>
+	</define>
+
+	<define name="view_field_attrs">
+		<!-- Common attributes on all view fields. -->
+		<choice>
+			<ref name="decoration"/>
+			<ref name="oe_class"/>
+			<ref name="invisible"/>
+			<ref name="groups"/>
+			<attribute name="string">
+				<a:documentation>
+					The title of the field that will be displayed.
+				</a:documentation>
+			</attribute>
+			<attribute name="optional">
+				<choice>
+					<value>show</value>
+					<value>hide</value>
+				</choice>
+				<a:documentation>
+					Allows the field to be shown/hidden by the user, and whether to show it by default.
+				</a:documentation>
+			</attribute>
+			<attribute name="readonly" a:defaultValue="False">
+				<a:documentation>
+					Whether the field is read-only. Takes a Python expression.
+				</a:documentation>
+			</attribute>
+			<attribute name="required" a:defaultValue="False">
+				<a:documentation>
+					Whether the field is required. Takes a Python expression.
+				</a:documentation>
+			</attribute>
+			<attribute name="widget">
+				<a:documentation xml:space="preserve">
+					The widget used to display the field.<br/>
+					See https://www.odoo.com/documentation/latest/developer/reference/frontend/javascript_reference.html#fields
+					for a non-exhaustive listing of Javascript fields.
+				</a:documentation>
+			</attribute>
+			<attribute name="options" a:defaultValue="{}">
+				<a:documentation xml:space="preserve">
+					A Python dictionary containing additional options for the widget.<br/><br/>
+					On relational fields, these options are used to control creation/editing behavior:
+					`no_create`, `no_quick_create`, `no_open`, `no_open_edit` and so on.<br/> <br/>
+					See https://www.odoo.com/documentation/latest/developer/reference/frontend/javascript_reference.html#fields
+					for a non-exhaustive listing of Javascript fields, and options that they accept.
+				</a:documentation>
+			</attribute>
+			<attribute name="width">
+				<a:documentation>
+					THe CSS width of the column, when there are no records in the list.
+				</a:documentation>
+			</attribute>
+			<attribute name="nolabel">
+				<value>1</value>
+				<a:documentation>
+					Whether to hide the label of the field.
+				</a:documentation>
+			</attribute>
+			<attribute name="domain" a:defaultValue="[]">
+				<a:documentation>
+					A
+					[domain](https://www.odoo.com/documentation/latest/developer/reference/backend/orm.html#reference-orm-domains)
+					to filter records assignable to this field.
+				</a:documentation>
+			</attribute>
+			<attribute name="context" a:defaultValue="{}">
+				<a:documentation>
+					Additional context to pass when creating new records for this field, or when searching and editing. Takes a
+					Python dictionary.
+				</a:documentation>
+			</attribute>
+		</choice>
+	</define>
+
+	<define name="tree_button_attrs">
+		<attribute name="type">
+			<choice>
+				<value>object</value>
+				<value>action</value>
+			</choice>
+			<a:documentation xml:space="preserve">
+				What should happen when the button is clicked.<br/>
+				- `object`: Call a method on the view's model.<br/>
+				- `action`: Execute an action.
+			</a:documentation>
+		</attribute>
+		<attribute name="name">
+			<a:documentation xml:space="preserve">
+				What to invoke when the button is clicked.<br/>
+				- When `type` is `object`, this is the method to call.<br/>
+				- When `type` is `action`, this is the external ID of the action to execute.
+					Either an integer ID or a string format `%(xmlid)d`.
+			</a:documentation>
+		</attribute>
+		<zeroOrMore>
+			<choice>
+				<ref name="oe_class"/>
+				<ref name="invisible"/>
+				<ref name="groups"/>
+				<attribute name="string">
+					<a:documentation>
+						The button's text, or alt-text if `icon` is specified.
+					</a:documentation>
+				</attribute>
+				<attribute name="icon">
+					<a:documentation xml:space="preserve">
+						The icon to display on the button.<br/>
+						See https://www.odoo.com/documentation/latest/developer/reference/user_interface/icons.html#reference-user-interface-ui-icons
+					</a:documentation>
+				</attribute>
+				<attribute name="help">
+					<a:documentation>
+						A tooltip to display upon hovering.
+					</a:documentation>
+				</attribute>
+				<attribute name="context" a:defaultValue="{}">
+					<a:documentation>
+						Additional context to pass to the method or action.
+						Accepts a Python dictionary.
+					</a:documentation>
+				</attribute>
+				<attribute name="column_invisible" a:defaultValue="False">
+					<a:documentation>
+						Whether this button's column should be hidden. Takes a Python expression.
+					</a:documentation>
+				</attribute>
+			</choice>
+		</zeroOrMore>
+	</define>
+
+	<define name="tree_field">
+		<element name="field">
+			<a:documentation>
+				A field that will be displayed in the list view.
+			</a:documentation>
+			<attribute name="name">
+				<a:documentation>
+					The name of the field that will be displayed.
+				</a:documentation>
+			</attribute>
+			<zeroOrMore>
+				<choice>
+					<ref name="view_field_attrs"/>
+					<attribute name="column_invisible" a:defaultValue="False">
+						<a:documentation>
+							Whether the entire column shoud be hidden. Takes a Python expression.
+						</a:documentation>
+					</attribute>
+					<attribute name="sum">
+						<a:documentation>
+							Display a sum of this column, with the specified title.
+						</a:documentation>
+					</attribute>
+					<attribute name="avg">
+						<a:documentation>
+							Display an average of this column, with the specified title.
+						</a:documentation>
+					</attribute>
+				</choice>
+			</zeroOrMore>
 		</element>
 	</define>
 
 	<define name="any">
 		<choice>
 			<ref name="tree"/>
+			<ref name="tree_field"/>
 			<element>
-				<anyName/>
+				<anyName>
+					<except>
+						<name>tree</name>
+						<name>field</name>
+					</except>
+				</anyName>
 				<zeroOrMore>
 					<choice>
 						<attribute>
@@ -453,6 +638,107 @@
 					</choice>
 				</zeroOrMore>
 			</element>
+		</choice>
+	</define>
+
+	<define name="arch_fragment">
+		<choice>
+			<ref name="tree"/>
+			<ref name="form"/>
+			<element name="xpath">
+				<a:documentation>
+					Matches a node in the inherited view using XPath.
+				</a:documentation>
+				<attribute name="expr">
+					<a:documentation>
+						The [XPath expression](https://developer.mozilla.org/en-US/docs/Web/XPath) to locate elements in
+						the inherited view. Note that only the first match is used.
+					</a:documentation>
+				</attribute>
+				<ref name="position"/>
+			</element>
+			<element>
+				<anyName>
+					<except>
+						<name>tree</name>
+						<name>form</name>
+						<name>xpath</name>
+					</except>
+				</anyName>
+				<zeroOrMore>
+					<choice>
+						<attribute>
+							<anyName>
+								<except>
+									<name>position</name>
+								</except>
+							</anyName>
+						</attribute>
+					</choice>
+				</zeroOrMore>
+				<ref name="position"/>
+			</element>
+		</choice>
+	</define>
+
+	<define name="position">
+		<choice>
+			<group>
+				<optional> <!-- TODO: remove this optional once all structures are done -->
+					<attribute name="position">
+						<a:documentation>
+							Specify how to modify/insert elements with respect to this XPath node.
+						</a:documentation>
+						<choice>
+							<value>before</value>
+							<value>after</value>
+							<value>replace</value>
+							<value>inside</value>
+						</choice>
+					</attribute>
+				</optional>
+				<zeroOrMore>
+					<ref name="form_children"/>
+				</zeroOrMore>
+			</group>
+			<group>
+				<attribute name="position">
+					<value>attributes</value>
+				</attribute>
+				<oneOrMore>
+					<element name="attribute">
+						<a:documentation>
+							Attributes to set on the parent node. Leave empty to remove the attribute.
+						</a:documentation>
+						<attribute name="name">
+							<a:documentation>
+								The name of the attribute to set.
+							</a:documentation>
+						</attribute>
+						<zeroOrMore>
+							<choice>
+								<text/>
+								<attribute name="add">
+									<a:documentation>
+										What to add to the attribute. The value is automatically preceded by `separator`.
+									</a:documentation>
+								</attribute>
+								<attribute name="remove">
+									<a:documentation>
+										Which part to remove from the attribute, after splitting by `separator`.
+									</a:documentation>
+								</attribute>
+								<attribute name="separator" a:defaultValue=",">
+									<a:documentation>
+										The separator to split the attribute by. `remove` will remove contiguous substrings of the
+										attribute, as determined by this separator.
+									</a:documentation>
+								</attribute>
+							</choice>
+						</zeroOrMore>
+					</element>
+				</oneOrMore>
+			</group>
 		</choice>
 	</define>
 
@@ -593,7 +879,9 @@
 			</optional>
 			<optional>
 				<attribute name="groups">
-					<a:documentation> A comma-separated list of <code>res.groups</code> that are allowed to see this report. </a:documentation>
+					<a:documentation>
+						A comma-separated list of `res.groups` that are allowed to see this report.
+					</a:documentation>
 				</attribute>
 			</optional>
 			<optional>
@@ -625,8 +913,8 @@
 			</attribute>
 			<choice>
 				<group>
-					<attribute name="type" xml:space="preserve">
-						<a:documentation>
+					<attribute name="type">
+						<a:documentation xml:space="preserve">
 							The type of the field that this value will be set to.<br/>
 							- For binary fields, either provide the path to `file=`
 								or the contents to the body of the tag.<br/>
@@ -634,7 +922,8 @@
 							- For `list` and `tuple` fields, provide one or more `&lt;value />` tags.<br/>
 							- For `html` and `xml` fields, provide the contents directly in the body of the tag.
 								Each tag must be a well-formed XML fragment, i.e. empty attributes must have a value,
-								like `&lt;img contenteditable="" />`. </a:documentation>
+								like `&lt;img contenteditable="" />`.
+						</a:documentation>
 						<choice>
 							<value>base64</value>
 							<value>char</value>
@@ -681,13 +970,21 @@
 				</group>
 				<group>
 					<attribute name="type">
-						<choice>
-							<value>html</value>
-							<value>xml</value>
-						</choice>
+						<value>xml</value>
 					</attribute>
 					<oneOrMore>
-						<ref name="any"/>
+						<ref name="arch_fragment"/>
+					</oneOrMore>
+				</group>
+				<group>
+					<attribute name="type">
+						<value>html</value>
+					</attribute>
+					<oneOrMore>
+						<choice>
+							<text/>
+							<ref name="any"/>
+						</choice>
 					</oneOrMore>
 				</group>
 				<group>
@@ -857,12 +1154,175 @@
 				</optional>
 			</group>
 			<zeroOrMore>
-				<choice>
-					<text/>
-					<ref name="any"/>
-				</choice>
+				<ref name="template_children"/>
 			</zeroOrMore>
 		</element>
+	</define>
+
+	<define name="template_children">
+		<choice>
+			<text/>
+			<element name="t">
+				<ref name="template_html"/>
+			</element>
+			<element name="div">
+				<ref name="template_html"/>
+			</element>
+			<element name="span">
+				<ref name="template_html"/>
+			</element>
+			<element name="p">
+				<ref name="template_html"/>
+			</element>
+			<element name="table">
+				<ref name="template_html"/>
+			</element>
+			<element name="thead">
+				<ref name="template_html"/>
+			</element>
+			<element name="tbody">
+				<ref name="template_html"/>
+			</element>
+			<element name="th">
+				<ref name="template_html"/>
+			</element>
+			<element name="tr">
+				<ref name="template_html"/>
+			</element>
+			<element name="td">
+				<ref name="template_html"/>
+			</element>
+			<element name="strong">
+				<ref name="template_html"/>
+			</element>
+			<element name="i">
+				<ref name="template_html"/>
+			</element>
+			<element name="h1">
+				<ref name="template_html"/>
+			</element>
+			<element name="h2">
+				<ref name="template_html"/>
+			</element>
+			<element name="h3">
+				<ref name="template_html"/>
+			</element>
+			<element name="h4">
+				<ref name="template_html"/>
+			</element>
+			<element name="h5">
+				<ref name="template_html"/>
+			</element>
+			<element name="h6">
+				<ref name="template_html"/>
+			</element>
+			<element name="body">
+				<ref name="template_html"/>
+			</element>
+			<element name="img">
+				<ref name="template_html"/>
+			</element>
+			<element name="a">
+				<ref name="template_html"/>
+			</element>
+			<element>
+				<anyName/>
+				<zeroOrMore>
+					<choice>
+						<attribute>
+							<anyName/>
+						</attribute>
+						<ref name="template_children"/>
+					</choice>
+				</zeroOrMore>
+			</element>
+		</choice>
+	</define>
+
+	<define name="template_html">
+		<zeroOrMore>
+			<choice>
+				<ref name="template_children"/>
+				<attribute name="t-if" a:defaultValue="True">
+					<a:documentation>
+						An expression determining whether this element should be displayed.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-elif">
+					<a:documentation>
+						An expression determining whether this element should be displayed.
+						Must be preceded by an element with `t-if`.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-else">
+					<a:documentation>
+						A fallback element that will be displayed if no preceding `t-if` or `t-elif` expressions are true.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-foreach">
+					<a:documentation>
+						An expression that will be evaluated to produce a list of values.
+						Must be followed by `t-as`.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-as">
+					<a:documentation>
+						The name of the variable that will be used to reference each value in the list.
+						Must be a variable; no other expressions are supported.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-set" a:defaultValue="oopo">
+					<a:documentation>
+						A variable name that will be set to the value of some expression, which
+						must be specified by `t-value` within this element.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-value">
+					<a:documentation>
+						The expression that will be evaluated to produce the value that will be set to the variable.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-out">
+					<a:documentation>
+						An expression to stringify and include in the output.
+						If displaying a relational field, consider using `t-field` instead.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-esc">
+					<a:documentation>
+						Old syntax for `t-out`. Use `t-out` instead.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-field">
+					<a:documentation xml:space="preserve">
+						A field to be displayed in the output.
+						Options can be specified with `t-options-*`.<br/><br/>
+						Not allowed on `&lt;t/>` elements.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-options" a:defaultValue="{}">
+					<a:documentation>
+						Options for a field-like element.
+						Useful for specifying the `widget`, which can also be done alternatively with `t-options-widget`.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-options-widget">
+					<a:documentation>
+						Shorthand for specifying the `widget` option for the field specified by `t-field`.
+					</a:documentation>
+				</attribute>
+				<attribute name="t-call">
+					<a:documentation xml:space="preserve">
+						A template name to render at this location.
+						Accepts interpolation `foo_{{ value }}` similar to `t-attf-*`.<br/><br/>
+						Template inputs should be provided within this element, using `t-set` and `t-value`.
+					</a:documentation>
+				</attribute>
+				<attribute>
+					<anyName/>
+				</attribute>
+			</choice>
+		</zeroOrMore>
 	</define>
 
 	<define name="delete">
