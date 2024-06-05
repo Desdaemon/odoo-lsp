@@ -67,7 +67,7 @@ query! {
   (attribute
     (identifier) @_api (identifier) @DEPENDS)]
   (argument_list (string) @MAPPED)
-  (#match? @_mapper "^(mapp|filter|sort)ed$")
+  (#match? @_mapper "^(mapp|filter|sort|group)ed$")
   (#eq? @_api "api")
   (#match? @DEPENDS "^(depends|constrains|onchange)$"))
 
