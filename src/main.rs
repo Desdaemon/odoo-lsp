@@ -181,7 +181,6 @@ impl LanguageServer for Backend {
 			self.capabilities.pull_diagnostics.store(true, Relaxed);
 		}
 
-
 		Ok(InitializeResult {
 			server_info: None,
 			offset_encoding: None,
@@ -349,7 +348,7 @@ impl LanguageServer for Backend {
 					.await
 					.unwrap_or(false)
 				{
-					if let Some(file_path) = path_.parent() {
+					if let Some(file_path) = path_.parent().and_then(|p| p.parent()) {
 						_ = self
 							.index
 							.add_root(file_path, None, false)

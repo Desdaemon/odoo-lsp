@@ -346,6 +346,7 @@ impl<T> std::ops::Deref for MaxVec<T> {
 
 pub trait TryResultExt {
 	type Result: Sized;
+	/// Panics if this is [`TryResult::Locked`].
 	fn expect(self, msg: &str) -> Option<Self::Result>;
 }
 
@@ -370,10 +371,18 @@ pub fn init_for_test() {
 		.init();
 }
 
-#[derive(Default)]
 pub struct CondVar {
 	should_wait: AtomicBool,
 	notifier: tokio::sync::Notify,
+}
+
+impl Default for CondVar {
+	fn default() -> Self {
+		Self {
+			should_wait: AtomicBool::new(true),
+			notifier: Default::default(),
+		}
+	}
 }
 
 pub struct Blocker<'a>(&'a CondVar);

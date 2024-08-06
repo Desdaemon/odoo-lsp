@@ -123,6 +123,7 @@ enum Output {
 	Components(HashMap<ComponentName, Component>),
 }
 
+#[derive(Debug)]
 pub struct AddRootResults {
 	pub module_count: usize,
 	pub record_count: usize,
@@ -138,6 +139,7 @@ impl Index {
 		self.records.retain(|_, record| !record.deleted);
 		info!("(mark_n_sweep) deleted {} records", pre - self.records.len());
 	}
+	#[tracing::instrument(skip_all, fields(root=format!("{}", root.display())), ret)]
 	pub async fn add_root(
 		&self,
 		root: &Path,
@@ -172,11 +174,16 @@ impl Index {
 		let interner = interner();
 		let root_key = interner.get_or_intern(root.to_string_lossy());
 		for manifest in manifests {
-			let manifest = manifest.into_diagnostic()?;
-			let module_dir = manifest
-				.path()
-				.parent()
-				.ok_or_else(|| miette::diagnostic!("Unexpected empty path"))?;
+			let manifest = match manifest {
+				Ok(manifest) => manifest,
+				Err(err) => {
+					warn!(err = %err, "error traversing manifest");
+					continue;
+				}
+			};
+			let Some(module_dir) = manifest.path().parent() else {
+				continue;
+			};
 			fn matched_top_to_bottom(gitignore: &Gitignore, path: &Path) -> bool {
 				let ancestors = path.ancestors().collect::<Vec<_>>();
 				for ancestor in ancestors.into_iter().rev() {

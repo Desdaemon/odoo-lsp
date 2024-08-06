@@ -34,6 +34,7 @@ pub struct Backend {
 	pub record_ranges: DashMap<String, Box<[ByteRange]>>,
 	pub ast_map: DashMap<String, Tree>,
 	pub index: Index,
+	/// Roots added during initial setup. Not to be confused with [Index::roots].
 	pub roots: DashSet<PathBuf>,
 	pub capabilities: Capabilities,
 	pub root_setup: CondVar,
@@ -97,8 +98,9 @@ impl Backend {
 	/// Maximum file line count to process diagnostics each on_change
 	pub const DIAGNOSTICS_LINE_LIMIT: usize = 1200;
 
+	#[tracing::instrument(skip_all, ret)]
 	pub fn find_root_of(&self, path: &Path) -> Option<PathBuf> {
-		for root_ in self.roots.iter() {
+		for root_ in self.index.roots.iter() {
 			if path.starts_with(root_.key()) {
 				return Some(root_.key().to_owned());
 			}
