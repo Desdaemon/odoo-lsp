@@ -15,12 +15,13 @@
 use std::{
 	alloc::Layout,
 	borrow::Borrow,
+	cell::UnsafeCell,
 	collections::{HashMap, HashSet},
 	hash::Hash,
 	marker::PhantomData,
 	ops::Add,
 	path::PathBuf,
-	sync::Arc,
+	sync::{atomic::AtomicUsize, Arc},
 };
 
 use crate::{
@@ -31,7 +32,7 @@ use crate::{
 	template::Template,
 	ImStr,
 };
-use dashmap::{DashMap, RwLock};
+use dashmap::DashMap;
 use ropey::Rope;
 
 use super::MinLoc;
@@ -91,8 +92,13 @@ where
 	V: Usage,
 {
 	fn usage(&self) -> UsageInfo<Self> {
+		#[allow(dead_code)]
+		struct RwLockLayout<T> {
+			raw: AtomicUsize,
+			cell: UnsafeCell<T>,
+		}
 		let stack = Layout::array::<(K, V)>(self.len()).unwrap().size();
-		let mut usage = Layout::array::<RwLock<HashMap<K, V>>>(self.shards().len())
+		let mut usage = Layout::array::<RwLockLayout<HashMap<K, V>>>(self.shards().len())
 			.unwrap()
 			.size();
 		usage += stack;
