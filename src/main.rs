@@ -395,30 +395,33 @@ impl LanguageServer for Backend {
 				.inspect_err(|err| warn!("{err}"));
 			return;
 		}
-		let mut document = self
-			.document_map
-			.get_mut(params.text_document.uri.path())
-			.expect("Did not build a document");
-		let old_rope = document.rope.clone();
-		// Update the rope
-		// TODO: Refactor into method
-		// Per the spec (https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_didChange),
-		// deltas are applied SEQUENTIALLY so we don't have to do any extra processing.
-		for change in &params.content_changes {
-			if change.range.is_none() && change.range_length.is_none() {
-				document.value_mut().rope = ropey::Rope::from_str(&change.text);
-			} else {
-				let range = change.range.expect("LSP change event must have a range");
-				let range =
-					lsp_range_to_char_range(range, &document.rope).expect("did_change applying delta: no range");
-				let rope = &mut document.value_mut().rope;
-				rope.remove(range.erase());
-				if !change.text.is_empty() {
-					rope.insert(range.start.0, &change.text);
+		let old_rope;
+		{
+			let mut document = self
+				.document_map
+				.try_get_mut(params.text_document.uri.path())
+				.expect(format_loc!("deadlock"))
+				.expect("Did not build a document");
+			old_rope = document.rope.clone();
+			// Update the rope
+			// TODO: Refactor into method
+			// Per the spec (https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_didChange),
+			// deltas are applied SEQUENTIALLY so we don't have to do any extra processing.
+			for change in &params.content_changes {
+				if change.range.is_none() && change.range_length.is_none() {
+					document.value_mut().rope = ropey::Rope::from_str(&change.text);
+				} else {
+					let range = change.range.expect("LSP change event must have a range");
+					let range =
+						lsp_range_to_char_range(range, &document.rope).expect("did_change applying delta: no range");
+					let rope = &mut document.value_mut().rope;
+					rope.remove(range.erase());
+					if !change.text.is_empty() {
+						rope.insert(range.start.0, &change.text);
+					}
 				}
 			}
 		}
-		drop(document);
 		_ = self
 			.on_change(backend::TextDocumentItem {
 				uri: params.text_document.uri,
@@ -438,6 +441,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
+		self.root_setup.wait().await;
 		let uri = &params.text_document_position_params.text_document.uri;
 		debug!("goto_definition {}", uri.path());
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
@@ -465,6 +469,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+		self.root_setup.wait().await;
 		let uri = &params.text_document_position.text_document.uri;
 		debug!("references {}", uri.path());
 
@@ -486,6 +491,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+		self.root_setup.wait().await;
 		let uri = &params.text_document_position.text_document.uri;
 		debug!("(completion) {}", uri.path());
 
@@ -533,6 +539,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn completion_resolve(&self, mut completion: CompletionItem) -> Result<CompletionItem> {
+		self.root_setup.wait().await;
 		'resolve: {
 			match &completion.kind {
 				Some(CompletionItemKind::CLASS) => {
@@ -602,6 +609,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+		self.root_setup.wait().await;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let document = some!(self.document_map.get(uri.path()));
 		let (_, ext) = some!(uri.path().rsplit_once('.'));
@@ -624,6 +632,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
+		self.root_setup.wait().await;
 		let items = self
 			.roots
 			.iter()
@@ -650,6 +659,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
+		self.root_setup.wait().await;
 		for added in params.event.added {
 			// let file_path = added.uri.path();
 			let Ok(file_path) = added.uri.to_file_path() else {
@@ -673,6 +683,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
+		self.root_setup.wait().await;
 		let query = &params.query;
 
 		let models_by_prefix = self.index.models.by_prefix.read().await;
@@ -729,6 +740,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
+		self.root_setup.wait().await;
 		let path = params.text_document.uri.path();
 		debug!("{path}");
 		let mut diagnostics = vec![];
@@ -758,6 +770,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+		self.root_setup.wait().await;
 		let Some((_, "xml")) = params.text_document.uri.path().rsplit_once('.') else {
 			return Ok(None);
 		};
@@ -773,6 +786,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
+		self.root_setup.wait().await;
 		match (params.command.as_str(), params.arguments.as_slice()) {
 			("goto_owl", [Value::String(_), Value::String(subcomponent)]) => {
 				// FIXME: Subcomponents should not just depend on the component's name,
