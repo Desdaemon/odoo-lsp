@@ -399,8 +399,8 @@ impl LanguageServer for Backend {
 		{
 			let mut document = self
 				.document_map
-				.get_mut(params.text_document.uri.path())
-				// .expect(format_loc!("deadlock"))
+				.try_get_mut(params.text_document.uri.path())
+				.expect(format_loc!("deadlock"))
 				.expect("Did not build a document");
 			old_rope = document.rope.clone();
 			// Update the rope

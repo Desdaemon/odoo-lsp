@@ -344,6 +344,7 @@ impl ModelIndex {
 			if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
 				if let Some(fields) = entry.fields.as_ref() {
 					for (name, field) in fields {
+						fields_set.insert(interner().resolve(&name).as_bytes(), ());
 						match out.entry(*name) {
 							Entry::Occupied(mut old_field) => {
 								old_field.get_mut().merge(field);
