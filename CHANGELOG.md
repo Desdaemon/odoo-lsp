@@ -1,4 +1,44 @@
 # Changelog
+## [0.5.0](https://github.com/Desdaemon/odoo-lsp/releases/tag/v0.5.0) - 2024-08-28
+Compare: [`v0.4.1...v0.5.0`](https://github.com/Desdaemon/odoo-lsp/compare/v0.4.1...v0.5.0)
+
+### Bug Fixes
+
+- **xml:** Don't access xpath fields [`531e69c`](https://github.com/Desdaemon/odoo-lsp/commit/531e69c4b8f2769039994bc230c8cde899d475e3)
+- Reduce memory usage [`ecfbda5`](https://github.com/Desdaemon/odoo-lsp/commit/ecfbda571b0c8b2c4c08e493b297e3660b72d473)
+- Allow domain='..' in fields [`1a9e394`](https://github.com/Desdaemon/odoo-lsp/commit/1a9e3942ce9b3b01a33a288bb3e1961116b2d267)
+- Make immutable strings fitter on 32-bit [`2a99b89`](https://github.com/Desdaemon/odoo-lsp/commit/2a99b89340bef52c84f29a29be9e441c14a5b4fa)
+- Do not skip local config file [`2126748`](https://github.com/Desdaemon/odoo-lsp/commit/21267489b1c74a02f6dc85ebc1ee3ca69047632f)
+- Default to primary inheritance for templates [`f5fc32c`](https://github.com/Desdaemon/odoo-lsp/commit/f5fc32cb3cd4458a2744aaadbb49446305c8cc04)
+- Diagnostics for attributes [`f661806`](https://github.com/Desdaemon/odoo-lsp/commit/f66180690f0fb0c1437848f08a5d60aa6e3da53f)
+- Consistent use of paths for Windows [`d34fbf9`](https://github.com/Desdaemon/odoo-lsp/commit/d34fbf960c8cee965ae1c4f5353ed3867125c75b)
+- Support incomplete attributes [`70af361`](https://github.com/Desdaemon/odoo-lsp/commit/70af36188209c0538fcda95dff1d3694bb0d9ba7)
+- Allow more builtin fields [`20a554a`](https://github.com/Desdaemon/odoo-lsp/commit/20a554a02950d230877f016414a20c63a2719e9a)
+- Do not clobber record names [`785c388`](https://github.com/Desdaemon/odoo-lsp/commit/785c388f5427c3c3d9509c124529195698b1f458)
+- Use version for self update [`ebb6df2`](https://github.com/Desdaemon/odoo-lsp/commit/ebb6df249f96d0d9127591d2d9f0c498e4245a59)
+- Broken root finder, prevent panics [`a16fda9`](https://github.com/Desdaemon/odoo-lsp/commit/a16fda9391f064cf0df9f21b24e99f6323ac0eba)
+- Properly wait for setup on all handlers [`7c6cdc8`](https://github.com/Desdaemon/odoo-lsp/commit/7c6cdc8bd65258e68edf7e018e34c43db6f6d93d)
+- Shift 1 position when completing on dot [`e2a0fcc`](https://github.com/Desdaemon/odoo-lsp/commit/e2a0fccf1c96f4fb325fcb7c606a58398952c39f)
+- Add ancestor fields to field set [`54f57bb`](https://github.com/Desdaemon/odoo-lsp/commit/54f57bb0c5688e6e034dfb446de75c763e015a0e)
+
+### Features
+
+- Try to embed nightly version in binary [`fdeb2e0`](https://github.com/Desdaemon/odoo-lsp/commit/fdeb2e00e127617cf0516df097e552c5e7c0a5d9)
+- Allow configuring completion limits [`8895160`](https://github.com/Desdaemon/odoo-lsp/commit/889516086fda3082a76f90bb8cc4476380ad1064)
+- Complete report_name references [`7008fbc`](https://github.com/Desdaemon/odoo-lsp/commit/7008fbc9fa5dcf097342e2805ba7f5142c5314dd)
+- Default to 1-thread execution [`6ce8d76`](https://github.com/Desdaemon/odoo-lsp/commit/6ce8d766b9afa2b25c553dbbfa02d79ccc838e44)
+- Go-to Owl components and templates [`d5cf8f6`](https://github.com/Desdaemon/odoo-lsp/commit/d5cf8f60e5e958eeeba0207247ce32ce343f60e6)
+- Hover for component props [`ae5d491`](https://github.com/Desdaemon/odoo-lsp/commit/ae5d491c276053e36009f48ed11fc9041da42bd4)
+- **xml:** Add schema for tree views [`9e30871`](https://github.com/Desdaemon/odoo-lsp/commit/9e30871d88963ddfa7c0a55c403670869700e1e9)
+- **xml:** Add form view schema [`e52b7fc`](https://github.com/Desdaemon/odoo-lsp/commit/e52b7fc479aeedfc6424891e6d2fefd5ae6f8fb6)
+- **xml:** Add more form elements and attributes [`ad62bda`](https://github.com/Desdaemon/odoo-lsp/commit/ad62bda954c2732915b48db37941de50646b58f0)
+- Allow grouped() mapped access [`3961eec`](https://github.com/Desdaemon/odoo-lsp/commit/3961eec1370a472f784d09e3644370bb947ab82f)
+
+### Refactor
+
+- Python queries [`3272e43`](https://github.com/Desdaemon/odoo-lsp/commit/3272e43e2f3b74f6961ae84b3600a61a0e0f9ace)
+
+
 ## [0.4.1](https://github.com/Desdaemon/odoo-lsp/releases/tag/v0.4.1) - 2024-05-01
 Compare: [`v0.4.0...v0.4.1`](https://github.com/Desdaemon/odoo-lsp/compare/v0.4.0...v0.4.1)
 

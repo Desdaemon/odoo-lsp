@@ -1,6 +1,6 @@
 [package]
 name = "odoo-lsp"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 authors = ["Viet Dinh <54ckb0y789@gmail.com>"]
 description = "Language server for Odoo Python/JS/XML"
