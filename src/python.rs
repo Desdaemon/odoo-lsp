@@ -591,7 +591,9 @@ impl Backend {
 		);
 		let lhs;
 		let rhs;
+		let mut on_dot = false;
 		if !cursor_node.is_named() {
+			on_dot = true;
 			// We landed on one of the punctuations inside the attribute.
 			// Need to determine which one it is.
 			let dot = cursor_node.descendant_for_byte_range(offset, offset)?;
@@ -631,7 +633,7 @@ impl Backend {
 		let Some(rhs) = rhs else {
 			// In single-expression mode, rhs could be empty in which case
 			// we return an empty needle/range.
-			let offset = real_offset.unwrap_or(offset);
+			let offset = real_offset.unwrap_or(offset) + if on_dot { 1 } else { 0 };
 			return Some((lhs, Cow::from(""), offset..offset));
 		};
 		let (field, range) = if rhs.range().start_point.row != lhs.range().end_point.row {
