@@ -40,6 +40,10 @@ enum RefKind<'a> {
 	PyExpr(usize),
 	/// `<Component />`
 	Component,
+	/// `<field widget=".."/>`
+	Widget,
+	/// `<field name="tag">..</field>`
+	ActionTag,
 }
 
 enum Tag<'a> {
@@ -331,6 +335,12 @@ impl Backend {
 					&mut items,
 				)?;
 			}
+			RefKind::Widget => {
+				self.complete_widget(/*needle/, */ replace_range, rope.clone(), &mut items)?;
+			}
+			RefKind::ActionTag => {
+				self.complete_action_tag(/*needle/, */ replace_range, rope.clone(), &mut items)?;
+			}
 			RefKind::TName | RefKind::Component => return Ok(None),
 		}
 
@@ -400,6 +410,8 @@ impl Backend {
 				};
 				self.jump_def_template_name(interner().resolve(template))
 			}
+			Some(RefKind::Widget) => self.jump_def_widget(needle),
+			Some(RefKind::ActionTag) => self.jump_def_action_tag(needle),
 			None => Ok(None),
 		}
 	}
@@ -430,6 +442,8 @@ impl Backend {
 			| Some(RefKind::FieldName(_))
 			| Some(RefKind::PropOf(..))
 			| Some(RefKind::Component)
+			| Some(RefKind::Widget)
+			| Some(RefKind::ActionTag)
 			| None => Ok(None),
 		}
 	}
@@ -568,7 +582,7 @@ impl Backend {
 					})),
 				}))
 			}
-			Some(RefKind::TName) | None => {
+			Some(RefKind::TName) | Some(RefKind::Widget) | Some(RefKind::ActionTag) | None => {
 				#[cfg(not(debug_assertions))]
 				return Ok(None);
 
@@ -631,6 +645,7 @@ impl Backend {
 		let mut depth = 0;
 		let mut expect_model_string = false;
 		let mut expect_template_string = false;
+		let mut expect_action_tag = false;
 
 		let mut scope = Scope::default();
 		let mut parser = Parser::new();
@@ -697,6 +712,10 @@ impl Backend {
 							// string reference to a template (ir.ui.view)
 							expect_template_string = true;
 						}
+						"name" if value.as_str() == "tag" => {
+							// ir.actions tag for a client action (on the `actions` registry)
+							expect_action_tag = true;
+						}
 						"name" if value.as_str() == "arch" => {
 							arch_mode = true;
 							arch_depth = depth
@@ -724,6 +743,10 @@ impl Backend {
 							model_filter = Some("res.groups".to_string());
 							arch_model = None;
 							determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
+						}
+						"widget" if value_in_range && arch_depth > 0 => {
+							ref_kind = Some(RefKind::Widget);
+							ref_at_cursor = Some((value.as_str(), value.range()));
 						}
 						_ => {}
 					}
@@ -867,6 +890,13 @@ impl Backend {
 						ref_at_cursor = Some((text.as_str(), text.range()));
 						ref_kind = Some(RefKind::Ref("inherit_id"));
 						model_filter = Some("ir.ui.view".to_string());
+					}
+				}
+				Ok(Token::Text { text }) if expect_action_tag => {
+					expect_action_tag = false;
+					if text.range().contains_end(offset_at_cursor) {
+						ref_at_cursor = Some((text.as_str(), text.range()));
+						ref_kind = Some(RefKind::ActionTag);
 					}
 				}
 				Ok(Token::ElementEnd { end, span }) => {

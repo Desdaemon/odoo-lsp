@@ -21,7 +21,7 @@ use xmlparser::{Token, Tokenizer};
 
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
-use crate::utils::{path_contains, ts_range_to_lsp_range, ByteOffset, ByteRange, RangeExt, Usage};
+use crate::utils::{path_contains, ts_range_to_lsp_range, ByteOffset, ByteRange, MinLoc, RangeExt, Usage};
 use crate::{format_loc, ok, ImStr};
 
 mod record;
@@ -34,6 +34,7 @@ pub use template::TemplateIndex;
 mod component;
 pub use crate::component::{Component, ComponentName};
 pub use component::ComponentQuery;
+mod registry;
 
 use crate::template::{gather_templates, NewTemplate};
 
@@ -105,6 +106,10 @@ pub struct Index {
 	pub templates: template::TemplateIndex,
 	pub models: ModelIndex,
 	pub components: component::ComponentIndex,
+	#[default(_code = "DashMap::with_shard_amount(4)")]
+	pub widgets: DashMap<ImStr, MinLoc>,
+	#[default(_code = "DashMap::with_shard_amount(4)")]
+	pub actions: DashMap<ImStr, MinLoc>,
 }
 
 pub type ModuleName = Symbol<Module>;
@@ -121,6 +126,10 @@ enum Output {
 		models: Vec<Model>,
 	},
 	Components(HashMap<ComponentName, Component>),
+	Registries {
+		widgets: Vec<(ImStr, MinLoc)>,
+		actions: Vec<(ImStr, MinLoc)>,
+	},
 }
 
 #[derive(Debug)]
@@ -313,6 +322,7 @@ impl Index {
 			for js in scripts {
 				let Ok(js) = js else { continue };
 				let path = js.path().to_path_buf();
+				outputs.spawn(registry::add_root_js(root_key, path.clone()));
 				outputs.spawn(component::add_root_js(root_key, path));
 			}
 		}
@@ -347,6 +357,18 @@ impl Index {
 				Output::Components(components) => {
 					component_count += components.len();
 					self.components.extend(components);
+				}
+				Output::Registries { widgets, actions } => {
+					for (widget, loc) in widgets {
+						if !self.widgets.contains_key(&widget) {
+							self.widgets.insert(widget, loc);
+						}
+					}
+					for (action, loc) in actions {
+						if !self.actions.contains_key(&action) {
+							self.actions.insert(action, loc);
+						}
+					}
 				}
 			}
 		}
@@ -621,6 +643,8 @@ impl Index {
 			templates,
 			models,
 			components,
+			widgets,
+			actions,
 		} = self;
 		let mut modules = roots.usage();
 		modules.0 = roots.iter().map(|entry| entry.value().len()).sum::<usize>();
@@ -630,6 +654,8 @@ impl Index {
 			"templates": templates.statistics(),
 			"models": models.statistics(),
 			"components": components.statistics(),
+			"widgets": widgets.usage(),
+			"actions": actions.usage(),
 		}}
 	}
 }

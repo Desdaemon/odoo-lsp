@@ -131,7 +131,7 @@ impl Ord for ImStr {
 impl std::hash::Hash for ImStr {
 	#[inline]
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-		self.deref().hash(state)
+		self.as_bytes().hash(state)
 	}
 }
 

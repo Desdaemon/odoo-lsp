@@ -480,6 +480,50 @@ impl Backend {
 		items.extend(completions);
 		Ok(())
 	}
+	pub fn complete_widget(
+		&self,
+		range: ByteRange,
+		rope: Rope,
+		items: &mut MaxVec<CompletionItem>,
+	) -> miette::Result<()> {
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_widget) range"))?;
+		let completions = self.index.widgets.iter().flat_map(|widget| {
+			let widget = widget.key().to_string();
+			Some(CompletionItem {
+				text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+					range,
+					new_text: widget.clone(),
+				})),
+				label: widget,
+				kind: Some(CompletionItemKind::ENUM),
+				..Default::default()
+			})
+		});
+		items.extend(completions);
+		Ok(())
+	}
+	pub fn complete_action_tag(
+		&self,
+		range: ByteRange,
+		rope: Rope,
+		items: &mut MaxVec<CompletionItem>,
+	) -> miette::Result<()> {
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_action_tag) range"))?;
+		let completions = self.index.actions.iter().flat_map(|tag| {
+			let tag = tag.key().to_string();
+			Some(CompletionItem {
+				text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+					range,
+					new_text: tag.clone(),
+				})),
+				label: tag,
+				kind: Some(CompletionItemKind::ENUM),
+				..Default::default()
+			})
+		});
+		items.extend(completions);
+		Ok(())
+	}
 	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
 		let mut value = Cow::from(cursor_value);
 		let path = some!(uri.to_file_path().ok());
@@ -582,6 +626,14 @@ impl Backend {
 		let prop = some!(interner().get(prop));
 		let prop = some!(self.find_prop_recursive(&component.into(), &prop.into()));
 		Ok(Some(prop.location.into()))
+	}
+	pub fn jump_def_widget(&self, widget: &str) -> miette::Result<Option<Location>> {
+		let field = some!(self.index.widgets.get(widget.as_bytes()));
+		Ok(Some(field.value().clone().into()))
+	}
+	pub fn jump_def_action_tag(&self, tag: &str) -> miette::Result<Option<Location>> {
+		let field = some!(self.index.actions.get(tag.as_bytes()));
+		Ok(Some(field.value().clone().into()))
 	}
 	fn find_prop_recursive(&self, component: &Symbol<Component>, prop: &Symbol<Prop>) -> Option<PropDescriptor> {
 		let component = self.index.components.get(component)?;
