@@ -96,6 +96,7 @@ mod catch_panic;
 mod cli;
 mod js;
 mod python;
+mod retry;
 mod xml;
 
 #[cfg(doc)]
@@ -319,6 +320,8 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
+		self.root_setup.wait().await;
+
 		info!("{}", params.text_document.uri.path());
 		let language_id = params.text_document.language_id.as_str();
 		let split_uri = params.text_document.uri.path().rsplit_once('.');
@@ -336,7 +339,6 @@ impl LanguageServer for Backend {
 		self.document_map
 			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()));
 
-		self.root_setup.wait().await;
 		let path = params.text_document.uri.to_file_path().unwrap();
 		if self.index.module_of_path(&path).is_none() {
 			// outside of root?
@@ -886,8 +888,10 @@ async fn main() {
 	.finish();
 
 	let service = ServiceBuilder::new()
+		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(48)))
+		.layer(tower::retry::RetryLayer::new(retry::LspRetryPolicy::new(12)))
+		.layer(tower::buffer::BufferLayer::new(16))
 		.layer_fn(CatchPanic)
-		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(25)))
 		.service(service);
 	Server::new(stdin, stdout, socket).serve(service).await;
 }

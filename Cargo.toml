@@ -53,7 +53,7 @@ globwalk = "0.9.1"
 miette = { version = "7.2.0", features = ["fancy"] }
 futures = "0.3.28"
 xmlparser = "0.13.5"
-tower = { version = "0.5.0", features = ["timeout"] }
+tower = { version = "0.5.0", features = ["timeout", "retry", "buffer"] }
 pin-project-lite = "0.2.12"
 tree-sitter.workspace = true
 tree-sitter-python = "0.20.4"
