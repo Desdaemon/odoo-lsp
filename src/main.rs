@@ -828,15 +828,15 @@ impl LanguageServer for Backend {
 	}
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
-	let outlog = std::env::var("ODOO_LSP_LOG").ok().map(|var| {
+	let outlog = std::env::var("ODOO_LSP_LOG").ok().and_then(|var| {
 		let path = match var.as_str() {
 			#[cfg(unix)]
 			"1" => Path::new("/tmp/odoo_lsp.log"),
 			_ => Path::new(&var),
 		};
-		std::fs::File::create(path).unwrap()
+		std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
 	});
 	let registry = tracing_subscriber::registry().with(EnvFilter::from_default_env());
 	let layer = tracing_subscriber::fmt::layer()
