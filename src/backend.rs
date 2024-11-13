@@ -110,6 +110,7 @@ impl Backend {
 	#[instrument(skip_all)]
 	pub async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
 		let split_uri = params.uri.path().rsplit_once('.');
+		self.root_setup.wait().await;
 		let mut document = self
 			.document_map
 			.try_get_mut(params.uri.path())
@@ -135,7 +136,6 @@ impl Backend {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
 				self.on_change_python(&params.text, &params.uri, rope.clone(), params.old_rope)?;
 				if eager_diagnostics {
-					self.root_setup.wait().await;
 					self.diagnose_python(
 						params.uri.path(),
 						&rope,

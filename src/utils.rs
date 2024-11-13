@@ -392,10 +392,24 @@ impl CondVar {
 		self.should_wait.store(true, Ordering::SeqCst);
 		Blocker(self)
 	}
+
+	const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+	/// Waits for a maximum of [`WAIT_LIMIT`][Self::WAIT_LIMIT] for a notification.
 	pub async fn wait(&self) {
 		if self.should_wait.load(Ordering::SeqCst) {
-			self.notifier.notified().await;
+			tokio::select! {
+				_ = self.notifier.notified() => {}
+				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
+					tracing::warn!("WAIT_LIMIT elapsed (thread={:?})", std::thread::current().id());
+				}
+			}
 		}
+	}
+
+	#[inline]
+	pub fn should_wait(&self) -> bool {
+		self.should_wait.load(Ordering::SeqCst)
 	}
 }
 

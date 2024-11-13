@@ -96,7 +96,6 @@ mod catch_panic;
 mod cli;
 mod js;
 mod python;
-mod retry;
 mod xml;
 
 #[cfg(doc)]
@@ -262,7 +261,6 @@ impl LanguageServer for Backend {
 				.await;
 		}
 
-		let _blocker = self.root_setup.block();
 		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
 		let mut progress = None;
 		if self
@@ -284,6 +282,7 @@ impl LanguageServer for Backend {
 			progress = Some((&self.client, token.clone()));
 		}
 
+		let _blocker = self.root_setup.block();
 		self.ensure_nonoverlapping_roots();
 
 		for root in self.roots.iter() {
@@ -307,6 +306,7 @@ impl LanguageServer for Backend {
 				_ => {}
 			}
 		}
+		drop(_blocker);
 
 		if progress.is_some() {
 			_ = self
@@ -320,8 +320,6 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
-		self.root_setup.wait().await;
-
 		info!("{}", params.text_document.uri.path());
 		let language_id = params.text_document.language_id.as_str();
 		let split_uri = params.text_document.uri.path().rsplit_once('.');
@@ -339,6 +337,7 @@ impl LanguageServer for Backend {
 		self.document_map
 			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()));
 
+		self.root_setup.wait().await;
 		let path = params.text_document.uri.to_file_path().unwrap();
 		if self.index.module_of_path(&path).is_none() {
 			// outside of root?
@@ -401,7 +400,8 @@ impl LanguageServer for Backend {
 		{
 			let mut document = self
 				.document_map
-				.get_mut(params.text_document.uri.path())
+				.try_get_mut(params.text_document.uri.path())
+				.expect(format_loc!("deadlock"))
 				.expect("Did not build a document");
 			old_rope = document.rope.clone();
 			// Update the rope
@@ -437,12 +437,16 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
-		self.root_setup.wait().await;
+		if self.root_setup.should_wait() {
+			return;
+		}
 		_ = self.did_save_impl(params).await.inspect_err(|err| warn!("{err}"));
 	}
 	#[instrument(skip_all)]
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
-		self.root_setup.wait().await;
+		if self.root_setup.should_wait() {
+			return Ok(None);
+		}
 		let uri = &params.text_document_position_params.text_document.uri;
 		debug!("goto_definition {}", uri.path());
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
@@ -470,7 +474,9 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-		self.root_setup.wait().await;
+		if self.root_setup.should_wait() {
+			return Ok(None);
+		}
 		let uri = &params.text_document_position.text_document.uri;
 		debug!("references {}", uri.path());
 
@@ -492,7 +498,9 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-		self.root_setup.wait().await;
+		if self.root_setup.should_wait() {
+			return Ok(None);
+		}
 		let uri = &params.text_document_position.text_document.uri;
 		debug!("(completion) {}", uri.path());
 
@@ -500,7 +508,6 @@ impl LanguageServer for Backend {
 			return Ok(None); // hit a directory, super unlikely
 		};
 
-		self.root_setup.wait().await;
 		let Some(document) = self.document_map.get(uri.path()) else {
 			debug!("Bug: did not build a document for {}", uri.path());
 			return Ok(None);
@@ -540,7 +547,9 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn completion_resolve(&self, mut completion: CompletionItem) -> Result<CompletionItem> {
-		self.root_setup.wait().await;
+		if self.root_setup.should_wait() {
+			return Ok(completion);
+		}
 		'resolve: {
 			match &completion.kind {
 				Some(CompletionItemKind::CLASS) => {
@@ -610,7 +619,9 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-		self.root_setup.wait().await;
+		if self.root_setup.should_wait() {
+			return Ok(None);
+		}
 		let uri = &params.text_document_position_params.text_document.uri;
 		let document = some!(self.document_map.get(uri.path()));
 		let (_, ext) = some!(uri.path().rsplit_once('.'));
@@ -684,7 +695,9 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
-		self.root_setup.wait().await;
+		if self.root_setup.should_wait() {
+			return Ok(None);
+		}
 		let query = &params.query;
 
 		let models_by_prefix = self.index.models.by_prefix.read().await;
@@ -747,7 +760,6 @@ impl LanguageServer for Backend {
 		let mut diagnostics = vec![];
 		if let Some((_, "py")) = path.rsplit_once('.') {
 			if let Some(mut document) = self.document_map.try_get_mut(path).expect(format_loc!("deadlock")) {
-				self.root_setup.wait().await;
 				let damage_zone = document.damage_zone.take();
 				let rope = &document.rope.clone();
 				self.diagnose_python(
@@ -771,7 +783,9 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-		self.root_setup.wait().await;
+		if self.root_setup.should_wait() {
+			return Ok(None);
+		}
 		let Some((_, "xml")) = params.text_document.uri.path().rsplit_once('.') else {
 			return Ok(None);
 		};
@@ -787,7 +801,9 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
-		self.root_setup.wait().await;
+		if self.root_setup.should_wait() {
+			return Ok(None);
+		}
 		match (params.command.as_str(), params.arguments.as_slice()) {
 			("goto_owl", [Value::String(_), Value::String(subcomponent)]) => {
 				// FIXME: Subcomponents should not just depend on the component's name,
@@ -812,7 +828,7 @@ impl LanguageServer for Backend {
 	}
 }
 
-#[tokio::main(worker_threads = 2)]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
 	let outlog = std::env::var("ODOO_LSP_LOG").ok().map(|var| {
 		let path = match var.as_str() {
@@ -888,9 +904,7 @@ async fn main() {
 	.finish();
 
 	let service = ServiceBuilder::new()
-		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(48)))
-		.layer(tower::retry::RetryLayer::new(retry::LspRetryPolicy::new(12)))
-		.layer(tower::buffer::BufferLayer::new(16))
+		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))
 		.layer_fn(CatchPanic)
 		.service(service);
 	Server::new(stdin, stdout, socket).serve(service).await;
