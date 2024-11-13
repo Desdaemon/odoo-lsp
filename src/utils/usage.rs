@@ -325,10 +325,9 @@ impl Usage for ModelEntry {
 
 impl Usage for ModelLocation {
 	fn usage(&self) -> UsageInfo<Self> {
-		let Self(a, b) = self;
+		let Self(a) = self;
 		let mut usage = 0;
 		usage += a.usage().0;
-		usage += b.usage().0;
 		UsageInfo::new(usage)
 	}
 }

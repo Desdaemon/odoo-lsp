@@ -21,8 +21,12 @@ use ts_macros::query;
 
 use crate::index::{interner, Interner, PathSymbol, Symbol};
 use crate::str::Text;
-use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt, Usage};
+use crate::utils::{
+	lsp_range_to_point_range, ts_range_to_lsp_range, ByteOffset, ByteRange, MinLoc, RangeExt, TryResultExt, Usage,
+};
 use crate::{format_loc, ImStr};
+
+mod method;
 
 #[derive(Clone, Debug)]
 pub struct Model {
@@ -55,8 +59,6 @@ pub struct ModelEntry {
 	pub fields_set: qp_trie::Trie<&'static [u8], ()>,
 	pub docstring: Option<Text>,
 }
-
-// pub enum FieldName {}
 
 #[derive(Clone, Debug)]
 pub enum FieldKind {
@@ -96,7 +98,8 @@ impl Field {
 }
 
 #[derive(Clone)]
-pub struct ModelLocation(pub MinLoc, pub ByteRange);
+#[repr(transparent)]
+pub struct ModelLocation(pub MinLoc);
 
 impl Display for ModelLocation {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -151,13 +154,10 @@ impl ModelIndex {
 					by_prefix.insert(base.clone(), name);
 					let mut entry = self.entry(name).or_default();
 					if entry.base.is_none() || replace {
-						entry.base = Some(ModelLocation(
-							MinLoc {
-								path,
-								range: item.range,
-							},
-							item.byte_range.clone(),
-						));
+						entry.base = Some(ModelLocation(MinLoc {
+							path,
+							range: item.range,
+						}));
 						entry
 							.ancestors
 							.extend(ancestors.iter().map(|sym| ModelName::from(interner.get_or_intern(sym))));
@@ -166,13 +166,10 @@ impl ModelIndex {
 							"Conflicting bases for {}:\nfirst={}\n  new={}",
 							interner.resolve(&name),
 							entry.base.as_ref().unwrap(),
-							ModelLocation(
-								MinLoc {
-									path,
-									range: item.range
-								},
-								item.byte_range.clone()
-							)
+							ModelLocation(MinLoc {
+								path,
+								range: item.range
+							})
 						)
 					}
 				}
@@ -188,13 +185,10 @@ impl ModelIndex {
 					if let Some((primary, ancestors)) = inherits.split_first() {
 						let inherit = interner.get_or_intern(primary).into();
 						let mut entry = self.entry(inherit).or_default();
-						entry.descendants.push(ModelLocation(
-							MinLoc {
-								path,
-								range: item.range,
-							},
-							item.byte_range.clone(),
-						));
+						entry.descendants.push(ModelLocation(MinLoc {
+							path,
+							range: item.range,
+						}));
 						entry
 							.ancestors
 							.extend(ancestors.iter().map(|sym| ModelName::from(interner.get_or_intern(sym))));
@@ -219,7 +213,7 @@ impl ModelIndex {
 		let query = ModelFields::query();
 		let fields = locations
 			.into_par_iter()
-			.filter_map(|ModelLocation(location, byte_range)| {
+			.filter_map(|ModelLocation(location)| {
 				if !locations_filter.is_empty() && !locations_filter.contains(&location.path) {
 					return None;
 				}
@@ -233,9 +227,8 @@ impl ModelIndex {
 					.set_language(&tree_sitter_python::LANGUAGE.into())
 					.expect(format_loc!("Failed to set language"));
 				let ast = parser.parse(&contents, None)?;
-				let byte_range = byte_range.erase();
 				let mut cursor = QueryCursor::new();
-				cursor.set_byte_range(byte_range);
+				cursor.set_point_range(lsp_range_to_point_range(location.range.clone()));
 				for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
 					let mut field = None;
 					let mut type_ = None;
@@ -428,8 +421,8 @@ impl ModelIndex {
 				warn!("unresolved field `{}`.`{lhs}`", interner().resolve(model));
 				*needle = lhs;
 				if let Some(range) = range.as_mut() {
-					let end = range.start.0 + lhs.len();
-					**range = range.start..ByteOffset(end);
+					let end = range.start.0 as usize + lhs.len();
+					**range = range.start..ByteOffset::from(end);
 				}
 				return Err(ResolveMappedError::NonRelational);
 			};
@@ -438,8 +431,8 @@ impl ModelIndex {
 			// old range: foo.bar.baz
 			// range:         bar.baz
 			if let Some(range) = range.as_mut() {
-				let start = range.start.0 + lhs.len() + 1;
-				**range = ByteOffset(start)..range.end;
+				let start = range.start.0 as usize + lhs.len() + 1;
+				**range = ByteOffset::from(start)..range.end;
 			}
 		}
 		Ok(())
@@ -510,7 +503,7 @@ query! {
 
 impl ModelEntry {
 	pub async fn resolve_details(&mut self) -> miette::Result<()> {
-		let Some(ModelLocation(loc, byte_range)) = &self.base else {
+		let Some(ModelLocation(loc)) = &self.base else {
 			return Ok(());
 		};
 		if self.docstring.is_none() {
@@ -524,7 +517,7 @@ impl ModelEntry {
 				.ok_or_else(|| diagnostic!("AST not parsed"))?;
 			let query = ModelHelp::query();
 			let mut cursor = QueryCursor::new();
-			cursor.set_byte_range(byte_range.erase());
+			cursor.set_point_range(lsp_range_to_point_range(loc.range));
 			for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
 				if let Some(docstring) = match_.nodes_for_capture_index(0).next() {
 					let contents = String::from_utf8_lossy(&contents[docstring.byte_range()]);

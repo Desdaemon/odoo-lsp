@@ -82,9 +82,9 @@ pub fn gather_templates(
 						}
 					};
 					let name = interner().get_or_intern(name).into();
-					let start = offset_to_position(ByteOffset(tag_start), document.clone())
+					let start = offset_to_position(ByteOffset::from(tag_start), document.clone())
 						.ok_or_else(|| diagnostic!("qweb_templates start <- tag_start"))?;
-					let end = offset_to_position(ByteOffset(span.end()), document.clone())
+					let end = offset_to_position(ByteOffset::from(span.end()), document.clone())
 						.ok_or_else(|| diagnostic!("qweb_templates end <- span.end()"))?;
 					let range = Range { start, end };
 					templates.push(NewTemplate {
@@ -120,7 +120,7 @@ pub fn gather_templates(
 				let name_candidate = if base { t_name } else { t_inherit };
 				let Some(name) = name_candidate else { break };
 				let name = interner().get_or_intern(name).into();
-				let start = offset_to_position(ByteOffset(tag_start), document.clone())
+				let start = offset_to_position(ByteOffset::from(tag_start), document.clone())
 					.ok_or_else(|| diagnostic!("qweb_templates start <- tag_start"))?;
 				let end = Position {
 					line: err.pos().row,

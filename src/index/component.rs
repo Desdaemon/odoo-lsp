@@ -158,7 +158,8 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Out
 							type_: Default::default(),
 							location: MinLoc {
 								path: path_key,
-								range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
+								range: offset_range_to_lsp_range(range.map_unit(ByteOffset::from), rope.clone())
+									.unwrap(),
 							},
 						}),
 					};
@@ -177,7 +178,7 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Out
 					component.template = Some(ComponentTemplate::Name(name.into()));
 				}
 				Some(ComponentQuery::TemplateInline) => {
-					let range = capture.node.byte_range().shrink(1).map_unit(ByteOffset);
+					let range = capture.node.byte_range().shrink(1).map_unit(ByteOffset::from);
 					component.template = Some(ComponentTemplate::Inline(
 						offset_range_to_lsp_range(range, rope.clone()).unwrap(),
 					));

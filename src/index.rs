@@ -423,7 +423,7 @@ async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> mie
 			Some(Ok(Token::ElementStart { local, span, .. })) => match local.as_str() {
 				"record" => {
 					let record = Record::from_reader(
-						ByteOffset(span.start()),
+						ByteOffset(span.start() as _),
 						module_name,
 						path_uri,
 						&mut reader,
@@ -433,7 +433,7 @@ async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> mie
 				}
 				"template" => {
 					if let Some(template) = Record::template(
-						ByteOffset(span.start()),
+						ByteOffset(span.start() as _),
 						module_name,
 						path_uri,
 						&mut reader,
@@ -446,7 +446,7 @@ async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> mie
 				}
 				"menuitem" => {
 					let menuitem = Record::menuitem(
-						ByteOffset(span.start()),
+						ByteOffset(span.start() as _),
 						module_name,
 						path_uri,
 						&mut reader,
@@ -526,7 +526,7 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 		let model = models.entry(model_node.id()).or_insert_with(|| NewModel {
 			name: None,
 			range: model_node.range(),
-			byte_range: model_node.byte_range().map_unit(ByteOffset),
+			byte_range: model_node.byte_range().map_unit(ByteOffset::from),
 			inherits: vec![],
 		});
 		match &contents[capture.byte_range()] {

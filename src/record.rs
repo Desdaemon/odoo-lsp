@@ -81,7 +81,7 @@ impl Record {
 				})) if local.as_str() == "record" => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(ByteOffset(span.end()));
+						end = Some(ByteOffset::from(span.end()));
 						break;
 					}
 				}
@@ -92,7 +92,7 @@ impl Record {
 				})) if in_record => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(ByteOffset(span.end()));
+						end = Some(ByteOffset::from(span.end()));
 						break;
 					}
 				}
@@ -168,7 +168,7 @@ impl Record {
 				})) if in_template => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(ByteOffset(span.end()));
+						end = Some(ByteOffset::from(span.end()));
 						break;
 					}
 				}
@@ -184,7 +184,7 @@ impl Record {
 				})) if local.as_str() == "template" => {
 					stack -= 1;
 					if stack <= 0 {
-						end = Some(ByteOffset(span.end()));
+						end = Some(ByteOffset::from(span.end()));
 						break;
 					}
 				}
@@ -241,7 +241,7 @@ impl Record {
 					}
 				}
 				Some(Ok(Token::ElementEnd { span, .. })) => {
-					end = Some(ByteOffset(span.end()));
+					end = Some(ByteOffset::from(span.end()));
 					break;
 				}
 				None => break,

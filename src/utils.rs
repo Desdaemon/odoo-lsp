@@ -11,6 +11,7 @@ use futures::future::BoxFuture;
 use ropey::{Rope, RopeSlice};
 use smart_default::SmartDefault;
 use tower_lsp::lsp_types::*;
+use tree_sitter::Point;
 use xmlparser::{StrSpan, TextPos, Token};
 
 mod visitor;
@@ -74,7 +75,7 @@ impl<'a, T> EarlyReturn<'a, T> {
 }
 
 /// A more economical version of [Location].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MinLoc {
 	pub path: PathSymbol,
 	pub range: Range,
@@ -101,9 +102,9 @@ impl From<MinLoc> for Location {
 }
 
 pub fn offset_to_position(offset: ByteOffset, rope: Rope) -> Option<Position> {
-	let line = rope.try_byte_to_line(offset.0).ok()?;
+	let line = rope.try_byte_to_line(offset.0 as _).ok()?;
 	let line_start_char = rope.try_line_to_char(line).ok()?;
-	let char_offset = rope.try_byte_to_char(offset.0).ok()?;
+	let char_offset = rope.try_byte_to_char(offset.0 as _).ok()?;
 	let column = char_offset - line_start_char;
 	Some(Position::new(line as u32, column as u32))
 }
@@ -111,13 +112,13 @@ pub fn offset_to_position(offset: ByteOffset, rope: Rope) -> Option<Position> {
 pub fn position_to_offset(position: Position, rope: &Rope) -> Option<ByteOffset> {
 	let CharOffset(char_offset) = position_to_char(position, rope)?;
 	let byte_offset = rope.try_char_to_byte(char_offset).ok()?;
-	Some(ByteOffset(byte_offset))
+	Some(ByteOffset::from(byte_offset))
 }
 
 pub fn position_to_offset_slice(position: Position, slice: &RopeSlice) -> Option<ByteOffset> {
 	let CharOffset(char_offset) = position_to_char_slice(position, slice)?;
 	let byte_offset = slice.try_char_to_byte(char_offset).ok()?;
-	Some(ByteOffset(byte_offset))
+	Some(ByteOffset::from(byte_offset))
 }
 
 fn position_to_char(position: Position, rope: &Rope) -> Option<CharOffset> {
@@ -168,6 +169,17 @@ pub fn ts_range_to_lsp_range(range: tree_sitter::Range) -> Range {
 	}
 }
 
+#[inline]
+pub fn lsp_range_to_point_range(range: Range) -> std::ops::Range<Point> {
+	Point {
+		row: range.start.line as _,
+		column: range.start.character as _,
+	}..Point {
+		row: range.end.line as _,
+		column: range.end.character as _,
+	}
+}
+
 pub fn token_span<'r, 't>(token: &'r Token<'t>) -> &'r StrSpan<'t> {
 	match token {
 		Token::Declaration { span, .. }
@@ -206,8 +218,9 @@ pub fn cow_split_once<'src>(
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+// TODO: Change to u32, we shouldn't be having files that large.
 #[repr(transparent)]
-pub struct ByteOffset(pub usize);
+pub struct ByteOffset(pub u32);
 pub type ByteRange = core::ops::Range<ByteOffset>;
 
 impl From<usize> for ByteOffset {
@@ -249,7 +262,7 @@ pub trait Erase {
 impl Erase for ByteRange {
 	#[inline]
 	fn erase(&self) -> core::ops::Range<usize> {
-		self.clone().map_unit(|unit| unit.0)
+		self.clone().map_unit(|unit| unit.0 as _)
 	}
 }
 

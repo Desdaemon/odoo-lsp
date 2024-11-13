@@ -547,7 +547,7 @@ impl Backend {
 	pub fn jump_def_model(&self, model: &str) -> miette::Result<Option<Location>> {
 		let model = some!(interner().get(model));
 		match (self.index.models.get(&model.into())).and_then(|model| model.base.as_ref().cloned()) {
-			Some(ModelLocation(base, _)) => Ok(Some(base.into())),
+			Some(ModelLocation(base)) => Ok(Some(base.into())),
 			None => Ok(None),
 		}
 	}
