@@ -352,6 +352,7 @@ impl Backend {
 		// 2. foo.mapped('..')
 		//    foo: Model('t) => _: Model('t).mapped('..')
 		// 3. foo.mapped(lambda rec: 't): 't
+		#[cfg(debug_assertions)]
 		if node.byte_range().len() <= 64 {
 			trace!(
 				"type_of {} '{}'",
@@ -604,7 +605,7 @@ mod tests {
 	#[test]
 	fn test_field_completion() {
 		let mut parser = Parser::new();
-		parser.set_language(tree_sitter_python::language()).unwrap();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 		let contents = br#"
 class Foo(models.AbstractModel):
 	_name = 'foo'
@@ -646,7 +647,7 @@ class Foo(models.AbstractModel):
 	#[test]
 	fn test_determine_scope() {
 		let mut parser = Parser::new();
-		parser.set_language(tree_sitter_python::language()).unwrap();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 		let contents = r#"
 class Foo(models.Model):
 	_name = 'foo'

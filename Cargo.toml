@@ -40,7 +40,7 @@ pkg-fmt = "zip"
 pkg-fmt = "zip"
 
 [workspace.dependencies]
-tree-sitter = "0.20.10"
+tree-sitter = "0.23"
 
 [dependencies]
 ropey = "1.5.0"
@@ -53,11 +53,8 @@ globwalk = "0.9.1"
 miette = { version = "7.2.0", features = ["fancy"] }
 futures = "0.3.28"
 xmlparser = "0.13.5"
-tower = { version = "0.5.0", features = ["timeout", "retry", "buffer"] }
+tower = { version = "0.5.0", features = ["timeout"] }
 pin-project-lite = "0.2.12"
-tree-sitter.workspace = true
-tree-sitter-python = "0.20.4"
-tree-sitter-javascript = "0.20.4"
 qp-trie = "0.8.1"
 lasso = { version = "0.7.2", features = ["multi-threaded"] }
 intmap = "2.0.0"
@@ -77,6 +74,9 @@ smart-default = "0.7.1"
 const_format = { version = "0.2.32", features = ["assertcp"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tree-sitter-javascript = "0.23.1"
+tree-sitter-python = "0.23.4"
+tree-sitter.workspace = true
 
 [target.'cfg(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64"))))'.dependencies]
 self_update = { version = "0.41.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }

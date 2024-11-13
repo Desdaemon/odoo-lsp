@@ -23,7 +23,7 @@ use super::{interner, Component, ComponentName, Output, TemplateName};
 // static components OR Foo.components: Component subcomponents
 #[rustfmt::skip]
 query! {
-	#[lang = "tree_sitter_javascript::language"]
+	#[lang = "tree_sitter_javascript"]
 	ComponentQuery(Name, Prop, Parent, TemplateName, TemplateInline, Subcomponent);
 ((class_declaration
   (identifier) @NAME
@@ -120,7 +120,7 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Out
 	let contents = ok!(tokio::fs::read(&path).await, "Could not read {:?}", path);
 	let rope = ropey::Rope::from(String::from_utf8_lossy(&contents));
 	let mut parser = Parser::new();
-	ok!(parser.set_language(tree_sitter_javascript::language()));
+	ok!(parser.set_language(&tree_sitter_javascript::LANGUAGE.into()));
 	let ast = parser
 		.parse(&contents, None)
 		.ok_or_else(|| diagnostic!("AST not parsed"))?;

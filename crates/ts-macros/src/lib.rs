@@ -100,10 +100,10 @@ enum TsLang {
 impl ToTokens for TsLang {
 	fn to_tokens(&self, tokens: &mut TokenStream) {
 		match self {
-			Self::Python => tokens.extend(quote!(::tree_sitter_python::language())),
-			Self::Javascript => tokens.extend(quote!(::tree_sitter_javascript::language())),
+			Self::Python => tokens.extend(quote!(::tree_sitter_python)),
+			Self::Javascript => tokens.extend(quote!(::tree_sitter_javascript)),
 			Self::Custom(lang) => match syn::parse_str::<syn::Path>(&lang.value()) {
-				Ok(lang) => tokens.extend(quote!(#lang())),
+				Ok(lang) => tokens.extend(quote!(#lang)),
 				Err(err) => {
 					let report = err.to_compile_error();
 					tokens.extend(quote_spanned!(lang.span() => #report))
@@ -240,7 +240,7 @@ impl QueryDefinition {
 					use ::std::sync::OnceLock as _OnceLock;
 					static QUERY: _OnceLock<::tree_sitter::Query> = _OnceLock::new();
 					QUERY.get_or_init(|| {
-						::tree_sitter::Query::new(#language, #query).unwrap()
+						::tree_sitter::Query::new(&#language::LANGUAGE.into(), #query).unwrap()
 					})
 				}
 			}

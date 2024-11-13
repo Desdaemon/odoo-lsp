@@ -288,7 +288,7 @@ impl Backend {
 			}
 			RefKind::PyExpr(py_offset) => 'expr: {
 				let mut parser = Parser::new();
-				parser.set_language(tree_sitter_python::language()).unwrap();
+				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 				let ast = some!(parser.parse(value, None));
 				let contents = value.as_bytes();
 				let Some((object, field, range)) = self.attribute_node_at_offset(py_offset, ast.root_node(), contents)
@@ -394,7 +394,7 @@ impl Backend {
 			Some(RefKind::Id) => self.jump_def_xml_id(needle, uri),
 			Some(RefKind::PyExpr(py_offset)) => {
 				let mut parser = Parser::new();
-				parser.set_language(tree_sitter_python::language()).unwrap();
+				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 				let contents = needle.as_bytes();
 				let ast = some!(parser.parse(contents, None));
 				let (object, field, _) = some!(self.attribute_node_at_offset(py_offset, ast.root_node(), contents));
@@ -506,7 +506,7 @@ impl Backend {
 			Some(RefKind::TInherit) | Some(RefKind::TCall) => Ok(self.hover_template(needle, lsp_range)),
 			Some(RefKind::PyExpr(py_offset)) => {
 				let mut parser = Parser::new();
-				parser.set_language(tree_sitter_python::language()).unwrap();
+				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 				let contents = needle.as_bytes();
 				let ast = some!(parser.parse(contents, None));
 				let Some((object, field, range)) = self.attribute_node_at_offset(py_offset, ast.root_node(), contents)
@@ -649,7 +649,7 @@ impl Backend {
 
 		let mut scope = Scope::default();
 		let mut parser = Parser::new();
-		parser.set_language(tree_sitter_python::language()).unwrap();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 
 		let mut foreach_as = attr_pair("t-foreach", "t-as");
 		let mut set_value = attr_pair("t-set", "t-value");

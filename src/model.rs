@@ -230,7 +230,7 @@ impl ModelIndex {
 					.ok()?;
 				let mut parser = Parser::new();
 				parser
-					.set_language(tree_sitter_python::language())
+					.set_language(&tree_sitter_python::LANGUAGE.into())
 					.expect(format_loc!("Failed to set language"));
 				let ast = parser.parse(&contents, None)?;
 				let byte_range = byte_range.erase();
@@ -516,7 +516,9 @@ impl ModelEntry {
 		if self.docstring.is_none() {
 			let contents = tokio::fs::read(loc.path.to_path()).await.into_diagnostic()?;
 			let mut parser = Parser::new();
-			parser.set_language(tree_sitter_python::language()).into_diagnostic()?;
+			parser
+				.set_language(&tree_sitter_python::LANGUAGE.into())
+				.into_diagnostic()?;
 			let ast = parser
 				.parse(&contents, None)
 				.ok_or_else(|| diagnostic!("AST not parsed"))?;

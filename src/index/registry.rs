@@ -13,7 +13,7 @@ use super::Output;
 
 #[rustfmt::skip]
 query! {
-    #[lang = "tree_sitter_javascript::language"]
+    #[lang = "tree_sitter_javascript"]
     RegistryQuery(Category, Field);
 
 // registry.category(CATEGORY).add(FIELD, ..)
@@ -32,7 +32,7 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Out
 	let contents = ok!(tokio::fs::read(&path).await, "Could not read {:?}", path);
 	let path = PathSymbol::strip_root(root, &path);
 	let mut parser = Parser::new();
-	ok!(parser.set_language(tree_sitter_javascript::language()));
+	ok!(parser.set_language(&tree_sitter_javascript::LANGUAGE.into()));
 	let ast = parser
 		.parse(&contents, None)
 		.ok_or_else(|| diagnostic!("AST not parsed"))?;

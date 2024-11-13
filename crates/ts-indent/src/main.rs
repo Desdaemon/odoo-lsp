@@ -3,7 +3,7 @@ use tree_sitter::QueryCursor;
 use ts_macros::query;
 
 query! {
-	#[lang = "tree_sitter_scheme::language"]
+	#[lang = "tree_sitter_scheme"]
 	IndentQuery(Indent, Dedent, Newline);
 
 [ "(" "[" ] @INDENT
@@ -38,7 +38,7 @@ fn main() {
 	let mut output = String::with_capacity(input.len());
 
 	let mut parser = tree_sitter::Parser::new();
-	parser.set_language(tree_sitter_scheme::language()).unwrap();
+	parser.set_language(&tree_sitter_scheme::LANGUAGE.into()).unwrap();
 	let tree = parser.parse(&input, None).unwrap();
 
 	let mut cursor = QueryCursor::new();

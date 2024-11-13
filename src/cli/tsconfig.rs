@@ -13,7 +13,7 @@ pub type DefineIndex = DashMap<Spur, Vec<ImStr>>;
 
 #[rustfmt::skip]
 query! {
-	#[lang = "tree_sitter_javascript::language"]
+	#[lang = "tree_sitter_javascript"]
 	OdooDefines(Pragma, Name);
 ((program . (comment) @PRAGMA)
   (#match? @PRAGMA "odoo-module alias="))
@@ -35,7 +35,7 @@ pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> mi
 
 	let mut parser = Parser::new();
 	parser
-		.set_language(tree_sitter_javascript::language())
+		.set_language(&tree_sitter_javascript::LANGUAGE.into())
 		.into_diagnostic()?;
 	let ast = parser.parse(&contents, None).expect("AST not parsed");
 	let query = OdooDefines::query();
