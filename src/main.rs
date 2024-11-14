@@ -240,7 +240,7 @@ impl LanguageServer for Backend {
 			references_limit: _,
 			completions_limit: _,
 		} = self;
-		document_map.remove(path);
+		document_map.remove(path).await;
 		record_ranges.remove(path);
 		ast_map.remove(path);
 
@@ -335,7 +335,8 @@ impl LanguageServer for Backend {
 
 		let rope = Rope::from_str(&params.text_document.text);
 		self.document_map
-			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()));
+			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()))
+			.await;
 
 		self.root_setup.wait().await;
 		let path = params.text_document.uri.to_file_path().unwrap();
@@ -400,8 +401,8 @@ impl LanguageServer for Backend {
 		{
 			let mut document = self
 				.document_map
-				.try_get_mut(params.text_document.uri.path())
-				.expect(format_loc!("deadlock"))
+				.get_mut(params.text_document.uri.path())
+				.await
 				.expect("Did not build a document");
 			old_rope = document.rope.clone();
 			// Update the rope
@@ -410,12 +411,12 @@ impl LanguageServer for Backend {
 			// deltas are applied SEQUENTIALLY so we don't have to do any extra processing.
 			for change in &params.content_changes {
 				if change.range.is_none() && change.range_length.is_none() {
-					document.value_mut().rope = ropey::Rope::from_str(&change.text);
+					document.as_mut().rope = ropey::Rope::from_str(&change.text);
 				} else {
 					let range = change.range.expect("LSP change event must have a range");
 					let range =
 						lsp_range_to_char_range(range, &document.rope).expect("did_change applying delta: no range");
-					let rope = &mut document.value_mut().rope;
+					let rope = &mut document.as_mut().rope;
 					rope.remove(range.erase());
 					if !change.text.is_empty() {
 						rope.insert(range.start.0, &change.text);
@@ -453,7 +454,7 @@ impl LanguageServer for Backend {
 			debug!("(goto_definition) unsupported: {}", uri.path());
 			return Ok(None);
 		};
-		let Some(document) = self.document_map.get(uri.path()) else {
+		let Some(document) = self.document_map.get(uri.path()).await else {
 			panic!("Bug: did not build a document for {}", uri.path());
 		};
 		let location = match ext {
@@ -483,7 +484,7 @@ impl LanguageServer for Backend {
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
-		let Some(document) = self.document_map.get(uri.path()) else {
+		let Some(document) = self.document_map.get(uri.path()).await else {
 			debug!("Bug: did not build a document for {}", uri.path());
 			return Ok(None);
 		};
@@ -508,7 +509,7 @@ impl LanguageServer for Backend {
 			return Ok(None); // hit a directory, super unlikely
 		};
 
-		let Some(document) = self.document_map.get(uri.path()) else {
+		let Some(document) = self.document_map.get(uri.path()).await else {
 			debug!("Bug: did not build a document for {}", uri.path());
 			return Ok(None);
 		};
@@ -623,7 +624,7 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position_params.text_document.uri;
-		let document = some!(self.document_map.get(uri.path()));
+		let document = some!(self.document_map.get(uri.path()).await);
 		let (_, ext) = some!(uri.path().rsplit_once('.'));
 		let hover = match ext {
 			"py" => self.python_hover(params, document.rope.clone()),
@@ -759,7 +760,8 @@ impl LanguageServer for Backend {
 		debug!("{path}");
 		let mut diagnostics = vec![];
 		if let Some((_, "py")) = path.rsplit_once('.') {
-			if let Some(mut document) = self.document_map.try_get_mut(path).expect(format_loc!("deadlock")) {
+			if let Some(mut document) = self.document_map.get_mut(path).await {
+				let mut document = document.as_mut();
 				let damage_zone = document.damage_zone.take();
 				let rope = &document.rope.clone();
 				self.diagnose_python(
@@ -790,7 +792,7 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 
-		let document = some!(self.document_map.get(params.text_document.uri.path()));
+		let document = some!(self.document_map.get(params.text_document.uri.path()).await);
 
 		Ok(self
 			.xml_code_actions(params, document.rope.clone())
@@ -887,7 +889,7 @@ async fn main() {
 	let (service, socket) = LspService::build(|client| Backend {
 		client,
 		index: Default::default(),
-		document_map: DashMap::with_shard_amount(4),
+		document_map: RwMap::new(),
 		record_ranges: DashMap::with_shard_amount(4),
 		roots: DashSet::default(),
 		capabilities: Default::default(),

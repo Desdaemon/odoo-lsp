@@ -77,6 +77,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tree-sitter-javascript = "0.23.1"
 tree-sitter-python = "0.23.4"
 tree-sitter.workspace = true
+ouroboros = "0.18.4"
 
 [target.'cfg(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64"))))'.dependencies]
 self_update = { version = "0.41.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }

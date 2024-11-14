@@ -30,7 +30,7 @@ use odoo_lsp::{format_loc, some, utils::*};
 pub struct Backend {
 	pub client: Client,
 	/// fs path -> rope, diagnostics etc.
-	pub document_map: DashMap<String, Document>,
+	pub document_map: RwMap<String, Document>,
 	pub record_ranges: DashMap<String, Box<[ByteRange]>>,
 	pub ast_map: DashMap<String, Tree>,
 	pub index: Index,
@@ -110,14 +110,14 @@ impl Backend {
 	#[instrument(skip_all)]
 	pub async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
 		let split_uri = params.uri.path().rsplit_once('.');
-		self.root_setup.wait().await;
 		let mut document = self
 			.document_map
-			.try_get_mut(params.uri.path())
-			.expect(format_loc!("deadlock"))
+			.get_mut(params.uri.path())
+			.await
 			.expect(format_loc!("(on_change) did not build document"));
 		match &params.text {
 			Text::Full(full) => {
+				let mut document = document.as_mut();
 				document.rope = ropey::Rope::from_str(full);
 				document.damage_zone = None;
 			}
@@ -140,9 +140,10 @@ impl Backend {
 						params.uri.path(),
 						&rope,
 						params.text.damage_zone(&rope, None),
-						&mut document.diagnostics_cache,
+						&mut document.as_mut().diagnostics_cache,
 					);
 				} else {
+					let mut document = document.as_mut();
 					document.damage_zone = params.text.damage_zone(&rope, document.damage_zone.take());
 				}
 			}
@@ -171,22 +172,21 @@ impl Backend {
 		let root = self.find_root_of(&path).ok_or_else(|| diagnostic!("out of root"))?;
 		let root = interner().get_or_intern_path(&root);
 
-		let mut document = self
-			.document_map
-			.try_get_mut(uri.path())
-			.expect(format_loc!("deadlock"))
-			.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
-
 		match extension {
-			"py" => self.did_save_python(uri, root, &mut document).await,
-			"xml" => self.did_save_xml(uri, root, &mut document).await?,
+			"py" => self.did_save_python(uri, root).await?,
+			"xml" => self.did_save_xml(uri, root).await?,
 			_ => {}
 		}
 		Ok(())
 	}
-	pub async fn did_save_python(&self, uri: Url, root: Spur, document: &mut Document) {
+	pub async fn did_save_python(&self, uri: Url, root: Spur) -> miette::Result<()> {
 		let path = uri.to_file_path().unwrap();
-		let zone = document.damage_zone.take();
+		let mut document = self
+			.document_map
+			.get_mut(uri.path())
+			.await
+			.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
+		let zone = document.as_mut().damage_zone.take();
 		let rope = &document.rope;
 		let text = Cow::from(rope);
 		_ = self
@@ -199,14 +199,21 @@ impl Backend {
 				uri.path(),
 				&document.rope.clone(),
 				zone,
-				&mut document.diagnostics_cache,
+				&mut document.as_mut().diagnostics_cache,
 			);
 			self.client
 				.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
 				.await;
 		}
+
+		Ok(())
 	}
-	pub async fn did_save_xml(&self, uri: Url, root: Spur, document: &mut Document) -> miette::Result<()> {
+	pub async fn did_save_xml(&self, uri: Url, root: Spur) -> miette::Result<()> {
+		let document = self
+			.document_map
+			.get(uri.path())
+			.await
+			.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
 		self.update_xml(root, &Text::Delta(vec![]), &uri, &document.rope, true)
 			.await?;
 		Ok(())
@@ -876,7 +883,8 @@ impl Backend {
 		let symbols_usage = interner.current_memory_usage();
 		Ok(serde_json::json! {{
 			"debug": cfg!(debug_assertions),
-			"documents": document_map.usage(),
+			// TODO
+			// "documents": document_map.usage(),
 			"records": record_ranges.usage(),
 			"ast": ast_map.usage(),
 			"index": index.statistics(),
