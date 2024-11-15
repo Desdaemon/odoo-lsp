@@ -1,3 +1,6 @@
 [tool.pytest.ini_options]
 timeout = 30
 session_timeout = 600
+
+[tool.pyright]
+venv = ".venv"
