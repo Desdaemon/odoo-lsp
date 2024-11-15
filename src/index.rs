@@ -228,12 +228,12 @@ impl Index {
 				module_dir,
 				root
 			);
-			if let Some(duplicate) = self
+			let duplicate = self
 				.roots
 				.entry(root.into())
 				.or_default()
-				.insert(module_key.into(), module_path.to_str().expect("non-utf8 path").into())
-			{
+				.insert(module_key.into(), module_path.to_str().expect("non-utf8 path").into());
+			if let Some(duplicate) = duplicate {
 				warn!(old = %duplicate, new = ?module_path, "duplicate module {module_name}");
 				if let (Some((client, _)), "base") = (&progress, module_name.as_str()) {
 					let resp = client
@@ -396,7 +396,7 @@ impl Index {
 			if let Ok(path) = path.strip_prefix(entry.key()) {
 				for component in path.components() {
 					if let Component::Normal(norm) = component {
-						if let Some(module) = interner().get(&norm.to_string_lossy()) {
+						if let Some(module) = interner().get(norm.to_string_lossy()) {
 							if entry.value().contains_key(&module.into()) {
 								return Some(module.into());
 							}

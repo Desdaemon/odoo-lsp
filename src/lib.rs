@@ -1,4 +1,6 @@
+#![warn(clippy::cognitive_complexity)]
 #![deny(clippy::unused_async)]
+#![deny(clippy::await_holding_invalid_type)]
 
 pub mod config;
 pub mod index;

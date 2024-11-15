@@ -51,7 +51,7 @@ serde = { version = "1.0", features = ["derive"] }
 dashmap = { version = "6.0.1", features = ["raw-api"] }
 globwalk = "0.9.1"
 miette = { version = "7.2.0", features = ["fancy"] }
-futures = "0.3.28"
+futures = "0.3.31"
 xmlparser = "0.13.5"
 tower = { version = "0.5.0", features = ["timeout"] }
 pin-project-lite = "0.2.12"
@@ -77,7 +77,6 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tree-sitter-javascript = "0.23.1"
 tree-sitter-python = "0.23.4"
 tree-sitter.workspace = true
-ouroboros = "0.18.4"
 
 [target.'cfg(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64"))))'.dependencies]
 self_update = { version = "0.41.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }

@@ -1,0 +1,3 @@
+await-holding-invalid-types = [
+  { path = "dashmap::mapref::one::RefMut", reason = "Would deadlock if another task wants to acquire a reference" }
+]

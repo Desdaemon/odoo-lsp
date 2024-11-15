@@ -30,7 +30,7 @@ use odoo_lsp::{format_loc, some, utils::*};
 pub struct Backend {
 	pub client: Client,
 	/// fs path -> rope, diagnostics etc.
-	pub document_map: RwMap<String, Document>,
+	pub document_map: DashMap<String, Document>,
 	pub record_ranges: DashMap<String, Box<[ByteRange]>>,
 	pub ast_map: DashMap<String, Tree>,
 	pub index: Index,
@@ -110,40 +110,44 @@ impl Backend {
 	#[instrument(skip_all)]
 	pub async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
 		let split_uri = params.uri.path().rsplit_once('.');
-		let mut document = self
-			.document_map
-			.get_mut(params.uri.path())
-			.await
-			.expect(format_loc!("(on_change) did not build document"));
-		match &params.text {
-			Text::Full(full) => {
-				let mut document = document.as_mut();
-				document.rope = ropey::Rope::from_str(full);
-				document.damage_zone = None;
+		let rope;
+		let path;
+		let root;
+		let eager_diagnostics;
+		{
+			let mut document = self
+				.document_map
+				.get_mut(params.uri.path())
+				.expect(format_loc!("(on_change) did not build document"));
+			match &params.text {
+				Text::Full(full) => {
+					document.rope = ropey::Rope::from_str(full);
+					document.damage_zone = None;
+				}
+				Text::Delta(_) => {
+					// Rope updates are handled by did_change
+				}
 			}
-			Text::Delta(_) => {
-				// Rope updates are handled by did_change
-			}
-		}
-		let path = params.uri.to_file_path().unwrap();
-		let root = self
-			.find_root_of(&path)
-			.ok_or_else(|| miette!("file not under any root"))?;
-		let root = interner().get_or_intern_path(&root);
-		let rope = document.rope.clone();
-		let eager_diagnostics = self.eager_diagnostics(params.open, &rope);
+			rope = document.rope.clone();
+			path = params.uri.to_file_path().unwrap();
+			let root_path = self
+				.find_root_of(&path)
+				.ok_or_else(|| miette!("file not under any root"))?;
+			root = interner().get_or_intern_path(&root_path);
+			eager_diagnostics = self.eager_diagnostics(params.open, &rope);
+		};
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
+				let mut document = self.document_map.get_mut(params.uri.path()).unwrap();
 				self.on_change_python(&params.text, &params.uri, rope.clone(), params.old_rope)?;
 				if eager_diagnostics {
 					self.diagnose_python(
 						params.uri.path(),
 						&rope,
 						params.text.damage_zone(&rope, None),
-						&mut document.as_mut().diagnostics_cache,
+						&mut document.diagnostics_cache,
 					);
 				} else {
-					let mut document = document.as_mut();
 					document.damage_zone = params.text.damage_zone(&rope, document.damage_zone.take());
 				}
 			}
@@ -157,8 +161,15 @@ impl Backend {
 		}
 
 		if eager_diagnostics {
+			let diagnostics = {
+				self.document_map
+					.get(params.uri.path())
+					.unwrap()
+					.diagnostics_cache
+					.clone()
+			};
 			self.client
-				.publish_diagnostics(params.uri, document.diagnostics_cache.clone(), Some(params.version))
+				.publish_diagnostics(params.uri, diagnostics, Some(params.version))
 				.await;
 		}
 
@@ -181,29 +192,33 @@ impl Backend {
 	}
 	pub async fn did_save_python(&self, uri: Url, root: Spur) -> miette::Result<()> {
 		let path = uri.to_file_path().unwrap();
-		let mut document = self
-			.document_map
-			.get_mut(uri.path())
-			.await
-			.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
-		let zone = document.as_mut().damage_zone.take();
-		let rope = &document.rope;
-		let text = Cow::from(rope);
-		_ = self
-			.update_models(Text::Full(text.into_owned()), &path, root, rope.clone())
-			.await
-			.inspect_err(|err| warn!("{err:?}"));
+		let zone;
+		_ = {
+			let mut document = self
+				.document_map
+				.get_mut(uri.path())
+				.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
+			zone = document.damage_zone.take();
+			let rope = document.rope.clone();
+			let text = Cow::from(&document.rope).into_owned();
+			self.update_models(Text::Full(text), &path, root, rope)
+		}
+		.await
+		.inspect_err(|err| warn!("{err:?}"));
 		if zone.is_some() {
 			debug!("diagnostics");
-			self.diagnose_python(
-				uri.path(),
-				&document.rope.clone(),
-				zone,
-				&mut document.as_mut().diagnostics_cache,
-			);
-			self.client
-				.publish_diagnostics(uri, document.diagnostics_cache.clone(), None)
-				.await;
+			{
+				let mut document = self.document_map.get_mut(uri.path()).unwrap();
+				self.diagnose_python(
+					uri.path(),
+					&document.rope.clone(),
+					zone,
+					&mut document.diagnostics_cache,
+				);
+				let diags = document.diagnostics_cache.clone();
+				self.client.publish_diagnostics(uri, diags, None)
+			}
+			.await;
 		}
 
 		Ok(())
@@ -212,7 +227,6 @@ impl Backend {
 		let document = self
 			.document_map
 			.get(uri.path())
-			.await
 			.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
 		self.update_xml(root, &Text::Delta(vec![]), &uri, &document.rope, true)
 			.await?;
@@ -883,8 +897,7 @@ impl Backend {
 		let symbols_usage = interner.current_memory_usage();
 		Ok(serde_json::json! {{
 			"debug": cfg!(debug_assertions),
-			// TODO
-			// "documents": document_map.usage(),
+			"documents": document_map.usage(),
 			"records": record_ranges.usage(),
 			"ast": ast_map.usage(),
 			"index": index.statistics(),

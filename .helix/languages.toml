@@ -1,0 +1,2 @@
+[language-server.rust-analyzer.config.rust-analyzer]
+check.command = "clippy"

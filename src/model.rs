@@ -7,12 +7,12 @@ use std::sync::Arc;
 
 use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
-use futures::executor::block_on;
 use lasso::Spur;
 use miette::{diagnostic, Diagnostic, IntoDiagnostic};
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use smart_default::SmartDefault;
+use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 use tower_lsp::lsp_types::Range;
 use tracing::{debug, error, info, trace, warn};
@@ -344,7 +344,7 @@ impl ModelIndex {
 			if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
 				if let Some(fields) = entry.fields.as_ref() {
 					for (name, field) in fields {
-						fields_set.insert(interner().resolve(&name).as_bytes(), ());
+						fields_set.insert(interner().resolve(name).as_bytes(), ());
 						match out.entry(*name) {
 							Entry::Occupied(mut old_field) => {
 								old_field.get_mut().merge(field);
@@ -493,7 +493,7 @@ impl ModelIndex {
 		let Self { inner, by_prefix } = self;
 		serde_json::json! {{
 			"entries": inner.usage(),
-			"by_prefix": block_on(by_prefix.read()).usage(),
+			"by_prefix": Handle::current().block_on(by_prefix.read()).usage(),
 		}}
 	}
 }
@@ -509,12 +509,12 @@ query! {
 }
 
 impl ModelEntry {
-	pub async fn resolve_details(&mut self) -> miette::Result<()> {
+	pub fn resolve_details(&mut self) -> miette::Result<()> {
 		let Some(ModelLocation(loc, byte_range)) = &self.base else {
 			return Ok(());
 		};
 		if self.docstring.is_none() {
-			let contents = tokio::fs::read(loc.path.to_path()).await.into_diagnostic()?;
+			let contents = std::fs::read(loc.path.to_path()).into_diagnostic()?;
 			let mut parser = Parser::new();
 			parser
 				.set_language(&tree_sitter_python::LANGUAGE.into())

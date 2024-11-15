@@ -68,6 +68,7 @@
 
 #![warn(clippy::cognitive_complexity)]
 #![deny(clippy::unused_async)]
+#![deny(clippy::await_holding_invalid_type)]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
@@ -240,7 +241,7 @@ impl LanguageServer for Backend {
 			references_limit: _,
 			completions_limit: _,
 		} = self;
-		document_map.remove(path).await;
+		document_map.remove(path);
 		record_ranges.remove(path);
 		ast_map.remove(path);
 
@@ -335,8 +336,7 @@ impl LanguageServer for Backend {
 
 		let rope = Rope::from_str(&params.text_document.text);
 		self.document_map
-			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()))
-			.await;
+			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()));
 
 		self.root_setup.wait().await;
 		let path = params.text_document.uri.to_file_path().unwrap();
@@ -402,7 +402,6 @@ impl LanguageServer for Backend {
 			let mut document = self
 				.document_map
 				.get_mut(params.text_document.uri.path())
-				.await
 				.expect("Did not build a document");
 			old_rope = document.rope.clone();
 			// Update the rope
@@ -411,12 +410,12 @@ impl LanguageServer for Backend {
 			// deltas are applied SEQUENTIALLY so we don't have to do any extra processing.
 			for change in &params.content_changes {
 				if change.range.is_none() && change.range_length.is_none() {
-					document.as_mut().rope = ropey::Rope::from_str(&change.text);
+					document.rope = ropey::Rope::from_str(&change.text);
 				} else {
 					let range = change.range.expect("LSP change event must have a range");
 					let range =
 						lsp_range_to_char_range(range, &document.rope).expect("did_change applying delta: no range");
-					let rope = &mut document.as_mut().rope;
+					let rope = &mut document.rope;
 					rope.remove(range.erase());
 					if !change.text.is_empty() {
 						rope.insert(range.start.0, &change.text);
@@ -454,7 +453,7 @@ impl LanguageServer for Backend {
 			debug!("(goto_definition) unsupported: {}", uri.path());
 			return Ok(None);
 		};
-		let Some(document) = self.document_map.get(uri.path()).await else {
+		let Some(document) = self.document_map.get(uri.path()) else {
 			panic!("Bug: did not build a document for {}", uri.path());
 		};
 		let location = match ext {
@@ -484,7 +483,7 @@ impl LanguageServer for Backend {
 		let Some((_, ext)) = uri.path().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
-		let Some(document) = self.document_map.get(uri.path()).await else {
+		let Some(document) = self.document_map.get(uri.path()) else {
 			debug!("Bug: did not build a document for {}", uri.path());
 			return Ok(None);
 		};
@@ -509,7 +508,7 @@ impl LanguageServer for Backend {
 			return Ok(None); // hit a directory, super unlikely
 		};
 
-		let Some(document) = self.document_map.get(uri.path()).await else {
+		let Some(document) = self.document_map.get(uri.path()) else {
 			debug!("Bug: did not build a document for {}", uri.path());
 			return Ok(None);
 		};
@@ -557,15 +556,10 @@ impl LanguageServer for Backend {
 					let Some(model) = interner().get(&completion.label) else {
 						break 'resolve;
 					};
-					let Some(mut entry) = self
-						.index
-						.models
-						.try_get_mut(&model.into())
-						.expect(format_loc!("deadlock"))
-					else {
+					let Some(mut entry) = self.index.models.get_mut(&model.into()) else {
 						break 'resolve;
 					};
-					if let Err(err) = entry.resolve_details().await {
+					if let Err(err) = entry.resolve_details() {
 						error!("resolving details: {err}");
 					}
 					completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
@@ -624,7 +618,7 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position_params.text_document.uri;
-		let document = some!(self.document_map.get(uri.path()).await);
+		let document = some!(self.document_map.get(uri.path()));
 		let (_, ext) = some!(uri.path().rsplit_once('.'));
 		let hover = match ext {
 			"py" => self.python_hover(params, document.rope.clone()),
@@ -760,8 +754,7 @@ impl LanguageServer for Backend {
 		debug!("{path}");
 		let mut diagnostics = vec![];
 		if let Some((_, "py")) = path.rsplit_once('.') {
-			if let Some(mut document) = self.document_map.get_mut(path).await {
-				let mut document = document.as_mut();
+			if let Some(mut document) = self.document_map.get_mut(path) {
 				let damage_zone = document.damage_zone.take();
 				let rope = &document.rope.clone();
 				self.diagnose_python(
@@ -792,7 +785,7 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 
-		let document = some!(self.document_map.get(params.text_document.uri.path()).await);
+		let document = some!(self.document_map.get(params.text_document.uri.path()));
 
 		Ok(self
 			.xml_code_actions(params, document.rope.clone())
@@ -806,24 +799,23 @@ impl LanguageServer for Backend {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
-		match (params.command.as_str(), params.arguments.as_slice()) {
-			("goto_owl", [Value::String(_), Value::String(subcomponent)]) => {
-				// FIXME: Subcomponents should not just depend on the component's name,
-				// since users can readjust subcomponents' names at will.
-				let component = some!(interner().get(subcomponent));
-				let component = some!(self.index.components.get(&component.into()));
-				let location = some!(component.location.as_ref());
-				_ = self
-					.client
-					.show_document(ShowDocumentParams {
-						uri: Url::from_file_path(location.path.as_string()).unwrap(),
-						external: Some(false),
-						take_focus: Some(true),
-						selection: Some(location.range),
-					})
-					.await;
-			}
-			_ => {}
+		if let ("goto_owl", [Value::String(_), Value::String(subcomponent)]) =
+			(params.command.as_str(), params.arguments.as_slice())
+		{
+			// FIXME: Subcomponents should not just depend on the component's name,
+			// since users can readjust subcomponents' names at will.
+			let component = some!(interner().get(subcomponent));
+			let component = some!(self.index.components.get(&component.into()));
+			let location = some!(component.location.as_ref());
+			_ = self
+				.client
+				.show_document(ShowDocumentParams {
+					uri: Url::from_file_path(location.path.as_string()).unwrap(),
+					external: Some(false),
+					take_focus: Some(true),
+					selection: Some(location.range),
+				})
+				.await;
 		}
 
 		Ok(None)
@@ -889,7 +881,7 @@ async fn main() {
 	let (service, socket) = LspService::build(|client| Backend {
 		client,
 		index: Default::default(),
-		document_map: RwMap::new(),
+		document_map: DashMap::with_shard_amount(4),
 		record_ranges: DashMap::with_shard_amount(4),
 		roots: DashSet::default(),
 		capabilities: Default::default(),

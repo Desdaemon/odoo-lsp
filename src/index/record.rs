@@ -3,11 +3,10 @@ use std::{collections::HashSet, fmt::Debug, hash::Hash, marker::PhantomData};
 
 use dashmap::{mapref::one::Ref, DashMap};
 use derive_more::{Deref, DerefMut};
-use futures::executor::block_on;
 use intmap::IntMap;
 use lasso::{Key, Spur, ThreadedRodeo};
 use smart_default::SmartDefault;
-use tokio::sync::RwLock;
+use tokio::{runtime::Handle, sync::RwLock};
 
 use crate::{model::ModelName, record::Record};
 
@@ -210,7 +209,7 @@ impl RecordIndex {
 			"entries": inner.usage(),
 			"by_model": by_model.usage(),
 			"by_inherit_id": by_inherit_id.usage(),
-			"by_prefix": block_on(by_prefix.read()).usage(),
+			"by_prefix": Handle::current().block_on(by_prefix.read()).usage(),
 		}}
 	}
 }

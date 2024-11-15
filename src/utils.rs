@@ -21,9 +21,6 @@ use crate::index::PathSymbol;
 mod usage;
 pub use usage::{Usage, UsageInfo};
 
-mod map;
-pub use map::RwMap;
-
 /// Unwraps the option in the context of a function that returns [`Result<Option<_>>`].
 #[macro_export]
 macro_rules! some {

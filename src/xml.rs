@@ -229,7 +229,7 @@ impl Backend {
 			RefKind::Ref(relation) => {
 				let model_key = some!(model_filter);
 				let model = some!(interner().get(&model_key));
-				let fields = some!(self.index.models.populate_field_names(model.into(), &[]));
+				let fields = some!(self.index.models.populate_field_names(model.into(), &[])).downgrade();
 				let fields = some!(fields.fields.as_ref());
 				let relation = some!(interner().get(relation));
 				let Some(Field {

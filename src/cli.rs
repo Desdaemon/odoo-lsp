@@ -150,7 +150,7 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 			root.join("web/tooling/types").to_string_lossy().into_owned(),
 		));
 		for (module, path) in entry.value().iter() {
-			let module = interner.resolve(&module);
+			let module = interner.resolve(module);
 			ts_paths
 				.entry(format!("@{module}/*"))
 				.or_insert_with(|| Value::Array(vec![]))

@@ -2,10 +2,10 @@ use std::ops::DerefMut;
 use std::{collections::HashMap, path::PathBuf};
 
 use dashmap::DashMap;
-use futures::executor::block_on;
 use lasso::{Key, Spur};
 use miette::diagnostic;
 use smart_default::SmartDefault;
+use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
@@ -306,7 +306,7 @@ impl ComponentIndex {
 		serde_json::json! {{
 			"entries": inner.usage(),
 			"by_template": by_template.usage(),
-			"by_prefix": block_on(by_prefix.read()).usage(),
+			"by_prefix": Handle::current().block_on(by_prefix.read()).usage(),
 		}}
 	}
 }

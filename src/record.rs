@@ -68,7 +68,7 @@ impl Record {
 						} else {
 							inherit_id = Some(
 								interner()
-									.get_or_intern(&format!("{}.{maybe_inherit_id}", interner().resolve(&module)))
+									.get_or_intern(format!("{}.{maybe_inherit_id}", interner().resolve(&module)))
 									.into(),
 							);
 						}
@@ -154,7 +154,7 @@ impl Record {
 						} else {
 							inherit_id = Some(
 								interner()
-									.get_or_intern(&format!("{}.{value}", interner().resolve(&module)))
+									.get_or_intern(format!("{}.{value}", interner().resolve(&module)))
 									.into(),
 							)
 						}

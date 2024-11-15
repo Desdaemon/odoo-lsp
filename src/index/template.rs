@@ -1,9 +1,8 @@
 use derive_more::Deref;
 
 use dashmap::DashMap;
-use futures::executor::block_on;
 use smart_default::SmartDefault;
-use tokio::sync::RwLock;
+use tokio::{runtime::Handle, sync::RwLock};
 
 use crate::{template::NewTemplate, utils::Usage};
 
@@ -43,7 +42,7 @@ impl TemplateIndex {
 		let Self { inner, by_prefix } = self;
 		serde_json::json! {{
 			"entries": inner.usage(),
-			"by_prefix": block_on(by_prefix.read()).usage(),
+			"by_prefix": Handle::current().block_on(by_prefix.read()).usage(),
 		}}
 	}
 }
