@@ -598,7 +598,7 @@ impl LanguageServer for Backend {
 					drop(entry);
 					if let Some(field_entry) = field_entry {
 						let type_ = interner().resolve(&field_entry.type_);
-						completion.detail = match self.index.models.normalize_field_relation(field.into(), model) {
+						completion.detail = match self.index.models.resolve_related_field(field.into(), model) {
 							None => Some(format!("{type_}(…)")),
 							Some(relation) => {
 								let relation = interner().resolve(&relation);

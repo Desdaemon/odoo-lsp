@@ -611,6 +611,7 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 			(false, None) => Some(Model {
 				range,
 				byte_range,
+				// if _name is not defined and _inherit = [A, B, C], A is considered the inherit base by default
 				type_: ModelType::Inherit(inherits),
 			}),
 			(true, None) => None,

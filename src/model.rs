@@ -180,7 +180,7 @@ impl ModelIndex {
 					if replace {
 						for inherit in inherits {
 							let Some(inherit) = interner.get(inherit) else { continue };
-							if let Some(mut entry) = self.try_get_mut(&inherit.into()).expect(format_loc!("deadlock")) {
+							if let Some(mut entry) = self.get_mut(&inherit.into()) {
 								entry.descendants.retain(|loc| loc.0.path != path)
 							}
 						}
@@ -397,15 +397,15 @@ impl ModelIndex {
 	) -> Result<(), ResolveMappedError> {
 		while let Some((lhs, rhs)) = needle.split_once('.') {
 			trace!("(resolved_mapped) `{needle}` model=`{}`", interner().resolve(model));
-			let mut normalized = interner()
+			let mut resolved = interner()
 				.get(lhs)
-				.and_then(|key| self.normalize_field_relation(key.into(), *model));
-			if let Some(normalized) = &normalized {
+				.and_then(|key| self.resolve_related_field(key.into(), *model));
+			if let Some(normalized) = &resolved {
 				trace!("(resolved_mapped) prenormalized: {}", interner().resolve(normalized));
 			}
 			// lhs: foo
 			// rhs: ba
-			if normalized.is_none() {
+			if resolved.is_none() {
 				let Some(fields) = self.populate_field_names((*model).into(), &[]) else {
 					debug!(
 						"tried to resolve before fields are populated for `{}`",
@@ -416,15 +416,15 @@ impl ModelIndex {
 				let field = interner().get(lhs);
 				let field = field.and_then(|field| fields.fields.as_ref()?.get(&field.into()));
 				match field.as_ref().map(|f| &f.kind) {
-					Some(FieldKind::Relational(rel)) => normalized = Some(*rel),
+					Some(FieldKind::Relational(rel)) => resolved = Some(*rel),
 					None | Some(FieldKind::Value) => return Err(ResolveMappedError::NonRelational),
 					Some(FieldKind::Related(..)) => {
 						drop(fields);
-						normalized = self.normalize_field_relation(interner().get(lhs).unwrap().into(), *model);
+						resolved = self.resolve_related_field(interner().get(lhs).unwrap().into(), *model);
 					}
 				}
 			}
-			let Some(rel) = normalized else {
+			let Some(rel) = resolved else {
 				warn!("unresolved field `{}`.`{lhs}`", interner().resolve(model));
 				*needle = lhs;
 				if let Some(range) = range.as_mut() {
@@ -444,9 +444,9 @@ impl ModelIndex {
 		}
 		Ok(())
 	}
-	/// Turns related fields ([`FieldKind::Related`]) into concrete fields, and return the field's type itself.
+	/// Turns related fields ([`FieldKind::Related`]) into concrete fields, and return the field's type itself if successful.
 	#[must_use = "normalized relation might not have been updated back to the central index"]
-	pub fn normalize_field_relation(&self, field: Symbol<Field>, model: Spur) -> Option<Spur> {
+	pub fn resolve_related_field(&self, field: Symbol<Field>, model: Spur) -> Option<Spur> {
 		// Why populate?
 		// If we came from a long chain of relations, we might encounter a field on a model
 		// that hasn't been populated yet. This is because we only populate fields when they're
@@ -469,7 +469,7 @@ impl ModelIndex {
 			if self.resolve_mapped(&mut field_model, &mut related, None).is_ok() {
 				// resolved_mapped took us to the final field, now we need to resolve it to a model
 				let related_key = interner().get(related)?;
-				let field_model = self.normalize_field_relation(related_key.into(), field_model)?;
+				let field_model = self.resolve_related_field(related_key.into(), field_model)?;
 
 				kind = FieldKind::Relational(field_model);
 				let mut model_entry = self.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;

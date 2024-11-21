@@ -481,7 +481,7 @@ impl Backend {
 		let attr = String::from_utf8_lossy(attr);
 		self.index.models.populate_field_names(model, &[])?;
 		let attr = interner().get(attr.as_ref())?;
-		let relation = self.index.models.normalize_field_relation(attr.into(), model.into())?;
+		let relation = self.index.models.resolve_related_field(attr.into(), model.into())?;
 		Some(Type::Model(interner().resolve(&relation).into()))
 	}
 	pub fn has_attribute(&self, type_: &Type, attr: &[u8], scope: &Scope) -> bool {
