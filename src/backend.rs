@@ -152,7 +152,7 @@ impl Backend {
 				}
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
-				self.update_xml(root, &params.text, &params.uri, &rope, false).await?;
+				self.update_xml(root, &params.text, &params.uri, rope, false).await?;
 			}
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
 				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
@@ -224,12 +224,14 @@ impl Backend {
 		Ok(())
 	}
 	pub async fn did_save_xml(&self, uri: Url, root: Spur) -> miette::Result<()> {
-		let document = self
-			.document_map
-			.get(uri.path())
-			.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
-		self.update_xml(root, &Text::Delta(vec![]), &uri, &document.rope, true)
-			.await?;
+		let rope = {
+			let document = self
+				.document_map
+				.get(uri.path())
+				.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
+			document.rope.clone()
+		};
+		self.update_xml(root, &Text::Delta(vec![]), &uri, rope, true).await?;
 		Ok(())
 	}
 	/// Whether diagnostics should be processed/pushed with each `on_change`.

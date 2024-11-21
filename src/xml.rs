@@ -60,7 +60,7 @@ impl Backend {
 		root: Spur,
 		text: &Text,
 		uri: &Url,
-		rope: &Rope,
+		rope: Rope,
 		did_save: bool,
 	) -> miette::Result<()> {
 		let text = match text {
@@ -111,7 +111,7 @@ impl Backend {
 									continue;
 								}
 								record_ranges.extend(entries.into_iter().map(|entry| {
-									lsp_range_to_offset_range(entry.template.location.unwrap().range, rope).unwrap()
+									lsp_range_to_offset_range(entry.template.location.unwrap().range, &rope).unwrap()
 								}));
 								continue;
 							}
@@ -124,7 +124,7 @@ impl Backend {
 								continue;
 							}
 						};
-						let Some(range) = lsp_range_to_offset_range(record.location.range, rope) else {
+						let Some(range) = lsp_range_to_offset_range(record.location.range, &rope) else {
 							debug!("no range for {}", record.id);
 							continue;
 						};
@@ -146,7 +146,7 @@ impl Backend {
 							continue;
 						}
 						record_ranges.extend(entries.into_iter().map(|entry| {
-							lsp_range_to_offset_range(entry.template.location.unwrap().range, rope).unwrap()
+							lsp_range_to_offset_range(entry.template.location.unwrap().range, &rope).unwrap()
 						}));
 					}
 				}
@@ -229,15 +229,18 @@ impl Backend {
 			RefKind::Ref(relation) => {
 				let model_key = some!(model_filter);
 				let model = some!(interner().get(&model_key));
-				let fields = some!(self.index.models.populate_field_names(model.into(), &[])).downgrade();
-				let fields = some!(fields.fields.as_ref());
-				let relation = some!(interner().get(relation));
-				let Some(Field {
-					kind: FieldKind::Relational(relation),
-					..
-				}) = fields.get(&relation.into()).map(Arc::as_ref)
-				else {
-					return Ok(None);
+				let relation = {
+					let fields = some!(self.index.models.populate_field_names(model.into(), &[])).downgrade();
+					let fields = some!(fields.fields.as_ref());
+					let relation = some!(interner().get(relation));
+					let Some(Field {
+						kind: FieldKind::Relational(relation),
+						..
+					}) = fields.get(&relation.into()).map(Arc::as_ref)
+					else {
+						return Ok(None);
+					};
+					*relation
 				};
 				self.complete_xml_id(
 					needle,

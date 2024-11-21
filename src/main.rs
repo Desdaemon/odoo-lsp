@@ -508,12 +508,15 @@ impl LanguageServer for Backend {
 			return Ok(None); // hit a directory, super unlikely
 		};
 
-		let Some(document) = self.document_map.get(uri.path()) else {
-			debug!("Bug: did not build a document for {}", uri.path());
-			return Ok(None);
+		let rope = {
+			let Some(document) = self.document_map.get(uri.path()) else {
+				debug!("Bug: did not build a document for {}", uri.path());
+				return Ok(None);
+			};
+			document.rope.clone()
 		};
 		if ext == "xml" {
-			let completions = self.xml_completions(params, document.rope.clone()).await;
+			let completions = self.xml_completions(params, rope).await;
 			match completions {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
@@ -524,13 +527,14 @@ impl LanguageServer for Backend {
 				}
 			}
 		} else if ext == "py" {
-			let Some(ast) = self.ast_map.get(uri.path()) else {
-				debug!("Bug: did not build AST for {}", uri.path());
-				return Ok(None);
+			let ast = {
+				let Some(ast) = self.ast_map.get(uri.path()) else {
+					debug!("Bug: did not build AST for {}", uri.path());
+					return Ok(None);
+				};
+				ast.value().clone()
 			};
-			let completions = self
-				.python_completions(params, ast.value().clone(), document.rope.clone())
-				.await;
+			let completions = self.python_completions(params, ast, rope).await;
 			match completions {
 				Ok(ret) => Ok(ret),
 				Err(err) => {
@@ -805,8 +809,10 @@ impl LanguageServer for Backend {
 			// FIXME: Subcomponents should not just depend on the component's name,
 			// since users can readjust subcomponents' names at will.
 			let component = some!(interner().get(subcomponent));
-			let component = some!(self.index.components.get(&component.into()));
-			let location = some!(component.location.as_ref());
+			let location = {
+				let component = some!(self.index.components.get(&component.into()));
+				some!(component.location.clone())
+			};
 			_ = self
 				.client
 				.show_document(ShowDocumentParams {
