@@ -22,7 +22,7 @@ use ts_macros::query;
 
 #[rustfmt::skip]
 query! {
-	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope);
+	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor);
 
 (call [
   (attribute [
@@ -76,15 +76,7 @@ query! {
   (attribute (identifier) @_fields (identifier) @_Field) ]
   (argument_list
     . ((comment)* . (string) @MODEL)?
-    (keyword_argument [
-      ((identifier) @_comodel_name (string) @MODEL
-        (#eq? @_comodel_name "comodel_name"))
-      ((identifier) @_domain [
-        (list [
-          (parenthesized_expression (string) @MAPPED)
-          (tuple . (string) @MAPPED) ])
-        _ ]
-        (#eq? @_domain "domain")) ])?)
+	((keyword_argument (identifier) @FIELD_DESCRIPTOR (_)) ","?)*)
   (#eq? @_fields "fields")
   (#match? @_Field "^(Many2one|One2many|Many2many)$"))
 
@@ -237,6 +229,9 @@ impl Backend {
 			let root = some!(top_level_stmt(ast.root_node(), offset));
 			'match_: for match_ in cursor.matches(query, root, contents) {
 				let mut model_filter = None;
+				let mut field_descriptors = vec![];
+				let mut field_descriptor_in_offset = None;
+
 				for capture in match_.captures {
 					let range = capture.node.byte_range();
 					match PyCompletions::from(capture.index) {
@@ -338,6 +333,19 @@ impl Backend {
 								items: items.into_inner(),
 							})));
 						}
+						Some(PyCompletions::FieldDescriptor) => {
+							let Some(desc_value) = capture.node.next_named_sibling() else {
+								continue;
+							};
+
+							let descriptor = &contents[capture.node.byte_range()];
+							if matches!(descriptor, b"comodel_name" | b"domain") {
+								field_descriptors.push((descriptor, desc_value));
+							}
+							if desc_value.byte_range().contains(&offset) {
+								field_descriptor_in_offset = Some((descriptor, desc_value));
+							}
+						}
 						Some(PyCompletions::Depends)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Mapped)
@@ -346,6 +354,102 @@ impl Backend {
 						| Some(PyCompletions::Scope)
 						| Some(PyCompletions::ReadFn)
 						| None => {}
+					}
+				}
+				if let Some((descriptor, value)) = field_descriptor_in_offset {
+					let range = value.byte_range();
+					match descriptor {
+						b"comodel_name" => {
+							// same as model
+							let Some(slice) = rope.get_byte_slice(range.clone()) else {
+								dbg!(&range);
+								break 'match_;
+							};
+							let relative_offset = range.start;
+							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+							let rope = rope.clone();
+							early_return.lift(|| async move {
+								let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
+								self.complete_model(
+									&needle,
+									range.shrink(1).map_unit(ByteOffset),
+									rope.clone(),
+									&mut items,
+								)
+								.await?;
+								Ok(Some(CompletionResponse::List(CompletionList {
+									is_incomplete: !items.has_space(),
+									items: items.into_inner(),
+								})))
+							});
+							break 'match_;
+						}
+						b"domain" => {
+							let mut domain_node = value;
+							if domain_node.kind() == "lambda" {
+								let Some(body) = domain_node.child_by_field_name("body") else {
+									continue;
+								};
+								domain_node = body;
+							}
+							if domain_node.kind() != "list" {
+								continue;
+							}
+							let comodel_name = field_descriptors
+								.iter()
+								.find_map(|&(desc, node)| {
+									(desc == b"comodel_name").then(|| &contents[node.byte_range().shrink(1)])
+								})
+								// FIXME: Only correct if this came from the unnamed field relation
+								.or(this_model.inner);
+
+							let Some(mapped) = domain_node.named_children(&mut domain_node.walk()).find_map(|domain| {
+								// find the mapped domain element that contains the offset
+								if domain.kind() != "tuple" {
+									return None;
+								}
+								let mapped = domain.named_child(0)?;
+								mapped.byte_range().contains(&offset).then_some(mapped)
+							}) else {
+								continue;
+							};
+
+							let Mapped {
+								needle,
+								model,
+								single_field,
+								range,
+							} = some!(self.gather_mapped(
+								root,
+								&match_,
+								Some(offset),
+								mapped.byte_range(),
+								comodel_name,
+								contents,
+								true,
+							));
+
+							// range:  foo.bar.baz
+							// needle: foo.ba
+							let mut range = range;
+							let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
+							let mut needle = needle.as_ref();
+							let mut model = some!(interner().get(model));
+							if !single_field {
+								some!(self
+									.index
+									.models
+									.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+									.ok());
+							}
+							let model_name = interner().resolve(&model);
+							self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)?;
+							return Ok(Some(CompletionResponse::List(CompletionList {
+								is_incomplete: !items.has_space(),
+								items: items.into_inner(),
+							})));
+						}
+						_ => {}
 					}
 				}
 			}
@@ -393,19 +497,17 @@ impl Backend {
 		let mut needle = if for_replacing {
 			range = range.shrink(1);
 			let offset = offset.unwrap_or(range.end);
-			// Cow::from(rope.get_byte_slice(range.start..offset)?)
 			String::from_utf8_lossy(&contents[range.start..offset])
 		} else {
-			// let slice = Cow::from(rope.get_byte_slice(range.clone().shrink(1))?);
 			let slice = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
 			let relative_start = range.start + 1;
-			let offset = offset.unwrap_or((range.end - 1).max(relative_start));
-			assert!(
-				offset >= relative_start,
-				"offset={} cannot be less than relative_start={}",
-				offset,
-				relative_start
-			);
+			let offset = offset.unwrap_or((range.end - 1).max(relative_start + 1));
+			// assert!(
+			// 	offset >= relative_start,
+			// 	"offset={} cannot be less than relative_start={}",
+			// 	offset,
+			// 	relative_start
+			// );
 			let slice_till_end = &slice[offset - relative_start..];
 			// How many characters until the next period or end-of-string?
 			let limit = slice_till_end.find('.').unwrap_or(slice_till_end.len());
@@ -528,6 +630,9 @@ impl Backend {
 							let model = interner().resolve(&model);
 							return self.jump_def_field_name(needle, model);
 						}
+					}
+					Some(PyCompletions::FieldDescriptor) => {
+						// TODO
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::Mapped)
@@ -703,6 +808,7 @@ impl Backend {
 					| Some(PyCompletions::Prop)
 					| Some(PyCompletions::ReadFn)
 					| Some(PyCompletions::Scope)
+					| Some(PyCompletions::FieldDescriptor)
 					| None => {}
 				}
 			}
@@ -771,6 +877,9 @@ impl Backend {
 						let xml_id = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
 						return self.hover_record(&xml_id, offset_range_to_lsp_range(range.map_unit(ByteOffset), rope));
 					}
+					Some(PyCompletions::FieldDescriptor) => {
+						// TODO
+					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)
 					| Some(PyCompletions::Mapped)
@@ -837,6 +946,8 @@ impl Backend {
 		let mut cursor = QueryCursor::new();
 		let mut this_model = ThisModel::default();
 		for match_ in cursor.matches(query, root, contents) {
+			let mut field_descriptors = vec![];
+
 			for capture in match_.captures {
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::XmlId) => {
@@ -894,87 +1005,28 @@ impl Backend {
 						};
 						this_model.tag_model(capture.node, &match_, top_level_ranges[idx].clone(), contents);
 					}
-					Some(PyCompletions::Mapped) => {
-						if !in_active_root(capture.node.byte_range()) {
-							continue;
-						}
-						let Some(Mapped {
-							needle,
-							model,
-							single_field,
-							mut range,
-						}) = self.gather_mapped(
-							root,
-							&match_,
-							None,
-							capture.node.byte_range(),
-							this_model.inner,
-							contents,
-							false,
-						)
-						else {
+					Some(PyCompletions::FieldDescriptor) => {
+						// fields.Many2one(field_descriptor=...)
+
+						let Some(desc_value) = capture.node.next_named_sibling() else {
 							continue;
 						};
-						let mut model = interner().get_or_intern(&model);
-						let mut needle = needle.as_ref();
-						if single_field {
-							if let Some(dot) = needle.find('.') {
-								let message_range = range.start.0 + dot..range.end.0;
-								diagnostics.push(Diagnostic {
-									range: offset_range_to_lsp_range(message_range.map_unit(ByteOffset), rope.clone())
-										.unwrap(),
-									severity: Some(DiagnosticSeverity::ERROR),
-									message: "Dotted access is not supported in this context".to_string(),
-									..Default::default()
-								});
-								needle = &needle[..dot];
-								range = (range.start.0..range.start.0 + dot).map_unit(ByteOffset);
-							}
-						} else {
-							match self
-								.index
-								.models
-								.resolve_mapped(&mut model, &mut needle, Some(&mut range))
-							{
-								Ok(()) => {}
-								Err(ResolveMappedError::NonRelational) => {
-									diagnostics.push(Diagnostic {
-										range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
-										severity: Some(DiagnosticSeverity::ERROR),
-										message: format!("`{needle}` is not a relational field"),
-										..Default::default()
-									});
-									continue;
-								}
-							}
+
+						let descriptor = &contents[capture.node.byte_range()];
+						if matches!(descriptor, b"comodel_name" | b"domain") {
+							field_descriptors.push((descriptor, desc_value));
 						}
-						if needle.is_empty() {
-							// Nothing to compare yet, keep going.
-							continue;
-						}
-						let mut has_field = false;
-						if self.index.models.contains_key(&model.into()) {
-							let Some(entry) = self.index.models.populate_field_names(model.into(), &[]) else {
-								continue;
-							};
-							let Some(fields) = entry.fields.as_ref() else { continue };
-							static MAPPED_BUILTINS: phf::Set<&str> =
-								phf::phf_set!("id", "display_name", "create_date", "write_date");
-							if MAPPED_BUILTINS.contains(needle) {
-								continue;
-							}
-							if let Some(key) = interner().get(needle) {
-								has_field = fields.contains_key(&key.into());
-							}
-						}
-						if !has_field {
-							diagnostics.push(Diagnostic {
-								range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
-								severity: Some(DiagnosticSeverity::ERROR),
-								message: format!("Model `{}` has no field `{needle}`", interner().resolve(&model)),
-								..Default::default()
-							});
-						}
+					}
+					Some(PyCompletions::Mapped) => {
+						self.diagnose_mapped(
+							rope,
+							diagnostics,
+							contents,
+							root,
+							this_model.inner,
+							&match_,
+							capture.node.byte_range(),
+						);
 					}
 					Some(PyCompletions::Scope) => {
 						if !in_active_root(capture.node.byte_range()) {
@@ -1069,6 +1121,145 @@ impl Backend {
 					| None => {}
 				}
 			}
+
+			// post-process for field_descriptors
+			for &(descriptor, node) in &field_descriptors {
+				match descriptor {
+					b"comodel_name" => {
+						let range = node.byte_range().shrink(1);
+						let model = String::from_utf8_lossy(&contents[range.clone()]);
+						let model_key = interner().get(&model);
+						let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
+						if !has_model.unwrap_or(false) {
+							diagnostics.push(Diagnostic {
+								range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
+								message: format!("`{model}` is not a valid model name"),
+								severity: Some(DiagnosticSeverity::ERROR),
+								..Default::default()
+							})
+						}
+					}
+					b"domain" => {
+						let mut domain_node = node;
+						if domain_node.kind() == "lambda" {
+							let Some(body) = domain_node.child_by_field_name("body") else {
+								continue;
+							};
+							domain_node = body;
+						}
+						if domain_node.kind() != "list" {
+							continue;
+						}
+						let Some(comodel_name) = field_descriptors
+							.iter()
+							.find_map(|&(desc, node)| (desc == b"comodel_name").then_some(node))
+						else {
+							continue;
+						};
+						let comodel_name = Some(&contents[comodel_name.byte_range().shrink(1)]);
+
+						// TODO: walk subdomains (`any` and `not any`)
+						for domain in domain_node.named_children(&mut domain_node.walk()) {
+							if domain.kind() != "tuple" {
+								continue;
+							}
+
+							let Some(mapped) = domain.named_child(0) else { continue };
+							if mapped.kind() != "string" {
+								continue;
+							}
+
+							self.diagnose_mapped(
+								rope,
+								diagnostics,
+								contents,
+								root,
+								comodel_name,
+								&match_,
+								mapped.byte_range(),
+							);
+						}
+					}
+					_ => {}
+				}
+			}
+		}
+	}
+
+	fn diagnose_mapped(
+		&self,
+		rope: &Rope,
+		diagnostics: &mut Vec<Diagnostic>,
+		contents: &[u8],
+		root: Node<'_>,
+		model: Option<&[u8]>,
+		match_: &QueryMatch<'_, '_>,
+		mapped_range: std::ops::Range<usize>,
+	) {
+		let Some(Mapped {
+			needle,
+			model,
+			single_field,
+			mut range,
+		}) = self.gather_mapped(root, match_, None, mapped_range, model, contents, false)
+		else {
+			return;
+		};
+		let mut model = interner().get_or_intern(&model);
+		let mut needle = needle.as_ref();
+		if single_field {
+			if let Some(dot) = needle.find('.') {
+				let message_range = range.start.0 + dot..range.end.0;
+				diagnostics.push(Diagnostic {
+					range: offset_range_to_lsp_range(message_range.map_unit(ByteOffset), rope.clone()).unwrap(),
+					severity: Some(DiagnosticSeverity::ERROR),
+					message: "Dotted access is not supported in this context".to_string(),
+					..Default::default()
+				});
+				needle = &needle[..dot];
+				range = (range.start.0..range.start.0 + dot).map_unit(ByteOffset);
+			}
+		} else {
+			match (self.index.models).resolve_mapped(&mut model, &mut needle, Some(&mut range)) {
+				Ok(()) => {}
+				Err(ResolveMappedError::NonRelational) => {
+					diagnostics.push(Diagnostic {
+						range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
+						severity: Some(DiagnosticSeverity::ERROR),
+						message: format!("`{needle}` is not a relational field"),
+						..Default::default()
+					});
+					return;
+				}
+			}
+		}
+		if needle.is_empty() {
+			// Nothing to compare yet, keep going.
+			return;
+		}
+		let mut has_field = false;
+		if self.index.models.contains_key(&model.into()) {
+			let Some(entry) = self.index.models.populate_field_names(model.into(), &[]) else {
+				return;
+			};
+			let Some(fields) = entry.fields.as_ref() else {
+				return;
+			};
+			static MAPPED_BUILTINS: phf::Set<&str> = phf::phf_set!("id", "display_name", "create_date", "write_date");
+			if MAPPED_BUILTINS.contains(needle) {
+				return;
+			}
+			if let Some(key) = interner().get(needle) {
+				has_field = fields.contains_key(&key.into());
+			}
+		}
+		if !has_field {
+			diagnostics.push(Diagnostic {
+				range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
+				severity: Some(DiagnosticSeverity::ERROR),
+				message: format!("Model `{}` has no field `{needle}`", interner().resolve(&model)),
+				..Default::default()
+			});
 		}
 	}
 }
@@ -1180,7 +1371,7 @@ env['model']
 request.render('template')
 foo = fields.Char()
 bar = fields.Many2one('positional', string='blah', domain="[('foo', '=', 'bar')]")
-baz = fields.Many2many(comodel_name='named')
+baz = fields.Many2many(comodel_name='named', domain=[('foo', '=', bar)])
 "#;
 		let ast = parser.parse(&contents[..], None).unwrap();
 		let query = PyCompletions::query();
@@ -1189,8 +1380,8 @@ baz = fields.Many2many(comodel_name='named')
 			(0, vec!["env", "ref", "'ref'"]),
 			(1, vec!["env", "'model'"]),
 			(0, vec!["request", "render", "'template'"]),
-			(4, vec!["fields", "Many2one", "'positional'", "domain"]),
-			(4, vec!["fields", "Many2many", "comodel_name", "'named'"]),
+			(4, vec!["fields", "Many2one", "'positional'", "string", "domain"]),
+			(4, vec!["fields", "Many2many", "comodel_name", "domain"]),
 		];
 		let actual = cursor
 			.matches(query, ast.root_node(), &contents[..])
