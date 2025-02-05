@@ -18,7 +18,8 @@
 			"type": "lldb",
 			"request": "attach",
 			"name": "Attach",
-			"program": "odoo-lsp",
+			// "program": "odoo-lsp",
+			"pid": "${command:pickMyProcess}",
 			"sourceLanguages": ["rust"]
 		},
 		{

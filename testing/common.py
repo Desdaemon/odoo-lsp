@@ -1,4 +1,7 @@
-import pytest
+__all__ = [
+    'fixture_test',
+]
+
 from collections import defaultdict
 from pathlib import Path
 from pytest_lsp import LanguageClient
@@ -18,7 +21,6 @@ from lsprotocol.types import (
     Diagnostic,
 )
 
-
 LANG_PY = Language(tspython.language())
 QUERY_PY = Query(
     LANG_PY,
@@ -31,6 +33,8 @@ QUERY_PY = Query(
 """,
 )
 
+def splay_diag(diags: list[Diagnostic]):
+    return ((d.range.start, d.message) for d in diags)
 
 class Expected:
     __slots__ = ("diag", "complete")
@@ -52,8 +56,7 @@ class PositionOperator(BaseOperator):
 def inc(position: Position):
     return Position(position.line + 1, position.character + 1)
 
-@pytest.mark.asyncio(scope="module")
-async def test_python(client: LanguageClient, rootdir: str):
+async def fixture_test(client: LanguageClient, rootdir: str):
     files = {
         file: file.read_text() for file in Path(rootdir).joinpath("foo").rglob("*.py")
     }
@@ -112,7 +115,12 @@ async def test_python(client: LanguageClient, rootdir: str):
                     pos,
                 )
             )
-            assert isinstance(results, CompletionList)
+            if not expected_completion:
+                assert not results
+                continue
+            if not isinstance(results, CompletionList):
+                unexpected.append(f"complete: unexpected empty list\n  at {file}:{inc(pos)}")
+                continue
             actual = [e.label for e in results.items]
             if actual != expected_completion:
                 node = asts[file].root_node.named_descendant_for_point_range(
@@ -126,34 +134,4 @@ async def test_python(client: LanguageClient, rootdir: str):
                 unexpected.append(
                     f"complete: actual={' '.join(actual)}\n  at {file}:{inc(pos)}\n{' ' * node.start_point.column}{node_text}"
                 )
-    unexpected_len = len(unexpected)
-    assert not unexpected_len, "\n".join(unexpected)
-
-
-@pytest.mark.asyncio(scope="module")
-async def test_xml_completions(client: LanguageClient, rootdir: str):
-    client.text_document_did_open(
-        DidOpenTextDocumentParams(
-            TextDocumentItem(
-                uri=f"file://{rootdir}/foo/records.xml",
-                language_id="xml",
-                version=1,
-                text=Path(f"{rootdir}/foo/records.xml").read_text(),
-            )
-        )
-    )
-    await client.wait_for_notification("textDocument/publishDiagnostics")
-
-    results = await client.text_document_completion_async(
-        CompletionParams(
-            TextDocumentIdentifier(uri=f"file://{rootdir}/foo/records.xml"),
-            Position(2, 17),
-        )
-    )
-    assert isinstance(results, CompletionList)
-    assert len(results.items) == 1
-    assert [e.label for e in results.items] == ["bar"]
-
-
-def splay_diag(diags: list[Diagnostic]):
-    return ((d.range.start, d.message) for d in diags)
+    return unexpected

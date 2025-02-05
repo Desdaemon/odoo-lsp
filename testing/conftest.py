@@ -25,7 +25,8 @@ __dirname = os.path.dirname(os.path.realpath(__file__))
 if lsp_devtools := which("lsp-devtools"):
     odoocmd = [lsp_devtools, "agent", "--", f"{__dirname}/../target/debug/odoo-lsp"]
 else:
-    odoocmd = [f"{__dirname}/../target/debug/odoo-lsp"]
+    # odoocmd = [f"{__dirname}/../target/debug/odoo-lsp"]
+    odoocmd = ["cargo", "run"]
 ODOO_ENV = dict(os.environ)
 ODOO_ENV.setdefault('RUST_LOG', 'info,odoo_lsp=trace')
 ODOO_ENV.setdefault('ODOO_LSP_LOG', '1')

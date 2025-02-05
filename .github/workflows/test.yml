@@ -8,6 +8,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   e2e-testing:
     strategy:
@@ -18,34 +22,98 @@ jobs:
           - macos-latest
           - windows-latest
     runs-on: ${{ matrix.runs-on }}
+    permissions:
+      checks: write
+      pull-requests: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+        if: matrix.runs-on != 'ubuntu-latest'
+
+      - name: Setup Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+        if: matrix.runs-on == 'ubuntu-latest'
 
       - name: Create dummy tag
         run: git tag -f CI
 
+      # copied from  https://github.com/BamPeers/rust-ci-github-actions-workflow
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        env:
+          cache-name: cache-dependencies
+        with:
+          path: |
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('Cargo.lock') }}
+      - name: Install tools
+        if: matrix.runs-on == 'ubuntu-latest'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo2junit,cargo-llvm-cov
+
       - name: Run unit tests
         id: cargo-test
+        if: matrix.runs-on != 'ubuntu-latest'
         continue-on-error: true
         run: cargo test
 
-      - name: Run tests
+      - name: Run unit tests with coverage
+        id: cargo-testcov
+        if: matrix.runs-on == 'ubuntu-latest'
+        continue-on-error: true
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov clean --workspace -v
+          cargo test -- -Z unstable-options --format json | cargo2junit > results.xml;
+
+      - name: Upload test results
+        uses: EnricoMi/publish-unit-test-result-action@v1
+        if: steps.cargo-testcov.outcome != 'skipped'
+        with:
+          check_name: Test Results
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          files: results.xml
+
+      - name: Run fixture tests
+        id: fixture-test
         working-directory: testing
+        continue-on-error: true
+        shell: bash
         run: |
           pip install -U uv
           uv venv
           . ${{ matrix.runs-on == 'windows-latest' && '.venv/Scripts/activate' || '.venv/bin/activate'}}
           uv pip compile requirements.in -o requirements.txt
           uv pip sync requirements.txt
+          ${{ matrix.runs-on == 'ubuntu-latest' && 'source <(cargo llvm-cov show-env --export-prefix)' || '' }}
+          cargo build
           pytest -vv --junitxml=.results.xml --color=yes
 
-      - name: Report failures
+      - name: Generate coverage report
+        id: gen-cov
+        if: matrix.runs-on == 'ubuntu-latest'
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          cargo llvm-cov report --lcov --output-path lcov.info
+
+      - name: Upload to CodeCov
+        if: steps.gen-cov.outcome == 'success'
+        uses: codecov/codecov-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./lcov.info
+          fail_ci_if_error: true
+
+      - name: Report fixture test results
         if: always()
         uses: pmeier/pytest-results-action@main
         with:
@@ -55,5 +123,5 @@ jobs:
           title: E2E Test Results
 
       - name: Fail if unit tests failed
-        if: steps.cargo-test.outcome == 'failure'
+        if: steps.cargo-test.outcome == 'failure' || steps.cargo-testcov.outcome == 'failure' || steps.fixture-test.outcome == 'failure'
         run: exit 1
