@@ -151,14 +151,15 @@ query! {
 	FieldCompletion(Name, SelfParam, Scope);
 ((class_definition
   (block
-    (expression_statement
-      (assignment
-        (identifier) @_name (string) @NAME))?
+    (expression_statement [
+      (assignment (identifier) @_name (string) @NAME)
+	  (assignment (identifier) @_inherit (list . (string) @NAME)) ])?
     [
       (decorated_definition
         (function_definition
           (parameters . (identifier) @SELF_PARAM)) @SCOPE)
       (function_definition (parameters . (identifier) @SELF_PARAM)) @SCOPE])) @class
+  (#eq? @_inherit "_inherit")
   (#match? @_name "^_(name|inherit)$"))
 }
 
@@ -570,7 +571,9 @@ pub fn determine_scope<'out, 'node>(
 		for capture in match_.captures {
 			match FieldCompletion::from(capture.index) {
 				Some(FieldCompletion::Name) => {
-					self_type = Some(capture.node);
+					if self_type.is_none() {
+						self_type = Some(capture.node);
+					}
 				}
 				Some(FieldCompletion::SelfParam) => {
 					self_param = Some(capture.node);
