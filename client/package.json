@@ -8,7 +8,9 @@
 	},
 	"devDependencies": {
 		"@types/node": "^17.0.45",
-		"@types/vscode": "^1.66.0",
-		"vscode-test": "^1.6.1"
+		"@types/vscode": "^1.75.0",
+		"vscode-test": "^1.6.1",
+		"execa": "^9.5.2",
+		"vscode-languageclient": "^8.1.0"
 	}
 }

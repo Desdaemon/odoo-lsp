@@ -1,6 +1,7 @@
-import { statSync, type ObjectEncodingOptions } from "node:fs";
-import { exec, type ExecOptions } from "node:child_process";
+import { statSync } from "node:fs";
+import { exec } from "node:child_process";
 import type { ExtensionContext } from "vscode";
+import { $ } from 'execa';
 
 export const isWindows = process.platform === "win32";
 export const shell = isWindows ? "powershell.exe" : "sh";
@@ -19,15 +20,6 @@ export function guessRustTarget() {
 		if (arch === "x64") return "x86_64-unknown-linux-gnu";
 		return "i686-unknown-linux-gnu";
 	}
-}
-
-export function $(command: string, options?: ObjectEncodingOptions & ExecOptions) {
-	return new Promise<{ stdout: string | Buffer; stderr: string | Buffer }>((resolve, reject) => {
-		exec(command, options, (err, stdout, stderr) => {
-			if (err) reject(err);
-			else resolve({ stdout, stderr });
-		});
-	});
 }
 
 export function makeStates<T extends Record<string | number, (..._: unknown[]) => unknown>>(
@@ -50,9 +42,9 @@ export function makeStates<T extends Record<string | number, (..._: unknown[]) =
 
 export async function downloadFile(src: string, dest: string) {
 	if (isWindows) {
-		await $(`Invoke-WebRequest -Uri ${src} -OutFile ${dest}`, { shell });
+		await $({ shell })`Invoke-WebRequest -Uri ${src} -OutFile ${dest}`;
 	} else {
-		await $(`curl -Lo ${dest} ${src}`, { shell });
+		await $`curl -Lo ${dest} ${src}`;
 	}
 }
 
