@@ -2,6 +2,7 @@
 
 [![nightly](https://github.com/Desdaemon/odoo-lsp/actions/workflows/nightly.yml/badge.svg)](https://github.com/Desdaemon/odoo-lsp/actions/workflows/nightly.yml)
 [![test](https://github.com/Desdaemon/odoo-lsp/actions/workflows/test.yml/badge.svg)](https://github.com/Desdaemon/odoo-lsp/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/Desdaemon/odoo-lsp/graph/badge.svg?token=6Y9WYWZ07G)](https://codecov.io/gh/Desdaemon/odoo-lsp)
 
 ## Features
 
