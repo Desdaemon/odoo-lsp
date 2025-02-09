@@ -15,7 +15,6 @@ import {
 } from "vscode-languageclient/node";
 import { registerXmlFileAssociations, registerXPathSemanticTokensProvider } from "./xml";
 import {
-	$,
 	compareDate,
 	downloadFile,
 	guessRustTarget,
@@ -27,6 +26,7 @@ import {
 	which,
 } from "./utils";
 import * as vscode from "vscode";
+import { $ } from "execa";
 
 let client: LanguageClient;
 let extensionState: State;
@@ -144,18 +144,12 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 					await downloadFile(link, latest);
 					await downloadFile(shaLink, shaOutput);
 					if (isWindows) {
-						const { stdout } = await $(
-							`(Get-FileHash ${latest} -Algorithm SHA256).Hash -eq (Get-Content ${shaOutput})`,
-							powershell,
-						);
-						if (stdout.toString().trim() !== "True") throw new Error("Checksum verification failed");
-						await $(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
+						const { stdout } = await $(powershell)`(Get-Filehash ${latest} -Algorithm SHA256).Hash -eq (Get-Content ${shaOutput})`;
+						if (stdout.trim() !== "True") throw new Error("Checksum verification failed");
+						await $(powershell)`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`;
 					} else {
-						await $(
-							`if [ "$(shasum -a 256 ${latest} | cut -d ' ' -f 1)" != "$(cat ${shaOutput})" ]; then exit 1; fi`,
-							sh,
-						);
-						await $(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
+						await $(sh)`if [ "$(shasum -a 256 ${latest} | cut -d ' ' -f 1)" != "$(cat ${shaOutput})" ]; then exit 1; fi`
+						await $`tar -xzf ${latest} -C ${runtimeDir}`;
 					}
 				} catch (err) {
 					// We only build nightly when there are changes, so there will be days without nightly builds.
@@ -166,9 +160,9 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		);
 	} else if (!existsSync(odooLspBin)) {
 		if (isWindows) {
-			await $(`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`, powershell);
+			await $(powershell)`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`;
 		} else {
-			await $(`tar -xzf ${latest} -C ${runtimeDir}`, sh);
+			await $`tar -xzf ${latest} -C ${runtimeDir}`;
 		}
 	}
 

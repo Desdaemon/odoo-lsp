@@ -10,9 +10,10 @@ client/**
 target
 static
 examples
-.*
+.*/**
 .github
 Cargo.*
 pnpm-lock.yaml
 *.vsix
 syntaxes/gen/
+testing/

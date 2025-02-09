@@ -50,7 +50,7 @@ export async function registerXmlFileAssociations(
 				.then((choice) => {
 					if (choice === "Never show again") extensionState.noXmlReminders = true;
 					if (choice !== "Install") return;
-					vscode.commands.executeCommand("workbench.extensions.search", "@id:redhat.vscode-xml");
+					vscode.commands.executeCommand("workbench.extensions.action.installExtensions", "@id:redhat.vscode-xml");
 				});
 		}
 	} catch (err) {
@@ -76,7 +76,7 @@ export async function registerXPathSemanticTokensProvider(
 			.then((choice) => {
 				if (choice === "Never show again") extensionState.noXPathReminders = true;
 				if (choice !== "Install") return;
-				vscode.commands.executeCommand("workbench.extensions.search", "@id:deltaxml.xslt-xpath");
+				vscode.commands.executeCommand("workbench.extensions.action.installExtensions", "@id:deltaxml.xslt-xpath");
 			});
 		return;
 	}

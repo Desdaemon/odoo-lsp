@@ -151,14 +151,15 @@ query! {
 	FieldCompletion(Name, SelfParam, Scope);
 ((class_definition
   (block
-    (expression_statement
-      (assignment
-        (identifier) @_name (string) @NAME))?
+    (expression_statement [
+      (assignment (identifier) @_name (string) @NAME)
+	  (assignment (identifier) @_inherit (list . (string) @NAME)) ])?
     [
       (decorated_definition
         (function_definition
           (parameters . (identifier) @SELF_PARAM)) @SCOPE)
       (function_definition (parameters . (identifier) @SELF_PARAM)) @SCOPE])) @class
+  (#eq? @_inherit "_inherit")
   (#match? @_name "^_(name|inherit)$"))
 }
 
@@ -200,9 +201,11 @@ impl Backend {
 			self_param.into_owned(),
 			Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
 		);
-		let scope = self.walk_scope(fn_scope, Some(scope), |scope, node| {
+		let (_, Some(scope)) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
 			self.build_scope(scope, node, range.end.0, contents)
-		})?;
+		}) else {
+			return None
+		};
 
 		let node_at_cursor = fn_scope.descendant_for_byte_range(range.start.0, range.end.0)?;
 		let type_at_cursor = self.type_of(node_at_cursor, &scope, contents)?;
@@ -210,7 +213,7 @@ impl Backend {
 	}
 	/// Builds the scope up to `offset`.
 	///
-	/// ###### About [ScopeControlFlow]
+	/// #### About [ScopeControlFlow]
 	/// This is one of the rare occasions where [ControlFlow] is used. It is similar to
 	/// [Result] in that the try-operator (?) can be used to end iteration on a
 	/// [ControlFlow::Break]. Otherwise, [ControlFlow::Continue] has a continuation value
@@ -518,18 +521,16 @@ impl Backend {
 	///
 	/// To accumulate bindings into a scope, use [`Backend::build_scope`].
 	pub fn walk_scope<T>(
-		&self,
 		node: Node,
 		scope: Option<Scope>,
 		mut step: impl FnMut(&mut Scope, Node) -> ControlFlow<Option<T>, bool>,
-	) -> Option<T> {
+	) -> (Scope, Option<T>) {
 		let mut scope = scope.unwrap_or_default();
 		let mut scope_ends = vec![];
 		for node in PreTravel::new(node) {
 			if !node.is_named() {
 				continue;
 			}
-			let _test = node.to_sexp();
 			if let Some(end) = scope_ends.last() {
 				if node.start_byte() > *end {
 					scope.exit();
@@ -537,7 +538,7 @@ impl Backend {
 				}
 			}
 			match step(&mut scope, node) {
-				ControlFlow::Break(value) => return value,
+				ControlFlow::Break(value) => return (scope, value),
 				ControlFlow::Continue(entered) => {
 					if entered {
 						scope_ends.push(node.end_byte());
@@ -545,7 +546,7 @@ impl Backend {
 				}
 			}
 		}
-		None
+		(scope, None)
 	}
 }
 
@@ -570,7 +571,9 @@ pub fn determine_scope<'out, 'node>(
 		for capture in match_.captures {
 			match FieldCompletion::from(capture.index) {
 				Some(FieldCompletion::Name) => {
-					self_type = Some(capture.node);
+					if self_type.is_none() {
+						self_type = Some(capture.node);
+					}
 				}
 				Some(FieldCompletion::SelfParam) => {
 					self_param = Some(capture.node);

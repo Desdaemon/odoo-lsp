@@ -10,7 +10,7 @@ from deepdiff import DeepDiff  # type: ignore
 from deepdiff.diff import DiffLevel
 from deepdiff.operator import BaseOperator
 from tree_sitter import Language
-import tree_sitter_python as tspython
+import tree_sitter_language_pack as tslangs
 from lsprotocol.types import (
     DidOpenTextDocumentParams,
     TextDocumentItem,
@@ -20,18 +20,27 @@ from lsprotocol.types import (
     CompletionList,
     Diagnostic,
 )
+from typing import Literal
 
-LANG_PY = Language(tspython.language())
-QUERY_PY = Query(
-    LANG_PY,
-    """
-((comment) @diag
-  (#match? @diag "\\\\^diag "))
+def prepare_query(glob: str, lang: Language, query: str):
+    return (glob, lang, Query(lang, query))
 
-((comment) @complete
-  (#match? @complete "\\\\^complete "))
-""",
-)
+QUERIES = {
+    'python': prepare_query('*.py', tslangs.get_language('python'), """
+        ((comment) @diag
+        (#match? @diag "\\\\^diag "))
+
+        ((comment) @complete
+        (#match? @complete "\\\\^complete "))
+    """),
+    'xml': prepare_query('*.xml', tslangs.get_language('xml'), """
+        ((Comment) @diag
+        (#match? @diag "\\\\^diag "))
+
+        ((Comment) @complete
+        (#match? @complete "\\\\^complete "))
+    """)
+}
 
 def splay_diag(diags: list[Diagnostic]):
     return ((d.range.start, d.message) for d in diags)
@@ -56,17 +65,18 @@ class PositionOperator(BaseOperator):
 def inc(position: Position):
     return Position(position.line + 1, position.character + 1)
 
-async def fixture_test(client: LanguageClient, rootdir: str):
+async def fixture_test(client: LanguageClient, rootdir: str, language: Literal['python', 'xml'] = 'python'):
+    glob, lang, query = QUERIES[language]
     files = {
-        file: file.read_text() for file in Path(rootdir).joinpath("foo").rglob("*.py")
+        file: file.read_text() for file in Path(rootdir).joinpath("foo").rglob(glob)
     }
     expected = defaultdict[Path, Expected](Expected)
     asts = dict[Path, Tree]()
     for file, text in files.items():
-        parser = Parser(LANG_PY)
+        parser = Parser(lang)
         ast = parser.parse(text.encode())
         asts[file] = ast
-        for node, _ in QUERY_PY.captures(ast.root_node):
+        for node in (node for nodes in query.captures(ast.root_node).values() for node in nodes):
             assert (text := node.text), "node has no text"
             text = text.decode()
             if (offset := text.find("^diag ")) != -1:
@@ -76,7 +86,10 @@ async def fixture_test(client: LanguageClient, rootdir: str):
                 )
                 expected[file].diag.append((pos, msg))
             elif (offset := text.find("^complete ")) != -1:
-                completions = text[offset + 10 :].strip().split(" ")
+                raw_completions = text[offset + 10 :].strip()
+                if language == 'xml':
+                    raw_completions = raw_completions.removesuffix('-->').rstrip()
+                completions = raw_completions.split(" ")
                 pos = Position(
                     node.start_point.row - 1, node.start_point.column + offset
                 )
@@ -88,7 +101,7 @@ async def fixture_test(client: LanguageClient, rootdir: str):
             DidOpenTextDocumentParams(
                 TextDocumentItem(
                     uri=file.as_uri(),
-                    language_id="python",
+                    language_id=language,
                     version=1,
                     text=text,
                 )

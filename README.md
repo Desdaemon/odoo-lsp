@@ -2,6 +2,7 @@
 
 [![nightly](https://github.com/Desdaemon/odoo-lsp/actions/workflows/nightly.yml/badge.svg)](https://github.com/Desdaemon/odoo-lsp/actions/workflows/nightly.yml)
 [![test](https://github.com/Desdaemon/odoo-lsp/actions/workflows/test.yml/badge.svg)](https://github.com/Desdaemon/odoo-lsp/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/Desdaemon/odoo-lsp/graph/badge.svg?token=6Y9WYWZ07G)](https://codecov.io/gh/Desdaemon/odoo-lsp)
 
 ## Features
 
@@ -31,10 +32,10 @@ Nightly binaries are also available for major platforms, please check [Releases]
 
 ```bash
 # One-line
-curl -L https://github.com/Desdaemon/odoo-lsp/releases/download/nightly/odoo-lsp-x86_64-unknown-linux-musl.tgz | tar -xzvf -
+curl -L https://github.com/Desdaemon/odoo-lsp/releases/download/latest/odoo-lsp-x86_64-unknown-linux-musl.tgz | tar -xzvf -
 
 # Apple Silicon
-curl -L https://github.com/Desdaemon/odoo-lsp/releases/download/nightly/odoo-lsp-aarch64-apple-darwin.tgz | tar -xzvf -
+curl -L https://github.com/Desdaemon/odoo-lsp/releases/download/latest/odoo-lsp-aarch64-apple-darwin.tgz | tar -xzvf -
 
 # With cargo-binstall
 cargo binstall odoo-lsp
