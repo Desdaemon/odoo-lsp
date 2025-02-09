@@ -294,7 +294,7 @@ impl Backend {
 				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 				let ast = some!(parser.parse(value, None));
 				let contents = value.as_bytes();
-				let Some((object, field, range)) = self.attribute_node_at_offset(py_offset, ast.root_node(), contents)
+				let Some((object, field, range)) = Self::attribute_node_at_offset(py_offset, ast.root_node(), contents)
 				else {
 					// Suggest items in the current scope
 					items.extend(scope.iter().map(|(ident, model)| {
@@ -322,6 +322,11 @@ impl Backend {
 					}));
 					break 'expr;
 				};
+				// in this case walk_scope eventually ends so just retrieve the scope under its control
+				let (default_scope, scope) = Self::walk_scope(ast.root_node(), Some(scope.clone()), |scope, node| {
+					self.build_scope(scope, node, range.end, contents)
+				});
+				let scope = scope.unwrap_or(default_scope);
 				let model = some!(self.type_of(object, &scope, contents));
 				let model = some!(self.resolve_type(&model, &scope));
 				let needle_end = py_offset.saturating_sub(range.start);
@@ -400,7 +405,7 @@ impl Backend {
 				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 				let contents = needle.as_bytes();
 				let ast = some!(parser.parse(contents, None));
-				let (object, field, _) = some!(self.attribute_node_at_offset(py_offset, ast.root_node(), contents));
+				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), contents));
 				let model = some!(self.type_of(object, &scope, contents));
 				let model = some!(self.resolve_type(&model, &Scope::default()));
 				self.jump_def_field_name(&field, interner().resolve(&model))
@@ -512,7 +517,7 @@ impl Backend {
 				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 				let contents = needle.as_bytes();
 				let ast = some!(parser.parse(contents, None));
-				let Some((object, field, range)) = self.attribute_node_at_offset(py_offset, ast.root_node(), contents)
+				let Some((object, field, range)) = Self::attribute_node_at_offset(py_offset, ast.root_node(), contents)
 				else {
 					let cursor_node = some!(ast.root_node().named_descendant_for_byte_range(py_offset, py_offset));
 					let needle = String::from_utf8_lossy(&contents[cursor_node.byte_range()]);

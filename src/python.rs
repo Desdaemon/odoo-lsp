@@ -661,7 +661,7 @@ impl Backend {
 		root: Node<'out>,
 		contents: &'out [u8],
 	) -> Option<(&str, Cow<str>, core::ops::Range<usize>)> {
-		let (lhs, field, range) = self.attribute_node_at_offset(offset, root, contents)?;
+		let (lhs, field, range) = Self::attribute_node_at_offset(offset, root, contents)?;
 		let model = self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), contents)?;
 		let model = interner().resolve(&model);
 		Some((model, field, range))
@@ -670,11 +670,10 @@ impl Backend {
 	/// Returns `(object, field, range)`
 	#[instrument(level = "trace", skip_all, ret)]
 	pub fn attribute_node_at_offset<'out>(
-		&'out self,
 		mut offset: usize,
 		root: Node<'out>,
 		contents: &'out [u8],
-	) -> Option<(Node, Cow<str>, core::ops::Range<usize>)> {
+	) -> Option<(Node<'out>, Cow<'out, str>, core::ops::Range<usize>)> {
 		if contents.is_empty() {
 			return None;
 		}
@@ -1048,7 +1047,7 @@ impl Backend {
 							Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
 						);
 						let scope_end = fn_scope.end_byte();
-						self.walk_scope(fn_scope, Some(scope), |scope, node| {
+						Self::walk_scope(fn_scope, Some(scope), |scope, node| {
 							let entered = self.build_scope(scope, node, scope_end, contents)?;
 
 							let attribute = node.child_by_field_name("attribute");
@@ -1428,7 +1427,7 @@ class Foo(models.AbstractModel):
 	def no_decorators(self):
 		pass
 "#;
-		let ast = parser.parse(&contents[..], None).unwrap();
+		let ast = parser.parse(contents, None).unwrap();
 		let query = PyCompletions::query();
 		let mut cursor = QueryCursor::new();
 		let expected: &[&[&str]] = &[
@@ -1465,5 +1464,19 @@ class Foo(models.AbstractModel):
 			})
 			.collect::<Vec<_>>();
 		assert_eq!(expected, actual);
+	}
+
+	#[test]
+	fn test_attribute_node_at_offset() {
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+		let contents = "foo.mapped(lambda f: f.bar)";
+		let offset = contents.find("bar").unwrap();
+		let contents = contents.as_bytes();
+		let ast = parser.parse(contents, None).unwrap();
+		let (object, field, range) = Backend::attribute_node_at_offset(offset, ast.root_node(), contents).unwrap();
+		assert_eq!(&contents[object.byte_range()], b"f");
+		assert_eq!(field.as_ref(), "bar");
+		assert_eq!(&contents[range], b"bar");
 	}
 }
