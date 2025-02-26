@@ -12,6 +12,10 @@ class Foo(Model):
     def completions(self):
         self.env["bar"]
         #         ^complete bar derived.bar foo foob
+        self._where_calc([('bar', '=', '123')])
+        #                   ^complete bar foo_m2m foo_m2o foo_o2m
+        self.flush_model(['bar'])
+        #                  ^complete bar foo_m2m foo_m2o foo_o2m
         for foo in self:
             foo.
         #       ^complete bar foo_m2m foo_m2o foo_o2m

@@ -808,8 +808,9 @@ impl Backend {
 						}
 						"action" => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
-							ref_kind = Some(RefKind::Ref("action"));
-							model_filter = Some("ir.ui.menu".to_string());
+							// ref_kind = Some(RefKind::Ref("action"));
+							ref_kind = Some(RefKind::Id);
+							model_filter = Some("ir.actions.act_window".to_string());
 						}
 						"groups" => {
 							ref_kind = Some(RefKind::Id);

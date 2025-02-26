@@ -93,7 +93,7 @@ query! {
         (tuple . (string) @MAPPED)
         (parenthesized_expression (string) @MAPPED)]))]))
   (#eq? @_domain "domain")
-  (#match? @_search "^(search(_(read|count))?|_?read_group|filtered_domain)$"))
+  (#match? @_search "^(search(_(read|count))?|_?read_group|filtered_domain|_where_calc)$"))
 
 ((call
   (attribute
@@ -104,7 +104,7 @@ query! {
       (identifier) @_domain
       (list (string) @MAPPED)) ]))
   (#match? @_domain "^(groupby|aggregates)$")
-  (#match? @READ_FN "^_?read(_group)?$"))
+  (#match? @READ_FN "^(_?read(_group)?|flush_model)$"))
 
 ((call
   (attribute
@@ -660,7 +660,7 @@ impl Backend {
 		offset: usize,
 		root: Node<'out>,
 		contents: &'out [u8],
-	) -> Option<(&str, Cow<str>, core::ops::Range<usize>)> {
+	) -> Option<(&'out str, Cow<'out, str>, core::ops::Range<usize>)> {
 		let (lhs, field, range) = Self::attribute_node_at_offset(offset, root, contents)?;
 		let model = self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), contents)?;
 		let model = interner().resolve(&model);

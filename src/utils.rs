@@ -336,6 +336,13 @@ impl<T> MaxVec<T> {
 	}
 }
 
+impl<T> std::convert::AsMut<[T]> for MaxVec<T> {
+	#[inline]
+	fn as_mut(&mut self) -> &mut [T] {
+		&mut self.0
+	}
+}
+
 impl<T> std::ops::Deref for MaxVec<T> {
 	type Target = Vec<T>;
 	#[inline]

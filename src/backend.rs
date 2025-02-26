@@ -565,7 +565,7 @@ impl Backend {
 			}
 		}
 		let record_id = some!(interner().get(value));
-		return Ok((self.index.records.get(&record_id.into())).map(|record| record.location.clone().into()));
+		Ok((self.index.records.get(&record_id.into())).map(|record| record.location.clone().into()))
 	}
 	pub fn jump_def_model(&self, model: &str) -> miette::Result<Option<Location>> {
 		let model = some!(interner().get(model));
