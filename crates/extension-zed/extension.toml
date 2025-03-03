@@ -1,0 +1,11 @@
+schema_version = 1
+id = "odoo-lsp"
+name = "Odoo LSP"
+version = "1.0.0"
+authors = ["Viet Dinh <54ckb0y789@gmail.com>"]
+description = "Language server for Odoo Python/XML/JS"
+repository = "https://github.com/Desdaemon/odoo-lsp/tree/main/crates/extension-zed"
+
+[language_servers.odoo-lsp]
+name = "Odoo LSP"
+languages = ["Python", "JavaScript", "XML"]
