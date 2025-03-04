@@ -16,7 +16,7 @@ use ts_macros::query;
 
 use crate::Backend;
 
-static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
+pub static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
 	b"create",
 	b"copy",
 	b"name_create",
@@ -204,7 +204,7 @@ impl Backend {
 		let (_, Some(scope)) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
 			self.build_scope(scope, node, range.end.0, contents)
 		}) else {
-			return None
+			return None;
 		};
 
 		let node_at_cursor = fn_scope.descendant_for_byte_range(range.start.0, range.end.0)?;
@@ -482,7 +482,7 @@ impl Backend {
 	pub fn type_of_attribute(&self, type_: &Type, attr: &[u8], scope: &Scope) -> Option<Type> {
 		let model = self.resolve_type(type_, scope)?;
 		let attr = String::from_utf8_lossy(attr);
-		self.index.models.populate_field_names(model, &[])?;
+		self.index.models.populate_properties(model, &[])?;
 		let attr = interner().get(attr.as_ref())?;
 		let relation = self.index.models.resolve_related_field(attr.into(), model.into())?;
 		Some(Type::Model(interner().resolve(&relation).into()))
@@ -491,13 +491,11 @@ impl Backend {
 		(|| -> Option<()> {
 			let model = self.resolve_type(type_, scope)?;
 			let attr = String::from_utf8_lossy(attr);
-			let entry = self.index.models.populate_field_names(model, &[])?;
+			let entry = self.index.models.populate_properties(model, &[])?;
 			let attr = interner().get(attr.as_ref())?;
-			if entry.fields.as_ref().unwrap().contains_key(&attr.into()) {
-				Some(())
-			} else {
-				None
-			}
+			(entry.fields.as_ref().unwrap().contains_key(&attr.into())
+				|| entry.methods.as_ref().unwrap().contains_key(&attr.into()))
+			.then_some(())
 		})()
 		.is_some()
 	}

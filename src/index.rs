@@ -473,6 +473,7 @@ async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> mie
 
 #[rustfmt::skip]
 query! {
+	#[derive(Debug, PartialEq, Eq)]
 	ModelQuery(Model, Name);
 ((class_definition
   (argument_list [

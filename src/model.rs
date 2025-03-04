@@ -22,7 +22,7 @@ use ts_macros::query;
 use crate::index::{interner, Interner, PathSymbol, Symbol};
 use crate::str::Text;
 use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt, Usage};
-use crate::{format_loc, ImStr};
+use crate::{format_loc, test_utils, ImStr};
 
 #[derive(Clone, Debug)]
 pub struct Model {
@@ -35,6 +35,24 @@ pub struct Model {
 pub enum ModelType {
 	Base { name: ImStr, ancestors: Vec<ImStr> },
 	Inherit(Vec<ImStr>),
+}
+
+impl ModelType {
+	/// NOTE: For testing only, this function deliberatetely leaks memory to make it
+	/// easier to pattern-match.
+	#[cfg(test)]
+	pub fn splay(&self) -> (Option<&str>, &[&str]) {
+		match self {
+			Self::Base { name, ancestors } => (
+				Some(name.as_str()),
+				Box::leak(ancestors.iter().map(|a| a.as_str()).collect::<Box<[_]>>()),
+			),
+			Self::Inherit(ancestors) => (
+				None,
+				Box::leak(ancestors.iter().map(|a| a.as_str()).collect::<Box<[_]>>()),
+			),
+		}
+	}
 }
 
 #[derive(SmartDefault)]
@@ -52,11 +70,10 @@ pub struct ModelEntry {
 	pub descendants: Vec<ModelLocation>,
 	pub ancestors: Vec<ModelName>,
 	pub fields: Option<HashMap<Symbol<Field>, Arc<Field>>>,
-	pub fields_set: qp_trie::Trie<&'static [u8], ()>,
+	pub methods: Option<HashMap<Symbol<Method>, Arc<Method>>>,
+	pub properties_by_prefix: qp_trie::Trie<&'static [u8], PropertyKind>,
 	pub docstring: Option<Text>,
 }
-
-// pub enum FieldName {}
 
 #[derive(Clone, Debug)]
 pub enum FieldKind {
@@ -65,12 +82,32 @@ pub enum FieldKind {
 	Related(ImStr),
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum PropertyKind {
+	Field,
+	Method,
+}
+
 #[derive(Clone, Debug)]
 pub struct Field {
 	pub kind: FieldKind,
 	pub type_: Spur,
 	pub location: MinLoc,
 	pub help: Option<Text>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Method {
+	pub return_type: MethodReturnType,
+	pub locations: Vec<MinLoc>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum MethodReturnType {
+	#[default]
+	Unprocessed,
+	Value,
+	Relational(Symbol<Model>),
 }
 
 impl Field {
@@ -92,6 +129,17 @@ impl Field {
 			self_.help = Some(help.clone());
 		}
 		self_
+	}
+}
+
+impl Method {
+	pub fn add_override(self: &mut Arc<Self>, location: MinLoc) {
+		let self_ = Arc::make_mut(self);
+		self_.locations.push(location);
+	}
+	pub fn merge(self: &mut Arc<Self>, other: &Self) {
+		let self_ = Arc::make_mut(self);
+		self_.locations.extend(other.locations.iter().cloned());
 	}
 }
 
@@ -120,7 +168,7 @@ impl Deref for ModelIndex {
 
 #[rustfmt::skip]
 query! {
-	ModelFields(Field, Type, Relation, Arg, Value);
+	ModelProperties(Field, Type, Relation, Arg, Value, Method, MethodBody);
 ((class_definition
   (block
     (expression_statement
@@ -133,6 +181,12 @@ query! {
             ((keyword_argument (identifier) @ARG (_) @VALUE) ","?)*))))))
   (#eq? @_fields "fields")
   (#match? @TYPE "^[A-Z]"))
+
+(class_definition
+  (block [
+    (function_definition (identifier) @METHOD) @METHOD_BODY
+    (decorated_definition
+      (function_definition (identifier) @METHOD) @METHOD_BODY) ]))
 }
 
 #[derive(Diagnostic, thiserror::Error, Debug)]
@@ -203,29 +257,35 @@ impl ModelIndex {
 			}
 		}
 	}
-	pub fn populate_field_names<'model>(
+	/// Recursively traverses this model's definitions and populates all of its properties, including fields and methods.
+	///
+	/// `locations_filter` can be set to an empty slice to search all definitions, or a list of specific paths to search.
+	///
+	/// Deadlocks if an entry in [`ModelIndex`] is being held with the key `model`.
+	pub fn populate_properties<'model>(
 		&'model self,
 		model: ModelName,
 		locations_filter: &[PathSymbol],
 	) -> Option<RefMut<'model, ModelName, ModelEntry>> {
 		let model_name = interner().resolve(&model);
 		let mut entry = self.try_get_mut(&model).expect(format_loc!("deadlock"))?;
-		if entry.fields.is_some() && locations_filter.is_empty() {
+		if entry.fields.is_some() && entry.methods.is_some() && locations_filter.is_empty() {
 			return Some(entry);
 		}
 		let t0 = std::time::Instant::now();
 		let locations = entry.base.iter().chain(&entry.descendants).cloned().collect::<Vec<_>>();
 
-		let query = ModelFields::query();
-		let fields = locations
+		let query = ModelProperties::query();
+		let iter = locations
 			.into_par_iter()
 			.filter_map(|ModelLocation(location, byte_range)| {
 				if !locations_filter.is_empty() && !locations_filter.contains(&location.path) {
 					return None;
 				}
 				let mut fields = vec![];
+				let mut methods = vec![];
 				let fpath = location.path.to_path();
-				let contents = std::fs::read(&fpath)
+				let contents = test_utils::fs::read(&fpath)
 					.map_err(|err| error!("Failed to read {}:\n{err}", fpath.display()))
 					.ok()?;
 				let mut parser = Parser::new();
@@ -249,12 +309,14 @@ impl ModelIndex {
 						Help,
 						Related,
 					}
+					let mut method_name = None;
+					let mut method_body = None;
 					for capture in match_.captures {
-						match ModelFields::from(capture.index) {
-							Some(ModelFields::Field) => {
+						match ModelProperties::from(capture.index) {
+							Some(ModelProperties::Field) => {
 								field = Some(capture.node);
 							}
-							Some(ModelFields::Type) => {
+							Some(ModelProperties::Type) => {
 								type_ = Some(capture.node.byte_range());
 								// TODO: fields.Reference
 								is_relational = matches!(
@@ -262,18 +324,18 @@ impl ModelIndex {
 									b"One2many" | b"Many2one" | b"Many2many"
 								);
 							}
-							Some(ModelFields::Relation) => {
+							Some(ModelProperties::Relation) => {
 								if is_relational {
 									relation = Some(capture.node.byte_range().shrink(1));
 								}
 							}
-							Some(ModelFields::Arg) => match &contents[capture.node.byte_range()] {
+							Some(ModelProperties::Arg) => match &contents[capture.node.byte_range()] {
 								b"comodel_name" if is_relational => kwarg = Some(Kwargs::ComodelName),
 								b"help" => kwarg = Some(Kwargs::Help),
 								b"related" => kwarg = Some(Kwargs::Related),
 								_ => kwarg = None,
 							},
-							Some(ModelFields::Value) => match kwarg {
+							Some(ModelProperties::Value) => match kwarg {
 								Some(Kwargs::ComodelName) => {
 									if capture.node.kind() == "string" {
 										relation = Some(capture.node.byte_range().shrink(1));
@@ -291,6 +353,12 @@ impl ModelIndex {
 								}
 								None => {}
 							},
+							Some(ModelProperties::Method) => {
+								method_name = Some(capture.node);
+							}
+							Some(ModelProperties::MethodBody) => {
+								method_body = Some(capture.node);
+							}
 							None => {}
 						}
 					}
@@ -327,25 +395,37 @@ impl ModelIndex {
 							},
 						))
 					}
+					if let (Some(method), Some(body)) = (method_name, method_body) {
+						let method_str = String::from_utf8_lossy(&contents[method.byte_range()]);
+						let method = interner().get_or_intern(&method_str);
+						let range = ts_range_to_lsp_range(body.range());
+						methods.push((
+							method,
+							MinLoc {
+								path: location.path,
+								range,
+							},
+						))
+					}
 				}
-				Some(fields)
-			})
-			.flatten_iter();
+				Some((fields, methods))
+			});
 
 		let ancestors = entry.ancestors.to_vec();
-		let mut out = entry.fields.take().unwrap_or_default();
-		let mut fields_set = core::mem::take(&mut entry.fields_set);
+		let mut out_fields = entry.fields.take().unwrap_or_default();
+		let mut out_methods = entry.methods.take().unwrap_or_default();
+		let mut properties_set = core::mem::take(&mut entry.properties_by_prefix);
 
 		// drop to prevent deadlock
 		drop(entry);
 
-		// recursively get or populate ancestors' fields
+		// recursively get or populate ancestors' properties
 		for ancestor in ancestors {
-			if let Some(entry) = self.populate_field_names(ancestor, locations_filter) {
+			if let Some(entry) = self.populate_properties(ancestor, locations_filter) {
 				if let Some(fields) = entry.fields.as_ref() {
 					for (name, field) in fields {
-						fields_set.insert(interner().resolve(name).as_bytes(), ());
-						match out.entry(*name) {
+						properties_set.insert(interner().resolve(name).as_bytes(), PropertyKind::Field);
+						match out_fields.entry(*name) {
 							Entry::Occupied(mut old_field) => {
 								old_field.get_mut().merge(field);
 							}
@@ -355,30 +435,64 @@ impl ModelIndex {
 						}
 					}
 				}
+				if let Some(methods) = entry.methods.as_ref() {
+					for (name, method) in methods {
+						properties_set.insert(interner().resolve(name).as_bytes(), PropertyKind::Method);
+						match out_methods.entry(*name) {
+							Entry::Occupied(mut old_method) => {
+								old_method.get_mut().merge(method);
+							}
+							Entry::Vacant(empty) => {
+								empty.insert(method.clone());
+							}
+						}
+					}
+				}
 			}
 		}
 
-		for (key, type_) in fields.collect::<Vec<_>>() {
-			match out.entry(key.into()) {
+		let (fields, methods): (Vec<_>, Vec<_>) = iter.collect();
+
+		for (key, field) in fields.into_iter().flatten() {
+			match out_fields.entry(key.into()) {
 				Entry::Occupied(mut old_field) => {
-					old_field.get_mut().merge(&type_);
+					old_field.get_mut().merge(&field);
 				}
 				Entry::Vacant(empty) => {
-					empty.insert(type_.into());
+					empty.insert(field.into());
 				}
 			}
-			fields_set.insert(interner().resolve(&key).as_bytes(), ());
+			properties_set.insert(interner().resolve(&key).as_bytes(), PropertyKind::Field);
+		}
+
+		for (key, method_location) in methods.into_iter().flatten() {
+			match out_methods.entry(key.into()) {
+				Entry::Occupied(mut old_method) => {
+					old_method.get_mut().add_override(method_location);
+				}
+				Entry::Vacant(empty) => {
+					empty.insert(
+						Method {
+							return_type: Default::default(),
+							locations: vec![method_location],
+						}
+						.into(),
+					);
+				}
+			}
+			properties_set.insert(interner().resolve(&key).as_bytes(), PropertyKind::Method);
 		}
 
 		info!(
-			target: "populate_model_fields",
-			"{model_name}: {} fields, {}ms",
-			out.len(),
+			"{model_name}: {} fields, {} methods, {}ms",
+			out_fields.len(),
+			out_methods.len(),
 			t0.elapsed().as_millis()
 		);
 		let mut entry = self.try_get_mut(&model).expect(format_loc!("deadlock")).unwrap();
-		entry.fields = Some(out);
-		entry.fields_set = fields_set;
+		entry.fields = Some(out_fields);
+		entry.methods = Some(out_methods);
+		entry.properties_by_prefix = properties_set;
 		Some(entry)
 	}
 	/// Splits a mapped access expression, e.g. `foo.bar.baz`, and traverses until the expression is exhausted.
@@ -406,7 +520,7 @@ impl ModelIndex {
 			// lhs: foo
 			// rhs: ba
 			if resolved.is_none() {
-				let Some(fields) = self.populate_field_names((*model).into(), &[]) else {
+				let Some(model_entry) = self.populate_properties((*model).into(), &[]) else {
 					debug!(
 						"tried to resolve before fields are populated for `{}`",
 						interner().resolve(model)
@@ -414,12 +528,12 @@ impl ModelIndex {
 					return Ok(());
 				};
 				let field = interner().get(lhs);
-				let field = field.and_then(|field| fields.fields.as_ref()?.get(&field.into()));
+				let field = field.and_then(|field| model_entry.fields.as_ref()?.get(&field.into()));
 				match field.as_ref().map(|f| &f.kind) {
 					Some(FieldKind::Relational(rel)) => resolved = Some(*rel),
 					None | Some(FieldKind::Value) => return Err(ResolveMappedError::NonRelational),
 					Some(FieldKind::Related(..)) => {
-						drop(fields);
+						drop(model_entry);
 						resolved = self.resolve_related_field(interner().get(lhs).unwrap().into(), *model);
 					}
 				}
@@ -452,8 +566,8 @@ impl ModelIndex {
 		// that hasn't been populated yet. This is because we only populate fields when they're
 		// accessed. So we need to populate the fields of the model we're currently on.
 		// It's a no-op if the fields are already populated.
-		// If a stack overflow occurs, check populate_field_names.
-		let entry = self.populate_field_names(model.into(), &[])?;
+		// If a stack overflow occurs, check populate_properties.
+		let entry = self.populate_properties(model.into(), &[])?;
 		let field_entry = entry.fields.as_ref()?.get(&field)?;
 		let mut kind = field_entry.kind.clone();
 		let mut field_model = model;
@@ -488,6 +602,11 @@ impl ModelIndex {
 			FieldKind::Value => None,
 			FieldKind::Related(_) => None,
 		}
+	}
+	pub fn resolve_method_signature(&self, method: &mut Method) -> Option<()> {
+		let first = method.locations.first().as_ref()?;
+
+		None
 	}
 	pub(crate) fn statistics(&self) -> serde_json::Value {
 		let Self { inner, by_prefix } = self;
@@ -568,5 +687,139 @@ fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
 			Cow::from(content.join(" "))
 		}
 		_ => unreachable!(),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use rayon::slice::ParallelSliceMut;
+use tree_sitter::{Parser, QueryCursor};
+
+	use super::{test_utils, ModelIndex};
+	use crate::index::{index_models, interner, ModelQuery, PathSymbol};
+	use pretty_assertions::assert_eq;
+	use std::{collections::HashSet, path::Path};
+
+	macro_rules! assert_matches {
+		($obj:expr, $pat:pat) => {
+			assert!(
+				matches!($obj, $pat),
+				"{}",
+				pretty_assertions::StrComparison::new(&format!("{:#?}", $obj), stringify!($pat))
+			)
+		};
+	}
+
+	const FOO_PY: &[u8] = br#"
+class Foo(Model):
+	_name = 'foo'
+
+	bar = Char()
+
+class Bar(Model):
+	_name = 'bar'
+	_inherit = 'foo'
+
+	baz = Char()
+
+	def test(self):
+		...
+"#;
+	fn clamp_str(str: &str) -> &str {
+		if str.len() > 10 {
+			&str[..10]
+		} else {
+			str
+		}
+	}
+
+	#[test]
+	fn test_model_query() {
+		let query = ModelQuery::query();
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+		let ast = parser.parse(FOO_PY, None).unwrap();
+		let matches = QueryCursor::new()
+			.matches(query, ast.root_node(), FOO_PY)
+			.into_iter()
+			.map(|match_| {
+				(match_.captures.iter())
+					.map(|cap| {
+						(
+							ModelQuery::from(cap.index),
+							clamp_str(unsafe { core::str::from_utf8_unchecked(&FOO_PY[cap.node.byte_range()]) }),
+						)
+					})
+					.collect::<Vec<_>>()
+			})
+			.collect::<Vec<_>>();
+		let matches = matches.iter().map(|match_| &match_[..]).collect::<Vec<_>>();
+		use ModelQuery as T;
+		assert_eq!(
+			matches.as_slice(),
+			[
+				[
+					(Some(T::Model), "class Foo("),
+					(None, "Model"),
+					(Some(T::Name), "_name"),
+				],
+				[
+					(Some(T::Model), "class Bar("),
+					(None, "Model"),
+					(Some(T::Name), "_name"),
+				],
+				[
+					(Some(T::Model), "class Bar("),
+					(None, "Model"),
+					(Some(T::Name), "_inherit"),
+				]
+			]
+		);
+	}
+
+	#[test]
+	fn test_populate_properties() {
+		let rt = tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.unwrap();
+
+		const ROOT: &str = "/addons";
+		const FOO_PY_PATH: &str = "/addons/foo.py";
+		if let Ok(mut fs) = test_utils::fs::TEST_FS.write() {
+			fs.insert(FOO_PY_PATH.into(), FOO_PY);
+		} else {
+			panic!("can't modify FS");
+		}
+
+		let index = ModelIndex::default();
+		let foo_models = index_models(FOO_PY).unwrap();
+
+		let root = interner().get_or_intern_static(ROOT);
+		let path = PathSymbol::strip_root(root, Path::new(FOO_PY_PATH));
+		rt.block_on(index.append(path, interner(), false, &foo_models[..]));
+
+		let foo = index
+			.populate_properties(interner().get_or_intern_static("foo").into(), &[])
+			.unwrap();
+
+		assert_eq!(
+			foo.fields
+				.as_ref()
+				.unwrap()
+				.keys().next()
+				.map(|sym| interner().resolve(sym)),
+			Some("bar")
+		);
+		drop(foo);
+
+		let bar = index
+			.populate_properties(interner().get_or_intern_static("bar").into(), &[])
+			.unwrap();
+
+		let bar_fields = bar.fields.as_ref().unwrap().keys().map(|sym| interner().resolve(sym)).collect::<HashSet<_>>();
+		assert_eq!(bar_fields.len(), 2);
+		assert!(bar_fields.contains("baz"));
+		assert!(bar_fields.contains("bar"));
 	}
 }

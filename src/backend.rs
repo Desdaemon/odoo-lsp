@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
 use fomat_macros::fomat;
@@ -15,6 +16,7 @@ use lasso::Spur;
 use miette::{diagnostic, miette};
 use odoo_lsp::component::{Prop, PropDescriptor};
 use ropey::Rope;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
@@ -23,7 +25,7 @@ use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{interner, Component, Index, Interner, ModuleName, RecordId, Symbol, SymbolSet};
-use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName};
+use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName, PropertyKind};
 use odoo_lsp::record::Record;
 use odoo_lsp::{format_loc, some, utils::*};
 
@@ -89,6 +91,12 @@ impl Document {
 			damage_zone: None,
 		}
 	}
+}
+
+/// Data provided by completion providers to be consumed by `completion_resolve`
+#[derive(Serialize, Deserialize)]
+pub struct CompletionData {
+	pub model: String,
 }
 
 impl Backend {
@@ -362,12 +370,15 @@ impl Backend {
 		}
 		Ok(())
 	}
-	pub fn complete_field_name(
+	/// `only_properties` should be specified if a particular kind of [property][PropertyKind] should be included,
+	/// defaults to any if not specified.
+	pub fn complete_property_name(
 		&self,
 		needle: &str,
 		range: ByteRange,
 		model: String,
 		rope: Rope,
+		for_only_prop: Option<PropertyKind>,
 		items: &mut MaxVec<CompletionItem>,
 	) -> miette::Result<()> {
 		debug!("needle=`{needle}` model=`{model}`");
@@ -376,29 +387,34 @@ impl Backend {
 		}
 		let model_key = interner().get_or_intern(&model);
 		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
-		let Some(model_entry) = self.index.models.populate_field_names(model_key.into(), &[]) else {
+		let Some(model_entry) = self.index.models.populate_properties(model_key.into(), &[]) else {
 			return Ok(());
 		};
 		let iter = if needle.is_empty() {
-			model_entry.fields_set.iter()
+			model_entry.properties_by_prefix.iter()
 		} else {
-			model_entry.fields_set.iter_prefix(needle.as_bytes())
+			model_entry.properties_by_prefix.iter_prefix(needle.as_bytes())
 		};
-		let completions = iter.map(|(field_name, _)| {
-			// SAFETY: only utf-8 bytestrings from interner() are allowed
-			let field_name = unsafe { core::str::from_utf8_unchecked(field_name).to_string() };
-			CompletionItem {
-				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-					new_text: field_name.clone(),
-					insert: range,
-					replace: range,
-				})),
-				label: field_name,
-				kind: Some(CompletionItemKind::FIELD),
-				// TODO: Make this type-safe
-				data: Some(Value::String(model.clone())),
-				..Default::default()
+		let completions = iter.filter_map(|(property_name, kind)| {
+			if for_only_prop.as_ref().is_some_and(|target| target != kind) {
+				return None;
 			}
+			// SAFETY: only utf-8 bytestrings from interner() are allowed
+			let property_name = unsafe { core::str::from_utf8_unchecked(property_name).to_string() };
+			let kind = Some(match kind {
+				PropertyKind::Field => CompletionItemKind::FIELD,
+				PropertyKind::Method => CompletionItemKind::METHOD,
+			});
+			Some(CompletionItem {
+				label: property_name.clone(),
+				kind,
+				text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+					range,
+					new_text: property_name,
+				})),
+				data: serde_json::to_value(CompletionData { model: model.clone() }).ok(),
+				..Default::default()
+			})
 		});
 		items.extend(completions);
 		Ok(())
@@ -633,7 +649,7 @@ impl Backend {
 	}
 	pub fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model_key = interner().get_or_intern(model);
-		let entry = some!(self.index.models.populate_field_names(model_key.into(), &[]));
+		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
 		let field = some!(interner().get(field));
 		let field = some!(entry.fields.as_ref()).get(&field.into());
 		Ok(Some(some!(field).location.clone().into()))
@@ -672,7 +688,7 @@ impl Backend {
 	}
 	pub fn hover_field_name(&self, name: &str, model: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
 		let model_key = interner().get_or_intern(model);
-		let fields = some!(self.index.models.populate_field_names(model_key.into(), &[]));
+		let fields = some!(self.index.models.populate_properties(model_key.into(), &[]));
 		let field = some!(interner().get(name));
 		let field = some!(fields.fields.as_ref()).get(&field.into());
 		Ok(Some(Hover {
@@ -935,6 +951,68 @@ impl Backend {
 		for root in redundant {
 			self.roots.remove(Path::new(root));
 		}
+	}
+	pub fn completion_resolve_field(&self, completion: &mut CompletionItem) -> Option<()> {
+		let CompletionData { model } = completion
+			.data
+			.take()
+			.and_then(|raw| serde_json::from_value(raw).ok())?;
+		let field = interner().get(&completion.label)?;
+		let field_name = interner().resolve(&field);
+		let model = interner().get(model)?;
+		let mut entry = self
+			.index
+			.models
+			.try_get_mut(&model.into())
+			.expect(format_loc!("deadlock"))?;
+		let fields = entry.fields.as_mut()?;
+		let field_entry = fields.get(&field.into()).cloned()?;
+		drop(entry);
+
+		let type_ = interner().resolve(&field_entry.type_);
+		completion.detail = match self.index.models.resolve_related_field(field.into(), model) {
+			None => Some(format!("{type_}(…)")),
+			Some(relation) => {
+				let relation = interner().resolve(&relation);
+				Some(format!("{type_}(\"{relation}\", …)"))
+			}
+		};
+		completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
+			kind: MarkupKind::Markdown,
+			value: self.field_docstring(field_name, &field_entry, false),
+		}));
+
+		Some(())
+	}
+	pub fn completion_resolve_method(&self, completion: &mut CompletionItem) -> Option<()> {
+		let CompletionData { model } = completion
+			.data
+			.take()
+			.and_then(|raw| serde_json::from_value(raw).ok())?;
+		let method = interner().get(&completion.label)?;
+		let method_name = interner().resolve(&method);
+		let model = interner().get(model)?;
+		let mut entry = self
+			.index
+			.models
+			.try_get_mut(&model.into())
+			.expect(format_loc!("deadlock"))?;
+		let methods = entry.methods.as_mut()?;
+		let method_entry = Arc::make_mut(methods.get_mut(&method.into())?);
+		drop(entry);
+
+		let docstring = fomat! {
+			"```python\n"
+			"(method) def " (completion.label) "(…) → …\n"
+			"```"
+		};
+
+		completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
+			kind: MarkupKind::Markdown,
+			value: docstring,
+		}));
+
+		Some(())
 	}
 }
 

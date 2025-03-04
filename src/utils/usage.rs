@@ -27,7 +27,7 @@ use std::{
 use crate::{
 	component::{Component, ComponentTemplate, PropDescriptor},
 	index::{PathSymbol, Symbol, SymbolMap, SymbolSet},
-	model::{Field, FieldKind, ModelEntry, ModelLocation},
+	model::{Field, FieldKind, ModelEntry, ModelLocation, PropertyKind},
 	record::Record,
 	template::Template,
 	ImStr,
@@ -309,8 +309,9 @@ impl Usage for ModelEntry {
 			descendants,
 			ancestors,
 			fields,
-			fields_set,
+			properties_by_prefix: fields_set,
 			docstring,
+			methods: _,
 		} = self;
 		let mut usage = 0;
 		usage += base.usage().0;
@@ -390,6 +391,12 @@ impl Usage for ComponentTemplate {
 			ComponentTemplate::Name(name) => UsageInfo::new(name.usage().0),
 			ComponentTemplate::Inline(inline) => UsageInfo::new(inline.usage().0),
 		}
+	}
+}
+
+impl Usage for PropertyKind {
+	fn usage(&self) -> UsageInfo<Self> {
+		UsageInfo::new(0)
 	}
 }
 

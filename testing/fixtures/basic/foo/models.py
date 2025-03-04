@@ -18,13 +18,13 @@ class Foo(Model):
         #                  ^complete bar foo_m2m foo_m2o foo_o2m
         for foo in self:
             foo.
-        #       ^complete bar foo_m2m foo_m2o foo_o2m
+        #      ^complete bar completions diagnostics foo_m2m foo_m2o foo_o2m
 
     def diagnostics(self):
         self.foo
-        #    ^diag Model `foo` has no field `foo`
+        #    ^diag Model `foo` has no property `foo`
         self.env["foo"].foo
-        #               ^diag Model `foo` has no field `foo`
+        #               ^diag Model `foo` has no property `foo`
         self.mapped("foo")
         #            ^diag Model `foo` has no field `foo`
         self.env["fo"]
@@ -59,6 +59,8 @@ class Foob(Model):
             "foo_id": ...
             #^complete barb foo_id hoeh
         })
+        self.
+        #   ^complete barb foo_id handler hoeh missing_depends
 
     @api.depends("barb")
     def missing_depends(self):

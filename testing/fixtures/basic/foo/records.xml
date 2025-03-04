@@ -8,8 +8,8 @@
 		<t t-set="bar" t-value="foo_obj.mapped('bar')"/>
 		<!--                                    ^ TODO: make this work-->
 		<t t-set="baz" t-value="foo_obj.filtered(lambda f: f.bar)"/>
-		<!--                                                ^complete bar foo_m2m foo_m2o foo_o2m -->
+		<!--                                                ^complete bar completions diagnostics foo_m2m foo_m2o foo_o2m -->
 		<t t-set="quux" t-value="foo_obj.bar"/>
-		   <!--                         ^complete bar foo_m2m foo_m2o foo_o2m -->
+		<!--                            ^complete bar completions diagnostics foo_m2m foo_m2o foo_o2m -->
 	</template>
 </odoo>

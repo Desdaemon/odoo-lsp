@@ -102,7 +102,7 @@ mod xml;
 #[cfg(doc)]
 pub use odoo_lsp::*;
 
-use backend::{Backend, Document, Language, Text};
+use backend::{Backend, CompletionData, Document, Language, Text};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -572,44 +572,10 @@ impl LanguageServer for Backend {
 					}))
 				}
 				Some(CompletionItemKind::FIELD) => {
-					// NOTE: This was injected by complete_field_name().
-					let Some(Value::String(value)) = &completion.data else {
-						break 'resolve;
-					};
-					let Some(field) = interner().get(&completion.label) else {
-						break 'resolve;
-					};
-					let field_name = interner().resolve(&field);
-					let Some(model) = interner().get(value) else {
-						break 'resolve;
-					};
-					let Some(mut entry) = self
-						.index
-						.models
-						.try_get_mut(&model.into())
-						.expect(format_loc!("deadlock"))
-					else {
-						break 'resolve;
-					};
-					let Some(fields) = &mut entry.fields else {
-						break 'resolve;
-					};
-					let field_entry = fields.get(&field.into()).cloned();
-					drop(entry);
-					if let Some(field_entry) = field_entry {
-						let type_ = interner().resolve(&field_entry.type_);
-						completion.detail = match self.index.models.resolve_related_field(field.into(), model) {
-							None => Some(format!("{type_}(…)")),
-							Some(relation) => {
-								let relation = interner().resolve(&relation);
-								Some(format!("{type_}(\"{relation}\", …)"))
-							}
-						};
-						completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
-							kind: MarkupKind::Markdown,
-							value: self.field_docstring(field_name, &field_entry, false),
-						}))
-					}
+					_ = self.completion_resolve_field(&mut completion);
+				}
+				Some(CompletionItemKind::METHOD) => {
+					_ = self.completion_resolve_method(&mut completion);
 				}
 				_ => {}
 			}

@@ -1,4 +1,4 @@
-use crate::analyze::{determine_scope, Scope, Type};
+use crate::analyze::{determine_scope, Scope, Type, MODEL_METHODS};
 use crate::{Backend, Text};
 
 use std::borrow::Cow;
@@ -15,7 +15,7 @@ use tower_lsp::lsp_types::*;
 use tracing::{debug, instrument, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor, QueryMatch, Tree};
 
-use odoo_lsp::model::{ModelName, ModelType, ResolveMappedError};
+use odoo_lsp::model::{ModelName, ModelType, PropertyKind, ResolveMappedError};
 use odoo_lsp::utils::*;
 use odoo_lsp::{format_loc, some};
 use ts_macros::query;
@@ -26,7 +26,7 @@ query! {
 
 (call [
   (attribute [
-    (identifier) @_env 
+    (identifier) @_env
     (attribute (_) (identifier) @_env)] (identifier) @_ref)
   (attribute
     (identifier) @REQUEST (identifier) @_render)
@@ -54,12 +54,10 @@ query! {
         (list ((string) @MODEL ","?)*)
         (call
           (attribute
-            (identifier) @_fields (identifier))
+            (identifier) @_fields (identifier) (#eq? @_fields "fields"))
           (argument_list
             (keyword_argument
-              (identifier) @_related (string) @MAPPED)?))]))))
-  (#eq? @_fields "fields")
-  (#eq? @_related "related"))
+              (identifier) @_related (#eq? @_related "related") (string) @MAPPED)?))])))))
 
 (call [
   (attribute
@@ -131,15 +129,17 @@ query! {
         (ERROR (string) @MAPPED) ]) ]) ]))
   (#eq? @DEPENDS "create"))
 
-(class_definition
+((class_definition
   (block [
     (function_definition) @SCOPE
     (decorated_definition
       (decorator
         (call
-          (attribute (identifier) @_api (#eq? @_api "api") (identifier) @_depends (#eq? @_depends "depends"))
+          (attribute (identifier) @_api (identifier) @_depends)
           (argument_list ((string) @MAPPED ","?)*)))
       (function_definition) @SCOPE) ]))
+  (#eq? @_api "api")
+  (#eq? @_depends "depends"))
 
 (class_definition
   (block
@@ -192,12 +192,12 @@ impl Backend {
 							.map(|sym| ModelName::from(interner().get_or_intern(&sym))),
 					);
 					drop(entry);
-					self.index.models.populate_field_names(model_key.into(), &[path]);
+					self.index.models.populate_properties(model_key.into(), &[path]);
 				}
 				ModelType::Inherit(inherits) => {
 					let Some(model) = inherits.first() else { continue };
 					let model_key = interner().get(model).unwrap();
-					self.index.models.populate_field_names(model_key.into(), &[path]);
+					self.index.models.populate_properties(model_key.into(), &[path]);
 				}
 			}
 		}
@@ -320,14 +320,19 @@ impl Backend {
 							let mut needle = needle.as_ref();
 							let mut model = some!(interner().get(model));
 							if !single_field {
-								some!(self
-									.index
-									.models
+								some!((self.index.models)
 									.resolve_mapped(&mut model, &mut needle, Some(&mut range))
 									.ok());
 							}
 							let model_name = interner().resolve(&model);
-							self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)?;
+							self.complete_property_name(
+								needle,
+								range,
+								model_name.to_string(),
+								rope,
+								Some(PropertyKind::Field),
+								&mut items,
+							)?;
 							return Ok(Some(CompletionResponse::List(CompletionList {
 								is_incomplete: !items.has_space(),
 								items: items.into_inner(),
@@ -443,7 +448,14 @@ impl Backend {
 									.ok());
 							}
 							let model_name = interner().resolve(&model);
-							self.complete_field_name(needle, range, model_name.to_string(), rope, &mut items)?;
+							self.complete_property_name(
+								needle,
+								range,
+								model_name.to_string(),
+								rope,
+								Some(PropertyKind::Field),
+								&mut items,
+							)?;
 							return Ok(Some(CompletionResponse::List(CompletionList {
 								is_incomplete: !items.has_space(),
 								items: items.into_inner(),
@@ -457,7 +469,14 @@ impl Backend {
 				let (model, needle, range) = some!(self.attribute_at_offset(offset, root, contents));
 				let rope = rope.clone();
 				let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
-				self.complete_field_name(&needle, range.map_unit(ByteOffset), model.to_string(), rope, &mut items)?;
+				self.complete_property_name(
+					&needle,
+					range.map_unit(ByteOffset),
+					model.to_string(),
+					rope,
+					None,
+					&mut items,
+				)?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
 					is_incomplete: !items.has_space(),
 					items: items.into_inner(),
@@ -1054,13 +1073,6 @@ impl Backend {
 							if node.kind() != "attribute" || attribute.as_ref().unwrap().kind() != "identifier" {
 								return ControlFlow::Continue(entered);
 							}
-							match node.parent() {
-								Some(parent) if parent.kind() == "call" => {
-									// We don't handle methods yet, so don't diagnose them.
-									return ControlFlow::Continue(entered);
-								}
-								_ => {}
-							}
 
 							let attribute = attribute.unwrap();
 							static MODEL_BUILTINS: phf::Set<&str> = phf::phf_set!(
@@ -1070,11 +1082,18 @@ impl Backend {
 								"display_name",
 								"create_date",
 								"write_date",
+								"create_uid",
+								"write_uid",
 								"pool",
-								"record"
+								"record",
+								"flush_model",
+								"mapped",
 							);
 							let prop = String::from_utf8_lossy(&contents[attribute.byte_range()]);
-							if prop.starts_with('_') || MODEL_BUILTINS.contains(&prop) {
+							if prop.starts_with('_')
+								|| MODEL_BUILTINS.contains(&prop)
+								|| MODEL_METHODS.contains(prop.as_bytes())
+							{
 								return ControlFlow::Continue(entered);
 							}
 
@@ -1101,7 +1120,7 @@ impl Backend {
 								range: ts_range_to_lsp_range(attribute.range()),
 								severity: Some(DiagnosticSeverity::ERROR),
 								message: format!(
-									"Model `{}` has no field `{}`",
+									"Model `{}` has no property `{}`",
 									interner().resolve(&model_name),
 									String::from_utf8_lossy(&contents[attribute.byte_range()]),
 								),
@@ -1238,18 +1257,25 @@ impl Backend {
 		}
 		let mut has_field = false;
 		if self.index.models.contains_key(&model.into()) {
-			let Some(entry) = self.index.models.populate_field_names(model.into(), &[]) else {
+			let Some(entry) = self.index.models.populate_properties(model.into(), &[]) else {
 				return;
 			};
-			let Some(fields) = entry.fields.as_ref() else {
-				return;
-			};
-			static MAPPED_BUILTINS: phf::Set<&str> = phf::phf_set!("id", "display_name", "create_date", "write_date");
+			static MAPPED_BUILTINS: phf::Set<&str> = phf::phf_set!(
+				"id",
+				"display_name",
+				"create_date",
+				"write_date",
+				"create_uid",
+				"write_uid"
+			);
 			if MAPPED_BUILTINS.contains(needle) {
 				return;
 			}
+			let (Some(fields), Some(methods)) = (entry.fields.as_ref(), entry.methods.as_ref()) else {
+				return;
+			};
 			if let Some(key) = interner().get(needle) {
-				has_field = fields.contains_key(&key.into());
+				has_field = fields.contains_key(&key.into()) || methods.contains_key(&key.into());
 			}
 		}
 		if !has_field {
@@ -1318,7 +1344,7 @@ impl<'this> ThisModel<'this> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use odoo_lsp::model::ModelFields;
+	use odoo_lsp::model::ModelProperties;
 	use pretty_assertions::assert_eq;
 
 	/// Tricky behavior here. The query syntax must match the trailing comma between
@@ -1332,17 +1358,29 @@ mod tests {
 class Foo(models.Model):
 	foo = fields.Char('asd', help='asd')
 	bar = fields.Many2one(comodel_name='asd', help='asd')
-	what = fields.What(asd)
+
+	@property
+	def foobs(self):
+		...
+
 	haha = fields.Many2many('asd')
-	html = fields.Html(related='asd', foo=123, help='asdf')"#;
+	what = fields.What(asd)
+
+	def passer(self):
+		...
+
+	html = fields.Html(related='asd', foo=123, help='asdf')
+"#;
 		let ast = parser.parse(&contents[..], None).unwrap();
-		let query = ModelFields::query();
+		let query = ModelProperties::query();
 		let mut cursor = QueryCursor::new();
 		let expected: &[&[&str]] = &[
 			&["foo", "fields", "Char", "'asd'", "help", "'asd'"],
 			&["bar", "fields", "Many2one", "comodel_name", "'asd'", "help", "'asd'"],
-			&["what", "fields", "What"],
+			&["def foobs(self):\n\t\t...", "foobs"],
 			&["haha", "fields", "Many2many", "'asd'"],
+			&["what", "fields", "What"],
+			&["def passer(self):\n\t\t...", "passer"],
 			&[
 				"html", "fields", "Html", "related", "'asd'", "foo", "123", "help", "'asdf'",
 			],

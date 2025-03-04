@@ -11,7 +11,7 @@ use lasso::Spur;
 use miette::diagnostic;
 use odoo_lsp::component::{ComponentTemplate, PropType};
 use odoo_lsp::index::{interner, PathSymbol};
-use odoo_lsp::model::{Field, FieldKind};
+use odoo_lsp::model::{Field, FieldKind, PropertyKind};
 use odoo_lsp::template::gather_templates;
 use ropey::{Rope, RopeSlice};
 use tower_lsp::lsp_types::*;
@@ -230,7 +230,7 @@ impl Backend {
 				let model_key = some!(model_filter);
 				let model = some!(interner().get(&model_key));
 				let relation = {
-					let fields = some!(self.index.models.populate_field_names(model.into(), &[])).downgrade();
+					let fields = some!(self.index.models.populate_properties(model.into(), &[])).downgrade();
 					let fields = some!(fields.fields.as_ref());
 					let relation = some!(interner().get(relation));
 					let Some(Field {
@@ -269,7 +269,14 @@ impl Backend {
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 					model_filter = interner().resolve(&model).to_string();
 				}
-				self.complete_field_name(needle, replace_range, model_filter, rope.clone(), &mut items)?;
+				self.complete_property_name(
+					needle,
+					replace_range,
+					model_filter,
+					rope.clone(),
+					Some(PropertyKind::Field),
+					&mut items,
+				)?;
 			}
 			RefKind::TInherit | RefKind::TCall => {
 				self.complete_template_name(needle, replace_range, rope.clone(), &mut items)
@@ -335,11 +342,12 @@ impl Backend {
 					needle = &needle[..needle_end];
 				}
 				let anchor = value_range.start + relative_offset;
-				self.complete_field_name(
+				self.complete_property_name(
 					needle,
 					range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)),
 					interner().resolve(&model).to_string(),
 					rope.clone(),
+					None, // Field would be better, but leave this here at least until @property is implemented
 					&mut items,
 				)?;
 			}
