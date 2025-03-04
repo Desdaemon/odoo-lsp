@@ -1,5 +1,5 @@
-use crate::analyze::{determine_scope, Scope, Type, MODEL_METHODS};
 use crate::{Backend, Text};
+use odoo_lsp::analyze::{determine_scope, Scope, Type, MODEL_METHODS};
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use lasso::Spur;
 use miette::{diagnostic, miette};
-use odoo_lsp::index::{index_models, interner, PathSymbol};
+use odoo_lsp::index::{index_models, interner, Index, PathSymbol};
 use ropey::Rope;
 use tower_lsp::lsp_types::*;
 use tracing::{debug, instrument, trace, warn};
@@ -185,7 +185,12 @@ impl Backend {
 			match model.type_ {
 				ModelType::Base { name, ancestors } => {
 					let model_key = interner().get(&name).unwrap();
-					let mut entry = self.index.models.try_get_mut(&model_key.into()).unwrap();
+					let mut entry = self
+						.index
+						.models
+						.try_get_mut(&model_key.into())
+						.expect(format_loc!("deadlock"))
+						.unwrap();
 					entry.ancestors.extend(
 						ancestors
 							.into_iter()
@@ -241,8 +246,11 @@ impl Backend {
 						Some(PyCompletions::ForXmlId) => {
 							let model = || {
 								let model = capture.node.prev_named_sibling()?;
-								let model =
-									self.model_of_range(root, model.byte_range().map_unit(ByteOffset), contents)?;
+								let model = self.index.model_of_range(
+									root,
+									model.byte_range().map_unit(ByteOffset),
+									contents,
+								)?;
 								Some(interner().resolve(&model))
 							};
 							model_filter = model()
@@ -545,7 +553,7 @@ impl Backend {
 
 		let model;
 		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next() {
-			let model_ = self.model_of_range(root, local_model.byte_range().map_unit(ByteOffset), contents)?;
+			let model_ = (self.index).model_of_range(root, local_model.byte_range().map_unit(ByteOffset), contents)?;
 			model = interner().resolve(&model_).to_string();
 		} else if let Some(field_model) = match_.nodes_for_capture_index(PyCompletions::Model as _).next() {
 			// A sibling @MODEL node; this is defined on the `fields.*(comodel_name='@MODEL', domain=[..])` pattern
@@ -647,7 +655,7 @@ impl Backend {
 								some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 							}
 							let model = interner().resolve(&model);
-							return self.jump_def_field_name(needle, model);
+							return self.jump_def_property_name(needle, model);
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
@@ -667,13 +675,13 @@ impl Backend {
 			}
 		}
 
-		let (model, field, _) = some!(self.attribute_at_offset(offset, root, contents));
-		self.jump_def_field_name(&field, model)
+		let (model, prop, _) = some!(self.attribute_at_offset(offset, root, contents));
+		self.jump_def_property_name(&prop, model)
 	}
 	/// Resolves the attribute and the object's model at the cursor offset
 	/// using [`model_of_range`][Backend::model_of_range].
 	///
-	/// Returns `(model, field, range)`.
+	/// Returns `(model, property, range)`.
 	fn attribute_at_offset<'out>(
 		&'out self,
 		offset: usize,
@@ -681,7 +689,7 @@ impl Backend {
 		contents: &'out [u8],
 	) -> Option<(&'out str, Cow<'out, str>, core::ops::Range<usize>)> {
 		let (lhs, field, range) = Self::attribute_node_at_offset(offset, root, contents)?;
-		let model = self.model_of_range(root, lhs.byte_range().map_unit(ByteOffset), contents)?;
+		let model = (self.index).model_of_range(root, lhs.byte_range().map_unit(ByteOffset), contents)?;
 		let model = interner().resolve(&model);
 		Some((model, field, range))
 	}
@@ -831,7 +839,9 @@ impl Backend {
 				}
 			}
 		}
-		Ok(None)
+
+		let (model, prop, _) = some!(self.attribute_at_offset(offset, root, contents));
+		self.method_references(&prop, model)
 	}
 
 	pub fn python_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
@@ -889,7 +899,7 @@ impl Backend {
 								.ok());
 						}
 						let model = interner().resolve(&model);
-						return self.hover_field_name(needle, model, offset_range_to_lsp_range(range, rope.clone()));
+						return self.hover_property_name(needle, model, offset_range_to_lsp_range(range, rope.clone()));
 					}
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
 						let xml_id = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
@@ -911,16 +921,16 @@ impl Backend {
 				}
 			}
 		}
-		if let Some((model, field, range)) = self.attribute_at_offset(offset, root, contents) {
+		if let Some((model, prop, range)) = self.attribute_at_offset(offset, root, contents) {
 			let lsp_range = offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone());
-			return self.hover_field_name(&field, model, lsp_range);
+			return self.hover_property_name(&prop, model, lsp_range);
 		}
 
 		// No matches, assume arbitrary expression.
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
 		let lsp_range = ts_range_to_lsp_range(needle.range());
-		let model = some!(self.model_of_range(root, needle.byte_range().map_unit(ByteOffset), contents));
+		let model = some!((self.index).model_of_range(root, needle.byte_range().map_unit(ByteOffset), contents));
 		let model = interner().resolve(&model);
 		let identifier =
 			(needle.kind() == "identifier").then(|| String::from_utf8_lossy(&contents[needle.byte_range()]));
@@ -1066,8 +1076,8 @@ impl Backend {
 							Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
 						);
 						let scope_end = fn_scope.end_byte();
-						Self::walk_scope(fn_scope, Some(scope), |scope, node| {
-							let entered = self.build_scope(scope, node, scope_end, contents)?;
+						Index::walk_scope(fn_scope, Some(scope), |scope, node| {
+							let entered = (self.index).build_scope(scope, node, scope_end, contents)?;
 
 							let attribute = node.child_by_field_name("attribute");
 							if node.kind() != "attribute" || attribute.as_ref().unwrap().kind() != "identifier" {
@@ -1088,6 +1098,8 @@ impl Backend {
 								"record",
 								"flush_model",
 								"mapped",
+								"fields_get",
+								"user_has_groups",
 							);
 							let prop = String::from_utf8_lossy(&contents[attribute.byte_range()]);
 							if prop.starts_with('_')
@@ -1098,16 +1110,16 @@ impl Backend {
 							}
 
 							let Some(lhs_t) =
-								self.type_of(node.child_by_field_name("object").unwrap(), scope, contents)
+								(self.index).type_of(node.child_by_field_name("object").unwrap(), scope, contents)
 							else {
 								return ControlFlow::Continue(entered);
 							};
 
-							let Some(model_name) = self.resolve_type(&lhs_t, scope) else {
+							let Some(model_name) = (self.index).resolve_type(&lhs_t, scope) else {
 								return ControlFlow::Continue(entered);
 							};
 
-							if self.has_attribute(&lhs_t, &contents[attribute.byte_range()], scope) {
+							if (self.index).has_attribute(&lhs_t, &contents[attribute.byte_range()], scope) {
 								return ControlFlow::Continue(entered);
 							}
 

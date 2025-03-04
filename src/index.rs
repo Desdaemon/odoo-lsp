@@ -390,6 +390,7 @@ impl Index {
 			}
 		}
 	}
+	/// Has complexity of `O(len(self.roots))`
 	pub fn module_of_path(&self, path: &Path) -> Option<ModuleName> {
 		use std::path::Component;
 		for entry in self.roots.iter() {

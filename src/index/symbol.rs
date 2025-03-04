@@ -40,6 +40,10 @@ impl PathSymbol {
 		let path = self.to_path();
 		path.to_string_lossy().into_owned()
 	}
+	#[inline]
+	pub fn subpath(&self) -> &str {
+		interner().resolve(&self.1)
+	}
 }
 
 impl Display for PathSymbol {

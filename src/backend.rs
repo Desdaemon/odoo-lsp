@@ -7,7 +7,6 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
 use fomat_macros::fomat;
@@ -25,7 +24,7 @@ use tree_sitter::{Parser, Tree};
 
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{interner, Component, Index, Interner, ModuleName, RecordId, Symbol, SymbolSet};
-use odoo_lsp::model::{Field, FieldKind, ModelEntry, ModelLocation, ModelName, PropertyKind};
+use odoo_lsp::model::{Field, FieldKind, Method, ModelEntry, ModelLocation, ModelName, PropertyKind};
 use odoo_lsp::record::Record;
 use odoo_lsp::{format_loc, some, utils::*};
 
@@ -370,7 +369,7 @@ impl Backend {
 		}
 		Ok(())
 	}
-	/// `only_properties` should be specified if a particular kind of [property][PropertyKind] should be included,
+	/// `for_only_prop` should be specified if a particular kind of [property][PropertyKind] should be included,
 	/// defaults to any if not specified.
 	pub fn complete_property_name(
 		&self,
@@ -400,18 +399,19 @@ impl Backend {
 				return None;
 			}
 			// SAFETY: only utf-8 bytestrings from interner() are allowed
-			let property_name = unsafe { core::str::from_utf8_unchecked(property_name).to_string() };
+			let label = unsafe { core::str::from_utf8_unchecked(property_name).to_string() };
+			let mut new_text = label.to_string();
+			if matches!(kind, PropertyKind::Method) {
+				new_text += "()";
+			}
 			let kind = Some(match kind {
 				PropertyKind::Field => CompletionItemKind::FIELD,
 				PropertyKind::Method => CompletionItemKind::METHOD,
 			});
 			Some(CompletionItem {
-				label: property_name.clone(),
+				label,
 				kind,
-				text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-					range,
-					new_text: property_name,
-				})),
+				text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
 				data: serde_json::to_value(CompletionData { model: model.clone() }).ok(),
 				..Default::default()
 			})
@@ -647,12 +647,17 @@ impl Backend {
 			range,
 		})
 	}
-	pub fn jump_def_field_name(&self, field: &str, model: &str) -> miette::Result<Option<Location>> {
+	pub fn jump_def_property_name(&self, property: &str, model: &str) -> miette::Result<Option<Location>> {
 		let model_key = interner().get_or_intern(model);
 		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
-		let field = some!(interner().get(field));
-		let field = some!(entry.fields.as_ref()).get(&field.into());
-		Ok(Some(some!(field).location.clone().into()))
+		let prop = some!(interner().get(property));
+		if let Some(field) = entry.fields.as_ref().and_then(|fields| fields.get(&prop.into())) {
+			Ok(Some(field.location.clone().into()))
+		} else if let Some(method) = entry.methods.as_ref().and_then(|methods| methods.get(&prop.into())) {
+			Ok(Some(some!(method.locations.first().cloned()).into()))
+		} else {
+			Ok(None)
+		}
 	}
 	pub fn jump_def_template_name(&self, name: &str) -> miette::Result<Option<Location>> {
 		let name = some!(interner().get(name));
@@ -686,18 +691,40 @@ impl Backend {
 		}
 		None
 	}
-	pub fn hover_field_name(&self, name: &str, model: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
+	pub fn hover_property_name(&self, name: &str, model: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
 		let model_key = interner().get_or_intern(model);
-		let fields = some!(self.index.models.populate_properties(model_key.into(), &[]));
-		let field = some!(interner().get(name));
-		let field = some!(fields.fields.as_ref()).get(&field.into());
-		Ok(Some(Hover {
-			range,
-			contents: HoverContents::Markup(MarkupContent {
-				kind: MarkupKind::Markdown,
-				value: self.field_docstring(name, some!(field), true),
-			}),
-		}))
+		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
+		let prop = some!(interner().get(name));
+		if let Some(field) = entry.fields.as_ref().and_then(|fields| fields.get(&prop.into())) {
+			Ok(Some(Hover {
+				range,
+				contents: HoverContents::Markup(MarkupContent {
+					kind: MarkupKind::Markdown,
+					value: self.field_docstring(field, true),
+				}),
+			}))
+		} else if entry
+			.methods
+			.as_ref()
+			.is_some_and(|methods| methods.contains_key(&prop.into()))
+		{
+			drop(entry);
+			let rtype = self
+				.index
+				.resolve_method_returntype(prop.into(), model_key)
+				.map(|model| interner().resolve(&model));
+			let model = self.index.models.get(&model_key.into()).unwrap();
+			let method = model.methods.as_ref().unwrap().get(&prop.into()).unwrap();
+			Ok(Some(Hover {
+				range,
+				contents: HoverContents::Markup(MarkupContent {
+					kind: MarkupKind::Markdown,
+					value: self.method_docstring(name, method, rtype),
+				}),
+			}))
+		} else {
+			Ok(None)
+		}
 	}
 	pub fn hover_record(&self, xml_id: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
 		let key = some!(interner().get(xml_id));
@@ -728,6 +755,13 @@ impl Backend {
 		} else {
 			Ok(Some(record_locations.take(limit).collect()))
 		}
+	}
+	pub fn method_references(&self, prop: &str, model: &str) -> miette::Result<Option<Vec<Location>>> {
+		let model_key = interner().get_or_intern(model);
+		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
+		let prop = some!(interner().get(prop));
+		let method = some!(some!(entry.methods.as_ref()).get(&prop.into()));
+		Ok(Some(method.locations.iter().map(|loc| loc.clone().into()).collect()))
 	}
 	pub fn record_references(
 		&self,
@@ -830,12 +864,11 @@ impl Backend {
 			}
 		}
 	}
-	pub fn field_docstring(&self, name: &str, field: &Field, signature: bool) -> String {
+	pub fn field_docstring(&self, field: &Field, signature: bool) -> String {
 		fomat! {
 			if signature {
 				"```python\n"
-				(name) " = fields." (interner().resolve(&field.type_))
-				r#"("#
+				"(field) " (interner().resolve(&field.type_)) r#"("#
 				match &field.kind {
 					FieldKind::Value | FieldKind::Related(_) => {}
 					FieldKind::Relational(relation) => { "\"" (interner().resolve(relation)) "\", " }
@@ -849,6 +882,41 @@ impl Backend {
 				"*Defined in:* `" (interner().resolve(&module)) "`  \n"
 			}
 			if let Some(help) = &field.help { (help.to_string()) }
+		}
+	}
+	pub fn method_docstring(&self, name: &str, method: &Method, rtype: Option<&str>) -> String {
+		let origin_fragment = match method.locations.as_slice() {
+			[] => String::new(),
+			[first, rest @ ..] => {
+				let rest = rest.iter().filter_map(|override_| {
+					self.index
+						.module_of_path(&override_.path.to_path())
+						.map(|module| (interner().resolve(&module), override_, override_.range))
+				});
+				fomat! {
+					if let Some(module) = self
+						.index
+						.module_of_path(&first.path.to_path())
+					{
+						"*Defined in:* `" (interner().resolve(&module)) "`  \n"
+					}
+					for (idx, (module, override_, range)) in rest.enumerate() {
+						if idx == 0 { "*Overridden in:*\n" }
+						"- [`" (module) "`](" (override_.path.to_string()) "#L" (range.start.line + 1) ")  \n  in " (override_.path.subpath()) ":" (range.start.line + 1)
+					} sep { "\n" }
+				}
+			}
+		};
+		let rtype = match rtype {
+			Some(type_) => format!("Model[\"{type_}\"]"),
+			None => "…".to_string(),
+		};
+		fomat! {
+			"```python\n"
+			"(method) def " (name) "(…) → " (rtype)
+			"\n"
+			"```\n"
+			(origin_fragment)
 		}
 	}
 	pub async fn on_change_config(&self, config: Config) {
@@ -958,7 +1026,6 @@ impl Backend {
 			.take()
 			.and_then(|raw| serde_json::from_value(raw).ok())?;
 		let field = interner().get(&completion.label)?;
-		let field_name = interner().resolve(&field);
 		let model = interner().get(model)?;
 		let mut entry = self
 			.index
@@ -979,7 +1046,7 @@ impl Backend {
 		};
 		completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 			kind: MarkupKind::Markdown,
-			value: self.field_docstring(field_name, &field_entry, false),
+			value: self.field_docstring(&field_entry, false),
 		}));
 
 		Some(())
@@ -990,26 +1057,19 @@ impl Backend {
 			.take()
 			.and_then(|raw| serde_json::from_value(raw).ok())?;
 		let method = interner().get(&completion.label)?;
+		let model_key = interner().get(&model)?;
 		let method_name = interner().resolve(&method);
-		let model = interner().get(model)?;
-		let mut entry = self
+		let rtype = self
 			.index
-			.models
-			.try_get_mut(&model.into())
-			.expect(format_loc!("deadlock"))?;
-		let methods = entry.methods.as_mut()?;
-		let method_entry = Arc::make_mut(methods.get_mut(&method.into())?);
-		drop(entry);
-
-		let docstring = fomat! {
-			"```python\n"
-			"(method) def " (completion.label) "(…) → …\n"
-			"```"
-		};
+			.resolve_method_returntype(method.into(), model_key)
+			.map(|model| interner().resolve(&model));
+		let entry = self.index.models.get(&model_key.into())?;
+		let methods = entry.methods.as_ref()?;
+		let method_entry = methods.get(&method.into())?;
 
 		completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 			kind: MarkupKind::Markdown,
-			value: docstring,
+			value: self.method_docstring(method_name, method_entry, rtype),
 		}));
 
 		Some(())

@@ -89,9 +89,8 @@ use tracing::{debug, error, info, instrument, warn};
 
 use odoo_lsp::config::Config;
 use odoo_lsp::index::{interner, Interner};
-use odoo_lsp::{format_loc, loc, some, utils::*};
+use odoo_lsp::{loc, some, utils::*};
 
-mod analyze;
 mod backend;
 mod catch_panic;
 mod cli;
@@ -102,7 +101,7 @@ mod xml;
 #[cfg(doc)]
 pub use odoo_lsp::*;
 
-use backend::{Backend, CompletionData, Document, Language, Text};
+use backend::{Backend, Document, Language, Text};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;

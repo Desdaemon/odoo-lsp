@@ -1,5 +1,5 @@
-use crate::analyze::{normalize, Scope, Type};
 use crate::{Backend, Text};
+use odoo_lsp::analyze::{normalize, Scope, Type};
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -10,7 +10,7 @@ use fomat_macros::fomat;
 use lasso::Spur;
 use miette::diagnostic;
 use odoo_lsp::component::{ComponentTemplate, PropType};
-use odoo_lsp::index::{interner, PathSymbol};
+use odoo_lsp::index::{interner, Index, PathSymbol};
 use odoo_lsp::model::{Field, FieldKind, PropertyKind};
 use odoo_lsp::template::gather_templates;
 use ropey::{Rope, RopeSlice};
@@ -28,8 +28,8 @@ enum RefKind<'a> {
 	Ref(&'a str),
 	Model,
 	Id,
-	/// A list of `(start_byte, field)` which came before this field, or empty if a top-level field.
-	FieldName(Vec<(usize, &'a str)>),
+	/// A list of `(start_byte, field)` which came before this property, or empty if a top-level field.
+	PropertyName(Vec<(usize, &'a str)>),
 	TName,
 	TInherit,
 	TCall,
@@ -257,7 +257,7 @@ impl Backend {
 				self.complete_model(needle, replace_range, rope.clone(), &mut items)
 					.await?
 			}
-			RefKind::FieldName(access) => {
+			RefKind::PropertyName(access) => {
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
 					"{}.{needle}",
@@ -305,7 +305,7 @@ impl Backend {
 				else {
 					// Suggest items in the current scope
 					items.extend(scope.iter().map(|(ident, model)| {
-						let Some(model) = self.resolve_type(model, &scope) else {
+						let Some(model) = (self.index).resolve_type(model, &scope) else {
 							return CompletionItem {
 								label: ident.to_string(),
 								kind: Some(CompletionItemKind::VARIABLE),
@@ -330,12 +330,12 @@ impl Backend {
 					break 'expr;
 				};
 				// in this case walk_scope eventually ends so just retrieve the scope under its control
-				let (default_scope, scope) = Self::walk_scope(ast.root_node(), Some(scope.clone()), |scope, node| {
-					self.build_scope(scope, node, range.end, contents)
+				let (default_scope, scope) = Index::walk_scope(ast.root_node(), Some(scope.clone()), |scope, node| {
+					self.index.build_scope(scope, node, range.end, contents)
 				});
 				let scope = scope.unwrap_or(default_scope);
-				let model = some!(self.type_of(object, &scope, contents));
-				let model = some!(self.resolve_type(&model, &scope));
+				let model = some!(self.index.type_of(object, &scope, contents));
+				let model = some!(self.index.resolve_type(&model, &scope));
 				let needle_end = py_offset.saturating_sub(range.start);
 				let mut needle = field.as_ref();
 				if !needle.is_empty() && needle_end < needle.len() {
@@ -384,11 +384,11 @@ impl Backend {
 		match ref_kind {
 			Some(RefKind::Ref(_)) => self.jump_def_xml_id(needle, uri),
 			Some(RefKind::Model) => self.jump_def_model(needle),
-			Some(RefKind::FieldName(access)) => {
+			Some(RefKind::PropertyName(access)) => {
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
 					"{}.{needle}",
-					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
+					access.iter().map(|(_, prop)| *prop).collect::<Vec<_>>().join(".")
 				);
 				if !access.is_empty() {
 					needle = mapped.as_str();
@@ -396,7 +396,7 @@ impl Backend {
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 					model_filter = interner().resolve(&model).to_string();
 				}
-				self.jump_def_field_name(needle, &model_filter)
+				self.jump_def_property_name(needle, &model_filter)
 			}
 			Some(RefKind::TInherit) | Some(RefKind::TName) | Some(RefKind::TCall) => {
 				self.jump_def_template_name(needle)
@@ -414,9 +414,9 @@ impl Backend {
 				let contents = needle.as_bytes();
 				let ast = some!(parser.parse(contents, None));
 				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), contents));
-				let model = some!(self.type_of(object, &scope, contents));
-				let model = some!(self.resolve_type(&model, &Scope::default()));
-				self.jump_def_field_name(&field, interner().resolve(&model))
+				let model = some!(self.index.type_of(object, &scope, contents));
+				let model = some!(self.index.resolve_type(&model, &Scope::default()));
+				self.jump_def_property_name(&field, interner().resolve(&model))
 			}
 			Some(RefKind::Component) => {
 				let component = some!(interner().get(needle));
@@ -455,7 +455,7 @@ impl Backend {
 			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.template_references(cursor_value, true),
 			Some(RefKind::TName) => self.template_references(cursor_value, false),
 			Some(RefKind::PyExpr(_))
-			| Some(RefKind::FieldName(_))
+			| Some(RefKind::PropertyName(_))
 			| Some(RefKind::PropOf(..))
 			| Some(RefKind::Component)
 			| Some(RefKind::Widget)
@@ -495,7 +495,7 @@ impl Backend {
 					self.hover_record(&xml_id, lsp_range)
 				}
 			}
-			Some(RefKind::FieldName(access)) => {
+			Some(RefKind::PropertyName(access)) => {
 				// let model = some!(model_filter);
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
@@ -508,7 +508,7 @@ impl Backend {
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 					model_filter = interner().resolve(&model).to_string();
 				}
-				self.hover_field_name(needle, &model_filter, lsp_range)
+				self.hover_property_name(needle, &model_filter, lsp_range)
 			}
 			Some(RefKind::Id) => {
 				let current_module = some!(current_module);
@@ -537,7 +537,7 @@ impl Backend {
 							.map_unit(|unit| ByteOffset(unit + ref_range.start + relative_offset)),
 						rope.clone(),
 					);
-					if let Some(model) = self.resolve_type(scope_type, &scope) {
+					if let Some(model) = (self.index).resolve_type(scope_type, &scope) {
 						return self.hover_model(interner().resolve(&model), lsp_range, true, Some(&needle));
 					}
 					return Ok(Some(Hover {
@@ -548,10 +548,10 @@ impl Backend {
 						)),
 					}));
 				};
-				let model = some!(self.type_of(object, &scope, contents));
-				let model = some!(self.resolve_type(&model, &scope));
+				let model = some!(self.index.type_of(object, &scope, contents));
+				let model = some!(self.index.resolve_type(&model, &scope));
 				let anchor = ref_range.start + relative_offset;
-				self.hover_field_name(
+				self.hover_property_name(
 					&field,
 					interner().resolve(&model),
 					offset_range_to_lsp_range(range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)), rope.clone()),
@@ -712,7 +712,7 @@ impl Backend {
 						}
 						"name" if value_in_range => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
-							ref_kind = Some(RefKind::FieldName(
+							ref_kind = Some(RefKind::PropertyName(
 								accesses
 									.iter()
 									.map(|access| (access.field.start(), access.field.as_str()))
@@ -1036,8 +1036,9 @@ impl Backend {
 		contents: &[u8],
 	) -> miette::Result<()> {
 		normalize(&mut root);
-		let type_ = self.type_of(root, scope, contents).unwrap_or(Type::Value);
+		let type_ = self.index.type_of(root, scope, contents).unwrap_or(Type::Value);
 		let type_ = self
+			.index
 			.resolve_type(&type_, scope)
 			.map(|model| Type::Model(interner().resolve(&model).into()))
 			.unwrap_or(type_);

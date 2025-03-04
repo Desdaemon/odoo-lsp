@@ -107,7 +107,7 @@ pub enum MethodReturnType {
 	#[default]
 	Unprocessed,
 	Value,
-	Relational(Symbol<Model>),
+	Relational(Symbol<ModelEntry>),
 }
 
 impl Field {
@@ -559,6 +559,8 @@ impl ModelIndex {
 		Ok(())
 	}
 	/// Turns related fields ([`FieldKind::Related`]) into concrete fields, and return the field's type itself if successful.
+	///
+	/// Deadlocks if an entry in [`ModelIndex`] is held with the key `model`.
 	#[must_use = "normalized relation might not have been updated back to the central index"]
 	pub fn resolve_related_field(&self, field: Symbol<Field>, model: Spur) -> Option<Spur> {
 		// Why populate?
@@ -602,11 +604,6 @@ impl ModelIndex {
 			FieldKind::Value => None,
 			FieldKind::Related(_) => None,
 		}
-	}
-	pub fn resolve_method_signature(&self, method: &mut Method) -> Option<()> {
-		let first = method.locations.first().as_ref()?;
-
-		None
 	}
 	pub(crate) fn statistics(&self) -> serde_json::Value {
 		let Self { inner, by_prefix } = self;
@@ -656,6 +653,23 @@ impl ModelEntry {
 
 		Ok(())
 	}
+	pub fn prop_kind(&self, prop: Spur) -> Option<PropertyKind> {
+		if self
+			.fields
+			.as_ref()
+			.is_some_and(|fields| fields.contains_key(&prop.into()))
+		{
+			Some(PropertyKind::Field)
+		} else if self
+			.methods
+			.as_ref()
+			.is_some_and(|methods| methods.contains_key(&prop.into()))
+		{
+			Some(PropertyKind::Method)
+		} else {
+			None
+		}
+	}
 }
 
 /// `node` must be `[(string) (concatenated_string)]`
@@ -692,39 +706,15 @@ fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
 
 #[cfg(test)]
 mod tests {
-	use rayon::slice::ParallelSliceMut;
-use tree_sitter::{Parser, QueryCursor};
-
-	use super::{test_utils, ModelIndex};
-	use crate::index::{index_models, interner, ModelQuery, PathSymbol};
 	use pretty_assertions::assert_eq;
-	use std::{collections::HashSet, path::Path};
+	use std::collections::HashSet;
+	use tree_sitter::{Parser, QueryCursor};
 
-	macro_rules! assert_matches {
-		($obj:expr, $pat:pat) => {
-			assert!(
-				matches!($obj, $pat),
-				"{}",
-				pretty_assertions::StrComparison::new(&format!("{:#?}", $obj), stringify!($pat))
-			)
-		};
-	}
+	use crate::{
+		index::{interner, ModelQuery},
+		test_utils::cases::foo::{prepare_foo_index, FOO_PY},
+	};
 
-	const FOO_PY: &[u8] = br#"
-class Foo(Model):
-	_name = 'foo'
-
-	bar = Char()
-
-class Bar(Model):
-	_name = 'bar'
-	_inherit = 'foo'
-
-	baz = Char()
-
-	def test(self):
-		...
-"#;
 	fn clamp_str(str: &str) -> &str {
 		if str.len() > 10 {
 			&str[..10]
@@ -741,7 +731,6 @@ class Bar(Model):
 		let ast = parser.parse(FOO_PY, None).unwrap();
 		let matches = QueryCursor::new()
 			.matches(query, ast.root_node(), FOO_PY)
-			.into_iter()
 			.map(|match_| {
 				(match_.captures.iter())
 					.map(|cap| {
@@ -779,25 +768,7 @@ class Bar(Model):
 
 	#[test]
 	fn test_populate_properties() {
-		let rt = tokio::runtime::Builder::new_current_thread()
-			.enable_all()
-			.build()
-			.unwrap();
-
-		const ROOT: &str = "/addons";
-		const FOO_PY_PATH: &str = "/addons/foo.py";
-		if let Ok(mut fs) = test_utils::fs::TEST_FS.write() {
-			fs.insert(FOO_PY_PATH.into(), FOO_PY);
-		} else {
-			panic!("can't modify FS");
-		}
-
-		let index = ModelIndex::default();
-		let foo_models = index_models(FOO_PY).unwrap();
-
-		let root = interner().get_or_intern_static(ROOT);
-		let path = PathSymbol::strip_root(root, Path::new(FOO_PY_PATH));
-		rt.block_on(index.append(path, interner(), false, &foo_models[..]));
+		let index = prepare_foo_index();
 
 		let foo = index
 			.populate_properties(interner().get_or_intern_static("foo").into(), &[])
@@ -807,7 +778,8 @@ class Bar(Model):
 			foo.fields
 				.as_ref()
 				.unwrap()
-				.keys().next()
+				.keys()
+				.next()
 				.map(|sym| interner().resolve(sym)),
 			Some("bar")
 		);
@@ -817,7 +789,13 @@ class Bar(Model):
 			.populate_properties(interner().get_or_intern_static("bar").into(), &[])
 			.unwrap();
 
-		let bar_fields = bar.fields.as_ref().unwrap().keys().map(|sym| interner().resolve(sym)).collect::<HashSet<_>>();
+		let bar_fields = bar
+			.fields
+			.as_ref()
+			.unwrap()
+			.keys()
+			.map(|sym| interner().resolve(sym))
+			.collect::<HashSet<_>>();
 		assert_eq!(bar_fields.len(), 2);
 		assert!(bar_fields.contains("baz"));
 		assert!(bar_fields.contains("bar"));

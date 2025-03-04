@@ -8,9 +8,10 @@ pub mod str;
 pub mod utils;
 pub use str::ImStr;
 
+pub mod analyze;
 pub mod component;
 pub mod model;
 pub mod record;
 pub mod template;
 
-pub(self) mod test_utils;
+pub(crate) mod test_utils;
