@@ -106,6 +106,8 @@ pub struct Method {
 pub enum MethodReturnType {
 	#[default]
 	Unprocessed,
+	/// Set to prevent recursion
+	Processing,
 	Value,
 	Relational(Symbol<ModelEntry>),
 }

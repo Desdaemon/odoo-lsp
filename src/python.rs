@@ -679,7 +679,7 @@ impl Backend {
 		self.jump_def_property_name(&prop, model)
 	}
 	/// Resolves the attribute and the object's model at the cursor offset
-	/// using [`model_of_range`][Backend::model_of_range].
+	/// using [`model_of_range`][Index::model_of_range].
 	///
 	/// Returns `(model, property, range)`.
 	fn attribute_at_offset<'out>(
@@ -1115,7 +1115,7 @@ impl Backend {
 								return ControlFlow::Continue(entered);
 							};
 
-							let Some(model_name) = (self.index).resolve_type(&lhs_t, scope) else {
+							let Some(model_name) = (self.index).try_resolve_model(&lhs_t, scope) else {
 								return ControlFlow::Continue(entered);
 							};
 
@@ -1298,6 +1298,24 @@ impl Backend {
 				..Default::default()
 			});
 		}
+	}
+
+	#[allow(clippy::unused_async)] // reason: custom method
+	pub(crate) async fn debug_inspect_type(
+		&self,
+		params: TextDocumentPositionParams,
+	) -> tower_lsp::jsonrpc::Result<Option<String>> {
+		let uri = &params.text_document.uri;
+		let document = some!(self.document_map.get(uri.path()));
+		let ast = some!(self.ast_map.get(uri.path()));
+		let rope = &document.rope;
+		let contents = Cow::from(rope);
+		let ByteOffset(offset) = some!(position_to_offset(params.position, rope));
+		let root = some!(top_level_stmt(ast.root_node(), offset));
+		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
+		let (type_, _) =
+			some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), contents.as_bytes()));
+		Ok(Some(format!("{type_:?}").replacen("Text::", "", 1)))
 	}
 }
 
@@ -1528,5 +1546,19 @@ class Foo(models.AbstractModel):
 		assert_eq!(&contents[object.byte_range()], b"f");
 		assert_eq!(field.as_ref(), "bar");
 		assert_eq!(&contents[range], b"bar");
+	}
+
+	#[test]
+	fn test_attribute_at_offset_2() {
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+		let contents = "super().powerful()";
+		let offset = contents.find("powerful").unwrap();
+		let contents = contents.as_bytes();
+		let ast = parser.parse(contents, None).unwrap();
+		let (object, field, range) = Backend::attribute_node_at_offset(offset, ast.root_node(), contents).unwrap();
+		assert_eq!(&contents[object.byte_range()], b"super()");
+		assert_eq!(field.as_ref(), "powerful");
+		assert_eq!(&contents[range], b"powerful");
 	}
 }

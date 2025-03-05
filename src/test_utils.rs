@@ -47,6 +47,13 @@ class Bar(Model):
 
 	def test(self):
 		return self.env['foo']
+
+class Quux(Model):
+	_name = 'quux'
+	_inherit = 'bar'
+
+	def test(self):
+		return super().test()
 "#;
 		pub fn prepare_foo_index() -> ModelIndex {
 			let rt = tokio::runtime::Builder::new_current_thread()

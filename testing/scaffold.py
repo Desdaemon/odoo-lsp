@@ -20,10 +20,11 @@ if args and args[0] == "./scaffold.py":
 if len(args) < 1:
     die("Usage: scaffold.py fixtures/fixture_dir [addon1 addon2 ..]")
 
-fixture_dir = Path(args.pop(0))
+fixture_name = args.pop(0)
+fixture_dir = Path(fixture_name)
 os.makedirs(fixture_dir, exist_ok=True)
 
-copyfile("template_test_main.py", fixture_dir.joinpath("test_main.py"))
+copyfile("template_test_main.py", fixture_dir.joinpath(f"test_{fixture_name}.py"))
 copyfile("template_conftest.py", fixture_dir.joinpath("conftest.py"))
 
 with open(fixture_dir.joinpath(".odoo_lsp"), "w+") as config:

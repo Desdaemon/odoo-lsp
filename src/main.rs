@@ -866,6 +866,7 @@ async fn main() {
 	.custom_method("odoo-lsp/debug/usage", |_: &Backend| async move {
 		Ok(interner().report_usage())
 	})
+	.custom_method("odoo-lsp/inspect-type", Backend::debug_inspect_type)
 	.finish();
 
 	let service = ServiceBuilder::new()

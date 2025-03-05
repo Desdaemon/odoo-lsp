@@ -305,7 +305,7 @@ impl Backend {
 				else {
 					// Suggest items in the current scope
 					items.extend(scope.iter().map(|(ident, model)| {
-						let Some(model) = (self.index).resolve_type(model, &scope) else {
+						let Some(model) = (self.index).try_resolve_model(model, &scope) else {
 							return CompletionItem {
 								label: ident.to_string(),
 								kind: Some(CompletionItemKind::VARIABLE),
@@ -335,7 +335,7 @@ impl Backend {
 				});
 				let scope = scope.unwrap_or(default_scope);
 				let model = some!(self.index.type_of(object, &scope, contents));
-				let model = some!(self.index.resolve_type(&model, &scope));
+				let model = some!(self.index.try_resolve_model(&model, &scope));
 				let needle_end = py_offset.saturating_sub(range.start);
 				let mut needle = field.as_ref();
 				if !needle.is_empty() && needle_end < needle.len() {
@@ -415,7 +415,7 @@ impl Backend {
 				let ast = some!(parser.parse(contents, None));
 				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), contents));
 				let model = some!(self.index.type_of(object, &scope, contents));
-				let model = some!(self.index.resolve_type(&model, &Scope::default()));
+				let model = some!(self.index.try_resolve_model(&model, &Scope::default()));
 				self.jump_def_property_name(&field, interner().resolve(&model))
 			}
 			Some(RefKind::Component) => {
@@ -537,7 +537,7 @@ impl Backend {
 							.map_unit(|unit| ByteOffset(unit + ref_range.start + relative_offset)),
 						rope.clone(),
 					);
-					if let Some(model) = (self.index).resolve_type(scope_type, &scope) {
+					if let Some(model) = (self.index).try_resolve_model(scope_type, &scope) {
 						return self.hover_model(interner().resolve(&model), lsp_range, true, Some(&needle));
 					}
 					return Ok(Some(Hover {
@@ -549,7 +549,7 @@ impl Backend {
 					}));
 				};
 				let model = some!(self.index.type_of(object, &scope, contents));
-				let model = some!(self.index.resolve_type(&model, &scope));
+				let model = some!(self.index.try_resolve_model(&model, &scope));
 				let anchor = ref_range.start + relative_offset;
 				self.hover_property_name(
 					&field,
@@ -1039,7 +1039,7 @@ impl Backend {
 		let type_ = self.index.type_of(root, scope, contents).unwrap_or(Type::Value);
 		let type_ = self
 			.index
-			.resolve_type(&type_, scope)
+			.try_resolve_model(&type_, scope)
 			.map(|model| Type::Model(interner().resolve(&model).into()))
 			.unwrap_or(type_);
 		scope.insert(identifier.to_string(), type_);

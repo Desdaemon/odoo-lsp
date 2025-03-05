@@ -19,6 +19,7 @@ from lsprotocol.types import (
     Position,
     CompletionList,
     Diagnostic,
+    TextDocumentPositionParams,
 )
 from typing import Literal
 
@@ -26,14 +27,17 @@ def prepare_query(glob: str, lang: Language, query: str):
     return (glob, lang, Query(lang, query))
 
 QUERIES = {
-    'python': prepare_query('*.py', tslangs.get_language('python'), """
+    'python': prepare_query('**/*.py', tslangs.get_language('python'), r"""
         ((comment) @diag
-        (#match? @diag "\\\\^diag "))
+        (#match? @diag "\\^diag "))
 
         ((comment) @complete
-        (#match? @complete "\\\\^complete "))
+        (#match? @complete "\\^complete "))
+
+        ((comment) @type
+        (#match? @type "\\^type "))
     """),
-    'xml': prepare_query('*.xml', tslangs.get_language('xml'), """
+    'xml': prepare_query('**/*.xml', tslangs.get_language('xml'), """
         ((Comment) @diag
         (#match? @diag "\\\\^diag "))
 
@@ -46,13 +50,14 @@ def splay_diag(diags: list[Diagnostic]):
     return ((d.range.start, d.message) for d in diags)
 
 class Expected:
-    __slots__ = ("diag", "complete")
     diag: list[tuple[Position, str]]
     complete: list[tuple[Position, list[str]]]
+    type_: list[tuple[Position, str]]
 
     def __init__(self):
         self.diag = []
         self.complete = []
+        self.type_ = []
 
 class PositionOperator(BaseOperator):
     def give_up_diffing(self, level: DiffLevel, diff_instance: DeepDiff) -> bool:
@@ -68,7 +73,7 @@ def inc(position: Position):
 async def fixture_test(client: LanguageClient, rootdir: str, language: Literal['python', 'xml'] = 'python'):
     glob, lang, query = QUERIES[language]
     files = {
-        file: file.read_text() for file in Path(rootdir).joinpath("foo").rglob(glob)
+        file: file.read_text() for file in Path(rootdir).rglob(glob)
     }
     expected = defaultdict[Path, Expected](Expected)
     asts = dict[Path, Tree]()
@@ -94,6 +99,12 @@ async def fixture_test(client: LanguageClient, rootdir: str, language: Literal['
                     node.start_point.row - 1, node.start_point.column + offset
                 )
                 expected[file].complete.append((pos, completions))
+            elif (offset := text.find("^type ")) != -1:
+                type_ = text[offset + 6 :].strip()
+                pos = Position(
+                    node.start_point.row - 1, node.start_point.column + offset
+                )
+                expected[file].type_.append((pos, type_))
 
     unexpected: list[str] = []
     for file, text in files.items():
@@ -145,6 +156,26 @@ async def fixture_test(client: LanguageClient, rootdir: str, language: Literal['
                 else:
                     node_text = ""
                 unexpected.append(
-                    f"complete: actual={' '.join(actual)}\n  at {file}:{inc(pos)}\n{' ' * node.start_point.column}{node_text}"
+                    f"complete: actual={' '.join(actual)}\n"
+                    f"  at {file}:{inc(pos)}\n"
+                    f"{' ' * node.start_point.column}{node_text}"
+                )
+
+        for pos, expected_type in expected[file].type_:
+            type_ = await client.protocol.send_request_async('odoo-lsp/inspect-type',
+                TextDocumentPositionParams(TextDocumentIdentifier(file.as_uri()), pos))
+            if type_ != expected_type:
+                node = asts[file].root_node.named_descendant_for_point_range(
+                    (pos.line, pos.character), (pos.line, 9999)
+                )
+                assert node
+                if text := node.text:
+                    node_text = text.decode()
+                else:
+                    node_text = ""
+                unexpected.append(
+                    f"model: actual={type_!r}\n"
+                    f"  at {file}:{inc(pos)}\n"
+                    f"{' ' * node.start_point.column}{node_text}"
                 )
     return unexpected

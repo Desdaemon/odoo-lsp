@@ -43,7 +43,7 @@ pub static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
 );
 
 /// The subset of types that may resolve to a model.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Type {
 	Env,
 	/// \*.env.ref()
@@ -107,8 +107,11 @@ impl Scope {
 	pub fn insert(&mut self, key: String, value: Type) {
 		self.variables.insert(key, value);
 	}
-	pub fn enter(&mut self) {
+	pub fn enter(&mut self, inherit_super: bool) {
 		*self = Scope::new(Some(core::mem::take(self)));
+		if inherit_super {
+			self.super_ = self.parent.as_ref().unwrap().super_.clone();
+		}
 	}
 	pub fn exit(&mut self) {
 		if let Some(parent) = self.parent.take() {
@@ -182,8 +185,13 @@ query! {
 
 pub type ScopeControlFlow = ControlFlow<Option<Scope>, bool>;
 impl Index {
+	#[inline]
 	pub fn model_of_range(&self, node: Node<'_>, range: ByteRange, contents: &[u8]) -> Option<ModelName> {
-		trace!("model_of_range {}", String::from_utf8_lossy(&contents[range.erase()]));
+		let (type_at_cursor, scope) = self.type_of_range(node, range, contents)?;
+		self.try_resolve_model(&type_at_cursor, &scope)
+	}
+	pub fn type_of_range(&self, node: Node<'_>, range: ByteRange, contents: &[u8]) -> Option<(Type, Scope)> {
+		trace!(target: "type_of_range", "{}", String::from_utf8_lossy(&contents[range.erase()]));
 		// Phase 1: Determine the scope.
 		let (self_type, fn_scope, self_param) = determine_scope(node, contents, range.start.0)?;
 
@@ -210,9 +218,10 @@ impl Index {
 			return None;
 		};
 
+		// Phase 3: With the proper context available, determine the type of the node.
 		let node_at_cursor = fn_scope.descendant_for_byte_range(range.start.0, range.end.0)?;
 		let type_at_cursor = self.type_of(node_at_cursor, &scope, contents)?;
-		self.resolve_type(&type_at_cursor, &scope)
+		Some((type_at_cursor, scope))
 	}
 	/// Builds the scope up to `offset`, in bytes.
 	///
@@ -239,7 +248,7 @@ impl Index {
 			}
 			"for_statement" => {
 				// (for_statement left right body)
-				scope.enter();
+				scope.enter(true);
 				let lhs = node.named_child(0).unwrap();
 				if lhs.kind() == "identifier" {
 					let rhs = lhs.next_named_sibling().unwrap();
@@ -251,7 +260,10 @@ impl Index {
 				return ControlFlow::Continue(true);
 			}
 			"function_definition" => {
-				scope.enter();
+				let inherit_super = node
+					.parent()
+					.is_some_and(|parent| parent.parent().is_some_and(|gp| gp.kind() == "class_definition"));
+				scope.enter(inherit_super);
 				return ControlFlow::Continue(true);
 			}
 			"list_comprehension" | "set_comprehension" | "dictionary_comprehension" | "generator_expression"
@@ -394,7 +406,7 @@ impl Index {
 					b"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
 					b"company" | b"companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
 					b"mapped" => {
-						let model = self.resolve_type(&lhs, scope)?;
+						let model = self.try_resolve_model(&lhs, scope)?;
 						Some(Type::Method(model, "mapped".into()))
 					}
 					func if MODEL_METHODS.contains(func) => match lhs {
@@ -488,7 +500,7 @@ impl Index {
 		}
 	}
 	pub fn type_of_attribute(&self, type_: &Type, attr: &[u8], scope: &Scope) -> Option<Type> {
-		let model = self.resolve_type(type_, scope)?;
+		let model = self.try_resolve_model(type_, scope)?;
 		let attr = String::from_utf8_lossy(attr);
 		let model_entry = self.models.populate_properties(model, &[])?;
 		let attr_key = interner().get(attr.as_ref())?;
@@ -504,7 +516,7 @@ impl Index {
 	}
 	pub fn has_attribute(&self, type_: &Type, attr: &[u8], scope: &Scope) -> bool {
 		(|| -> Option<()> {
-			let model = self.resolve_type(type_, scope)?;
+			let model = self.try_resolve_model(type_, scope)?;
 			let attr = String::from_utf8_lossy(attr);
 			let entry = self.models.populate_properties(model, &[])?;
 			let attr = interner().get(attr.as_ref())?;
@@ -513,7 +525,7 @@ impl Index {
 		.is_some()
 	}
 	/// Call this method if it's unclear whether `type_` is a [`Type::Model`] and you just want the model's name.
-	pub fn resolve_type(&self, type_: &Type, scope: &Scope) -> Option<ModelName> {
+	pub fn try_resolve_model(&self, type_: &Type, scope: &Scope) -> Option<ModelName> {
 		match type_ {
 			Type::Model(model) => Some(interner().get(model)?.into()),
 			Type::Record(xml_id) => {
@@ -522,7 +534,7 @@ impl Index {
 				let record = self.records.get(&xml_id.into())?;
 				record.model
 			}
-			Type::Super => self.resolve_type(scope.get(scope.super_.as_deref()?)?, scope),
+			Type::Super => self.try_resolve_model(scope.get(scope.super_.as_deref()?)?, scope),
 			_ => None,
 		}
 	}
@@ -560,26 +572,34 @@ impl Index {
 		(scope, None)
 	}
 	pub fn resolve_method_returntype(&self, method: Symbol<Method>, model: Spur) -> Option<Symbol<ModelEntry>> {
+		#[cfg(debug_assertions)]
+		trace!(
+			method = interner().resolve(&method),
+			model = interner().resolve(&model),
+			"resolve_method_returntype"
+		);
+
 		_ = self.models.populate_properties(model.into(), &[]);
-		let model_entry = self.models.get(&model.into())?;
-		let method_obj = model_entry.methods.as_ref()?.get(&method)?;
+		let mut model_entry = self.models.get_mut(&model.into())?;
+		let method_obj = model_entry.methods.as_mut()?.get_mut(&method)?;
 		match method_obj.return_type {
 			MethodReturnType::Unprocessed => {}
-			MethodReturnType::Value => return None,
+			MethodReturnType::Value | MethodReturnType::Processing => return None,
 			MethodReturnType::Relational(rel) => return Some(rel),
 		}
 
-		let baseloc = method_obj.locations.first().cloned()?;
-		_ = method_obj;
+		let location = method_obj.locations.first().cloned()?;
+		Arc::make_mut(method_obj).return_type = MethodReturnType::Processing;
 		drop(model_entry);
-		let contents = String::from_utf8(test_utils::fs::read(baseloc.path.to_path()).unwrap()).unwrap();
+
+		let contents = String::from_utf8(test_utils::fs::read(location.path.to_path()).unwrap()).unwrap();
 		let rope = Rope::from_str(&contents);
 		let contents = contents.as_bytes();
 
 		let mut parser = Parser::new();
 		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-		let range = lsp_range_to_offset_range(baseloc.range, &rope)?;
-		let ast = parser.parse(&contents[..], None)?;
+		let range = lsp_range_to_offset_range(location.range, &rope)?;
+		let ast = parser.parse(contents, None)?;
 
 		// TODO: Improve this heuristic
 		fn is_toplevel_return(mut node: Node) -> bool {
@@ -609,10 +629,13 @@ impl Index {
 		let mut scope = Scope::default();
 		let self_type = match self_type {
 			Some(type_) => &contents[type_.byte_range().shrink(1)],
-			None => &[]
+			None => &[],
 		};
 		scope.super_ = Some(self_param.as_ref().into());
-		scope.insert(self_param.into_owned(), Type::Model(String::from_utf8_lossy(self_type).as_ref().into()));
+		scope.insert(
+			self_param.into_owned(),
+			Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
+		);
 		let offset = fn_scope.end_byte();
 		let (_, type_) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
 			let entered = self.build_scope(scope, node, offset, contents).map_break(|_| None)?;
@@ -624,7 +647,7 @@ impl Index {
 				let Some(type_) = self.type_of(child, scope, contents) else {
 					return ControlFlow::Continue(entered);
 				};
-				let Some(resolved) = self.resolve_type(&type_, scope) else {
+				let Some(resolved) = self.try_resolve_model(&type_, scope) else {
 					return ControlFlow::Continue(entered);
 				};
 				return ControlFlow::Break(Some(resolved));
@@ -636,12 +659,8 @@ impl Index {
 		let mut model = self.models.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
 		let method = Arc::make_mut(model.methods.as_mut()?.get_mut(&method)?);
 		match type_ {
-			Some(rel) => {
-				method.return_type = MethodReturnType::Relational(rel);
-			}
-			None => {
-				method.return_type = MethodReturnType::Value;
-			}
+			Some(rel) => method.return_type = MethodReturnType::Relational(rel),
+			None => method.return_type = MethodReturnType::Value,
 		}
 		type_
 	}
@@ -782,6 +801,24 @@ class Foo(models.Model):
 				.resolve_method_returntype(
 					interner().get_or_intern_static("test").into(),
 					interner().get_or_intern_static("bar")
+				)
+				.map(|model| interner().resolve(&model)),
+			Some("foo")
+		)
+	}
+
+	#[test]
+	fn test_super_analysis() {
+		let index = Index {
+			models: prepare_foo_index(),
+			..Default::default()
+		};
+
+		assert_eq!(
+			index
+				.resolve_method_returntype(
+					interner().get_or_intern_static("test").into(),
+					interner().get_or_intern_static("quux")
 				)
 				.map(|model| interner().resolve(&model)),
 			Some("foo")
