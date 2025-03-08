@@ -71,9 +71,11 @@ jobs:
         if: matrix.runs-on == 'ubuntu-latest'
         continue-on-error: true
         run: |
+          set -euxo pipefail
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov clean --workspace -v
           cargo test -- -Z unstable-options --format json | cargo2junit > results.xml;
+          echo "Generated $(find target -name '*.profraw' | wc -l) profiles"
 
       - name: Upload test results
         uses: EnricoMi/publish-unit-test-result-action@v1
@@ -89,6 +91,7 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
+          set -euxo pipefail
           pip install -U uv
           uv venv
           . ${{ matrix.runs-on == 'windows-latest' && '.venv/Scripts/activate' || '.venv/bin/activate'}}
@@ -97,6 +100,7 @@ jobs:
           ${{ matrix.runs-on == 'ubuntu-latest' && 'source <(cargo llvm-cov show-env --export-prefix)' || '' }}
           cargo build
           pytest -vv --junitxml=.results.xml --color=yes
+          echo "Generated $(find ../target -name '*.profraw' | wc -l) profiles"
 
       - name: Generate coverage report
         id: gen-cov
@@ -104,6 +108,7 @@ jobs:
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov clean --workspace -v
 
       - name: Upload to CodeCov
         if: steps.gen-cov.outcome == 'success'
