@@ -8,13 +8,13 @@ use std::task::{ready, Context, Poll};
 use futures::FutureExt;
 use futures::{future::CatchUnwind, Future};
 use tower::Service;
-use tower_lsp::jsonrpc::{Error, ErrorCode, Id, Response};
+use tower_lsp_server::jsonrpc::{Error, ErrorCode, Id, Response};
 use tracing::{error, warn};
 
 pub struct CatchPanic<S>(pub S);
-impl<S> Service<tower_lsp::jsonrpc::Request> for CatchPanic<S>
+impl<S> Service<tower_lsp_server::jsonrpc::Request> for CatchPanic<S>
 where
-	S: Service<tower_lsp::jsonrpc::Request, Response = Option<tower_lsp::jsonrpc::Response>>,
+	S: Service<tower_lsp_server::jsonrpc::Request, Response = Option<tower_lsp_server::jsonrpc::Response>>,
 {
 	type Response = S::Response;
 	type Error = S::Error;
@@ -25,7 +25,7 @@ where
 		self.0.poll_ready(cx)
 	}
 
-	fn call(&mut self, req: tower_lsp::jsonrpc::Request) -> Self::Future {
+	fn call(&mut self, req: tower_lsp_server::jsonrpc::Request) -> Self::Future {
 		let id = req.id().cloned();
 		match std::panic::catch_unwind(AssertUnwindSafe(|| self.0.call(req))) {
 			Ok(fut) => CatchPanicFuture {

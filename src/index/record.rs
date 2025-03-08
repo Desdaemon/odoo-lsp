@@ -1,4 +1,4 @@
-use crate::{utils::Usage, ImStr};
+use crate::ImStr;
 use std::{collections::HashSet, fmt::Debug, hash::Hash, marker::PhantomData};
 
 use dashmap::{mapref::one::Ref, DashMap};
@@ -6,7 +6,7 @@ use derive_more::{Deref, DerefMut};
 use intmap::IntMap;
 use lasso::{Key, Spur, ThreadedRodeo};
 use smart_default::SmartDefault;
-use tokio::{runtime::Handle, sync::RwLock};
+use tokio::sync::RwLock;
 
 use crate::{model::ModelName, record::Record};
 
@@ -194,22 +194,5 @@ where
 	fn next(&mut self) -> Option<Self::Item> {
 		let (next, ()) = self.0.next()?;
 		Some(Symbol::from(Spur::try_from_usize(*next as _).unwrap()))
-	}
-}
-
-impl RecordIndex {
-	pub(super) fn statistics(&self) -> serde_json::Value {
-		let Self {
-			inner,
-			by_model,
-			by_inherit_id,
-			by_prefix,
-		} = self;
-		serde_json::json! {{
-			"entries": inner.usage(),
-			"by_model": by_model.usage(),
-			"by_inherit_id": by_inherit_id.usage(),
-			"by_prefix": Handle::current().block_on(by_prefix.read()).usage(),
-		}}
 	}
 }

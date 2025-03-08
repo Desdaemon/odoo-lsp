@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -11,9 +12,9 @@ use lasso::{Spur, ThreadedRodeo};
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use smart_default::SmartDefault;
-use tower_lsp::lsp_types::notification::Progress;
-use tower_lsp::lsp_types::request::{ShowDocument, ShowMessageRequest};
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::lsp_types::notification::Progress;
+use tower_lsp_server::lsp_types::request::{ShowDocument, ShowMessageRequest};
+use tower_lsp_server::lsp_types::*;
 use tracing::{debug, info, warn};
 use tree_sitter::QueryCursor;
 use ts_macros::query;
@@ -21,7 +22,7 @@ use xmlparser::{Token, Tokenizer};
 
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
-use crate::utils::{path_contains, ts_range_to_lsp_range, ByteOffset, ByteRange, MinLoc, RangeExt, Usage};
+use crate::utils::{path_contains, ts_range_to_lsp_range, ByteOffset, ByteRange, MinLoc, RangeExt};
 use crate::{format_loc, ok, ImStr};
 
 mod record;
@@ -152,7 +153,7 @@ impl Index {
 	pub async fn add_root(
 		&self,
 		root: &Path,
-		progress: Option<(&tower_lsp::Client, ProgressToken)>,
+		progress: Option<(&tower_lsp_server::Client, ProgressToken)>,
 		tsconfig: bool,
 	) -> miette::Result<Option<AddRootResults>> {
 		if self.roots.contains_key(root) {
@@ -260,7 +261,7 @@ impl Index {
 						Ok(Some(resp)) if resp.title == "Go to odoo-lsp wiki" => {
 							_ = client
 								.send_request::<ShowDocument>(ShowDocumentParams {
-									uri: Url::parse("https://github.com/Desdaemon/odoo-lsp/wiki#usage").unwrap(),
+									uri: Uri::from_str("https://github.com/Desdaemon/odoo-lsp/wiki#usage").unwrap(),
 									external: Some(true),
 									take_focus: None,
 									selection: None,
@@ -638,31 +639,6 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 		}
 	});
 	Ok(models.collect())
-}
-
-impl Index {
-	pub fn statistics(&self) -> serde_json::Value {
-		let Self {
-			roots,
-			records,
-			templates,
-			models,
-			components,
-			widgets,
-			actions,
-		} = self;
-		let mut modules = roots.usage();
-		modules.0 = roots.iter().map(|entry| entry.value().len()).sum::<usize>();
-		serde_json::json! {{
-			"modules": modules,
-			"records": records.statistics(),
-			"templates": templates.statistics(),
-			"models": models.statistics(),
-			"components": components.statistics(),
-			"widgets": widgets.usage(),
-			"actions": actions.usage(),
-		}}
-	}
 }
 
 #[cfg(test)]

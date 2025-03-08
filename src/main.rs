@@ -66,11 +66,12 @@
 //! [`Spur`]: lasso::Spur
 //! [`Symbol`]: odoo_lsp::index::Symbol
 
-#![warn(clippy::cognitive_complexity)]
+// #![warn(clippy::cognitive_complexity)]
 #![deny(clippy::unused_async)]
 #![deny(clippy::await_holding_invalid_type)]
 
-use std::path::{Path, PathBuf};
+use std::borrow::Cow;
+use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
@@ -80,11 +81,11 @@ use dashmap::{DashMap, DashSet};
 use ropey::Rope;
 use serde_json::Value;
 use tower::ServiceBuilder;
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::notification::{DidChangeConfiguration, Notification, Progress};
-use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
-use tower_lsp::lsp_types::*;
-use tower_lsp::{LanguageServer, LspService, Server};
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::lsp_types::notification::{DidChangeConfiguration, Notification, Progress};
+use tower_lsp_server::lsp_types::request::WorkDoneProgressCreate;
+use tower_lsp_server::lsp_types::*;
+use tower_lsp_server::{LanguageServer, LspService, Server};
 use tracing::{debug, error, info, instrument, warn};
 
 use odoo_lsp::config::Config;
@@ -107,14 +108,16 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-#[tower_lsp::async_trait]
+#[tower_lsp_server::async_trait]
 impl LanguageServer for Backend {
 	#[instrument(skip_all)]
 	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-		let root = params.root_uri.and_then(|uri| uri.to_file_path().ok()).or_else(
-			#[allow(deprecated)]
-			|| params.root_path.map(PathBuf::from),
-		);
+		#[allow(deprecated)]
+		let root = params
+			.root_uri
+			.as_ref()
+			.and_then(|uri| uri.to_file_path())
+			.or_else(|| params.root_path.as_deref().map(Path::new).map(Cow::<Path>::from));
 		'root: {
 			match params.initialization_options.map(serde_json::from_value::<Config>) {
 				Some(Ok(config)) => {
@@ -125,7 +128,7 @@ impl LanguageServer for Backend {
 				}
 				None => {}
 			}
-			if let Some(root) = &root {
+			if let Some(root) = root {
 				let config_file = 'find_root: {
 					for choice in [".odoo_lsp", ".odoo_lsp.json"] {
 						let path = root.join(choice);
@@ -137,7 +140,7 @@ impl LanguageServer for Backend {
 					None
 				};
 				let Some((path, config)) = &config_file else {
-					self.roots.insert(root.clone());
+					self.roots.insert(root.into_owned());
 					break 'root;
 				};
 				match serde_json::from_slice::<Config>(config) {
@@ -147,9 +150,9 @@ impl LanguageServer for Backend {
 			}
 			for ws_dir in params.workspace_folders.unwrap_or_default() {
 				match ws_dir.uri.to_file_path() {
-					Ok(path) => drop(self.roots.insert(path)),
-					Err(()) => {
-						error!("not a file path: {}", ws_dir.uri);
+					Some(path) => drop(self.roots.insert(path.into_owned())),
+					None => {
+						error!("cannot parse as file path: {}", ws_dir.uri.as_str());
 					}
 				}
 			}
@@ -226,7 +229,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip(self))]
 	async fn did_close(&self, params: DidCloseTextDocumentParams) {
-		let path = params.text_document.uri.path();
+		let path = params.text_document.uri.path().as_str();
 		let Self {
 			document_map,
 			record_ranges,
@@ -318,11 +321,11 @@ impl LanguageServer for Backend {
 				.await;
 		}
 	}
-	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path()))]
+	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path().as_str()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
-		info!("{}", params.text_document.uri.path());
+		info!("{}", params.text_document.uri.path().as_str());
 		let language_id = params.text_document.language_id.as_str();
-		let split_uri = params.text_document.uri.path().rsplit_once('.');
+		let split_uri = params.text_document.uri.path().as_str().rsplit_once('.');
 		let language = match (language_id, split_uri) {
 			("python", _) | (_, Some((_, "py"))) => Language::Python,
 			("javascript", _) | (_, Some((_, "js"))) => Language::Javascript,
@@ -334,15 +337,17 @@ impl LanguageServer for Backend {
 		};
 
 		let rope = Rope::from_str(&params.text_document.text);
-		self.document_map
-			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()));
+		self.document_map.insert(
+			params.text_document.uri.path().as_str().to_string(),
+			Document::new(rope.clone()),
+		);
 
 		self.root_setup.wait().await;
 		let path = params.text_document.uri.to_file_path().unwrap();
 		if self.index.module_of_path(&path).is_none() {
 			// outside of root?
-			debug!("oob: {}", params.text_document.uri.path());
-			let path = params.text_document.uri.to_file_path().ok();
+			debug!("oob: {}", params.text_document.uri.path().as_str());
+			let path = params.text_document.uri.to_file_path();
 			let mut path = path.as_deref();
 			while let Some(path_) = path {
 				if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
@@ -400,7 +405,7 @@ impl LanguageServer for Backend {
 		{
 			let mut document = self
 				.document_map
-				.get_mut(params.text_document.uri.path())
+				.get_mut(params.text_document.uri.path().as_str())
 				.expect("Did not build a document");
 			old_rope = document.rope.clone();
 			// Update the rope
@@ -447,20 +452,20 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position_params.text_document.uri;
-		debug!("goto_definition {}", uri.path());
-		let Some((_, ext)) = uri.path().rsplit_once('.') else {
-			debug!("(goto_definition) unsupported: {}", uri.path());
+		debug!("goto_definition {}", uri.path().as_str());
+		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
+			debug!("(goto_definition) unsupported: {}", uri.path().as_str());
 			return Ok(None);
 		};
-		let Some(document) = self.document_map.get(uri.path()) else {
-			panic!("Bug: did not build a document for {}", uri.path());
+		let Some(document) = self.document_map.get(uri.path().as_str()) else {
+			panic!("Bug: did not build a document for {}", uri.path().as_str());
 		};
 		let location = match ext {
 			"xml" => self.xml_jump_def(params, document.rope.clone()),
 			"py" => self.python_jump_def(params, document.rope.clone()),
 			"js" => self.js_jump_def(params, &document.rope),
 			_ => {
-				debug!("(goto_definition) unsupported: {}", uri.path());
+				debug!("(goto_definition) unsupported: {}", uri.path().as_str());
 				return Ok(None);
 			}
 		};
@@ -477,13 +482,13 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position.text_document.uri;
-		debug!("references {}", uri.path());
+		debug!("references {}", uri.path().as_str());
 
-		let Some((_, ext)) = uri.path().rsplit_once('.') else {
+		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
-		let Some(document) = self.document_map.get(uri.path()) else {
-			debug!("Bug: did not build a document for {}", uri.path());
+		let Some(document) = self.document_map.get(uri.path().as_str()) else {
+			debug!("Bug: did not build a document for {}", uri.path().as_str());
 			return Ok(None);
 		};
 		let refs = match ext {
@@ -501,15 +506,15 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position.text_document.uri;
-		debug!("(completion) {}", uri.path());
+		debug!("(completion) {}", uri.path().as_str());
 
-		let Some((_, ext)) = uri.path().rsplit_once('.') else {
+		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
 
 		let rope = {
-			let Some(document) = self.document_map.get(uri.path()) else {
-				debug!("Bug: did not build a document for {}", uri.path());
+			let Some(document) = self.document_map.get(uri.path().as_str()) else {
+				debug!("Bug: did not build a document for {}", uri.path().as_str());
 				return Ok(None);
 			};
 			document.rope.clone()
@@ -527,8 +532,8 @@ impl LanguageServer for Backend {
 			}
 		} else if ext == "py" {
 			let ast = {
-				let Some(ast) = self.ast_map.get(uri.path()) else {
-					debug!("Bug: did not build AST for {}", uri.path());
+				let Some(ast) = self.ast_map.get(uri.path().as_str()) else {
+					debug!("Bug: did not build AST for {}", uri.path().as_str());
 					return Ok(None);
 				};
 				ast.value().clone()
@@ -544,7 +549,7 @@ impl LanguageServer for Backend {
 				}
 			}
 		} else {
-			debug!("(completion) unsupported {}", uri.path());
+			debug!("(completion) unsupported {}", uri.path().as_str());
 			Ok(None)
 		}
 	}
@@ -587,14 +592,14 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position_params.text_document.uri;
-		let document = some!(self.document_map.get(uri.path()));
-		let (_, ext) = some!(uri.path().rsplit_once('.'));
+		let document = some!(self.document_map.get(uri.path().as_str()));
+		let (_, ext) = some!(uri.path().as_str().rsplit_once('.'));
 		let hover = match ext {
 			"py" => self.python_hover(params, document.rope.clone()),
 			"xml" => self.xml_hover(params, document.rope.clone()),
 			"js" => self.js_hover(params, document.rope.clone()),
 			_ => {
-				debug!("(hover) unsupported {}", uri.path());
+				debug!("(hover) unsupported {}", uri.path().as_str());
 				Ok(None)
 			}
 		};
@@ -613,7 +618,7 @@ impl LanguageServer for Backend {
 			.roots
 			.iter()
 			.map(|entry| {
-				let scope_uri = Url::from_file_path(entry.key()).ok();
+				let scope_uri = from_file_path(entry.key());
 				ConfigurationItem {
 					section: Some("odoo-lsp".into()),
 					scope_uri,
@@ -637,9 +642,8 @@ impl LanguageServer for Backend {
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
 		self.root_setup.wait().await;
 		for added in params.event.added {
-			// let file_path = added.uri.path();
-			let Ok(file_path) = added.uri.to_file_path() else {
-				error!("not a file path: {}", added.uri);
+			let Some(file_path) = added.uri.to_file_path() else {
+				error!("not a file path: {}", added.uri.as_str());
 				continue;
 			};
 			_ = self
@@ -649,8 +653,8 @@ impl LanguageServer for Backend {
 				.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
 		}
 		for removed in params.event.removed {
-			let Ok(file_path) = removed.uri.to_file_path() else {
-				error!("not a file path: {}", removed.uri);
+			let Some(file_path) = removed.uri.to_file_path() else {
+				error!("not a file path: {}", removed.uri.as_str());
 				continue;
 			};
 			self.index.remove_root(&file_path);
@@ -719,7 +723,7 @@ impl LanguageServer for Backend {
 	#[instrument(skip_all)]
 	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
 		self.root_setup.wait().await;
-		let path = params.text_document.uri.path();
+		let path = params.text_document.uri.path().as_str();
 		debug!("{path}");
 		let mut diagnostics = vec![];
 		if let Some((_, "py")) = path.rsplit_once('.') {
@@ -727,7 +731,7 @@ impl LanguageServer for Backend {
 				let damage_zone = document.damage_zone.take();
 				let rope = &document.rope.clone();
 				self.diagnose_python(
-					params.text_document.uri.path(),
+					params.text_document.uri.path().as_str(),
 					rope,
 					damage_zone,
 					&mut document.diagnostics_cache,
@@ -750,11 +754,11 @@ impl LanguageServer for Backend {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
-		let Some((_, "xml")) = params.text_document.uri.path().rsplit_once('.') else {
+		let Some((_, "xml")) = params.text_document.uri.path().as_str().rsplit_once('.') else {
 			return Ok(None);
 		};
 
-		let document = some!(self.document_map.get(params.text_document.uri.path()));
+		let document = some!(self.document_map.get(params.text_document.uri.path().as_str()));
 
 		Ok(self
 			.xml_code_actions(params, document.rope.clone())
@@ -781,7 +785,7 @@ impl LanguageServer for Backend {
 			_ = self
 				.client
 				.show_document(ShowDocumentParams {
-					uri: Url::from_file_path(location.path.as_string()).unwrap(),
+					uri: from_file_path(&location.path.to_path()).unwrap(),
 					external: Some(false),
 					take_focus: Some(true),
 					selection: Some(location.range),
@@ -862,7 +866,6 @@ async fn main() {
 		references_limit: AtomicUsize::new(80),
 		completions_limit: AtomicUsize::new(200),
 	})
-	.custom_method("odoo-lsp/statistics", Backend::statistics)
 	.custom_method("odoo-lsp/debug/usage", |_: &Backend| async move {
 		Ok(interner().report_usage())
 	})

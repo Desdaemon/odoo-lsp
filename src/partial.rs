@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
-use tower_lsp::{
+use tower_lsp_server::{
 	lsp_types::{notification::Notification, CompletionResponse, ProgressToken},
 	Client,
 };

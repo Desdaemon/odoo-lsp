@@ -380,7 +380,6 @@ impl Index {
 		} else {
 			trace!("type_of {} range={:?}", node.kind(), node.byte_range());
 		}
-		let interner = interner();
 		match normalize(&mut node).kind() {
 			"subscript" => {
 				let lhs = node.child_by_field_name("value")?;
@@ -396,32 +395,7 @@ impl Index {
 					_ => None,
 				}
 			}
-			"attribute" => {
-				let lhs = node.named_child(0)?;
-				let lhs = self.type_of(lhs, scope, contents)?;
-				let rhs = node.named_child(1)?;
-				match &contents[rhs.byte_range()] {
-					b"env" if matches!(lhs, Type::Model(..) | Type::Record(..)) => Some(Type::Env),
-					b"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
-					b"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
-					b"company" | b"companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
-					b"mapped" => {
-						let model = self.try_resolve_model(&lhs, scope)?;
-						Some(Type::Method(model, "mapped".into()))
-					}
-					func if MODEL_METHODS.contains(func) => match lhs {
-						Type::Model(model) => Some(Type::ModelFn(model)),
-						Type::Record(xml_id) => {
-							let xml_id = interner.get(xml_id)?;
-							let record = self.records.get(&xml_id.into())?;
-							Some(Type::ModelFn(interner.resolve(record.model.as_deref()?).into()))
-						}
-						_ => None,
-					},
-					ident if rhs.kind() == "identifier" => self.type_of_attribute(&lhs, ident, scope),
-					_ => None,
-				}
-			}
+			"attribute" => self.type_of_attribute_node(node, scope, contents),
 			"identifier" => {
 				let key = String::from_utf8_lossy(&contents[node.byte_range()]);
 				if key == "super" {
@@ -433,69 +407,93 @@ impl Index {
 				let rhs = node.named_child(1)?;
 				self.type_of(rhs, scope, contents)
 			}
-			"call" => {
-				let func = node.named_child(0)?;
-				let func = self.type_of(func, scope, contents)?;
-				match func {
-					Type::RefFn => {
-						// (call (_) @func (argument_list . (string) @xml_id))
-						let xml_id = node.named_child(1)?.named_child(0)?;
-						matches!(xml_id.kind(), "string").then(|| {
-							Type::Record(
-								String::from_utf8_lossy(&contents[xml_id.byte_range().shrink(1)])
-									.as_ref()
-									.into(),
-							)
-						})
-					}
-					Type::ModelFn(model) => Some(Type::Model(model)),
-					Type::Super => scope.get(scope.super_.as_deref()?).cloned(),
-					Type::Method(model, mapped) if mapped == "mapped" => {
-						// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
-						let mapped = node.named_child(1)?.named_child(0)?;
-						match mapped.kind() {
-							"string" => {
-								let mut model = model.into();
-								let mapped = String::from_utf8_lossy(&contents[mapped.byte_range().shrink(1)]);
-								let mut mapped = mapped.as_ref();
-								self.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
-								self.type_of_attribute(
-									&Type::Model(interner.resolve(&model).into()),
-									mapped.as_bytes(),
-									scope,
-								)
-							}
-							"lambda" => {
-								// (lambda (lambda_parameters)? body: (_))
-								let mut scope = Scope::new(Some(scope.clone()));
-								if let Some(params) = mapped.child_by_field_name(b"parameters") {
-									let first_arg = params.named_child(0)?;
-									if first_arg.kind() == "identifier" {
-										let first_arg = String::from_utf8_lossy(&contents[first_arg.byte_range()]);
-										scope.insert(
-											first_arg.into_owned(),
-											Type::Model(interner.resolve(&model).into()),
-										);
-									}
-								}
-								let body = mapped.child_by_field_name(b"body")?;
-								self.type_of(body, &scope, contents)
-							}
-							_ => None,
-						}
-					}
-					Type::Method(model, method) => {
-						let method = interner.get(&method)?;
-						let ret_model = self.resolve_method_returntype(method.into(), *model)?;
-						Some(Type::Model(interner.resolve(&ret_model).into()))
-					}
-					Type::Env | Type::Record(..) | Type::Model(..) | Type::Value => None,
-				}
-			}
+			"call" => self.type_of_call_node(node, scope, contents),
 			"binary_operator" | "boolean_operator" => {
 				// (_ left right)
 				self.type_of(node.child_by_field_name("left")?, scope, contents)
 			}
+			_ => None,
+		}
+	}
+	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &[u8]) -> Option<Type> {
+		let func = call.named_child(0)?;
+		let func = self.type_of(func, scope, contents)?;
+		match func {
+			Type::RefFn => {
+				// (call (_) @func (argument_list . (string) @xml_id))
+				let xml_id = call.named_child(1)?.named_child(0)?;
+				matches!(xml_id.kind(), "string").then(|| {
+					Type::Record(
+						String::from_utf8_lossy(&contents[xml_id.byte_range().shrink(1)])
+							.as_ref()
+							.into(),
+					)
+				})
+			}
+			Type::ModelFn(model) => Some(Type::Model(model)),
+			Type::Super => scope.get(scope.super_.as_deref()?).cloned(),
+			Type::Method(model, mapped) if mapped == "mapped" => {
+				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
+				let mapped = call.named_child(1)?.named_child(0)?;
+				match mapped.kind() {
+					"string" => {
+						let mut model = model.into();
+						let mapped = String::from_utf8_lossy(&contents[mapped.byte_range().shrink(1)]);
+						let mut mapped = mapped.as_ref();
+						self.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
+						self.type_of_attribute(
+							&Type::Model(interner().resolve(&model).into()),
+							mapped.as_bytes(),
+							scope,
+						)
+					}
+					"lambda" => {
+						// (lambda (lambda_parameters)? body: (_))
+						let mut scope = Scope::new(Some(scope.clone()));
+						if let Some(params) = mapped.child_by_field_name(b"parameters") {
+							let first_arg = params.named_child(0)?;
+							if first_arg.kind() == "identifier" {
+								let first_arg = String::from_utf8_lossy(&contents[first_arg.byte_range()]);
+								scope.insert(first_arg.into_owned(), Type::Model(interner().resolve(&model).into()));
+							}
+						}
+						let body = mapped.child_by_field_name(b"body")?;
+						self.type_of(body, &scope, contents)
+					}
+					_ => None,
+				}
+			}
+			Type::Method(model, method) => {
+				let method = interner().get(&method)?;
+				let ret_model = self.resolve_method_returntype(method.into(), *model)?;
+				Some(Type::Model(interner().resolve(&ret_model).into()))
+			}
+			Type::Env | Type::Record(..) | Type::Model(..) | Type::Value => None,
+		}
+	}
+	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &[u8]) -> Option<Type> {
+		let lhs = attribute.named_child(0)?;
+		let lhs = self.type_of(lhs, scope, contents)?;
+		let rhs = attribute.named_child(1)?;
+		match &contents[rhs.byte_range()] {
+			b"env" if matches!(lhs, Type::Model(..) | Type::Record(..)) => Some(Type::Env),
+			b"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
+			b"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
+			b"company" | b"companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
+			b"mapped" => {
+				let model = self.try_resolve_model(&lhs, scope)?;
+				Some(Type::Method(model, "mapped".into()))
+			}
+			func if MODEL_METHODS.contains(func) => match lhs {
+				Type::Model(model) => Some(Type::ModelFn(model)),
+				Type::Record(xml_id) => {
+					let xml_id = interner().get(xml_id)?;
+					let record = self.records.get(&xml_id.into())?;
+					Some(Type::ModelFn(interner().resolve(record.model.as_deref()?).into()))
+				}
+				_ => None,
+			},
+			ident if rhs.kind() == "identifier" => self.type_of_attribute(&lhs, ident, scope),
 			_ => None,
 		}
 	}
@@ -716,7 +714,7 @@ pub fn determine_scope<'out, 'node>(
 mod tests {
 	use pretty_assertions::assert_eq;
 	use ropey::Rope;
-	use tower_lsp::lsp_types::Position;
+	use tower_lsp_server::lsp_types::Position;
 	use tree_sitter::{Parser, QueryCursor};
 
 	use crate::analyze::FieldCompletion;

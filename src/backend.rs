@@ -16,9 +16,8 @@ use miette::{diagnostic, miette};
 use odoo_lsp::component::{Prop, PropDescriptor};
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tower_lsp::lsp_types::*;
-use tower_lsp::Client;
+use tower_lsp_server::lsp_types::*;
+use tower_lsp_server::Client;
 use tracing::{debug, info, instrument, warn};
 use tree_sitter::{Parser, Tree};
 
@@ -54,7 +53,7 @@ pub struct Capabilities {
 }
 
 pub struct TextDocumentItem {
-	pub uri: Url,
+	pub uri: Uri,
 	pub text: Text,
 	pub version: i32,
 	pub language: Option<Language>,
@@ -116,7 +115,7 @@ impl Backend {
 	}
 	#[instrument(skip_all)]
 	pub async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
-		let split_uri = params.uri.path().rsplit_once('.');
+		let split_uri = params.uri.path().as_str().rsplit_once('.');
 		let rope;
 		let path;
 		let root;
@@ -124,7 +123,7 @@ impl Backend {
 		{
 			let mut document = self
 				.document_map
-				.get_mut(params.uri.path())
+				.get_mut(params.uri.path().as_str())
 				.expect(format_loc!("(on_change) did not build document"));
 			match &params.text {
 				Text::Full(full) => {
@@ -145,11 +144,11 @@ impl Backend {
 		};
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
-				let mut document = self.document_map.get_mut(params.uri.path()).unwrap();
+				let mut document = self.document_map.get_mut(params.uri.path().as_str()).unwrap();
 				self.on_change_python(&params.text, &params.uri, rope.clone(), params.old_rope)?;
 				if eager_diagnostics {
 					self.diagnose_python(
-						params.uri.path(),
+						params.uri.path().as_str(),
 						&rope,
 						params.text.damage_zone(&rope, None),
 						&mut document.diagnostics_cache,
@@ -170,7 +169,7 @@ impl Backend {
 		if eager_diagnostics {
 			let diagnostics = {
 				self.document_map
-					.get(params.uri.path())
+					.get(params.uri.path().as_str())
 					.unwrap()
 					.diagnostics_cache
 					.clone()
@@ -184,8 +183,12 @@ impl Backend {
 	}
 	pub async fn did_save_impl(&self, params: DidSaveTextDocumentParams) -> miette::Result<()> {
 		let uri = params.text_document.uri;
-		debug!("{}", uri.path());
-		let (_, extension) = uri.path().rsplit_once('.').ok_or_else(|| diagnostic!("no extension"))?;
+		debug!("{}", uri.path().as_str());
+		let (_, extension) = uri
+			.path()
+			.as_str()
+			.rsplit_once('.')
+			.ok_or_else(|| diagnostic!("no extension"))?;
 		let path = uri.to_file_path().unwrap();
 		let root = self.find_root_of(&path).ok_or_else(|| diagnostic!("out of root"))?;
 		let root = interner().get_or_intern_path(&root);
@@ -197,13 +200,13 @@ impl Backend {
 		}
 		Ok(())
 	}
-	pub async fn did_save_python(&self, uri: Url, root: Spur) -> miette::Result<()> {
+	pub async fn did_save_python(&self, uri: Uri, root: Spur) -> miette::Result<()> {
 		let path = uri.to_file_path().unwrap();
 		let zone;
 		_ = {
 			let mut document = self
 				.document_map
-				.get_mut(uri.path())
+				.get_mut(uri.path().as_str())
 				.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
 			zone = document.damage_zone.take();
 			let rope = document.rope.clone();
@@ -215,9 +218,9 @@ impl Backend {
 		if zone.is_some() {
 			debug!("diagnostics");
 			{
-				let mut document = self.document_map.get_mut(uri.path()).unwrap();
+				let mut document = self.document_map.get_mut(uri.path().as_str()).unwrap();
 				self.diagnose_python(
-					uri.path(),
+					uri.path().as_str(),
 					&document.rope.clone(),
 					zone,
 					&mut document.diagnostics_cache,
@@ -230,11 +233,11 @@ impl Backend {
 
 		Ok(())
 	}
-	pub async fn did_save_xml(&self, uri: Url, root: Spur) -> miette::Result<()> {
+	pub async fn did_save_xml(&self, uri: Uri, root: Spur) -> miette::Result<()> {
 		let rope = {
 			let document = self
 				.document_map
-				.get(uri.path())
+				.get(uri.path().as_str())
 				.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
 			document.rope.clone()
 		};
@@ -249,12 +252,15 @@ impl Backend {
 	pub fn update_ast(
 		&self,
 		text: &Text,
-		uri: &Url,
+		uri: &Uri,
 		rope: Rope,
 		old_rope: Option<Rope>,
 		mut parser: Parser,
 	) -> miette::Result<()> {
-		let ast = self.ast_map.try_get_mut(uri.path()).expect(format_loc!("deadlock"));
+		let ast = self
+			.ast_map
+			.try_get_mut(uri.path().as_str())
+			.expect(format_loc!("deadlock"));
 		let ast = match (text, ast) {
 			(Text::Full(full), _) => parser.parse(full, None),
 			(Text::Delta(delta), Some(mut ast)) => {
@@ -299,7 +305,7 @@ impl Backend {
 			(Text::Delta(_), None) => Err(diagnostic!("(update_ast) got delta but no ast"))?,
 		};
 		let ast = ast.ok_or_else(|| diagnostic!("No AST was parsed"))?;
-		self.ast_map.insert(uri.path().to_string(), ast);
+		self.ast_map.insert(uri.path().as_str().to_string(), ast);
 		Ok(())
 	}
 	pub async fn complete_xml_id(
@@ -563,9 +569,9 @@ impl Backend {
 		items.extend(completions);
 		Ok(())
 	}
-	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Url) -> miette::Result<Option<Location>> {
+	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Uri) -> miette::Result<Option<Location>> {
 		let mut value = Cow::from(cursor_value);
-		let path = some!(uri.to_file_path().ok());
+		let path = some!(uri.to_file_path());
 		if !value.contains('.') {
 			'unscoped: {
 				if let Some(module) = self.index.module_of_path(&path) {
@@ -575,7 +581,7 @@ impl Backend {
 				debug!(
 					"Could not find a reference for {} in {}: could not infer module",
 					cursor_value,
-					uri.path()
+					uri.path().as_str()
 				);
 				return Ok(None);
 			}
@@ -902,7 +908,7 @@ impl Backend {
 					}
 					for (idx, (module, override_, range)) in rest.enumerate() {
 						if idx == 0 { "*Overridden in:*\n" }
-						"- [`" (module) "`](" (override_.path.to_string()) "#L" (range.start.line + 1) ")  \n  in " (override_.path.subpath()) ":" (range.start.line + 1)
+						"- [`" (module) "`](" (to_display_path(override_.path.to_path())) "#L" (range.start.line + 1) ")  \n  in " (override_.path.subpath()) ":" (range.start.line + 1)
 					} sep { "\n" }
 				}
 			}
@@ -962,36 +968,6 @@ impl Backend {
 			}
 		}
 		// self.added_roots_root.store(true, Relaxed);
-	}
-	#[allow(clippy::unused_async)] // reason: custom method
-	pub async fn statistics(&self) -> tower_lsp::jsonrpc::Result<Value> {
-		let Self {
-			client: _,
-			document_map,
-			record_ranges,
-			ast_map,
-			index,
-			roots: _,
-			capabilities: _,
-			root_setup: _,
-			symbols_limit: _,
-			references_limit: _,
-			completions_limit: _,
-		} = self;
-		let interner = interner();
-		let symbols_len = interner.len();
-		let symbols_usage = interner.current_memory_usage();
-		Ok(serde_json::json! {{
-			"debug": cfg!(debug_assertions),
-			"documents": document_map.usage(),
-			"records": record_ranges.usage(),
-			"ast": ast_map.usage(),
-			"index": index.statistics(),
-			"intern": {
-				"len": symbols_len,
-				"bytes": symbols_usage,
-			}
-		}})
 	}
 	pub fn ensure_nonoverlapping_roots(&self) {
 		let mut redundant = vec![];
@@ -1096,19 +1072,5 @@ impl Text {
 		}
 		debug!("(damage_zone)\nseed={seed:?}\n out={out:?}");
 		(!out.is_empty()).then(|| out.map_unit(ByteOffset))
-	}
-}
-
-impl Usage for Document {
-	fn usage(&self) -> UsageInfo<Self> {
-		let Self {
-			rope,
-			diagnostics_cache,
-			damage_zone: _,
-		} = self;
-		let mut usage = 0;
-		usage += rope.usage().0;
-		usage += diagnostics_cache.usage().0;
-		UsageInfo::new(usage)
 	}
 }

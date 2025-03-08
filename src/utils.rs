@@ -3,23 +3,23 @@ use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::future::Future;
-use std::path::Path;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::LazyLock;
 
 use dashmap::try_result::TryResult;
 use futures::future::BoxFuture;
 use ropey::{Rope, RopeSlice};
 use smart_default::SmartDefault;
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::lsp_types::*;
 use xmlparser::{StrSpan, TextPos, Token};
 
 mod visitor;
 pub use visitor::PreTravel;
 
 use crate::index::PathSymbol;
-
-mod usage;
-pub use usage::{Usage, UsageInfo};
 
 /// Unwraps the option in the context of a function that returns [`Result<Option<_>>`].
 #[macro_export]
@@ -495,4 +495,99 @@ impl DisplayExt for std::fmt::Arguments<'_> {
 
 pub fn path_contains(path: impl AsRef<Path>, needle: impl AsRef<OsStr>) -> bool {
 	path.as_ref().components().any(|c| c.as_os_str() == needle.as_ref())
+}
+
+pub trait UriExt {
+	fn to_file_path(&self) -> Option<Cow<Path>>;
+}
+
+impl UriExt for tower_lsp_server::lsp_types::Uri {
+	fn to_file_path(&self) -> Option<Cow<Path>> {
+		Some(match self.path().as_estr().decode().into_string_lossy() {
+			Cow::Borrowed(ref_) => Cow::Borrowed(Path::new(ref_)),
+			Cow::Owned(owned) => Cow::Owned(PathBuf::from(owned)),
+		})
+	}
+}
+
+pub fn from_file_path(path: &Path) -> Option<Uri> {
+	Uri::from_str(&format!(
+		"file://{}",
+		String::from_utf8_lossy(path.as_os_str().as_bytes())
+	))
+	.ok()
+}
+
+static WSL: LazyLock<bool> = LazyLock::new(|| {
+	#[cfg(not(unix))]
+	return false;
+
+	#[cfg(unix)]
+	{
+		// equivalent to running `uname -r`
+		use core::ffi::CStr;
+		use core::mem::MaybeUninit;
+		use libc::utsname;
+
+		fn cstr_to_str(cstr: &[libc::c_char]) -> &str {
+			unsafe { CStr::from_ptr(cstr.as_ptr()).to_str().unwrap_or("<<invalid>>") }
+		}
+
+		let mut sysinfo = MaybeUninit::<utsname>::uninit();
+		if unsafe { libc::uname(sysinfo.as_mut_ptr()) } == 0 {
+			let sysinfo = unsafe { sysinfo.assume_init() };
+			cstr_to_str(&sysinfo.release).contains("WSL")
+		} else {
+			panic!("cannot call uname")
+		}
+	}
+});
+
+#[inline]
+fn wsl_to_windows_path(path: impl AsRef<OsStr>) -> Option<String> {
+	fn impl_(path: &OsStr) -> Result<String, String> {
+		let mut out = std::process::Command::new("wslpath")
+			.arg("-w")
+			.arg(path)
+			.output()
+			.map_err(|err| format_loc!("wslpath failed: {}", err))?;
+		let code = out.status.code().unwrap_or(-1);
+		if code != 0 {
+			return Err(format_loc!("wslpath failed with code={}", code));
+		}
+
+		Ok(String::from_utf8(core::mem::take(&mut out.stdout))
+			.map_err(|err| format_loc!("wslpath returned non-utf8 path: {}", err))?
+			.trim()
+			.to_string())
+	}
+	impl_(path.as_ref()).map_err(|err| tracing::error!("{err}")).ok()
+}
+
+/// Returns a path suitable for display on code editors e.g. VSCode.
+///
+/// Transforms the path on WSL only.
+pub fn to_display_path(path: impl AsRef<Path>) -> String {
+	if *WSL {
+		return wsl_to_windows_path(path.as_ref()).unwrap_or_else(|| path.as_ref().to_string_lossy().into_owned());
+	}
+
+	path.as_ref().to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{to_display_path, WSL};
+
+	#[test]
+	fn test_to_display_path() {
+		if !*WSL {
+			return;
+		}
+
+		assert_eq!(to_display_path("/mnt/c"), r"C:\");
+		let unix_path = to_display_path("/usr");
+		assert!(unix_path.starts_with(r"\\wsl"));
+		assert!(unix_path.ends_with(r"\usr"));
+	}
 }

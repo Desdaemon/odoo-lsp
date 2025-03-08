@@ -8,11 +8,11 @@ use odoo_lsp::index::{interner, ComponentQuery};
 use odoo_lsp::some;
 use odoo_lsp::utils::{position_to_offset, ts_range_to_lsp_range, ByteOffset, RangeExt};
 use ropey::Rope;
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::lsp_types::*;
 use tree_sitter::{Parser, QueryCursor};
 
 impl Backend {
-	pub fn on_change_js(&self, text: &Text, uri: &Url, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
+	pub fn on_change_js(&self, text: &Text, uri: &Uri, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
 			.set_language(&tree_sitter_javascript::LANGUAGE.into())
@@ -23,10 +23,10 @@ impl Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
-			.get(uri.path())
-			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
+			.get(uri.path().as_str())
+			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path().as_str()))?;
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, rope) else {
-			Err(diagnostic!("could not find offset for {}", uri.path()))?
+			Err(diagnostic!("could not find offset for {}", uri.path().as_str()))?
 		};
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
@@ -51,10 +51,10 @@ impl Backend {
 		let uri = &params.text_document_position.text_document.uri;
 		let ast = self
 			.ast_map
-			.get(uri.path())
-			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
+			.get(uri.path().as_str())
+			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path().as_str()))?;
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, rope) else {
-			Err(diagnostic!("could not find offset for {}", uri.path()))?
+			Err(diagnostic!("could not find offset for {}", uri.path().as_str()))?
 		};
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
@@ -84,10 +84,10 @@ impl Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
-			.get(uri.path())
-			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
+			.get(uri.path().as_str())
+			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path().as_str()))?;
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
-			Err(diagnostic!("could not find offset for {}", uri.path()))?
+			Err(diagnostic!("could not find offset for {}", uri.path().as_str()))?
 		};
 		let contents = Cow::from(rope);
 		let contents = contents.as_bytes();

@@ -12,16 +12,15 @@ use miette::{diagnostic, Diagnostic, IntoDiagnostic};
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use smart_default::SmartDefault;
-use tokio::runtime::Handle;
 use tokio::sync::RwLock;
-use tower_lsp::lsp_types::Range;
+use tower_lsp_server::lsp_types::Range;
 use tracing::{debug, error, info, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
 use crate::index::{interner, Interner, PathSymbol, Symbol};
 use crate::str::Text;
-use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt, Usage};
+use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt};
 use crate::{format_loc, test_utils, ImStr};
 
 #[derive(Clone, Debug)]
@@ -607,13 +606,6 @@ impl ModelIndex {
 			FieldKind::Related(_) => None,
 		}
 	}
-	pub(crate) fn statistics(&self) -> serde_json::Value {
-		let Self { inner, by_prefix } = self;
-		serde_json::json! {{
-			"entries": inner.usage(),
-			"by_prefix": Handle::current().block_on(by_prefix.read()).usage(),
-		}}
-	}
 }
 
 #[rustfmt::skip]
@@ -761,6 +753,16 @@ mod tests {
 				],
 				[
 					(Some(T::Model), "class Bar("),
+					(None, "Model"),
+					(Some(T::Name), "_inherit"),
+				],
+				[
+					(Some(T::Model), "class Quux"),
+					(None, "Model"),
+					(Some(T::Name), "_name"),
+				],
+				[
+					(Some(T::Model), "class Quux"),
 					(None, "Model"),
 					(Some(T::Name), "_inherit"),
 				]

@@ -1,4 +1,4 @@
-cognitive-complexity-threshold = 15
+cognitive-complexity-threshold = 20
 
 [[await-holding-invalid-types]]
 path = "dashmap::mapref::one::RefMut"

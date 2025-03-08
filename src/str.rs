@@ -11,8 +11,6 @@ use libflate::deflate::{Decoder, Encoder};
 use num_enum::IntoPrimitive;
 use num_enum::TryFromPrimitive;
 
-use crate::utils::{Usage, UsageInfo};
-
 /// Immutable, [String]-sized clone-friendly string.
 #[derive(Clone)]
 pub struct ImStr(pub(crate) Repr);
@@ -220,16 +218,6 @@ impl Text {
 				let str = unsafe { String::from_utf8_unchecked(buf) };
 				Cow::Owned(str)
 			}
-		}
-	}
-}
-
-impl Usage for Text {
-	fn usage(&self) -> UsageInfo<Self> {
-		match &self.0 {
-			TextRepr::Inline(_, _) => UsageInfo::new(0),
-			TextRepr::Arc(ptr) => UsageInfo::new(ptr.len()),
-			TextRepr::Compressed(ptr) => UsageInfo::new(ptr.len()),
 		}
 	}
 }

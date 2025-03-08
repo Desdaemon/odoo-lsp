@@ -44,47 +44,52 @@ tree-sitter = "0.23"
 
 [dependencies]
 ropey = "1.5.0"
-serde_json = "1.0.108"
+serde = { version = "1.0.218", features = ["derive"] }
+serde_json = "1.0.140"
 tokio = { version = "1.17.0", features = ["macros", "rt-multi-thread", "fs", "io-std"] }
-tower-lsp = { version = "0.20.0", features = ["proposed"] }
-serde = { version = "1.0", features = ["derive"] }
-dashmap = { version = "6.0.1", features = ["raw-api"] }
+# tower-lsp = { version = "0.20.0", features = ["proposed"] }
+tower-lsp-server = { git = "https://github.com/Desdaemon/tower-lsp-server", branch = "main", features = ["proposed"] }
+dashmap = { version = "6.1.0", features = ["raw-api"] }
 globwalk = "0.9.1"
-miette = { version = "7.2.0", features = ["fancy"] }
+miette = { version = "7.5.0", features = ["fancy"] }
 futures = "0.3.31"
 xmlparser = "0.13.5"
-tower = { version = "0.5.0", features = ["timeout"] }
-pin-project-lite = "0.2.12"
+tower = { version = "0.4.13", features = ["timeout"] }
+pin-project-lite = "0.2.16"
 qp-trie = "0.8.1"
 lasso = { version = "0.7.2", features = ["multi-threaded"] }
 intmap = "2.0.0"
 libflate = "2.0.0"
-phf = { version = "0.11.2", features = ["macros"] }
+phf = { version = "0.11.3", features = ["macros"] }
 ts-macros = { version = "0.4.1", path = "crates/ts-macros" }
-bitflags = "2.4.1"
-pathdiff = "0.2.1"
+bitflags = "2.6.0"
+pathdiff = "0.2.3"
 rayon = "1.8.0"
-derive_more = { version = "1.0.0", features = ["deref", "deref_mut"] }
+derive_more = { version = "2.0.1", features = ["deref", "deref_mut"] }
 ignore = "0.4.22"
 fomat-macros = "0.3.2"
 num_enum = "0.7.2"
-thiserror = "1.0.58"
+thiserror = "1.0.69"
 git-version = "0.3.9"
 smart-default = "0.7.1"
-const_format = { version = "0.2.32", features = ["assertcp"] }
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+const_format = { version = "0.2.34", features = ["assertcp"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tree-sitter-javascript = "0.23.1"
-tree-sitter-python = "0.23.4"
+tree-sitter-python = "0.23.6"
 tree-sitter.workspace = true
-
-[target.'cfg(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64"))))'.dependencies]
-self_update = { version = "0.41.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }
-
-[target.'cfg(not(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64")))))'.dependencies]
-self_update = { version = "0.41.0", features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
-
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"
+
+[target.'cfg(target_family = "unix")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64"))))'.dependencies]
+self_update = { version = "0.42.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }
+
+[target.'cfg(not(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64")))))'.dependencies]
+self_update = { version = "0.42.0", features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
+
+
 

@@ -70,10 +70,6 @@
 				"title": "odoo-lsp: Generate TypeScript config"
 			},
 			{
-				"command": "odoo-lsp.statistics",
-				"title": "odoo-lsp: Generate memory usage report"
-			},
-			{
 				"command": "odoo-lsp.restart-lsp",
 				"title": "odoo-lsp: Restart language server"
 			},

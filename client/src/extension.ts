@@ -402,17 +402,6 @@ export async function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand("odoo-lsp.statistics", async () => {
-			const response = await client.sendRequest("odoo-lsp/statistics");
-			const doc = await vscode.workspace.openTextDocument({
-				language: "json",
-				content: JSON.stringify(response, undefined, 2),
-			});
-			await vscode.window.showTextDocument(doc);
-		}),
-	);
-
-	context.subscriptions.push(
 		vscode.commands.registerCommand("odoo-lsp.restart-lsp", async () => {
 			await client.restart();
 			traceOutputChannel.info("Odoo LSP restarted");

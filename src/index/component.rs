@@ -5,14 +5,13 @@ use dashmap::DashMap;
 use lasso::{Key, Spur};
 use miette::diagnostic;
 use smart_default::SmartDefault;
-use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
 use crate::index::PathSymbol;
-use crate::utils::{offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, MinLoc, RangeExt, Usage};
+use crate::utils::{offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, MinLoc, RangeExt};
 use crate::{format_loc, ok};
 
 use super::{interner, Component, ComponentName, Output, TemplateName};
@@ -296,17 +295,5 @@ impl ComponentIndex {
 			}
 			self.insert(name, component);
 		}
-	}
-	pub(super) fn statistics(&self) -> serde_json::Value {
-		let Self {
-			inner,
-			by_template,
-			by_prefix,
-		} = self;
-		serde_json::json! {{
-			"entries": inner.usage(),
-			"by_template": by_template.usage(),
-			"by_prefix": Handle::current().block_on(by_prefix.read()).usage(),
-		}}
 	}
 }
