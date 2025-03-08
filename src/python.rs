@@ -22,7 +22,7 @@ use ts_macros::query;
 
 #[rustfmt::skip]
 query! {
-	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor);
+	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor, Compute);
 
 (call [
   (attribute [
@@ -56,8 +56,11 @@ query! {
           (attribute
             (identifier) @_fields (identifier) (#eq? @_fields "fields"))
           (argument_list
-            (keyword_argument
-              (identifier) @_related (#eq? @_related "related") (string) @MAPPED)?))])))))
+            (keyword_argument [
+              // alternatives for keyword arguments
+              // if none of the alternatives match, the optional marker outside ensures that this field is still recognized
+              ((identifier) @_related (#eq? @_related "related") (string) @MAPPED)
+              ((identifier) @_compute_fn (#match? @_compute_fn "^(compute|search|inverse)$") (string) @COMPUTE) ])?)) ])))))
 
 (call [
   (attribute
@@ -305,7 +308,9 @@ impl Backend {
 								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
 						}
-						Some(PyCompletions::Mapped) if range.contains_end(offset) => {
+						Some(mapstr @ (PyCompletions::Mapped | PyCompletions::Compute))
+							if range.contains_end(offset) =>
+						{
 							let Mapped {
 								needle,
 								model,
@@ -333,12 +338,17 @@ impl Backend {
 									.ok());
 							}
 							let model_name = interner().resolve(&model);
+							let prop_type = if matches!(mapstr, PyCompletions::Compute) {
+								Some(PropertyKind::Method)
+							} else {
+								Some(PropertyKind::Field)
+							};
 							self.complete_property_name(
 								needle,
 								range,
 								model_name.to_string(),
 								rope,
-								Some(PropertyKind::Field),
+								prop_type,
 								&mut items,
 							)?;
 							return Ok(Some(CompletionResponse::List(CompletionList {
@@ -362,6 +372,7 @@ impl Backend {
 						Some(PyCompletions::Depends)
 						| Some(PyCompletions::MappedTarget)
 						| Some(PyCompletions::Mapped)
+						| Some(PyCompletions::Compute)
 						| Some(PyCompletions::XmlId)
 						| Some(PyCompletions::Prop)
 						| Some(PyCompletions::Scope)
@@ -583,6 +594,12 @@ impl Backend {
 					}
 				}
 			}
+		} else if match_
+			.nodes_for_capture_index(PyCompletions::Compute as _)
+			.next()
+			.is_some()
+		{
+			single_field = true;
 		}
 
 		Some(Mapped {
@@ -639,7 +656,7 @@ impl Backend {
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
 					}
-					Some(PyCompletions::Mapped) if range.contains_end(offset) => {
+					Some(PyCompletions::Mapped | PyCompletions::Compute) if range.contains_end(offset) => {
 						if let Some(mapped) = self.gather_mapped(
 							root,
 							&match_,
@@ -663,6 +680,7 @@ impl Backend {
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::Mapped)
+					| Some(PyCompletions::Compute)
 					| Some(PyCompletions::ForXmlId)
 					| Some(PyCompletions::XmlId)
 					| Some(PyCompletions::MappedTarget)
@@ -794,6 +812,8 @@ impl Backend {
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let path = some!(params.text_document_position.text_document.uri.to_file_path());
 		let current_module = self.index.module_of_path(&path);
+		let mut this_model = ThisModel::default();
+
 		'match_: for match_ in cursor.matches(query, root, contents) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
@@ -823,7 +843,19 @@ impl Backend {
 							let slice = Cow::from(slice);
 							let slice = some!(interner().get(slice));
 							return self.model_references(&slice.into());
+						} else if range.end < offset {
+							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
+					}
+					Some(PyCompletions::Compute) => {
+						let range = capture.node.byte_range();
+						if !range.contains(&offset) {
+							continue;
+						}
+
+						let model = String::from_utf8_lossy(some!(this_model.inner.as_ref()));
+						let prop = String::from_utf8_lossy(&contents[range.shrink(1)]);
+						return self.method_references(&prop, &model);
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)
@@ -878,7 +910,7 @@ impl Backend {
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
 					}
-					Some(PyCompletions::Mapped) if range.contains(&offset) => {
+					Some(PyCompletions::Mapped | PyCompletions::Compute) if range.contains(&offset) => {
 						let mapped = some!(self.gather_mapped(
 							root,
 							&match_,
@@ -911,6 +943,7 @@ impl Backend {
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)
 					| Some(PyCompletions::Mapped)
+					| Some(PyCompletions::Compute)
 					| Some(PyCompletions::ForXmlId)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
@@ -1045,7 +1078,7 @@ impl Backend {
 							field_descriptors.push((descriptor, desc_value));
 						}
 					}
-					Some(PyCompletions::Mapped) => {
+					Some(mapstr @ (PyCompletions::Mapped | PyCompletions::Compute)) => {
 						self.diagnose_mapped(
 							rope,
 							diagnostics,
@@ -1054,6 +1087,7 @@ impl Backend {
 							this_model.inner,
 							&match_,
 							capture.node.byte_range(),
+							matches!(mapstr, PyCompletions::Mapped),
 						);
 					}
 					Some(PyCompletions::Scope) => {
@@ -1207,6 +1241,7 @@ impl Backend {
 								comodel_name,
 								&match_,
 								mapped.byte_range(),
+								true,
 							);
 						}
 					}
@@ -1225,6 +1260,7 @@ impl Backend {
 		model: Option<&[u8]>,
 		match_: &QueryMatch<'_, '_>,
 		mapped_range: std::ops::Range<usize>,
+		expect_field: bool,
 	) {
 		let Some(Mapped {
 			needle,
@@ -1267,7 +1303,7 @@ impl Backend {
 			// Nothing to compare yet, keep going.
 			return;
 		}
-		let mut has_field = false;
+		let mut has_property = false;
 		if self.index.models.contains_key(&model.into()) {
 			let Some(entry) = self.index.models.populate_properties(model.into(), &[]) else {
 				return;
@@ -1283,18 +1319,25 @@ impl Backend {
 			if MAPPED_BUILTINS.contains(needle) {
 				return;
 			}
-			let (Some(fields), Some(methods)) = (entry.fields.as_ref(), entry.methods.as_ref()) else {
-				return;
-			};
 			if let Some(key) = interner().get(needle) {
-				has_field = fields.contains_key(&key.into()) || methods.contains_key(&key.into());
+				if expect_field {
+					let Some(fields) = entry.fields.as_ref() else { return };
+					has_property = fields.contains_key(&key.into())
+				} else {
+					let Some(methods) = entry.methods.as_ref() else { return };
+					has_property = methods.contains_key(&key.into());
+				}
 			}
 		}
-		if !has_field {
+		if !has_property {
 			diagnostics.push(Diagnostic {
 				range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
 				severity: Some(DiagnosticSeverity::ERROR),
-				message: format!("Model `{}` has no field `{needle}`", interner().resolve(&model)),
+				message: format!(
+					"Model `{}` has no {} `{needle}`",
+					interner().resolve(&model),
+					if expect_field { "field" } else { "method" }
+				),
 				..Default::default()
 			});
 		}
