@@ -3,7 +3,6 @@ use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::future::Future;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -511,11 +510,7 @@ impl UriExt for tower_lsp_server::lsp_types::Uri {
 }
 
 pub fn from_file_path(path: &Path) -> Option<Uri> {
-	Uri::from_str(&format!(
-		"file://{}",
-		String::from_utf8_lossy(path.as_os_str().as_bytes())
-	))
-	.ok()
+	Uri::from_str(&format!("file://{}", path.as_os_str().to_string_lossy(),)).ok()
 }
 
 static WSL: LazyLock<bool> = LazyLock::new(|| {
