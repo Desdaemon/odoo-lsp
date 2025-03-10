@@ -135,13 +135,33 @@ impl Field {
 }
 
 impl Method {
-	pub fn add_override(self: &mut Arc<Self>, location: MinLoc) {
+	pub fn add_override(self: &mut Arc<Self>, location: MinLoc, top_level_scope: Option<Range>) {
 		let self_ = Arc::make_mut(self);
-		if let Some(loc) = self_.locations.iter_mut().find(|loc| loc.path == location.path) {
-			loc.range = location.range;
-		} else {
+		let Some((idx, _)) = self_
+			.locations
+			.iter()
+			.enumerate()
+			.rfind(|(_, loc)| loc.path == location.path)
+		else {
 			self_.locations.push(location);
+			return;
+		};
+
+		let Some(top_level_scope) = top_level_scope else {
+			self_.locations.insert(idx + 1, location);
+			return;
+		};
+
+		// find an exact match first
+		if let Some(loc) = self_.locations.iter_mut().take(idx + 1).find(|loc| {
+			loc.path == location.path
+				&& (loc.range.start >= top_level_scope.start && loc.range.end <= top_level_scope.end)
+		}) {
+			loc.range = location.range;
+			return;
 		}
+
+		self_.locations.insert(idx + 1, location);
 	}
 	pub fn merge(self: &mut Arc<Self>, other: &Self) {
 		let self_ = Arc::make_mut(self);
@@ -435,8 +455,13 @@ impl ModelIndex {
 						let method_str = String::from_utf8_lossy(&contents[method.byte_range()]);
 						let method = interner().get_or_intern(&method_str);
 						let range = ts_range_to_lsp_range(body.range());
+						let top_level_scope = ast
+							.root_node()
+							.child_containing_descendant(body)
+							.map(|scope| ts_range_to_lsp_range(scope.range()));
 						methods.push((
 							method,
+							top_level_scope,
 							MinLoc {
 								path: location.path,
 								range,
@@ -501,10 +526,10 @@ impl ModelIndex {
 			properties_set.insert(interner().resolve(&key).as_bytes(), PropertyKind::Field);
 		}
 
-		for (key, method_location) in methods.into_iter().flatten() {
+		for (key, top_level_scope, method_location) in methods.into_iter().flatten() {
 			match out_methods.entry(key.into()) {
 				Entry::Occupied(mut old_method) => {
-					old_method.get_mut().add_override(method_location);
+					old_method.get_mut().add_override(method_location, top_level_scope);
 				}
 				Entry::Vacant(empty) => {
 					empty.insert(
