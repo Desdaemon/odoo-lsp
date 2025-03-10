@@ -125,7 +125,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           path: ./odoo-lsp-${{ matrix.target }}.${{ matrix.runs-on == 'windows-latest' && 'zip' || 'tgz' }}
           name: odoo-lsp-${{ matrix.target }}.${{ matrix.runs-on == 'windows-latest' && 'zip' || 'tgz' }}
@@ -156,7 +156,7 @@ jobs:
           mv __temp__ package.json
       - run: pnpm package
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           path: ./odoo-lsp-*.vsix
           name: odoo-lsp-extension.vsix
