@@ -136,11 +136,41 @@ impl Field {
 impl Method {
 	pub fn add_override(self: &mut Arc<Self>, location: MinLoc) {
 		let self_ = Arc::make_mut(self);
-		self_.locations.push(location);
+		if let Some(loc) = self_.locations.iter_mut().find(|loc| loc.path == location.path) {
+			loc.range = location.range;
+		} else {
+			self_.locations.push(location);
+		}
 	}
 	pub fn merge(self: &mut Arc<Self>, other: &Self) {
 		let self_ = Arc::make_mut(self);
-		self_.locations.extend(other.locations.iter().cloned());
+		if self_.locations.is_empty() {
+			self_.locations.clone_from(&other.locations);
+			return;
+		}
+		let mut ranges_by_locations = HashMap::<_, Vec<_>>::new();
+		for loc in other.locations.iter() {
+			ranges_by_locations.entry(loc.path).or_default().push(loc.range);
+		}
+		for (path, ranges) in ranges_by_locations {
+			let mut first = None;
+			let mut last = None;
+			for (idx, loc) in self_.locations.iter().enumerate() {
+				if loc.path == path {
+					if first.is_none() {
+						first = Some(idx);
+					}
+					last = Some(idx);
+				} else if first.is_some() {
+					break;
+				}
+			}
+			let (Some(first), Some(last)) = (first, last) else {
+				(self_.locations).extend(ranges.into_iter().map(|range| MinLoc { path, range }));
+				continue;
+			};
+			(self_.locations).splice(first..=last, ranges.into_iter().map(|range| MinLoc { path, range }));
+		}
 	}
 }
 

@@ -1,0 +1,48 @@
+.TH ODOO\-LSP 1 "March 2025" "odoo-lsp 0.5" "User Commands"
+.SH NAME
+odoo-lsp \- Language server for Odoo Python/XML/JS
+
+.SH SYNOPSIS
+.B odoo-lsp
+[init|tsconfig|self-update] [options...]
+
+.SH USAGE
+.TP
+.B odoo-lsp
+Runs the language server.
+
+.TP
+.B odoo-lsp init --addons-path PATHS
+.nf
+Generates a config file for the LSP server.
+Files named `.odoo_lsp` and `.odoo_lsp.json` are recognized.
+.fi
+
+.TP
+.B odoo-lsp tsconfig --addons-path PATHS
+Generates a `tsconfig.json` file for TypeScript support.
+
+.TP
+.B odoo-lsp self-update [--nightly]
+Updates to the latest version available.
+
+
+.SH OPTIONS
+.TP
+.B \-o, \-\-out
+[init, tsconfig] Specifies the path to store the output.
+
+.TP
+.B \-\-addons-path PATH
+.nf
+Specifies the roots of the addons.
+Can be specified multiple times, or as a comma-separated list of paths.
+.fi
+
+.TP
+.B \-h, \-\-help
+Displays this help message.
+
+.TP
+.B \-v, \-\-version
+Prints the current version and exit.

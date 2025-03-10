@@ -18,7 +18,7 @@ pub struct Symbol<T> {
 }
 
 /// An interned path split into (root, subpath) to save memory.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PathSymbol(Spur, Spur);
 
 impl PathSymbol {
