@@ -906,9 +906,17 @@ impl Backend {
 					{
 						"*Defined in:* `" (interner().resolve(&module)) "`  \n"
 					}
+					if let Some(help) = &method.docstring {
+						match help.to_string() {
+							empty if empty.is_empty() => {}
+							other => {
+								(other) "\n\n"
+							}
+						}
+					}
 					for (idx, (module, override_, range)) in rest.enumerate() {
 						if idx == 0 { "*Overridden in:*\n" }
-						"- [`" (module) "`](" (to_display_path(override_.path.to_path())) "#L" (range.start.line + 1) ")  \n  in " (override_.path.subpath()) ":" (range.start.line + 1)
+						"- [`" (module) "`](" (to_display_path(override_.path.to_path())) "#L" (range.start.line + 1) ") in " (override_.path.subpath()) ":" (range.start.line + 1)
 					} sep { "\n" }
 				}
 			}

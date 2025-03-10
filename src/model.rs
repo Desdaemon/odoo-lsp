@@ -99,6 +99,7 @@ pub struct Field {
 pub struct Method {
 	pub return_type: MethodReturnType,
 	pub locations: Vec<MinLoc>,
+	pub docstring: Option<Text>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -144,10 +145,14 @@ impl Method {
 	}
 	pub fn merge(self: &mut Arc<Self>, other: &Self) {
 		let self_ = Arc::make_mut(self);
+		if other.docstring.is_some() {
+			self_.docstring = other.docstring.clone();
+		}
 		if self_.locations.is_empty() {
 			self_.locations.clone_from(&other.locations);
 			return;
 		}
+
 		let mut ranges_by_locations = HashMap::<_, Vec<_>>::new();
 		for loc in other.locations.iter() {
 			ranges_by_locations.entry(loc.path).or_default().push(loc.range);
@@ -506,6 +511,7 @@ impl ModelIndex {
 						Method {
 							return_type: Default::default(),
 							locations: vec![method_location],
+							docstring: None,
 						}
 						.into(),
 					);

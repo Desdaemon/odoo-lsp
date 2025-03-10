@@ -637,7 +637,7 @@ impl Index {
 		let offset = fn_scope.end_byte();
 		let (_, type_) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
 			let entered = self.build_scope(scope, node, offset, contents).map_break(|_| None)?;
-			// TODO: When implementing loose functions, make the toplevel check optional
+			// TODO: When implementing freestanding functions, make the toplevel check optional
 			if node.kind() == "return_statement" && is_toplevel_return(node) {
 				let Some(child) = node.named_child(0) else {
 					return ControlFlow::Continue(entered);
@@ -660,11 +660,38 @@ impl Index {
 			Some(rel) => method.return_type = MethodReturnType::Relational(rel),
 			None => method.return_type = MethodReturnType::Value,
 		}
+
+		let docstring = Self::method_docstring(fn_scope, contents)
+			.and_then(|doc| crate::str::Text::try_from(String::from_utf8_lossy(doc).as_ref()).ok());
+		method.docstring = docstring;
+
 		type_
+	}
+
+	fn method_docstring<'out>(fn_scope: Node, contents: &'out [u8]) -> Option<&'out [u8]> {
+		let block = fn_scope.child_by_field_name("body")?;
+		let expr_stmt = block.named_child(0)?;
+		if expr_stmt.kind() != "expression_statement" {
+			return None;
+		}
+
+		let string = expr_stmt.named_child(0)?;
+		if string.kind() != "string" {
+			return None;
+		}
+
+		let string_content = string.named_child(1)?;
+		if string_content.kind() != "string_content" {
+			return None;
+		}
+
+		Some(&contents[string_content.byte_range()])
 	}
 }
 
-/// Returns `(self_type, fn_scope, self_param)`
+/// Returns `(self_type, fn_scope, self_param)`.
+///
+/// `fn_scope` is customarily a `function_definition` node.
 #[instrument(level = "trace", skip_all, ret)]
 pub fn determine_scope<'out, 'node>(
 	node: Node<'node>,
