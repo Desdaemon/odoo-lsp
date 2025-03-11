@@ -599,6 +599,16 @@
 		<attribute name="invisible" a:defaultValue="False">
 			<a:documentation>
 				Whether the element is invisible. Takes a Python expression.
+				In a tree view, this only hides the singular cell; use `column_invisible` to hide the column.
+			</a:documentation>
+		</attribute>
+	</define>
+
+	<define name="column_invisible">
+		<attribute name="column_invisible" a:defaultValue="False">
+			<a:documentation>
+				Whether this column (in a tree view) is invisible. Takes a Python expression.
+				To set *defaults* for hiding or showing columns, use `optional` instead.
 			</a:documentation>
 		</attribute>
 	</define>
@@ -618,6 +628,7 @@
 			<ref name="decoration"/>
 			<ref name="oe_class"/>
 			<ref name="invisible"/>
+			<ref name="column_invisible">
 			<ref name="groups"/>
 			<attribute name="string">
 				<a:documentation>
