@@ -628,7 +628,7 @@
 			<ref name="decoration"/>
 			<ref name="oe_class"/>
 			<ref name="invisible"/>
-			<ref name="column_invisible">
+			<ref name="column_invisible"/>
 			<ref name="groups"/>
 			<attribute name="string">
 				<a:documentation>

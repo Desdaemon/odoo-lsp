@@ -3,6 +3,11 @@ name: test
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**/*'
+      - 'testing/**/*'
+      - 'examples/**/*'
+      - 'crates/**/src/**/*'
   pull_request:
 
 env:
