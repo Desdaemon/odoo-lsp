@@ -115,7 +115,7 @@ query! {
     (dictionary [
       (pair key: (string) @MAPPED)
       (ERROR (string) @MAPPED) ]) ]))
-  (#eq? @DEPENDS "write"))
+  (#match? @DEPENDS "^(write|copy)$"))
 
 ((call
   (attribute
