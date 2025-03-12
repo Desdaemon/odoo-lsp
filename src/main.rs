@@ -70,34 +70,36 @@
 #![deny(clippy::unused_async)]
 #![deny(clippy::await_holding_invalid_type)]
 
-use std::borrow::Cow;
-use std::path::Path;
+use std::ops::ControlFlow;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
-use std::time::Duration;
 
-use catch_panic::CatchPanic;
 use dashmap::{DashMap, DashSet};
+use futures::stream::FuturesUnordered;
+use futures::{StreamExt, TryFutureExt};
 use ropey::Rope;
 use serde_json::Value;
-use tower::ServiceBuilder;
-use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::notification::{DidChangeConfiguration, Notification, Progress};
-use tower_lsp_server::lsp_types::request::WorkDoneProgressCreate;
-use tower_lsp_server::lsp_types::*;
-use tower_lsp_server::{LanguageServer, LspService, Server};
+// use async_lsp::jsonrpc::Result;
+use async_lsp::lsp_types::notification::{self as notif, DidChangeConfiguration, Notification, Progress};
+use async_lsp::lsp_types::request::WorkDoneProgressCreate;
+use async_lsp::{lsp_types::*, ResponseError};
+
 use tracing::{debug, error, info, instrument, warn};
 
 use odoo_lsp::config::Config;
 use odoo_lsp::index::{interner, Interner};
-use odoo_lsp::{loc, some, utils::*};
+use odoo_lsp::{format_loc, loc, some, utils::*};
 
 mod backend;
-mod catch_panic;
 mod cli;
 mod js;
 mod python;
 mod xml;
+
+mod events {
+	pub struct Initialized;
+}
 
 #[cfg(doc)]
 pub use odoo_lsp::*;
@@ -108,16 +110,20 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-#[tower_lsp_server::async_trait]
-impl LanguageServer for Backend {
+type Result<T> = core::result::Result<T, async_lsp::ResponseError>;
+type NotifyResult = core::ops::ControlFlow<async_lsp::Result<()>>;
+const NOTIFY_RESUME: NotifyResult = ControlFlow::Continue(());
+
+// #[tower_lsp_server::async_trait]
+impl Backend {
 	#[instrument(skip_all)]
-	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+	async fn initialize(&mut self, params: InitializeParams) -> Result<InitializeResult> {
 		#[allow(deprecated)]
 		let root = params
 			.root_uri
 			.as_ref()
-			.and_then(|uri| uri.to_file_path())
-			.or_else(|| params.root_path.as_deref().map(Path::new).map(Cow::<Path>::from));
+			.and_then(|uri| uri.to_file_path().ok())
+			.or_else(|| params.root_path.as_deref().map(PathBuf::from));
 		'root: {
 			match params.initialization_options.map(serde_json::from_value::<Config>) {
 				Some(Ok(config)) => {
@@ -140,7 +146,7 @@ impl LanguageServer for Backend {
 					None
 				};
 				let Some((path, config)) = &config_file else {
-					self.roots.insert(root.into_owned());
+					self.roots.insert(root);
 					break 'root;
 				};
 				match serde_json::from_slice::<Config>(config) {
@@ -150,8 +156,8 @@ impl LanguageServer for Backend {
 			}
 			for ws_dir in params.workspace_folders.unwrap_or_default() {
 				match ws_dir.uri.to_file_path() {
-					Some(path) => drop(self.roots.insert(path.into_owned())),
-					None => {
+					Ok(path) => drop(self.roots.insert(path)),
+					Err(()) => {
 						error!("cannot parse as file path: {}", ws_dir.uri.as_str());
 					}
 				}
@@ -184,9 +190,13 @@ impl LanguageServer for Backend {
 			self.capabilities.pull_diagnostics.store(true, Relaxed);
 		}
 
+		if self.client.emit(events::Initialized).is_err() {
+			panic!("FIXME: can't resurrect a zombie for sure");
+		}
+
 		Ok(InitializeResult {
 			server_info: None,
-			offset_encoding: None,
+			// offset_encoding: None,
 			capabilities: ServerCapabilities {
 				definition_provider: Some(OneOf::Left(true)),
 				hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -224,12 +234,12 @@ impl LanguageServer for Backend {
 		})
 	}
 	#[instrument(skip_all)]
-	async fn shutdown(&self) -> Result<()> {
+	async fn shutdown(&mut self) -> Result<()> {
 		Ok(())
 	}
 	#[instrument(skip(self))]
-	async fn did_close(&self, params: DidCloseTextDocumentParams) {
-		let path = params.text_document.uri.path().as_str();
+	fn did_close(&mut self, params: DidCloseTextDocumentParams) -> NotifyResult {
+		let path = params.text_document.uri.path();
 		let Self {
 			document_map,
 			record_ranges,
@@ -247,49 +257,65 @@ impl LanguageServer for Backend {
 		record_ranges.remove(path);
 		ast_map.remove(path);
 
-		self.client
-			.publish_diagnostics(params.text_document.uri, vec![], None)
-			.await;
+		(self.client).notify::<notif::PublishDiagnostics>(PublishDiagnosticsParams {
+			uri: params.text_document.uri,
+			diagnostics: vec![],
+			version: None,
+		});
+
+		NOTIFY_RESUME
 	}
-	#[instrument(skip_all)]
-	async fn initialized(&self, _: InitializedParams) {
+	fn initialized(&mut self, _: InitializedParams) -> NotifyResult {
+		tokio::task::spawn(self.initialized_impl());
+		NOTIFY_RESUME
+	}
+	#[instrument(skip_all, ret)]
+	async fn initialized_impl(&self) {
 		if self.capabilities.dynamic_config.load(Relaxed) {
-			_ = self
-				.client
-				.register_capability(vec![Registration {
-					id: "_dynamic_config".to_string(),
-					method: DidChangeConfiguration::METHOD.to_string(),
-					register_options: None,
-				}])
+			(self.client)
+				.request::<request::RegisterCapability>(RegistrationParams {
+					registrations: vec![Registration {
+						id: "_dynamic_config".to_string(),
+						method: DidChangeConfiguration::METHOD.to_string(),
+						register_options: None,
+					}],
+				})
 				.await;
 		}
-
 		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
 		let mut progress = None;
-		if self
-			.client
-			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
+		if (self.client)
+			.request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
 			.await
 			.is_ok()
 		{
-			_ = self
-				.client
-				.send_notification::<Progress>(ProgressParams {
-					token: token.clone(),
-					value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
-						title: "Indexing".to_string(),
-						..Default::default()
-					})),
-				})
-				.await;
+			(self.client).notify::<Progress>(ProgressParams {
+				token: token.clone(),
+				value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
+					title: "Indexing".to_string(),
+					..Default::default()
+				})),
+			});
 			progress = Some((&self.client, token.clone()));
 		}
 
 		let _blocker = self.root_setup.block();
 		self.ensure_nonoverlapping_roots();
 
-		for root in self.roots.iter() {
-			match self.index.add_root(&root, progress.clone(), false).await {
+		let mut futs = self
+			.roots
+			.iter()
+			.map(|root| {
+				let root = root.to_path_buf();
+				let progress = progress.clone();
+				async move {
+					let result = self.index.add_root(&root, progress, false).await;
+					(root, result)
+				}
+			})
+			.collect::<FuturesUnordered<_>>();
+		while let Some((root, result)) = futs.next().await {
+			match result {
 				Ok(Some(results)) => {
 					info!(
 						target: "initialized",
@@ -312,42 +338,41 @@ impl LanguageServer for Backend {
 		drop(_blocker);
 
 		if progress.is_some() {
-			_ = self
-				.client
-				.send_notification::<Progress>(ProgressParams {
-					token,
-					value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
-				})
-				.await;
+			(self.client).notify::<Progress>(ProgressParams {
+				token,
+				value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
+			});
 		}
 	}
-	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path().as_str()))]
-	async fn did_open(&self, params: DidOpenTextDocumentParams) {
-		info!("{}", params.text_document.uri.path().as_str());
+	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path()))]
+	fn did_open(&mut self, params: DidOpenTextDocumentParams) -> NotifyResult {
+		info!("{}", params.text_document.uri.path());
 		let language_id = params.text_document.language_id.as_str();
-		let split_uri = params.text_document.uri.path().as_str().rsplit_once('.');
+		let split_uri = params.text_document.uri.path().rsplit_once('.');
 		let language = match (language_id, split_uri) {
 			("python", _) | (_, Some((_, "py"))) => Language::Python,
 			("javascript", _) | (_, Some((_, "js"))) => Language::Javascript,
 			("xml", _) | (_, Some((_, "xml"))) => Language::Xml,
 			_ => {
 				debug!("Could not determine language, or language not supported:\nlanguage_id={language_id} split_uri={split_uri:?}");
-				return;
+				return NOTIFY_RESUME;
 			}
 		};
 
 		let rope = Rope::from_str(&params.text_document.text);
-		self.document_map.insert(
-			params.text_document.uri.path().as_str().to_string(),
-			Document::new(rope.clone()),
-		);
+		self.document_map
+			.insert(params.text_document.uri.path().to_string(), Document::new(rope.clone()));
+		tokio::task::spawn(self.did_open_impl(language, params));
 
+		NOTIFY_RESUME
+	}
+	async fn did_open_impl(&self, language: Language, params: DidOpenTextDocumentParams) {
 		self.root_setup.wait().await;
 		let path = params.text_document.uri.to_file_path().unwrap();
 		if self.index.module_of_path(&path).is_none() {
 			// outside of root?
-			debug!("oob: {}", params.text_document.uri.path().as_str());
-			let path = params.text_document.uri.to_file_path();
+			debug!("oob: {}", params.text_document.uri.path());
+			let path = params.text_document.uri.to_file_path().ok();
 			let mut path = path.as_deref();
 			while let Some(path_) = path {
 				if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
@@ -380,7 +405,11 @@ impl LanguageServer for Backend {
 			.inspect_err(|err| warn!("{err}"));
 	}
 	#[instrument(skip_all)]
-	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
+	fn did_change(&mut self, params: DidChangeTextDocumentParams) -> NotifyResult {
+		tokio::task::spawn(self.did_change_impl(params));
+		NOTIFY_RESUME
+	}
+	async fn did_change_impl(&self, mut params: DidChangeTextDocumentParams) {
 		self.root_setup.wait().await;
 		if let [TextDocumentContentChangeEvent {
 			range: None,
@@ -405,7 +434,7 @@ impl LanguageServer for Backend {
 		{
 			let mut document = self
 				.document_map
-				.get_mut(params.text_document.uri.path().as_str())
+				.get_mut(params.text_document.uri.path())
 				.expect("Did not build a document");
 			old_rope = document.rope.clone();
 			// Update the rope
@@ -440,32 +469,33 @@ impl LanguageServer for Backend {
 			.inspect_err(|err| warn!("{err}"));
 	}
 	#[instrument(skip_all)]
-	async fn did_save(&self, params: DidSaveTextDocumentParams) {
-		if self.root_setup.should_wait() {
-			return;
+	fn did_save(&mut self, params: DidSaveTextDocumentParams) -> NotifyResult {
+		if !self.root_setup.should_wait() {
+			tokio::task::spawn(self.did_save_impl(params)).inspect_err(|err| warn!("{err}"));
 		}
-		_ = self.did_save_impl(params).await.inspect_err(|err| warn!("{err}"));
+
+		NOTIFY_RESUME
 	}
 	#[instrument(skip_all)]
-	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
+	async fn goto_definition(&mut self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position_params.text_document.uri;
-		debug!("goto_definition {}", uri.path().as_str());
-		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
-			debug!("(goto_definition) unsupported: {}", uri.path().as_str());
+		debug!("goto_definition {}", uri.path());
+		let Some((_, ext)) = uri.path().rsplit_once('.') else {
+			debug!("(goto_definition) unsupported: {}", uri.path());
 			return Ok(None);
 		};
-		let Some(document) = self.document_map.get(uri.path().as_str()) else {
-			panic!("Bug: did not build a document for {}", uri.path().as_str());
+		let Some(document) = self.document_map.get(uri.path()) else {
+			panic!("Bug: did not build a document for {}", uri.path());
 		};
 		let location = match ext {
 			"xml" => self.xml_jump_def(params, document.rope.clone()),
 			"py" => self.python_jump_def(params, document.rope.clone()),
 			"js" => self.js_jump_def(params, &document.rope),
 			_ => {
-				debug!("(goto_definition) unsupported: {}", uri.path().as_str());
+				debug!("(goto_definition) unsupported: {}", uri.path());
 				return Ok(None);
 			}
 		};
@@ -477,18 +507,18 @@ impl LanguageServer for Backend {
 		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}
 	#[instrument(skip_all)]
-	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+	async fn references(&mut self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position.text_document.uri;
-		debug!("references {}", uri.path().as_str());
+		debug!("references {}", uri.path());
 
-		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
+		let Some((_, ext)) = uri.path().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
-		let Some(document) = self.document_map.get(uri.path().as_str()) else {
-			debug!("Bug: did not build a document for {}", uri.path().as_str());
+		let Some(document) = self.document_map.get(uri.path()) else {
+			debug!("Bug: did not build a document for {}", uri.path());
 			return Ok(None);
 		};
 		let refs = match ext {
@@ -501,20 +531,20 @@ impl LanguageServer for Backend {
 		Ok(refs.inspect_err(|err| warn!("{err}")).ok().flatten())
 	}
 	#[instrument(skip_all)]
-	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+	async fn completion(&mut self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position.text_document.uri;
-		debug!("(completion) {}", uri.path().as_str());
+		debug!("(completion) {}", uri.path());
 
-		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
+		let Some((_, ext)) = uri.path().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
 
 		let rope = {
-			let Some(document) = self.document_map.get(uri.path().as_str()) else {
-				debug!("Bug: did not build a document for {}", uri.path().as_str());
+			let Some(document) = self.document_map.get(uri.path()) else {
+				debug!("Bug: did not build a document for {}", uri.path());
 				return Ok(None);
 			};
 			document.rope.clone()
@@ -523,17 +553,15 @@ impl LanguageServer for Backend {
 			let completions = self.xml_completions(params, rope).await;
 			match completions {
 				Ok(ret) => Ok(ret),
-				Err(report) => {
-					self.client
-						.show_message(MessageType::ERROR, format!("error during xml completion:\n{report}"))
-						.await;
+				Err(err) => {
+					error!("{err}");
 					Ok(None)
 				}
 			}
 		} else if ext == "py" {
 			let ast = {
-				let Some(ast) = self.ast_map.get(uri.path().as_str()) else {
-					debug!("Bug: did not build AST for {}", uri.path().as_str());
+				let Some(ast) = self.ast_map.get(uri.path()) else {
+					debug!("Bug: did not build AST for {}", uri.path());
 					return Ok(None);
 				};
 				ast.value().clone()
@@ -542,19 +570,17 @@ impl LanguageServer for Backend {
 			match completions {
 				Ok(ret) => Ok(ret),
 				Err(err) => {
-					self.client
-						.show_message(MessageType::ERROR, format!("error during python completion:\n{err}"))
-						.await;
+					error!("{err}");
 					Ok(None)
 				}
 			}
 		} else {
-			debug!("(completion) unsupported {}", uri.path().as_str());
+			debug!("(completion) unsupported {}", uri.path());
 			Ok(None)
 		}
 	}
 	#[instrument(skip_all)]
-	async fn completion_resolve(&self, mut completion: CompletionItem) -> Result<CompletionItem> {
+	async fn completion_resolve(&mut self, mut completion: CompletionItem) -> Result<CompletionItem> {
 		if self.root_setup.should_wait() {
 			return Ok(completion);
 		}
@@ -587,19 +613,19 @@ impl LanguageServer for Backend {
 		Ok(completion)
 	}
 	#[instrument(skip_all)]
-	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+	async fn hover(&mut self, params: HoverParams) -> Result<Option<Hover>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position_params.text_document.uri;
-		let document = some!(self.document_map.get(uri.path().as_str()));
-		let (_, ext) = some!(uri.path().as_str().rsplit_once('.'));
+		let document = some!(self.document_map.get(uri.path()));
+		let (_, ext) = some!(uri.path().rsplit_once('.'));
 		let hover = match ext {
 			"py" => self.python_hover(params, document.rope.clone()),
 			"xml" => self.xml_hover(params, document.rope.clone()),
 			"js" => self.js_hover(params, document.rope.clone()),
 			_ => {
-				debug!("(hover) unsupported {}", uri.path().as_str());
+				debug!("(hover) unsupported {}", uri.path());
 				Ok(None)
 			}
 		};
@@ -611,21 +637,28 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
-	#[instrument(skip_all)]
-	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
+	fn did_change_configuration(&mut self, _: DidChangeConfigurationParams) -> NotifyResult {
+		tokio::task::spawn(self.did_change_configuration_impl());
+		NOTIFY_RESUME
+	}
+	#[instrument(skip_all, ret)]
+	async fn did_change_configuration_impl(&self) {
 		self.root_setup.wait().await;
 		let items = self
 			.roots
 			.iter()
 			.map(|entry| {
-				let scope_uri = from_file_path(entry.key());
+				let scope_uri = Url::from_file_path(entry.key()).ok();
 				ConfigurationItem {
 					section: Some("odoo-lsp".into()),
 					scope_uri,
 				}
 			})
 			.collect();
-		let mut configs = self.client.configuration(items).await.unwrap_or_default();
+		let mut configs = (self.client)
+			.request::<request::WorkspaceConfiguration>(ConfigurationParams { items })
+			.await
+			.unwrap_or_default();
 		// TODO: Per-folder configuration
 		let Some(mut config) = configs
 			.pop()
@@ -638,11 +671,15 @@ impl LanguageServer for Backend {
 		config.module.take();
 		self.on_change_config(config).await;
 	}
-	#[instrument(skip_all)]
-	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
+	fn did_change_workspace_folders(&mut self, params: DidChangeWorkspaceFoldersParams) -> NotifyResult {
+		tokio::task::spawn(self.did_change_workspace_folders_impl(params));
+		NOTIFY_RESUME
+	}
+	#[instrument(skip_all, ret)]
+	async fn did_change_workspace_folders_impl(&self, params: DidChangeWorkspaceFoldersParams) {
 		self.root_setup.wait().await;
 		for added in params.event.added {
-			let Some(file_path) = added.uri.to_file_path() else {
+			let Ok(file_path) = added.uri.to_file_path() else {
 				error!("not a file path: {}", added.uri.as_str());
 				continue;
 			};
@@ -653,7 +690,7 @@ impl LanguageServer for Backend {
 				.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
 		}
 		for removed in params.event.removed {
-			let Some(file_path) = removed.uri.to_file_path() else {
+			let Ok(file_path) = removed.uri.to_file_path() else {
 				error!("not a file path: {}", removed.uri.as_str());
 				continue;
 			};
@@ -662,7 +699,7 @@ impl LanguageServer for Backend {
 		self.index.mark_n_sweep();
 	}
 	#[instrument(skip_all)]
-	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
+	async fn symbol(&mut self, params: WorkspaceSymbolParams) -> Result<Option<WorkspaceSymbolResponse>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
@@ -707,7 +744,9 @@ impl LanguageServer for Backend {
 						})
 					})
 				});
-			Ok(Some(models.chain(records).take(limit).collect()))
+			Ok(Some(WorkspaceSymbolResponse::Flat(
+				models.chain(records).take(limit).collect(),
+			)))
 		} else {
 			let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter().flat_map(|key| {
@@ -717,13 +756,15 @@ impl LanguageServer for Backend {
 						.map(|record| to_symbol_information(&record, interner))
 				})
 			});
-			Ok(Some(models.chain(records).take(limit).collect()))
+			Ok(Some(WorkspaceSymbolResponse::Flat(
+				models.chain(records).take(limit).collect(),
+			)))
 		}
 	}
 	#[instrument(skip_all)]
-	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
+	async fn diagnostic(&mut self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
 		self.root_setup.wait().await;
-		let path = params.text_document.uri.path().as_str();
+		let path = params.text_document.uri.path();
 		debug!("{path}");
 		let mut diagnostics = vec![];
 		if let Some((_, "py")) = path.rsplit_once('.') {
@@ -731,7 +772,7 @@ impl LanguageServer for Backend {
 				let damage_zone = document.damage_zone.take();
 				let rope = &document.rope.clone();
 				self.diagnose_python(
-					params.text_document.uri.path().as_str(),
+					params.text_document.uri.path(),
 					rope,
 					damage_zone,
 					&mut document.diagnostics_cache,
@@ -750,15 +791,15 @@ impl LanguageServer for Backend {
 		)))
 	}
 	#[instrument(skip_all)]
-	async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+	async fn code_action(&mut self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
-		let Some((_, "xml")) = params.text_document.uri.path().as_str().rsplit_once('.') else {
+		let Some((_, "xml")) = params.text_document.uri.path().rsplit_once('.') else {
 			return Ok(None);
 		};
 
-		let document = some!(self.document_map.get(params.text_document.uri.path().as_str()));
+		let document = some!(self.document_map.get(params.text_document.uri.path()));
 
 		Ok(self
 			.xml_code_actions(params, document.rope.clone())
@@ -768,7 +809,7 @@ impl LanguageServer for Backend {
 			.unwrap_or(None))
 	}
 	#[instrument(skip_all)]
-	async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
+	async fn execute_command(&mut self, params: ExecuteCommandParams) -> Result<Option<Value>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
@@ -782,10 +823,9 @@ impl LanguageServer for Backend {
 				let component = some!(self.index.components.get(&component.into()));
 				some!(component.location.clone())
 			};
-			_ = self
-				.client
-				.show_document(ShowDocumentParams {
-					uri: from_file_path(&location.path.to_path()).unwrap(),
+			_ = (self.client)
+				.request::<request::ShowDocument>(ShowDocumentParams {
+					uri: Url::from_file_path(&location.path.to_path()).unwrap(),
 					external: Some(false),
 					take_focus: Some(true),
 					selection: Some(location.range),
@@ -796,6 +836,11 @@ impl LanguageServer for Backend {
 		Ok(None)
 	}
 }
+
+use async_lsp::{
+	client_monitor::ClientProcessMonitorLayer, concurrency::ConcurrencyLayer, panic::CatchUnwindLayer, router::Router,
+	server::LifecycleLayer, tracing::TracingLayer,
+};
 
 #[tokio::main(worker_threads = 2)]
 async fn main() {
@@ -850,31 +895,114 @@ async fn main() {
 		}
 	}
 
-	let stdin = tokio::io::stdin();
-	let stdout = tokio::io::stdout();
+	// let stdin = tokio::io::stdin();
+	// let stdout = tokio::io::stdout();
 
-	let (service, socket) = LspService::build(|client| Backend {
-		client,
-		index: Default::default(),
-		document_map: DashMap::with_shard_amount(4),
-		record_ranges: DashMap::with_shard_amount(4),
-		roots: DashSet::default(),
-		capabilities: Default::default(),
-		root_setup: Default::default(),
-		ast_map: DashMap::with_shard_amount(4),
-		symbols_limit: AtomicUsize::new(80),
-		references_limit: AtomicUsize::new(80),
-		completions_limit: AtomicUsize::new(200),
-	})
-	.custom_method("odoo-lsp/debug/usage", |_: &Backend| async move {
-		Ok(interner().report_usage())
-	})
-	.custom_method("odoo-lsp/inspect-type", Backend::debug_inspect_type)
-	.finish();
+	// let (service, socket) = LspService::build(|client| Backend {
+	// 	client,
+	// 	index: Default::default(),
+	// 	document_map: DashMap::with_shard_amount(4),
+	// 	record_ranges: DashMap::with_shard_amount(4),
+	// 	roots: DashSet::default(),
+	// 	capabilities: Default::default(),
+	// 	root_setup: Default::default(),
+	// 	ast_map: DashMap::with_shard_amount(4),
+	// 	symbols_limit: AtomicUsize::new(80),
+	// 	references_limit: AtomicUsize::new(80),
+	// 	completions_limit: AtomicUsize::new(200),
+	// })
+	// .custom_method("odoo-lsp/debug/usage", |_: &Backend| async move {
+	// 	Ok(interner().report_usage())
+	// })
+	// .custom_method("odoo-lsp/inspect-type", Backend::debug_inspect_type)
+	// .finish();
 
-	let service = ServiceBuilder::new()
-		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))
-		.layer_fn(CatchPanic)
-		.service(service);
-	Server::new(stdin, stdout, socket).serve(service).await;
+	// let service = ServiceBuilder::new()
+	// 	.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))
+	// 	.layer_fn(CatchPanic)
+	// 	.service(service);
+	// Server::new(stdin, stdout, socket).serve(service).await;
+
+	let (server, _) = async_lsp::MainLoop::new_server(|client| {
+		let mut router = Router::new(backend::Backend {
+			client: client.clone(),
+			index: Default::default(),
+			document_map: DashMap::with_shard_amount(4),
+			record_ranges: DashMap::with_shard_amount(4),
+			roots: DashSet::default(),
+			capabilities: Default::default(),
+			root_setup: Default::default(),
+			ast_map: DashMap::with_shard_amount(4),
+			symbols_limit: AtomicUsize::new(80),
+			references_limit: AtomicUsize::new(80),
+			completions_limit: AtomicUsize::new(200),
+		});
+
+		router
+			// ==========================
+			.request::<request::Initialize, _>(Backend::initialize)
+			.request::<request::Shutdown, _>(|st, _| st.shutdown())
+			.request::<request::GotoDefinition, _>(Backend::goto_definition)
+			.request::<request::References, _>(Backend::references)
+			.request::<request::Completion, _>(Backend::completion)
+			.request::<request::ResolveCompletionItem, _>(Backend::completion_resolve)
+			.request::<request::HoverRequest, _>(Backend::hover)
+			.request::<request::WorkspaceSymbolRequest, _>(Backend::symbol)
+			.request::<request::DocumentDiagnosticRequest, _>(Backend::diagnostic)
+			.request::<request::CodeActionRequest, _>(Backend::code_action)
+			.request::<request::ExecuteCommand, _>(Backend::execute_command)
+			.unhandled_request(async |st, req| match req.method.as_ref() {
+				"odoo-lsp/debug/usage" => Ok(interner().report_usage().into()),
+				"odoo-lsp/inspect-type" => Ok(st
+					.debug_inspect_type(serde_json::from_value(req.params).map_err(|err| {
+						ResponseError::new(
+							async_lsp::ErrorCode::INVALID_PARAMS,
+							format_loc!("Could not parse params for odoo-lsp/inspect-type: {}", err),
+						)
+					})?)
+					.await
+					.map(|otype| match otype {
+						Some(val) => Value::String(val),
+						None => Value::Null,
+					})?),
+				_ => Err(ResponseError::new(
+					async_lsp::ErrorCode::METHOD_NOT_FOUND,
+					format_loc!("{} is not handled by odoo-lsp", req.method),
+				)),
+			})
+			// ==========================
+			.notification::<notif::DidCloseTextDocument>(Backend::did_close)
+			.notification::<notif::DidOpenTextDocument>(Backend::did_open)
+			.notification::<notif::DidChangeTextDocument>(Backend::did_change)
+			.notification::<notif::DidSaveTextDocument>(Backend::did_save)
+			.notification::<notif::DidChangeConfiguration>(Backend::did_change_configuration)
+			.notification::<notif::DidChangeWorkspaceFolders>(Backend::did_change_workspace_folders)
+			.notification::<notif::Exit>(|_, _| ControlFlow::Break(Ok(())))
+			// ==========================
+			.event::<events::Initialized>(|sv, _| sv.initialized(InitializedParams {}));
+
+		tower::ServiceBuilder::new()
+			.layer(TracingLayer::default())
+			.layer(LifecycleLayer::default())
+			.layer(CatchUnwindLayer::default())
+			.layer(ConcurrencyLayer::default())
+			.layer(ClientProcessMonitorLayer::new(client))
+			.service(router)
+	});
+
+	// Prefer truly asynchronous piped stdin/stdout without blocking tasks.
+	#[cfg(unix)]
+	let (stdin, stdout) = (
+		async_lsp::stdio::PipeStdin::lock_tokio().unwrap(),
+		async_lsp::stdio::PipeStdout::lock_tokio().unwrap(),
+	);
+
+	// Fallback to spawn blocking read/write otherwise.
+	#[cfg(not(unix))]
+	let (stdin, stdout) = (
+		tokio_util::compat::TokioAsyncReadCompatExt::compat(tokio::io::stdin()),
+		tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(tokio::io::stdout()),
+	);
+
+	server.run_buffered(stdin, stdout).await.unwrap();
 }

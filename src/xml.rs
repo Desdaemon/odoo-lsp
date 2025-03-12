@@ -6,6 +6,7 @@ use std::cmp::Ordering;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 
+use async_lsp::lsp_types::*;
 use fomat_macros::fomat;
 use lasso::Spur;
 use miette::diagnostic;
@@ -14,7 +15,6 @@ use odoo_lsp::index::{interner, Index, PathSymbol};
 use odoo_lsp::model::{Field, FieldKind, PropertyKind};
 use odoo_lsp::template::gather_templates;
 use ropey::{Rope, RopeSlice};
-use tower_lsp_server::lsp_types::*;
 use tracing::{debug, instrument, warn};
 use tree_sitter::Parser;
 use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
@@ -59,7 +59,7 @@ impl Backend {
 		&self,
 		root: Spur,
 		text: &Text,
-		uri: &Uri,
+		uri: &Url,
 		rope: Rope,
 		did_save: bool,
 	) -> miette::Result<()> {
@@ -71,11 +71,13 @@ impl Backend {
 		let mut reader = Tokenizer::from(text.as_ref());
 		let mut record_ranges = vec![];
 		let interner = interner();
-		let path = uri.to_file_path().ok_or_else(|| diagnostic!("uri.to_file_path failed"))?;
+		let path = uri
+			.to_file_path()
+			.map_err(|()| diagnostic!("uri.to_file_path failed"))?;
 		let current_module = self
 			.index
 			.module_of_path(&path)
-			.ok_or_else(|| diagnostic!("module_of_path for {} failed", uri.path().as_str()))?;
+			.ok_or_else(|| diagnostic!("module_of_path for {} failed", uri.path()))?;
 		let mut record_prefix = if did_save {
 			Some(self.index.records.by_prefix.write().await)
 		} else {
@@ -119,7 +121,7 @@ impl Backend {
 								warn!(
 									target: "on_change_xml",
 									"{local} could not be completely parsed: {}\n{err}",
-									uri.path().as_str()
+									uri.path()
 								);
 								continue;
 							}
@@ -159,19 +161,19 @@ impl Backend {
 			}
 		}
 		self.record_ranges
-			.insert(uri.path().as_str().to_string(), record_ranges.into_boxed_slice());
+			.insert(uri.path().to_string(), record_ranges.into_boxed_slice());
 		Ok(())
 	}
 	fn record_slice<'rope>(
 		&self,
 		rope: &'rope Rope,
-		uri: &Uri,
+		uri: &Url,
 		position: Position,
 	) -> miette::Result<(RopeSlice<'rope>, ByteOffset, usize)> {
 		let ranges = self
 			.record_ranges
-			.get(uri.path().as_str())
-			.ok_or_else(|| diagnostic!("Did not build record ranges for {}", uri.path().as_str()))?;
+			.get(uri.path())
+			.ok_or_else(|| diagnostic!("Did not build record ranges for {}", uri.path()))?;
 		let mut offset_at_cursor = position_to_offset(position, rope).ok_or_else(|| diagnostic!("offset_at_cursor"))?;
 		let Ok(record) = ranges.value().binary_search_by(|range| {
 			if offset_at_cursor < range.start {
@@ -209,7 +211,7 @@ impl Backend {
 		let (slice, offset_at_cursor, relative_offset) = self.record_slice(&rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
-		let path = some!(uri.to_file_path());
+		let path = some!(uri.to_file_path().ok());
 
 		let current_module = self.index.module_of_path(&path).expect("must be in a module");
 
@@ -434,7 +436,7 @@ impl Backend {
 	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
-		let path = some!(uri.to_file_path());
+		let path = some!(uri.to_file_path().ok());
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
@@ -466,7 +468,7 @@ impl Backend {
 	pub fn xml_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
-		let path = some!(uri.to_file_path());
+		let path = some!(uri.to_file_path().ok());
 		let (slice, offset_at_cursor, relative_offset) = self.record_slice(&rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());

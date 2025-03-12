@@ -7,11 +7,12 @@ use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
 
+use super::Result;
+use async_lsp::lsp_types::*;
 use lasso::Spur;
 use miette::{diagnostic, miette};
 use odoo_lsp::index::{index_models, interner, Index, PathSymbol};
 use ropey::Rope;
-use tower_lsp_server::lsp_types::*;
 use tracing::{debug, instrument, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor, QueryMatch, Tree};
 
@@ -168,7 +169,7 @@ struct Mapped<'text> {
 
 impl Backend {
 	#[tracing::instrument(skip_all, fields(uri))]
-	pub fn on_change_python(&self, text: &Text, uri: &Uri, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
+	pub fn on_change_python(&self, text: &Text, uri: &Url, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
 		let mut parser = Parser::new();
 		parser
 			.set_language(&tree_sitter_python::LANGUAGE.into())
@@ -221,7 +222,7 @@ impl Backend {
 			warn!("invalid position {:?}", params.text_document_position.position);
 			return Ok(None);
 		};
-		let path = some!(params.text_document_position.text_document.uri.to_file_path());
+		let path = some!(params.text_document_position.text_document.uri.to_file_path().ok());
 		let Some(current_module) = self.index.module_of_path(&path) else {
 			debug!("no current module");
 			return Ok(None);
@@ -613,10 +614,10 @@ impl Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
-			.get(uri.path().as_str())
-			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path().as_str()))?;
+			.get(uri.path())
+			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
-			return Err(miette!("could not find offset for {}", uri.path().as_str()));
+			return Err(miette!("could not find offset for {}", uri.path()));
 		};
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
@@ -803,14 +804,14 @@ impl Backend {
 		let uri = &params.text_document_position.text_document.uri;
 		let ast = self
 			.ast_map
-			.get(uri.path().as_str())
-			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path().as_str()))?;
+			.get(uri.path())
+			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
 		let mut cursor = tree_sitter::QueryCursor::new();
-		let path = some!(params.text_document_position.text_document.uri.to_file_path());
+		let path = some!(params.text_document_position.text_document.uri.to_file_path().ok());
 		let current_module = self.index.module_of_path(&path);
 		let mut this_model = ThisModel::default();
 
@@ -880,10 +881,10 @@ impl Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
-			.get(uri.path().as_str())
-			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path().as_str()))?;
+			.get(uri.path())
+			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path()))?;
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
-			Err(diagnostic!("could not find offset for {}", uri.path().as_str()))?
+			Err(diagnostic!("could not find offset for {}", uri.path()))?
 		};
 
 		let contents = Cow::from(rope.clone());
@@ -1344,13 +1345,10 @@ impl Backend {
 	}
 
 	#[allow(clippy::unused_async)] // reason: custom method
-	pub(crate) async fn debug_inspect_type(
-		&self,
-		params: TextDocumentPositionParams,
-	) -> tower_lsp_server::jsonrpc::Result<Option<String>> {
+	pub(crate) async fn debug_inspect_type(&self, params: TextDocumentPositionParams) -> Result<Option<String>> {
 		let uri = &params.text_document.uri;
-		let document = some!(self.document_map.get(uri.path().as_str()));
-		let ast = some!(self.ast_map.get(uri.path().as_str()));
+		let document = some!(self.document_map.get(uri.path()));
+		let ast = some!(self.ast_map.get(uri.path()));
 		let rope = &document.rope;
 		let contents = Cow::from(rope);
 		let ByteOffset(offset) = some!(position_to_offset(params.position, rope));

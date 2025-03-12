@@ -1,7 +1,7 @@
 use lasso::ThreadedRodeo;
 use miette::diagnostic;
 use ropey::Rope;
-use tower_lsp_server::lsp_types::*;
+use async_lsp::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
 use crate::index::{interner, ModuleName, PathSymbol, RecordId};

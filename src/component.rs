@@ -1,4 +1,4 @@
-use tower_lsp_server::lsp_types::Range;
+use async_lsp::lsp_types::Range;
 
 use crate::index::{Symbol, SymbolMap, TemplateIndex};
 use crate::template::TemplateName;

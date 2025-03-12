@@ -1,6 +1,6 @@
 use miette::diagnostic;
 use ropey::Rope;
-use tower_lsp_server::lsp_types::{Position, Range};
+use async_lsp::lsp_types::{Position, Range};
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
 use crate::index::{interner, PathSymbol, Symbol};

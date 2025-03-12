@@ -47,8 +47,6 @@ ropey = "1.5.0"
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.140"
 tokio = { version = "1.17.0", features = ["macros", "rt-multi-thread", "fs", "io-std"] }
-# tower-lsp = { version = "0.20.0", features = ["proposed"] }
-tower-lsp-server = { git = "https://github.com/Desdaemon/tower-lsp-server", branch = "main", features = ["proposed"] }
 dashmap = { version = "6.1.0", features = ["raw-api"] }
 globwalk = "0.9.1"
 miette = { version = "7.5.0", features = ["fancy"] }
@@ -78,6 +76,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tree-sitter-javascript = "0.23.1"
 tree-sitter-python = "0.23.6"
 tree-sitter.workspace = true
+async-lsp = { version = "0.2.2", features = ["async-io", "client-monitor", "stdio", "tokio", "tracing"], default-features = false }
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"

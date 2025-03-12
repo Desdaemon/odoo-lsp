@@ -741,7 +741,7 @@ pub fn determine_scope<'out, 'node>(
 mod tests {
 	use pretty_assertions::assert_eq;
 	use ropey::Rope;
-	use tower_lsp_server::lsp_types::Position;
+	use async_lsp::lsp_types::Position;
 	use tree_sitter::{Parser, QueryCursor};
 
 	use crate::analyze::FieldCompletion;

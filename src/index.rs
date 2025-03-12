@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::time::Duration;
 
+use async_lsp::lsp_types::notification::Progress;
+use async_lsp::{lsp_types::*, ClientSocket};
 use dashmap::DashMap;
 use globwalk::FileType;
 use ignore::gitignore::Gitignore;
@@ -12,9 +13,6 @@ use lasso::{Spur, ThreadedRodeo};
 use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use smart_default::SmartDefault;
-use tower_lsp_server::lsp_types::notification::Progress;
-use tower_lsp_server::lsp_types::request::{ShowDocument, ShowMessageRequest};
-use tower_lsp_server::lsp_types::*;
 use tracing::{debug, info, warn};
 use tree_sitter::QueryCursor;
 use ts_macros::query;
@@ -153,7 +151,7 @@ impl Index {
 	pub async fn add_root(
 		&self,
 		root: &Path,
-		progress: Option<(&tower_lsp_server::Client, ProgressToken)>,
+		progress: Option<(&ClientSocket, ProgressToken)>,
 		tsconfig: bool,
 	) -> miette::Result<Option<AddRootResults>> {
 		if self.roots.contains_key(root) {
@@ -212,15 +210,13 @@ impl Index {
 			module_count += 1;
 			let module_name = module_dir.file_name().unwrap().to_string_lossy().to_string();
 			if let Some((client, token)) = &progress {
-				_ = client
-					.send_notification::<Progress>(ProgressParams {
-						token: token.clone(),
-						value: ProgressParamsValue::WorkDone(WorkDoneProgress::Report(WorkDoneProgressReport {
-							message: Some(module_name.clone()),
-							..Default::default()
-						})),
-					})
-					.await;
+				_ = client.notify::<Progress>(ProgressParams {
+					token: token.clone(),
+					value: ProgressParamsValue::WorkDone(WorkDoneProgress::Report(WorkDoneProgressReport {
+						message: Some(module_name.clone()),
+						..Default::default()
+					})),
+				});
 			}
 			let module_key = interner.get_or_intern(&module_name);
 			let module_path = ok!(
@@ -237,39 +233,40 @@ impl Index {
 			if let Some(duplicate) = duplicate {
 				warn!(old = %duplicate, new = ?module_path, "duplicate module {module_name}");
 				if let (Some((client, _)), "base") = (&progress, module_name.as_str()) {
-					let resp = client
-						.send_request::<ShowMessageRequest>(ShowMessageRequestParams {
-							typ: MessageType::WARNING,
-							message: concat!(
-								"Duplicate base module found. The language server's performance may be affected.\n",
-								"Please configure your workspace (or .odoo_lsp) to only include one version of Odoo as described in the wiki.",
-							)
-							.to_string(),
-							actions: Some(vec![
-								MessageActionItem {
-									title: "Go to odoo-lsp wiki".to_string(),
-									properties: Default::default(),
-								},
-								MessageActionItem {
-									title: "Dismiss".to_string(),
-									properties: Default::default(),
-								},
-							]),
-						})
-						.await;
-					match resp {
-						Ok(Some(resp)) if resp.title == "Go to odoo-lsp wiki" => {
-							_ = client
-								.send_request::<ShowDocument>(ShowDocumentParams {
-									uri: Uri::from_str("https://github.com/Desdaemon/odoo-lsp/wiki#usage").unwrap(),
-									external: Some(true),
-									take_focus: None,
-									selection: None,
-								})
-								.await;
-						}
-						_ => {}
-					}
+					// compile_error!("FIXME: migrate to non-blocking events");
+					// let resp = client
+					// 	.request::<ShowMessageRequest>(ShowMessageRequestParams {
+					// 		typ: MessageType::WARNING,
+					// 		message: concat!(
+					// 			"Duplicate base module found. The language server's performance may be affected.\n",
+					// 			"Please configure your workspace (or .odoo_lsp) to only include one version of Odoo as described in the wiki.",
+					// 		)
+					// 		.to_string(),
+					// 		actions: Some(vec![
+					// 			MessageActionItem {
+					// 				title: "Go to odoo-lsp wiki".to_string(),
+					// 				properties: Default::default(),
+					// 			},
+					// 			MessageActionItem {
+					// 				title: "Dismiss".to_string(),
+					// 				properties: Default::default(),
+					// 			},
+					// 		]),
+					// 	})
+					// 	.await;
+					// match resp {
+					// 	Ok(Some(resp)) if resp.title == "Go to odoo-lsp wiki" => {
+					// 		_ = client
+					// 			.send_request::<ShowDocument>(ShowDocumentParams {
+					// 				uri: Url::from_str("https://github.com/Desdaemon/odoo-lsp/wiki#usage").unwrap(),
+					// 				external: Some(true),
+					// 				take_focus: None,
+					// 				selection: None,
+					// 			})
+					// 			.await;
+					// 	}
+					// 	_ => {}
+					// }
 				}
 			}
 			if tsconfig {

@@ -13,7 +13,7 @@ use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use smart_default::SmartDefault;
 use tokio::sync::RwLock;
-use tower_lsp_server::lsp_types::Range;
+use async_lsp::lsp_types::Range;
 use tracing::{debug, error, info, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;

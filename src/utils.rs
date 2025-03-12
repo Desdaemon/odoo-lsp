@@ -3,16 +3,15 @@ use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::future::Future;
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 
+use async_lsp::lsp_types::*;
 use dashmap::try_result::TryResult;
 use futures::future::BoxFuture;
 use ropey::{Rope, RopeSlice};
 use smart_default::SmartDefault;
-use tower_lsp_server::lsp_types::*;
 use xmlparser::{StrSpan, TextPos, Token};
 
 mod visitor;
@@ -496,22 +495,22 @@ pub fn path_contains(path: impl AsRef<Path>, needle: impl AsRef<OsStr>) -> bool 
 	path.as_ref().components().any(|c| c.as_os_str() == needle.as_ref())
 }
 
-pub trait UriExt {
-	fn to_file_path(&self) -> Option<Cow<Path>>;
-}
+// pub trait UriExt {
+// 	fn to_file_path(&self) -> Option<Cow<Path>>;
+// }
 
-impl UriExt for tower_lsp_server::lsp_types::Uri {
-	fn to_file_path(&self) -> Option<Cow<Path>> {
-		Some(match self.path().as_estr().decode().into_string_lossy() {
-			Cow::Borrowed(ref_) => Cow::Borrowed(Path::new(ref_)),
-			Cow::Owned(owned) => Cow::Owned(PathBuf::from(owned)),
-		})
-	}
-}
+// impl UriExt for async_lsp::lsp_types::Url {
+// 	fn to_file_path(&self) -> Option<Cow<Path>> {
+// 		// Some(match self.path().decode().into_string_lossy() {
+// 		// 	Cow::Borrowed(ref_) => Cow::Borrowed(Path::new(ref_)),
+// 		// 	Cow::Owned(owned) => Cow::Owned(PathBuf::from(owned)),
+// 		// })
+// 	}
+// }
 
-pub fn from_file_path(path: &Path) -> Option<Uri> {
-	Uri::from_str(&format!("file://{}", path.as_os_str().to_string_lossy(),)).ok()
-}
+// pub fn from_file_path(path: &Path) -> Option<Uri> {
+// 	Uri::from_str(&format!("file://{}", path.as_os_str().to_string_lossy(),)).ok()
+// }
 
 static WSL: LazyLock<bool> = LazyLock::new(|| {
 	#[cfg(not(unix))]
