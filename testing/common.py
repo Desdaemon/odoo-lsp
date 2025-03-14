@@ -74,6 +74,7 @@ async def fixture_test(client: LanguageClient, rootdir: str, language: Literal['
     glob, lang, query = QUERIES[language]
     files = {
         file: file.read_text() for file in Path(rootdir).rglob(glob)
+        if file.stem != "conftest" and not file.stem.startswith("test_")
     }
     expected = defaultdict[Path, Expected](Expected)
     asts = dict[Path, Tree]()

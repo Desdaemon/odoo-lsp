@@ -259,9 +259,19 @@ impl Index {
 				return ControlFlow::Continue(true);
 			}
 			"function_definition" => {
-				let inherit_super = node
-					.parent()
-					.is_some_and(|parent| parent.parent().is_some_and(|gp| gp.kind() == "class_definition"));
+				let mut inherit_super = false;
+				let mut node = node;
+				while let Some(parent) = node.parent() {
+					match parent.kind() {
+						"decorated_definition" => {
+							node = parent;
+							continue;
+						}
+						"block" => inherit_super = parent.parent().is_some_and(|gp| gp.kind() == "class_definition"),
+						_ => {}
+					}
+					break;
+				}
 				scope.enter(inherit_super);
 				return ControlFlow::Continue(true);
 			}

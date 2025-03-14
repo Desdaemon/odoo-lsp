@@ -4,10 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**/*'
-      - 'testing/**/*'
-      - 'examples/**/*'
-      - 'crates/**/src/**/*'
+      - '**/*.rs'
+      - '**/*.py'
   pull_request:
 
 env:

@@ -28,7 +28,7 @@ else:
     # odoocmd = [f"{__dirname}/../target/debug/odoo-lsp"]
     odoocmd = ["cargo", "run"]
 ODOO_ENV = dict(os.environ)
-ODOO_ENV.setdefault('RUST_LOG', 'info,odoo_lsp=trace')
+ODOO_ENV.setdefault('RUST_LOG', 'trace')
 ODOO_ENV.setdefault('ODOO_LSP_LOG', '1')
 
 
