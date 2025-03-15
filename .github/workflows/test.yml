@@ -37,20 +37,15 @@ jobs:
       - name: Create dummy tag
         run: git tag -f CI
 
-      # copied from  https://github.com/BamPeers/rust-ci-github-actions-workflow
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        env:
-          cache-name: cache-dependencies
+      - uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/.crates.toml
-            ~/.cargo/.crates2.json
-            ~/.cargo/bin
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            target
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('Cargo.lock') }}
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - uses: taiki-e/install-action@cargo-nextest
       - uses: taiki-e/install-action@cargo-llvm-cov
