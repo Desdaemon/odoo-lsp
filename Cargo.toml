@@ -84,9 +84,11 @@ async-lsp = { version = "0.2.2", features = ["tokio", "forward"] }
 pretty_assertions = "1.4.0"
 rstest = "0.25.0"
 tokio-util = { version = "0.7.14", features = ["compat"] }
+tree-sitter-xml = "0.7.0"
 
 [target.'cfg(target_family = "unix")'.dependencies]
 libc = "0.2"
+rustix = "1.0.2"
 
 [target.'cfg(all(target_os = "linux", any(not(target_env = "gnu"), not(target_pointer_width = "64"))))'.dependencies]
 self_update = { version = "0.42.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }
