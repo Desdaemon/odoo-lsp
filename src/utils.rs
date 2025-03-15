@@ -518,24 +518,10 @@ static WSL: LazyLock<bool> = LazyLock::new(|| {
 	return false;
 
 	#[cfg(unix)]
-	{
-		// equivalent to running `uname -r`
-		use core::ffi::CStr;
-		use core::mem::MaybeUninit;
-		use libc::utsname;
-
-		fn cstr_to_str(cstr: &[libc::c_char]) -> &str {
-			unsafe { CStr::from_ptr(cstr.as_ptr()).to_str().unwrap_or("<<invalid>>") }
-		}
-
-		let mut sysinfo = MaybeUninit::<utsname>::uninit();
-		if unsafe { libc::uname(sysinfo.as_mut_ptr()) } == 0 {
-			let sysinfo = unsafe { sysinfo.assume_init() };
-			cstr_to_str(&sysinfo.release).contains("WSL")
-		} else {
-			panic!("cannot call uname")
-		}
-	}
+	return rustix::system::uname()
+		.release()
+		.to_str()
+		.is_ok_and(|release| release.contains("WSL"));
 });
 
 #[inline]

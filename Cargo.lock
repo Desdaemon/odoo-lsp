@@ -1450,7 +1450,6 @@ dependencies = [
  "ignore",
  "intmap",
  "lasso",
- "libc",
  "libflate",
  "miette",
  "num_enum",
