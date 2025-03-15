@@ -80,7 +80,10 @@ tree-sitter-python = "0.23.6"
 tree-sitter.workspace = true
 
 [dev-dependencies]
+async-lsp = { version = "0.2.2", features = ["tokio", "forward"] }
 pretty_assertions = "1.4.0"
+rstest = "0.25.0"
+tokio-util = { version = "0.7.14", features = ["compat"] }
 
 [target.'cfg(target_family = "unix")'.dependencies]
 libc = "0.2"

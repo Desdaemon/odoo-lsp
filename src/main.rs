@@ -99,6 +99,10 @@ mod js;
 mod python;
 mod xml;
 
+#[cfg(test)]
+#[path = "../testing/index.rs"]
+mod testing;
+
 #[cfg(doc)]
 pub use odoo_lsp::*;
 
