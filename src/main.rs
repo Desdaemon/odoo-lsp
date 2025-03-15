@@ -97,6 +97,8 @@ mod catch_panic;
 mod cli;
 mod js;
 mod python;
+#[cfg(unix)]
+mod stdio;
 mod xml;
 
 #[cfg(test)]
@@ -801,8 +803,7 @@ impl LanguageServer for Backend {
 	}
 }
 
-#[tokio::main(worker_threads = 2)]
-async fn main() {
+fn main() {
 	let outlog = std::env::var("ODOO_LSP_LOG").ok().and_then(|var| {
 		let path = match var.as_str() {
 			#[cfg(unix)]
@@ -828,57 +829,83 @@ async fn main() {
 	let args = std::env::args().collect::<Vec<_>>();
 	let args = args.iter().skip(1).map(String::as_str).collect::<Vec<_>>();
 	let args = cli::parse_args(&args[..]);
-	match args.command {
-		cli::Command::Run => {}
-		cli::Command::TsConfig => {
-			_ = cli::tsconfig(&args.addons_path, args.output)
-				.await
-				.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
-			return;
+	let mut threads = args.threads.unwrap_or(4);
+	match std::thread::available_parallelism() {
+		Ok(value) if value.get() <= 4 => {
+			threads = 1usize.max(threads / 2);
 		}
-		cli::Command::Init { tsconfig } => {
-			_ = cli::init(&args.addons_path, args.output).inspect_err(|err| eprintln!("{} init failed: {err}", loc!()));
-			if tsconfig {
-				_ = cli::tsconfig(&args.addons_path, None)
-					.await
-					.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
-			}
-			return;
-		}
-		cli::Command::SelfUpdate { nightly } => {
-			_ = tokio::task::spawn_blocking(move || cli::self_update(nightly))
-				.await
-				.unwrap()
-				.inspect_err(|err| eprintln!("{} self-update failed: {err}", loc!()));
-			return;
-		}
+		_ => {}
 	}
 
-	let stdin = tokio::io::stdin();
-	let stdout = tokio::io::stdout();
+	let rt = if threads <= 1 {
+		tokio::runtime::Builder::new_current_thread().enable_all().build()
+	} else {
+		tokio::runtime::Builder::new_multi_thread()
+			.worker_threads(threads)
+			.enable_all()
+			.build()
+	}
+	.expect("failed to build runtime");
+	rt.block_on(async move {
+		match args.command {
+			cli::Command::Run => {}
+			cli::Command::TsConfig => {
+				_ = cli::tsconfig(&args.addons_path, args.output)
+					.await
+					.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
+				return;
+			}
+			cli::Command::Init { tsconfig } => {
+				_ = cli::init(&args.addons_path, args.output)
+					.inspect_err(|err| eprintln!("{} init failed: {err}", loc!()));
+				if tsconfig {
+					_ = cli::tsconfig(&args.addons_path, None)
+						.await
+						.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
+				}
+				return;
+			}
+			cli::Command::SelfUpdate { nightly } => {
+				_ = tokio::task::spawn_blocking(move || cli::self_update(nightly))
+					.await
+					.unwrap()
+					.inspect_err(|err| eprintln!("{} self-update failed: {err}", loc!()));
+				return;
+			}
+		}
 
-	let (service, socket) = LspService::build(|client| Backend {
-		client,
-		index: Default::default(),
-		document_map: DashMap::with_shard_amount(4),
-		record_ranges: DashMap::with_shard_amount(4),
-		roots: DashSet::default(),
-		capabilities: Default::default(),
-		root_setup: Default::default(),
-		ast_map: DashMap::with_shard_amount(4),
-		symbols_limit: AtomicUsize::new(80),
-		references_limit: AtomicUsize::new(80),
-		completions_limit: AtomicUsize::new(200),
-	})
-	.custom_method("odoo-lsp/debug/usage", |_: &Backend| async move {
-		Ok(interner().report_usage())
-	})
-	.custom_method("odoo-lsp/inspect-type", Backend::debug_inspect_type)
-	.finish();
+		#[cfg(unix)]
+		let (stdin, stdout) = (
+			stdio::PipeStdin::lock_tokio().unwrap(),
+			stdio::PipeStdout::lock_tokio().unwrap(),
+		);
 
-	let service = ServiceBuilder::new()
-		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))
-		.layer_fn(CatchPanic)
-		.service(service);
-	Server::new(stdin, stdout, socket).serve(service).await;
+		#[cfg(not(unix))]
+		let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
+
+		let (service, socket) = LspService::build(|client| Backend {
+			client,
+			index: Default::default(),
+			document_map: DashMap::with_shard_amount(4),
+			record_ranges: DashMap::with_shard_amount(4),
+			roots: DashSet::default(),
+			capabilities: Default::default(),
+			root_setup: Default::default(),
+			ast_map: DashMap::with_shard_amount(4),
+			symbols_limit: AtomicUsize::new(80),
+			references_limit: AtomicUsize::new(80),
+			completions_limit: AtomicUsize::new(200),
+		})
+		.custom_method("odoo-lsp/debug/usage", |_: &Backend| async move {
+			Ok(interner().report_usage())
+		})
+		.custom_method("odoo-lsp/inspect-type", Backend::debug_inspect_type)
+		.finish();
+
+		let service = ServiceBuilder::new()
+			.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))
+			.layer_fn(CatchPanic)
+			.service(service);
+		Server::new(stdin, stdout, socket).serve(service).await;
+	})
 }
