@@ -52,10 +52,9 @@ jobs:
             target
           key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('Cargo.lock') }}
 
-      - name: Install tools
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest${{ matrix.coverage && ',cargo-llvm-cov' }}
+      - uses: taiki-e/install-action@cargo-nextest
+      - uses: taiki-e/install-action@cargo-llvm-cov
+        if: matrix.coverage == 'yes'
 
       - name: Run unit tests
         id: cargo-test
@@ -69,9 +68,8 @@ jobs:
         continue-on-error: true
         run: |
           set -euxo pipefail
-          source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov clean --workspace -v
-          cargo nextest run --profile ci
+          cargo llvm-cov --codecov --output-path lcov.info nextest --profile ci
 
       - name: Upload test results
         if: always()
@@ -80,17 +78,15 @@ jobs:
           name: Test Results (${{ matrix.runs-on }})
           path: target/nextest/ci/junit.xml
 
-      - name: Generate coverage report
-        id: gencov
-        if: steps.cargo-testcov.outcome == 'success'
+      - name: Delete coverage artifacts
+        if: steps.cargo-testcov.outcome != 'skipped'
         run: |
           set -euxo pipefail
           source <(cargo llvm-cov show-env --export-prefix)
-          cargo llvm-cov report --lcov --output-path lcov.info
           cargo llvm-cov clean --workspace -v
 
       - name: Upload coverage report
-        if: steps.gencov.outcome == 'success'
+        if: steps.cargo-testcov.outcome == 'success'
         uses: codecov/codecov-action@v1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
