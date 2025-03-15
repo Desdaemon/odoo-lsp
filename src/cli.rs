@@ -17,6 +17,7 @@ const GIT_VERSION: &str = git_version::git_version!(args = ["--tags", "--candida
 pub struct Args<'a> {
 	pub addons_path: Vec<&'a str>,
 	pub output: Option<&'a str>,
+	pub threads: Option<usize>,
 	pub command: Command,
 }
 
@@ -60,6 +61,9 @@ OPTIONS:
 		Prints the current version and exit.
 	--nightly
 		[self-update] Selects the latest nightly available.
+	-j, --threads NUMBER
+		Specifies the number of threads to use. Defaults to four threads, or half
+		of the core count if it is less than four, minimum of one.
 ";
 
 pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
@@ -104,6 +108,19 @@ pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
 				args = rest;
 				if let Command::SelfUpdate { nightly } = &mut out.command {
 					*nightly = true;
+				}
+			}
+			["-j" | "--threads", threads, rest @ ..] => {
+				args = rest;
+				match threads.parse::<usize>() {
+					Ok(0) => {
+						eprintln!("Invalid thread count specified, ignoring.");
+					}
+					Ok(threads) => out.threads = Some(threads),
+					Err(err) => {
+						eprintln!("Cannot parse threads: {err}");
+						exit(1);
+					}
 				}
 			}
 			[] => break,
