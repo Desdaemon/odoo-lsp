@@ -3,7 +3,6 @@
 import sys
 import os
 from pathlib import Path
-from shutil import copyfile
 
 assert __name__ == "__main__", "Not supported as a library."
 
@@ -23,9 +22,6 @@ if len(args) < 1:
 fixture_name = args.pop(0)
 fixture_dir = Path(fixture_name)
 os.makedirs(fixture_dir, exist_ok=True)
-
-copyfile("template_test_main.py", fixture_dir.joinpath(f"test_{fixture_name}.py"))
-copyfile("template_conftest.py", fixture_dir.joinpath("conftest.py"))
 
 with open(fixture_dir.joinpath(".odoo_lsp"), "w+") as config:
     config.write('{"module":{"roots":["."]}}')
