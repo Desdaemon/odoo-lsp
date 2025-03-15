@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - '**/*.rs'
-      - '**/*.py'
   pull_request:
 
 env:
@@ -20,25 +19,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runs-on:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+        include:
+          - runs-on: ubuntu-latest
+            coverage: yes
+          - runs-on: macos-latest
+            coverage: no
+          - runs-on: windows-latest
+            coverage: no
     runs-on: ${{ matrix.runs-on }}
-    permissions:
-      checks: write
-      pull-requests: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        if: matrix.runs-on != 'ubuntu-latest'
-
-      - name: Setup Rust (nightly)
-        uses: dtolnay/rust-toolchain@nightly
-        if: matrix.runs-on == 'ubuntu-latest'
 
       - name: Create dummy tag
         run: git tag -f CI
@@ -57,79 +51,72 @@ jobs:
             ~/.cargo/registry/cache
             target
           key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('Cargo.lock') }}
+
       - name: Install tools
-        if: matrix.runs-on == 'ubuntu-latest'
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo2junit,cargo-llvm-cov
+          tool: cargo-nextest${{ matrix.coverage && ',cargo-llvm-cov' }}
 
       - name: Run unit tests
         id: cargo-test
-        if: matrix.runs-on != 'ubuntu-latest'
+        if: matrix.coverage == 'no'
         continue-on-error: true
-        run: cargo test
+        run: cargo nextest run --profile ci
 
-      - name: Run unit tests with coverage
+      - name: Run unit tests (with coverage)
         id: cargo-testcov
-        if: matrix.runs-on == 'ubuntu-latest'
+        if: matrix.coverage == 'yes'
         continue-on-error: true
         run: |
           set -euxo pipefail
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov clean --workspace -v
-          cargo test -- -Z unstable-options --format json | cargo2junit > results.xml;
-          echo "Generated $(find target -name '*.profraw' | wc -l) profiles"
+          cargo nextest run --profile ci
 
       - name: Upload test results
-        uses: EnricoMi/publish-unit-test-result-action@v1
-        if: steps.cargo-testcov.outcome != 'skipped'
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          check_name: Test Results
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          files: results.xml
-
-      - name: Run fixture tests
-        id: fixture-test
-        working-directory: testing
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euxo pipefail
-          pip install -U uv
-          uv venv
-          . ${{ matrix.runs-on == 'windows-latest' && '.venv/Scripts/activate' || '.venv/bin/activate'}}
-          uv pip compile requirements.in -o requirements.txt
-          uv pip sync requirements.txt
-          ${{ matrix.runs-on == 'ubuntu-latest' && 'source <(cargo llvm-cov show-env --export-prefix)' || '' }}
-          cargo build
-          pytest -vv --junitxml=.results.xml --color=yes
-          echo "Generated $(find ../target -name '*.profraw' | wc -l) profiles"
+          name: Test Results (${{ matrix.runs-on }})
+          path: target/nextest/ci/junit.xml
 
       - name: Generate coverage report
-        id: gen-cov
-        if: matrix.runs-on == 'ubuntu-latest'
+        id: gencov
+        if: steps.cargo-testcov.outcome == 'success'
         run: |
+          set -euxo pipefail
           source <(cargo llvm-cov show-env --export-prefix)
           cargo llvm-cov report --lcov --output-path lcov.info
           cargo llvm-cov clean --workspace -v
 
-      - name: Upload to CodeCov
-        if: steps.gen-cov.outcome == 'success'
+      - name: Upload coverage report
+        if: steps.gencov.outcome == 'success'
         uses: codecov/codecov-action@v1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./lcov.info
           fail_ci_if_error: true
 
-      - name: Report fixture test results
-        if: always()
-        uses: pmeier/pytest-results-action@main
-        with:
-          path: testing/.results.xml
-          summary: true
-          fail-on-empty: false
-          title: E2E Test Results
-
       - name: Fail if unit tests failed
-        if: steps.cargo-test.outcome == 'failure' || steps.cargo-testcov.outcome == 'failure' || steps.fixture-test.outcome == 'failure'
+        if: steps.cargo-test.outcome == 'failure' || steps.cargo-testcov.outcome == 'failure'
         run: exit 1
+
+  e2e-report-results:
+    name: Report test results
+    needs: e2e-testing
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      pull-requests: write
+    if: always()
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish test results
+        uses: EnricoMi/publish-unit-test-result-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          files: artifacts/**/junit.xml
