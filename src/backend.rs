@@ -74,13 +74,12 @@ pub struct Workspaces {
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	inner: DashMap<PathBuf, Workspace>,
 }
-
 impl Workspaces {
 	#[inline]
 	pub fn find_workspace_of<T>(&self, path: &Path, mut func: impl FnMut(&Path, &Workspace) -> Option<T>) -> Option<T> {
 		for ws in &self.inner {
-			if path.starts_with(&ws.key()) {
-				if let Some(res) = func(&ws.key(), &ws) {
+			if path.starts_with(ws.key()) {
+				if let Some(res) = func(ws.key(), &ws) {
 					return Some(res);
 				}
 			}
@@ -1033,7 +1032,7 @@ impl Backend {
 
 		for subroot in subroots {
 			let path = root.join(&subroot);
-			let Ok(root) = path.canonicalize() else {
+			let Ok(root) = strict_canonicalize(path) else {
 				continue;
 			};
 			let root_display = root.to_string_lossy();
@@ -1155,3 +1154,4 @@ impl Text {
 		(!out.is_empty()).then(|| out.map_unit(ByteOffset))
 	}
 }
+
