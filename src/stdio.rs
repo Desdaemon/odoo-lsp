@@ -200,7 +200,9 @@ mod tokio_impl {
 					Err(_would_block) => continue,
 				}
 			};
-			unsafe { buf.assume_init(len); }
+			unsafe {
+				buf.assume_init(len);
+			}
 			buf.advance(len);
 			Poll::Ready(Ok(()))
 		}

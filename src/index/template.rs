@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 
 use crate::template::NewTemplate;
 
-use super::{interner, Template, TemplateName};
+use super::{Template, TemplateName, _R};
 
 #[derive(SmartDefault, Deref)]
 pub struct TemplateIndex {
@@ -34,7 +34,7 @@ impl TemplateIndex {
 			} else {
 				self.entry(entry.name).or_default().descendants.push(entry.template);
 			}
-			let raw = interner().resolve(&entry.name);
+			let raw = _R(entry.name);
 			prefix.insert(raw.as_bytes(), entry.name);
 		}
 	}

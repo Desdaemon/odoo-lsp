@@ -70,35 +70,35 @@
 #![deny(clippy::unused_async)]
 #![deny(clippy::await_holding_invalid_type)]
 
-use std::borrow::Cow;
+use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
-use catch_panic::CatchPanic;
-use dashmap::{DashMap, DashSet};
 use ropey::Rope;
 use serde_json::Value;
-use tower::ServiceBuilder;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::lsp_types::notification::{DidChangeConfiguration, Notification, Progress};
 use tower_lsp_server::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp_server::lsp_types::*;
 use tower_lsp_server::{LanguageServer, LspService, Server};
 use tracing::{debug, error, info, instrument, warn};
+use tracing_subscriber::fmt::writer::MakeWriterExt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{fmt as tracing_fmt, EnvFilter};
 
-use odoo_lsp::config::Config;
-use odoo_lsp::index::{interner, Interner};
-use odoo_lsp::{loc, some, utils::*};
+use odoo_lsp::index::{Interner, _G, _R};
+use odoo_lsp::{some, utils::*};
+
+use backend::{Backend, Document, Language, Text};
+use catch_panic::CatchPanic;
 
 mod backend;
 mod catch_panic;
 mod cli;
 mod js;
 mod python;
-#[cfg(unix)]
-mod stdio;
 mod xml;
 
 #[cfg(test)]
@@ -108,61 +108,106 @@ mod testing;
 #[cfg(doc)]
 pub use odoo_lsp::*;
 
-use backend::{Backend, Document, Language, Text};
-use tracing_subscriber::fmt::writer::MakeWriterExt;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
+#[cfg(unix)]
+mod stdio;
 
-#[tower_lsp_server::async_trait]
-impl LanguageServer for Backend {
-	#[instrument(skip_all)]
-	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-		#[allow(deprecated)]
-		let root = params
-			.root_uri
-			.as_ref()
-			.and_then(|uri| uri.to_file_path())
-			.or_else(|| params.root_path.as_deref().map(Path::new).map(Cow::<Path>::from));
-		'root: {
-			match params.initialization_options.map(serde_json::from_value::<Config>) {
-				Some(Ok(config)) => {
-					self.on_change_config(config).await;
-				}
-				Some(Err(err)) => {
-					error!("could not parse provided config:\n{err}");
-				}
-				None => {}
-			}
-			if let Some(root) = root {
-				let config_file = 'find_root: {
-					for choice in [".odoo_lsp", ".odoo_lsp.json"] {
-						let path = root.join(choice);
-						match tokio::fs::read(&path).await {
-							Ok(file) => break 'find_root Some((path, file)),
-							Err(err) => error!("(initialize) could not read {path:?}: {err}"),
-						}
-					}
-					None
-				};
-				let Some((path, config)) = &config_file else {
-					self.roots.insert(root.into_owned());
-					break 'root;
-				};
-				match serde_json::from_slice::<Config>(config) {
-					Ok(config) => self.on_change_config(config).await,
-					Err(err) => error!("could not parse {:?}:\n{err}", path),
-				}
-			}
-			for ws_dir in params.workspace_folders.unwrap_or_default() {
-				match ws_dir.uri.to_file_path() {
-					Some(path) => drop(self.roots.insert(path.into_owned())),
-					None => {
-						error!("cannot parse as file path: {}", ws_dir.uri.as_str());
-					}
-				}
+fn main() {
+	let args = std::env::args().collect::<Vec<_>>();
+	let args = parse_args_and_init_logger(&args);
+
+	let mut threads = args.threads.unwrap_or(4);
+	match std::thread::available_parallelism() {
+		Ok(value) if value.get() <= 4 => {
+			threads = 1usize.max(threads / 2);
+		}
+		_ => {}
+	}
+
+	let rt = if threads <= 1 {
+		tokio::runtime::Builder::new_current_thread().enable_all().build()
+	} else {
+		tokio::runtime::Builder::new_multi_thread()
+			.worker_threads(threads)
+			.enable_all()
+			.build()
+	}
+	.expect("failed to build runtime");
+	rt.block_on(async move {
+		if cli::run(args).await {
+			return;
+		}
+
+		#[cfg(unix)]
+		let (stdin, stdout) = (
+			stdio::PipeStdin::lock_tokio().unwrap(),
+			stdio::PipeStdout::lock_tokio().unwrap(),
+		);
+
+		#[cfg(not(unix))]
+		let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
+
+		let (service, socket) = LspService::build(Backend::new)
+			.custom_method("odoo-lsp/debug/usage", |_: &Backend| async move {
+				Ok(Interner::report_usage())
+			})
+			.custom_method("odoo-lsp/inspect-type", Backend::debug_inspect_type)
+			.finish();
+
+		let service = tower::ServiceBuilder::new()
+			.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))
+			.layer_fn(CatchPanic)
+			.service(service);
+		Server::new(stdin, stdout, socket).serve(service).await;
+	})
+}
+
+fn parse_args_and_init_logger(args: &[String]) -> cli::Args<'_> {
+	let args = args.iter().skip(1).map(String::as_str).collect::<Vec<_>>();
+	let args = cli::parse_args(&args[..]);
+
+	let outlog = std::env::var("ODOO_LSP_LOG").ok().and_then(|var| {
+		let path = match var.as_str() {
+			#[cfg(unix)]
+			"1" => Path::new("/tmp/odoo_lsp.log"),
+			_ => Path::new(&var),
+		};
+		std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+	});
+	let registry = tracing_subscriber::registry().with(EnvFilter::from_default_env());
+	let layer = tracing_fmt::layer()
+		.without_time()
+		.with_writer(std::io::stderr)
+		.with_file(true)
+		.with_line_number(true)
+		.with_target(true);
+
+	match args.log_format {
+		cli::LogFormat::Compact => {
+			let layer = layer.compact();
+			match outlog {
+				Some(outlog) => registry.with(layer.map_writer(|stderr| stderr.and(outlog))).init(),
+				None => registry.with(layer).init(),
 			}
 		}
+		cli::LogFormat::Json => {
+			// both must be specified, ref https://github.com/tokio-rs/tracing/issues/1365#issuecomment-828845393
+			let layer = layer
+				.event_format(tracing_fmt::format().json())
+				.fmt_fields(tracing_fmt::format::JsonFields::new());
+			match outlog {
+				Some(outlog) => registry.with(layer.map_writer(|stderr| stderr.and(outlog))).init(),
+				None => registry.with(layer).init(),
+			}
+		}
+	}
+
+	args
+}
+
+impl LanguageServer for Backend {
+	#[instrument(skip_all, fields(params), ret)]
+	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+		self.init_workspaces(&params);
 
 		if let Some(WorkspaceClientCapabilities {
 			did_change_configuration:
@@ -172,7 +217,19 @@ impl LanguageServer for Backend {
 			..
 		}) = params.capabilities.workspace.as_ref()
 		{
-			self.capabilities.dynamic_config.store(true, Relaxed);
+			self.capabilities.can_notify_changed_config.store(true, Relaxed);
+		}
+
+		if let Some(WorkspaceClientCapabilities {
+			did_change_watched_files:
+				Some(DidChangeWatchedFilesClientCapabilities {
+					dynamic_registration: Some(true),
+					..
+				}),
+			..
+		}) = params.capabilities.workspace.as_ref()
+		{
+			self.capabilities.can_notify_changed_watched_files.store(true, Relaxed);
 		}
 		if let Some(WorkspaceClientCapabilities {
 			workspace_folders: Some(true),
@@ -236,22 +293,9 @@ impl LanguageServer for Backend {
 	#[instrument(skip(self))]
 	async fn did_close(&self, params: DidCloseTextDocumentParams) {
 		let path = params.text_document.uri.path().as_str();
-		let Self {
-			document_map,
-			record_ranges,
-			ast_map,
-			client: _,
-			index: _,
-			roots: _,
-			capabilities: _,
-			root_setup: _,
-			symbols_limit: _,
-			references_limit: _,
-			completions_limit: _,
-		} = self;
-		document_map.remove(path);
-		record_ranges.remove(path);
-		ast_map.remove(path);
+		self.document_map.remove(path);
+		self.record_ranges.remove(path);
+		self.ast_map.remove(path);
 
 		self.client
 			.publish_diagnostics(params.text_document.uri, vec![], None)
@@ -259,15 +303,32 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn initialized(&self, _: InitializedParams) {
-		if self.capabilities.dynamic_config.load(Relaxed) {
-			_ = self
-				.client
-				.register_capability(vec![Registration {
-					id: "_dynamic_config".to_string(),
-					method: DidChangeConfiguration::METHOD.to_string(),
-					register_options: None,
-				}])
-				.await;
+		let mut registrations = vec![];
+		if self.capabilities.can_notify_changed_config.load(Relaxed) {
+			registrations.push(Registration {
+				id: "odoo-lsp/did-change-config".to_string(),
+				method: DidChangeConfiguration::METHOD.to_string(),
+				register_options: None,
+			});
+		}
+		if self.capabilities.can_notify_changed_watched_files.load(Relaxed) {
+			registrations.push(Registration {
+				id: "odoo-lsp/did-change-odoo-lsp".to_string(),
+				method: notification::DidChangeWatchedFiles::METHOD.to_string(),
+				register_options: Some(
+					serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
+						watchers: vec![FileSystemWatcher {
+							glob_pattern: GlobPattern::String("**/.odoo_lsp{,.json}".to_string()),
+							kind: Some(WatchKind::Create | WatchKind::Change),
+						}],
+					})
+					.unwrap(),
+				),
+			});
+		}
+
+		if !registrations.is_empty() {
+			_ = self.client.register_capability(registrations).await;
 		}
 
 		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
@@ -293,14 +354,18 @@ impl LanguageServer for Backend {
 
 		let _blocker = self.root_setup.block();
 		self.ensure_nonoverlapping_roots();
+		info!(workspaces = ?self.workspaces);
 
-		for root in self.roots.iter() {
-			match self.index.add_root(&root, progress.clone(), false).await {
+		for ws in self.workspaces.iter() {
+			match (self.index)
+				.add_root(Path::new(ws.key()), progress.clone(), false)
+				.await
+			{
 				Ok(Some(results)) => {
 					info!(
 						target: "initialized",
 						"{} | {} modules | {} records | {} templates | {} models | {} components | {:.2}s",
-						root.display(),
+						ws.key().display(),
 						results.module_count,
 						results.record_count,
 						results.template_count,
@@ -310,7 +375,7 @@ impl LanguageServer for Backend {
 					);
 				}
 				Err(err) => {
-					error!("could not add root {}:\n{err}", root.display());
+					error!("could not add root {}:\n{err}", ws.key().display());
 				}
 				_ => {}
 			}
@@ -567,7 +632,7 @@ impl LanguageServer for Backend {
 		'resolve: {
 			match &completion.kind {
 				Some(CompletionItemKind::CLASS) => {
-					let Some(model) = interner().get(&completion.label) else {
+					let Some(model) = _G(&completion.label) else {
 						break 'resolve;
 					};
 					let Some(mut entry) = self.index.models.get_mut(&model.into()) else {
@@ -621,7 +686,7 @@ impl LanguageServer for Backend {
 	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
 		self.root_setup.wait().await;
 		let items = self
-			.roots
+			.workspaces
 			.iter()
 			.map(|entry| {
 				let scope_uri = from_file_path(entry.key());
@@ -631,18 +696,39 @@ impl LanguageServer for Backend {
 				}
 			})
 			.collect();
-		let mut configs = self.client.configuration(items).await.unwrap_or_default();
-		// TODO: Per-folder configuration
-		let Some(mut config) = configs
-			.pop()
-			.and_then(|config| serde_json::from_value::<Config>(config).ok())
-		else {
-			return;
-		};
-		// Don't configure modules yet.
-		info!("Configuration changed, but roots not implemented yet");
-		config.module.take();
-		self.on_change_config(config).await;
+		let configs = self.client.configuration(items).await.unwrap_or_default();
+		let workspace_paths = self.workspaces.iter().map(|ws| ws.key().to_owned()).collect::<Vec<_>>();
+		for (config, ws) in configs.into_iter().zip(workspace_paths) {
+			match serde_json::from_value(config) {
+				Ok(config) => self.on_change_config(config, Some(&ws)),
+				Err(err) => error!("Could not parse updated configuration for {}:\n{err}", ws.display()),
+			}
+		}
+		self.ensure_nonoverlapping_roots();
+
+		let workspaces = self
+			.workspaces
+			.iter()
+			.map(|ws| ws.key().to_owned())
+			.collect::<HashSet<_>>();
+		let roots = self
+			.index
+			.roots
+			.iter()
+			.map(|root| root.key().to_owned())
+			.collect::<HashSet<_>>();
+
+		for removed in roots.difference(&workspaces) {
+			self.index.remove_root(removed);
+		}
+
+		self.index.delete_marked_entries();
+
+		for added in workspaces.difference(&roots) {
+			if let Err(err) = self.index.add_root(added, None, false).await {
+				error!("failed to add root {}:\n{err}", added.display());
+			}
+		}
 	}
 	#[instrument(skip_all)]
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
@@ -665,7 +751,49 @@ impl LanguageServer for Backend {
 			};
 			self.index.remove_root(&file_path);
 		}
-		self.index.mark_n_sweep();
+		self.index.delete_marked_entries();
+	}
+	/// For VSCode and capable LSP clients, these events represent changes mostly to configuration files.
+	async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+		for FileEvent { uri, .. } in params.changes {
+			let Some(file_path) = uri.to_file_path() else { continue };
+			let Some(".odoo_lsp") = file_path.file_stem().and_then(|ostr| ostr.to_str()) else {
+				continue;
+			};
+			if let Some(wspath) = self.workspaces.find_workspace_of(&file_path, |wspath, _| {
+				file_path
+					.strip_prefix(wspath)
+					.is_ok_and(|suffix| {
+						suffix.file_stem().unwrap_or(suffix.as_os_str()).to_string_lossy() == ".odoo_lsp"
+					})
+					.then(|| wspath.to_owned())
+			}) {
+				let Ok(file) = std::fs::read(&file_path) else {
+					break;
+				};
+				let mut diagnostics = vec![];
+				match serde_json::from_slice(&file) {
+					Ok(config) => self.on_change_config(config, Some(&wspath)),
+					Err(err) => {
+						let point = Position {
+							line: err.line() as u32 - 1,
+							character: err.column() as u32 - 1,
+						};
+						diagnostics.push(Diagnostic {
+							range: Range {
+								start: point,
+								end: point,
+							},
+							message: format!("{err}"),
+							severity: Some(DiagnosticSeverity::ERROR),
+							..Default::default()
+						});
+					}
+				}
+				self.client.publish_diagnostics(uri, diagnostics, None).await;
+				break;
+			}
+		}
 	}
 	#[instrument(skip_all)]
 	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
@@ -673,6 +801,7 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		}
 		let query = &params.query;
+		let limit = self.project_config.symbols_limit.load(Relaxed);
 
 		let models_by_prefix = self.index.models.by_prefix.read().await;
 		let records_by_prefix = self.index.records.by_prefix.read().await;
@@ -680,7 +809,7 @@ impl LanguageServer for Backend {
 			self.index.models.get(key).into_iter().flat_map(|entry| {
 				#[allow(deprecated)]
 				entry.base.as_ref().map(|loc| SymbolInformation {
-					name: interner().resolve(entry.key()).to_string(),
+					name: _R(*entry.key()).to_string(),
 					kind: SymbolKind::CONSTANT,
 					tags: None,
 					deprecated: None,
@@ -689,11 +818,10 @@ impl LanguageServer for Backend {
 				})
 			})
 		});
-		let limit = self.symbols_limit.load(Relaxed);
-		fn to_symbol_information(record: &odoo_lsp::record::Record, interner: &Interner) -> SymbolInformation {
+		fn to_symbol_information(record: &odoo_lsp::record::Record) -> SymbolInformation {
 			#[allow(deprecated)]
 			SymbolInformation {
-				name: record.qualified_id(interner),
+				name: record.qualified_id(),
 				kind: SymbolKind::VARIABLE,
 				tags: None,
 				deprecated: None,
@@ -701,32 +829,28 @@ impl LanguageServer for Backend {
 				container_name: None,
 			}
 		}
-		let interner = &interner();
 		if let Some((module, xml_id_query)) = query.split_once('.') {
-			let module = some!(interner.get(module)).into();
+			let module = some!(_G(module)).into();
 			let records = records_by_prefix
 				.iter_prefix(xml_id_query.as_bytes())
 				.flat_map(|(_, keys)| {
 					keys.iter().flat_map(|key| {
-						self.index.records.get(key).and_then(|record| {
-							(record.module == module).then(|| to_symbol_information(&record, interner))
-						})
+						self.index
+							.records
+							.get(key)
+							.and_then(|record| (record.module == module).then(|| to_symbol_information(&record)))
 					})
 				});
 			Ok(Some(models.chain(records).take(limit).collect()))
 		} else {
 			let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, keys)| {
-				keys.iter().flat_map(|key| {
-					self.index
-						.records
-						.get(key)
-						.map(|record| to_symbol_information(&record, interner))
-				})
+				keys.iter()
+					.flat_map(|key| self.index.records.get(key).map(|record| to_symbol_information(&record)))
 			});
 			Ok(Some(models.chain(records).take(limit).collect()))
 		}
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip_all, ret)]
 	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
 		self.root_setup.wait().await;
 		let path = params.text_document.uri.path().as_str();
@@ -783,7 +907,7 @@ impl LanguageServer for Backend {
 		{
 			// FIXME: Subcomponents should not just depend on the component's name,
 			// since users can readjust subcomponents' names at will.
-			let component = some!(interner().get(subcomponent));
+			let component = some!(_G(subcomponent));
 			let location = {
 				let component = some!(self.index.components.get(&component.into()));
 				some!(component.location.clone())
@@ -801,111 +925,4 @@ impl LanguageServer for Backend {
 
 		Ok(None)
 	}
-}
-
-fn main() {
-	let outlog = std::env::var("ODOO_LSP_LOG").ok().and_then(|var| {
-		let path = match var.as_str() {
-			#[cfg(unix)]
-			"1" => Path::new("/tmp/odoo_lsp.log"),
-			_ => Path::new(&var),
-		};
-		std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
-	});
-	let registry = tracing_subscriber::registry().with(EnvFilter::from_default_env());
-	let layer = tracing_subscriber::fmt::layer()
-		.compact()
-		.without_time()
-		.with_writer(std::io::stderr)
-		.with_file(true)
-		.with_line_number(true)
-		.with_target(cfg!(debug_assertions));
-	if let Some(outlog) = outlog {
-		registry.with(layer.map_writer(|stderr| stderr.and(outlog))).init();
-	} else {
-		registry.with(layer).init();
-	}
-
-	let args = std::env::args().collect::<Vec<_>>();
-	let args = args.iter().skip(1).map(String::as_str).collect::<Vec<_>>();
-	let args = cli::parse_args(&args[..]);
-	let mut threads = args.threads.unwrap_or(4);
-	match std::thread::available_parallelism() {
-		Ok(value) if value.get() <= 4 => {
-			threads = 1usize.max(threads / 2);
-		}
-		_ => {}
-	}
-
-	let rt = if threads <= 1 {
-		tokio::runtime::Builder::new_current_thread().enable_all().build()
-	} else {
-		tokio::runtime::Builder::new_multi_thread()
-			.worker_threads(threads)
-			.enable_all()
-			.build()
-	}
-	.expect("failed to build runtime");
-	rt.block_on(async move {
-		match args.command {
-			cli::Command::Run => {}
-			cli::Command::TsConfig => {
-				_ = cli::tsconfig(&args.addons_path, args.output)
-					.await
-					.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
-				return;
-			}
-			cli::Command::Init { tsconfig } => {
-				_ = cli::init(&args.addons_path, args.output)
-					.inspect_err(|err| eprintln!("{} init failed: {err}", loc!()));
-				if tsconfig {
-					_ = cli::tsconfig(&args.addons_path, None)
-						.await
-						.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
-				}
-				return;
-			}
-			cli::Command::SelfUpdate { nightly } => {
-				_ = tokio::task::spawn_blocking(move || cli::self_update(nightly))
-					.await
-					.unwrap()
-					.inspect_err(|err| eprintln!("{} self-update failed: {err}", loc!()));
-				return;
-			}
-		}
-
-		#[cfg(unix)]
-		let (stdin, stdout) = (
-			stdio::PipeStdin::lock_tokio().unwrap(),
-			stdio::PipeStdout::lock_tokio().unwrap(),
-		);
-
-		#[cfg(not(unix))]
-		let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
-
-		let (service, socket) = LspService::build(|client| Backend {
-			client,
-			index: Default::default(),
-			document_map: DashMap::with_shard_amount(4),
-			record_ranges: DashMap::with_shard_amount(4),
-			roots: DashSet::default(),
-			capabilities: Default::default(),
-			root_setup: Default::default(),
-			ast_map: DashMap::with_shard_amount(4),
-			symbols_limit: AtomicUsize::new(80),
-			references_limit: AtomicUsize::new(80),
-			completions_limit: AtomicUsize::new(200),
-		})
-		.custom_method("odoo-lsp/debug/usage", |_: &Backend| async move {
-			Ok(interner().report_usage())
-		})
-		.custom_method("odoo-lsp/inspect-type", Backend::debug_inspect_type)
-		.finish();
-
-		let service = ServiceBuilder::new()
-			.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))
-			.layer_fn(CatchPanic)
-			.service(service);
-		Server::new(stdin, stdout, socket).serve(service).await;
-	})
 }

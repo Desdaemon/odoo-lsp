@@ -25,7 +25,7 @@ impl PathSymbol {
 	/// Panics if `root` is not a parent of `path`.
 	pub fn strip_root(root: Spur, path: &Path) -> Self {
 		let path = path.strip_prefix(interner().resolve(&root)).unwrap();
-		let path = interner().get_or_intern(path.to_string_lossy());
+		let path = _I(path.to_string_lossy());
 		PathSymbol(root, path)
 	}
 	pub fn empty() -> Self {
@@ -137,7 +137,7 @@ impl<T> Deref for Symbol<T> {
 	}
 }
 
-pub fn interner() -> &'static Interner {
+fn interner() -> &'static Interner {
 	static INTERNER: OnceLock<Interner> = OnceLock::new();
 	INTERNER.get_or_init(|| {
 		let interner = Interner::default();
@@ -147,4 +147,77 @@ pub fn interner() -> &'static Interner {
 		}
 		interner
 	})
+}
+
+#[inline]
+#[allow(non_snake_case)]
+#[doc(alias = "get_or_intern")]
+pub fn _I<T: AsRef<str>>(string: T) -> Spur {
+	fn impl_(string: &str) -> Spur {
+		interner().get_or_intern(string)
+	}
+	impl_(string.as_ref())
+}
+
+#[inline]
+#[allow(non_snake_case)]
+#[doc(alias = "intern_resolve")]
+pub fn _R<T: Into<Spur>>(token: T) -> &'static str {
+	interner().resolve(&token.into())
+}
+
+#[inline]
+#[allow(non_snake_case)]
+#[doc(alias = "intern_get")]
+pub fn _G<T: AsRef<str>>(string: T) -> Option<Spur> {
+	fn impl_(string: &str) -> Option<Spur> {
+		interner().get(string)
+	}
+	impl_(string.as_ref())
+}
+
+#[inline]
+#[allow(non_snake_case)]
+#[doc(alias = "get_or_intern_path")]
+pub fn _P<T: AsRef<Path>>(string: T) -> Spur {
+	fn impl_(string: &Path) -> Spur {
+		interner().get_or_intern_path(string)
+	}
+	impl_(string.as_ref())
+}
+
+impl super::Interner {
+	pub fn report_usage() -> serde_json::Value {
+		let self_ = interner();
+		let items = self_
+			.get_counter()
+			.iter()
+			.map(|entry| (*entry.key(), *entry.value()))
+			.collect::<Vec<_>>();
+
+		let most_common = {
+			let mut items = items.clone();
+			items.sort_by(|(_, a), (_, z)| z.cmp(a));
+			items
+				.into_iter()
+				.take(20)
+				.map(|(key, value)| (self_.resolve(&key), value))
+				.collect::<Vec<_>>()
+		};
+
+		let longest = {
+			let mut items = items
+				.into_iter()
+				.map(|(key, value)| (self_.resolve(&key), value))
+				.collect::<Vec<_>>();
+			items.sort_by(|(a, _), (z, _)| z.len().cmp(&a.len()));
+			items.truncate(30);
+			items
+		};
+
+		serde_json::json!({
+			"most_common": most_common,
+			"longest": longest,
+		})
+	}
 }

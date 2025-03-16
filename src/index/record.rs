@@ -4,13 +4,13 @@ use std::{collections::HashSet, fmt::Debug, hash::Hash, marker::PhantomData};
 use dashmap::{mapref::one::Ref, DashMap};
 use derive_more::{Deref, DerefMut};
 use intmap::IntMap;
-use lasso::{Key, Spur, ThreadedRodeo};
+use lasso::{Key, Spur};
 use smart_default::SmartDefault;
 use tokio::sync::RwLock;
 
 use crate::{model::ModelName, record::Record};
 
-use super::Symbol;
+use super::{Symbol, _I};
 
 #[derive(SmartDefault, Deref)]
 pub struct RecordIndex {
@@ -54,21 +54,16 @@ impl RecordIndex {
 		}
 		self.inner.insert(qualified_id, record);
 	}
-	pub async fn append(
-		&self,
-		prefix: Option<&mut RecordPrefixTrie>,
-		records: impl IntoIterator<Item = Record>,
-		interner: &ThreadedRodeo,
-	) {
+	pub async fn append(&self, prefix: Option<&mut RecordPrefixTrie>, records: impl IntoIterator<Item = Record>) {
 		if let Some(prefix) = prefix {
 			for record in records {
-				let id = interner.get_or_intern(record.qualified_id(interner));
+				let id = _I(record.qualified_id());
 				self.insert(id.into(), record, Some(prefix)).await;
 			}
 		} else {
 			let mut prefix = self.by_prefix.write().await;
 			for record in records {
-				let id = interner.get_or_intern(record.qualified_id(interner));
+				let id = _I(record.qualified_id());
 				self.insert(id.into(), record, Some(&mut prefix)).await;
 			}
 		}
@@ -103,13 +98,13 @@ impl RecordIndex {
 pub struct SymbolMap<K, T = ()>(
 	#[deref]
 	#[deref_mut]
-	IntMap<T>,
+	IntMap<usize, T>,
 	PhantomData<K>,
 );
 
 impl<K: Debug, T: Debug> Debug for SymbolMap<K, T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_map().entries(self.iter()).finish()
+		f.debug_map().entries(self.0.iter()).finish()
 	}
 }
 
@@ -133,18 +128,16 @@ impl<K> Default for SymbolSet<K> {
 impl<K, T> SymbolMap<K, T> {
 	#[inline]
 	pub fn get(&self, key: &Symbol<K>) -> Option<&T> {
-		self.0.get(key.into_usize() as u64)
+		self.0.get(key.into_usize())
 	}
 	#[inline]
 	pub fn get_mut(&mut self, key: &Symbol<K>) -> Option<&mut T> {
-		self.0.get_mut(key.into_usize() as u64)
+		self.0.get_mut(key.into_usize())
 	}
 	pub fn keys(&self) -> impl Iterator<Item = Symbol<K>> + '_ {
-		self.0
-			.iter()
-			.map(|(key, _)| Spur::try_from_usize(*key as usize).unwrap().into())
+		self.0.iter().map(|(key, _)| Spur::try_from_usize(key).unwrap().into())
 	}
-	pub fn iter(&self) -> IterMap<impl Iterator<Item = (&u64, &T)>, K, T> {
+	pub fn iter(&self) -> IterMap<impl Iterator<Item = (usize, &T)>, K, T> {
 		IterMap(self.0.iter(), PhantomData)
 	}
 }
@@ -152,20 +145,20 @@ impl<K, T> SymbolMap<K, T> {
 impl<K> SymbolSet<K> {
 	#[inline]
 	pub fn insert(&mut self, key: Symbol<K>) -> bool {
-		self.0 .0.insert_checked(key.into_usize() as u64, ())
+		self.0 .0.insert_checked(key.into_usize(), ())
 	}
 	#[inline]
 	pub fn contains_key(&self, key: Symbol<K>) -> bool {
 		self.0 .0.contains_key(key.into_usize() as _)
 	}
-	pub fn iter(&self) -> IterSet<impl Iterator<Item = (&u64, &())>, K> {
+	pub fn iter(&self) -> IterSet<impl Iterator<Item = (usize, &())>, K> {
 		IterSet(self.0 .0.iter(), PhantomData)
 	}
 	pub fn extend<I>(&mut self, items: I)
 	where
 		I: IntoIterator<Item = Symbol<K>>,
 	{
-		(self.0 .0).extend(items.into_iter().map(|key| (key.into_usize() as u64, ())));
+		(self.0 .0).extend(items.into_iter().map(|key| (key.into_usize(), ())));
 	}
 }
 
@@ -173,13 +166,13 @@ pub struct IterMap<'a, I, K, T>(I, PhantomData<(&'a K, &'a T)>);
 
 impl<'iter, K, T, I> Iterator for IterMap<'iter, I, K, T>
 where
-	I: Iterator<Item = (&'iter u64, &'iter T)>,
+	I: Iterator<Item = (usize, &'iter T)>,
 {
 	type Item = (Symbol<T>, &'iter T);
 
 	fn next(&mut self) -> Option<Self::Item> {
 		let (next_key, next_value) = self.0.next()?;
-		Some((Symbol::from(Spur::try_from_usize(*next_key as _).unwrap()), next_value))
+		Some((Symbol::from(Spur::try_from_usize(next_key as _).unwrap()), next_value))
 	}
 }
 
@@ -187,12 +180,12 @@ pub struct IterSet<'a, I, T>(I, PhantomData<&'a T>);
 
 impl<'iter, T, I> Iterator for IterSet<'iter, I, T>
 where
-	I: Iterator<Item = (&'iter u64, &'iter ())>,
+	I: Iterator<Item = (usize, &'iter ())>,
 {
 	type Item = Symbol<T>;
 
 	fn next(&mut self) -> Option<Self::Item> {
 		let (next, ()) = self.0.next()?;
-		Some(Symbol::from(Spur::try_from_usize(*next as _).unwrap()))
+		Some(Symbol::from(Spur::try_from_usize(next as _).unwrap()))
 	}
 }

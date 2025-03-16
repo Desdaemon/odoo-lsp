@@ -218,12 +218,12 @@ function updateExtension(context: vscode.ExtensionContext, release: string) {
 				extensionState.nightlyExtensionUpdates === "always"
 					? "Yes"
 					: await vscode.window.showInformationMessage(
-							"A new nightly update for the extension is available. Install?",
-							"Yes",
-							"No",
-							"Always",
-							"Never show again",
-					  );
+						"A new nightly update for the extension is available. Install?",
+						"Yes",
+						"No",
+						"Always",
+						"Never show again",
+					);
 			if (resp === "Always") extensionState.nightlyExtensionUpdates = "always";
 			else if (resp === "Never show again") extensionState.nightlyExtensionUpdates = "never";
 
@@ -293,9 +293,11 @@ export async function activate(context: vscode.ExtensionContext) {
 	const logLevel = vscode.workspace.getConfiguration("odoo-lsp.trace").get("binary");
 	const RUST_LOG_STYLE = "never";
 	const NO_COLOR = "1";
+	const args = ["--log-format", "json"];
 	const serverOptions: ServerOptions = {
 		run: {
 			command,
+			args,
 			options: {
 				env: {
 					...process.env,
@@ -307,6 +309,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		},
 		debug: {
 			command,
+			args,
 			options: {
 				env: {
 					...process.env,
@@ -319,37 +322,36 @@ export async function activate(context: vscode.ExtensionContext) {
 	};
 
 	const binaryOutputChannel = vscode.window.createOutputChannel("Odoo LSP", { log: true });
-	const logPattern = /^  (INFO|WARN|DEBUG|ERROR|TRACE) ([^\n]*)$/;
 	const splitPattern = /\n/gm;
 
 	const oldAppend = binaryOutputChannel.append.bind(binaryOutputChannel);
-	binaryOutputChannel.append = function (this: vscode.LogOutputChannel, lines: string) {
+	binaryOutputChannel.append = function(this: vscode.LogOutputChannel, lines: string) {
 		if (!lines) return;
 
 		for (const line of lines.split(splitPattern)) {
-			const match = logPattern.exec(line);
-			if (match) {
-				const rest = line.substring(match[0].length).trimEnd();
-				const target = match[2]!.trimStart();
-				switch (match[1]) {
-					case "INFO":
-						this.info(`[${target}]${rest}`);
-						break;
-					case "WARN":
-						this.warn(`[${target}]${rest}`);
-						break;
-					case "ERROR":
-						this.error(`[${target}]${rest}`);
-						break;
-					case "DEBUG":
-						this.debug(`[${target}]${rest}`);
-						break;
-					case "TRACE":
-						this.trace(`[${target}]${rest}`);
-						break;
+			try {
+				let { level, fields, target, spans } = JSON.parse(line) || {};
+
+				let message = '';
+				if (fields?.message) {
+					message = fields.message;
+					delete fields.message;
 				}
-				continue;
-			}
+				const formattedFields = Array.from(Object.entries(fields || {})).map(([key, val]) => `${key}=${val}`);
+				const components = [message, ...formattedFields].map(e => e.trim()).filter(Boolean).join(' ');
+				if (spans?.length) {
+					const formatted = spans.map(span => span.name).join('/');
+					if (formatted) target = `${target}:${formatted}`;
+				}
+				
+				switch (level) {
+				case 'INFO': this.info(`   [${target}] ${components}`); continue;
+				case 'WARN': this.warn(`[${target}] ${components}`); continue;
+				case 'ERROR': this.error(`  [${target}] ${components}`); continue;
+				case 'DEBUG': this.debug(`  [${target}] ${components}`); continue;
+				case 'TRACE': this.trace(`  [${target}] ${components}`); continue;
+				}
+			} catch {}
 			if (line.trim()) oldAppend(line);
 		}
 	}.bind(binaryOutputChannel);
@@ -360,9 +362,6 @@ export async function activate(context: vscode.ExtensionContext) {
 			{ language: "python", scheme: "file" },
 			{ language: "javascript", scheme: "file" },
 		],
-		synchronize: {
-			fileEvents: vscode.workspace.createFileSystemWatcher("**/.odoo_lsp*"),
-		},
 		outputChannel: binaryOutputChannel,
 		traceOutputChannel,
 		revealOutputChannelOn: process.env.RUST_LOG ? RevealOutputChannelOn.Info : undefined,

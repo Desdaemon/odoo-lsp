@@ -8,22 +8,22 @@ pub struct Config {
 	pub completions: Option<CompletionsConfig>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ModuleConfig {
 	pub roots: Option<Vec<String>>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SymbolsConfig {
-	pub limit: Option<u32>,
+	pub limit: Option<usize>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ReferencesConfig {
-	pub limit: Option<u32>,
+	pub limit: Option<usize>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct CompletionsConfig {
-	pub limit: Option<u32>,
+	pub limit: Option<usize>,
 }

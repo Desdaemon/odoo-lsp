@@ -1,9 +1,9 @@
-use miette::diagnostic;
 use ropey::Rope;
 use tower_lsp_server::lsp_types::{Position, Range};
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::index::{interner, PathSymbol, Symbol};
+use crate::errloc;
+use crate::index::{PathSymbol, Symbol, _I};
 use crate::utils::{offset_to_position, ByteOffset, MinLoc};
 
 #[derive(Default, Debug)]
@@ -29,7 +29,7 @@ pub fn gather_templates(
 	document: Rope,
 	templates: &mut Vec<NewTemplate>,
 	legacy: bool,
-) -> miette::Result<()> {
+) -> anyhow::Result<()> {
 	let mut root_tag = None;
 	let mut tag_start = 0;
 	let mut stack = 0;
@@ -81,11 +81,11 @@ pub fn gather_templates(
 							continue;
 						}
 					};
-					let name = interner().get_or_intern(name).into();
+					let name = _I(name).into();
 					let start = offset_to_position(ByteOffset(tag_start), document.clone())
-						.ok_or_else(|| diagnostic!("qweb_templates start <- tag_start"))?;
+						.ok_or_else(|| errloc!("qweb_templates start <- tag_start"))?;
 					let end = offset_to_position(ByteOffset(span.end()), document.clone())
-						.ok_or_else(|| diagnostic!("qweb_templates end <- span.end()"))?;
+						.ok_or_else(|| errloc!("qweb_templates end <- span.end()"))?;
 					let range = Range { start, end };
 					templates.push(NewTemplate {
 						base,
@@ -119,9 +119,9 @@ pub fn gather_templates(
 				let t_inherit = t_inherit.take();
 				let name_candidate = if base { t_name } else { t_inherit };
 				let Some(name) = name_candidate else { break };
-				let name = interner().get_or_intern(name).into();
+				let name = _I(name).into();
 				let start = offset_to_position(ByteOffset(tag_start), document.clone())
-					.ok_or_else(|| diagnostic!("qweb_templates start <- tag_start"))?;
+					.ok_or_else(|| errloc!("qweb_templates start <- tag_start"))?;
 				let end = Position {
 					line: err.pos().row,
 					character: err.pos().col,
@@ -145,7 +145,7 @@ pub fn gather_templates(
 
 #[cfg(test)]
 mod tests {
-	use crate::utils::init_for_test;
+	use crate::{index::_R, utils::init_for_test};
 
 	use super::*;
 
@@ -189,10 +189,10 @@ mod tests {
 			),
 			"{templates:#?}"
 		);
-		assert_eq!(interner().resolve(&templates[0].name), "first");
-		assert_eq!(interner().resolve(&templates[1].name), "second");
-		assert_eq!(interner().resolve(&templates[2].name), "doesnt_matter");
-		assert_eq!(interner().resolve(&templates[3].name), "second");
+		assert_eq!(_R(templates[0].name), "first");
+		assert_eq!(_R(templates[1].name), "second");
+		assert_eq!(_R(templates[2].name), "doesnt_matter");
+		assert_eq!(_R(templates[3].name), "second");
 	}
 	#[test]
 	fn test_with_xml_decl() {
@@ -217,9 +217,9 @@ mod tests {
 		gather_templates(PathSymbol::empty(), &mut reader, rope, &mut templates, false).unwrap();
 
 		assert!(
-			matches!(&templates[..], [NewTemplate { base: true, .. },]),
+			matches!(templates[..], [NewTemplate { base: true, .. },]),
 			"{templates:#?}"
 		);
-		assert_eq!(interner().resolve(&templates[0].name), "Draggable");
+		assert_eq!(_R(templates[0].name), "Draggable");
 	}
 }

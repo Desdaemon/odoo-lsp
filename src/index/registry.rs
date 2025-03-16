@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 
 use lasso::Spur;
-use miette::diagnostic;
 use tree_sitter::{Parser, QueryCursor};
 use ts_macros::query;
 
 use crate::index::PathSymbol;
 use crate::utils::{ts_range_to_lsp_range, MinLoc, RangeExt};
-use crate::{format_loc, ok, ImStr};
+use crate::{errloc, format_loc, ok, ImStr};
 
 use super::Output;
 
@@ -28,14 +27,14 @@ query! {
 	(arguments . (string) @FIELD))
 }
 
-pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Output> {
+pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
 	let contents = ok!(tokio::fs::read(&path).await, "Could not read {:?}", path);
 	let path = PathSymbol::strip_root(root, &path);
 	let mut parser = Parser::new();
 	ok!(parser.set_language(&tree_sitter_javascript::LANGUAGE.into()));
 	let ast = parser
 		.parse(&contents, None)
-		.ok_or_else(|| diagnostic!("AST not parsed"))?;
+		.ok_or_else(|| errloc!("AST not parsed"))?;
 	let query = RegistryQuery::query();
 	let mut cursor = QueryCursor::new();
 	let mut widgets = Vec::new();

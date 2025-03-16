@@ -112,12 +112,12 @@
 				},
 				"odoo-lsp.symbols.limit": {
 					"type": "number",
-					"default": 80,
+					"default": 200,
 					"description": "Maximum amount of workspace symbols to retrieve at once."
 				},
 				"odoo-lsp.references.limit": {
 					"type": "number",
-					"default": 80,
+					"default": 200,
 					"description": "Maximum amount of model/record references to retrieve at once."
 				},
 				"odoo-lsp.completions.limit": {
@@ -161,7 +161,7 @@
 		"build": "webpack --config webpack.config.js",
 		"package": "vsce package --no-dependencies",
 		"publish": "vsce publish --no-dependencies",
-		"install-for-vscode": "rm *.vsix && npm run package && code --install-extension *.vsix",
+		"install-for-vscode": "(rm *.vsix || true) && npm run package && code --install-extension *.vsix",
 		"miri": "cargo +nightly miri test",
 		"changelog": "conventional-changelog -p conventionalcommits -i CHANGELOG.md -s"
 	},

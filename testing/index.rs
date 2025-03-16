@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
-use std::{path::PathBuf, sync::atomic::AtomicUsize, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use async_lsp::lsp_types::*;
 use async_lsp::{LanguageServer, MainLoop};
-use dashmap::{DashMap, DashSet};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use pretty_assertions::{Comparison, StrComparison};
@@ -134,7 +133,7 @@ async fn fixture_test(#[files("testing/fixtures/*")] root: PathBuf) {
 						.iter()
 						.map(|diag| (diag.range.start, diag.message.clone()))
 						.collect::<Vec<_>>();
-					if &expected.diag[..] != &actual[..] {
+					if expected.diag[..] != actual[..] {
 						diffs.push(format!(
 							"[diag] {}\n{}",
 							path.display(),
@@ -166,7 +165,7 @@ async fn fixture_test(#[files("testing/fixtures/*")] root: PathBuf) {
 								.await;
 							if let Ok(Some(CompletionResponse::List(list))) = completions {
 								let actual = list.items.iter().map(|comp| comp.label.to_string()).collect::<Vec<_>>();
-								if &expected[..] != &actual[..] {
+								if expected[..] != actual[..] {
 									format!(
 										"[complete] in {path}:{}:{}\n{}",
 										position.line + 1,
@@ -300,21 +299,9 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 }
 
 fn setup_lsp_server() -> async_lsp::ServerSocket {
-	let (service, socket) = LspService::build(|client| Backend {
-		client,
-		index: Default::default(),
-		document_map: DashMap::with_shard_amount(4),
-		record_ranges: DashMap::with_shard_amount(4),
-		roots: DashSet::default(),
-		capabilities: Default::default(),
-		root_setup: Default::default(),
-		ast_map: DashMap::with_shard_amount(4),
-		symbols_limit: AtomicUsize::new(80),
-		references_limit: AtomicUsize::new(80),
-		completions_limit: AtomicUsize::new(200),
-	})
-	.custom_method("odoo-lsp/inspect-type", Backend::debug_inspect_type)
-	.finish();
+	let (service, socket) = LspService::build(Backend::new)
+		.custom_method("odoo-lsp/inspect-type", Backend::debug_inspect_type)
+		.finish();
 
 	let service = ServiceBuilder::new()
 		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))

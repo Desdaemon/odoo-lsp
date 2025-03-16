@@ -2,8 +2,11 @@ use std::{path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 use lasso::Spur;
-use miette::IntoDiagnostic;
-use odoo_lsp::{index::interner, utils::RangeExt, ImStr};
+use odoo_lsp::{
+	index::{_I, _R},
+	utils::RangeExt,
+	ImStr,
+};
 use tracing::debug;
 use tree_sitter::{Parser, QueryCursor};
 use ts_macros::query;
@@ -28,21 +31,21 @@ query! {
   (#eq? @_define "define"))
 }
 
-pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> miette::Result<()> {
-	let contents = tokio::fs::read(&file).await.into_diagnostic()?;
+pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> anyhow::Result<()> {
+	let contents = tokio::fs::read(&file).await?;
 
-	let file = interner().get_or_intern(file.to_string_lossy());
+	let file = _I(file.to_string_lossy());
 
 	let mut parser = Parser::new();
 	parser
 		.set_language(&tree_sitter_javascript::LANGUAGE.into())
-		.into_diagnostic()?;
+		?;
 	let ast = parser.parse(&contents, None).expect("AST not parsed");
 	let query = OdooDefines::query();
 	let mut cursor = QueryCursor::new();
 
 	for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
-		debug!("{} captures in {}", match_.captures.len(), interner().resolve(&file));
+		debug!("{} captures in {}", match_.captures.len(), _R(file));
 		if let Some(name) = match_.nodes_for_capture_index(OdooDefines::Name as _).next() {
 			let name = String::from_utf8_lossy(&contents[name.byte_range().shrink(1)]);
 			index.entry(file).or_default().push(name.as_ref().into());

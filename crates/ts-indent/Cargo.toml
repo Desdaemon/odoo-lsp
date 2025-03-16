@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-indent = "0.1.1"
 tree-sitter.workspace = true
 tree-sitter-scheme = { git = "https://github.com/6cdh/tree-sitter-scheme", version = "0.23.0", rev = "63e25a4a84142ae7ee0ee01fe3a32c985ca16745" }
 ts-macros = { version = "0.4.1", path = "../ts-macros" }

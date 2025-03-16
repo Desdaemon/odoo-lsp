@@ -3,18 +3,17 @@ use std::{collections::HashMap, path::PathBuf};
 
 use dashmap::DashMap;
 use lasso::{Key, Spur};
-use miette::diagnostic;
 use smart_default::SmartDefault;
 use tokio::sync::RwLock;
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
-use crate::index::PathSymbol;
+use crate::index::{PathSymbol, _I};
 use crate::utils::{offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, MinLoc, RangeExt};
-use crate::{format_loc, ok};
+use crate::{errloc, format_loc, ok};
 
-use super::{interner, Component, ComponentName, Output, TemplateName};
+use super::{Component, ComponentName, Output, TemplateName, _R};
 
 // Three cases:
 // static props OR Foo.props: Component props
@@ -114,7 +113,7 @@ query! {
   (#match? @SUBCOMPONENT "^[A-Z]"))
 }
 
-pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Output> {
+pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
 	let path_key = PathSymbol::strip_root(root, &path);
 	let contents = ok!(tokio::fs::read(&path).await, "Could not read {:?}", path);
 	let rope = ropey::Rope::from(String::from_utf8_lossy(&contents));
@@ -122,7 +121,7 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Out
 	ok!(parser.set_language(&tree_sitter_javascript::LANGUAGE.into()));
 	let ast = parser
 		.parse(&contents, None)
-		.ok_or_else(|| diagnostic!("AST not parsed"))?;
+		.ok_or_else(|| errloc!("AST not parsed"))?;
 	let query = ComponentQuery::query();
 	let mut cursor = QueryCursor::new();
 	let mut components = HashMap::<_, Component>::default();
@@ -132,7 +131,7 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Out
 		debug_assert_eq!(first.index, ComponentQuery::Name as u32);
 
 		let name = String::from_utf8_lossy(&contents[first.node.byte_range()]);
-		let name = interner().get_or_intern(&name);
+		let name = _I(&name);
 		let component = components.entry(name.into()).or_default();
 		if component.location.is_none() {
 			component.location = Some(MinLoc {
@@ -150,7 +149,7 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Out
 						range = range.shrink(1);
 					}
 					let prop = String::from_utf8_lossy(&contents[range.clone()]);
-					let prop = interner().get_or_intern(prop).into_usize();
+					let prop = _I(prop).into_usize();
 					let entry = match component.props.entry(prop as _) {
 						Entry::Occupied(entry) => entry.into_mut(),
 						Entry::Vacant(entry) => entry.insert(PropDescriptor {
@@ -167,12 +166,12 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Out
 				}
 				Some(ComponentQuery::Parent) => {
 					let parent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
-					let parent = interner().get_or_intern(parent);
+					let parent = _I(parent);
 					component.ancestors.push(parent.into());
 				}
 				Some(ComponentQuery::TemplateName) => {
 					let name = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
-					let name = interner().get_or_intern(&name);
+					let name = _I(&name);
 					component.template = Some(ComponentTemplate::Name(name.into()));
 				}
 				Some(ComponentQuery::TemplateInline) => {
@@ -183,7 +182,7 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> miette::Result<Out
 				}
 				Some(ComponentQuery::Subcomponent) => {
 					let subcomponent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
-					let subcomponent = interner().get_or_intern(&subcomponent);
+					let subcomponent = _I(&subcomponent);
 					component.subcomponents.push(subcomponent.into());
 				}
 				Some(ComponentQuery::Name) | None => {}
@@ -287,9 +286,8 @@ impl DerefMut for ComponentIndex {
 impl ComponentIndex {
 	pub fn extend(&self, components: HashMap<ComponentName, Component>) {
 		let mut by_prefix = self.by_prefix.try_write().expect(format_loc!("deadlock"));
-		let interner = interner();
 		for (name, component) in components {
-			by_prefix.insert(interner.resolve(&name).as_bytes(), name);
+			by_prefix.insert(_R(name).as_bytes(), name);
 			if let Some(ComponentTemplate::Name(template_name)) = component.template.as_ref() {
 				self.by_template.insert(*template_name, name);
 			}

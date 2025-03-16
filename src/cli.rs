@@ -1,9 +1,10 @@
 use std::{env::current_dir, fs::canonicalize, io::stdout, process::exit, sync::Arc};
 
+use anyhow::Context;
 use globwalk::FileType;
-use miette::{diagnostic, IntoDiagnostic};
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
-use odoo_lsp::index::{interner, Index};
+use odoo_lsp::index::{Index, _R};
+use odoo_lsp::{errloc, format_loc, loc};
 use self_update::{backends::github, Status};
 use serde_json::Value;
 use tracing::{debug, warn};
@@ -18,6 +19,7 @@ pub struct Args<'a> {
 	pub addons_path: Vec<&'a str>,
 	pub output: Option<&'a str>,
 	pub threads: Option<usize>,
+	pub log_format: LogFormat,
 	pub command: Command,
 }
 
@@ -32,6 +34,13 @@ pub enum Command {
 	SelfUpdate {
 		nightly: bool,
 	},
+}
+
+#[derive(Default, Clone, Copy)]
+pub enum LogFormat {
+	#[default]
+	Compact,
+	Json,
 }
 
 const HELP: &str = "Language server for Odoo Python/JS/XML
@@ -64,9 +73,11 @@ OPTIONS:
 	-j, --threads NUMBER
 		Specifies the number of threads to use. Defaults to four threads, or half
 		of the core count if it is less than four, minimum of one.
+	--log-format json
+		Emits machine-readable JSON logs, useful for LSP clients and middleware
 ";
 
-pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
+pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 	let mut out = Args::default();
 	loop {
 		match args {
@@ -123,6 +134,10 @@ pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
 					}
 				}
 			}
+			["--log-format", "json", rest @ ..] => {
+				args = rest;
+				out.log_format = LogFormat::Json;
+			}
 			[] => break,
 			_ => {
 				eprintln!("{HELP}");
@@ -134,11 +149,38 @@ pub fn parse_args<'r>(mut args: &'r [&'r str]) -> Args<'r> {
 	out
 }
 
-pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Result<()> {
+/// Returns true if a CLI handler has been invoked.
+pub async fn run(args: Args<'_>) -> bool {
+	match args.command {
+		Command::Run => return false,
+		Command::TsConfig => {
+			_ = tsconfig(&args.addons_path, args.output)
+				.await
+				.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
+		}
+		Command::Init { tsconfig } => {
+			_ = init(&args.addons_path, args.output).inspect_err(|err| eprintln!("{} init failed: {err}", loc!()));
+			if tsconfig {
+				_ = self::tsconfig(&args.addons_path, None)
+					.await
+					.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
+			}
+		}
+		Command::SelfUpdate { nightly } => {
+			_ = tokio::task::spawn_blocking(move || self_update(nightly))
+				.await
+				.unwrap()
+				.inspect_err(|err| eprintln!("{} self-update failed: {err}", loc!()));
+		}
+	}
+	true
+}
+
+async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<()> {
 	let addons_path = addons_path
 		.iter()
-		.map(|path| canonicalize(path).into_diagnostic())
-		.collect::<miette::Result<Vec<_>>>()?;
+		.map(|path| canonicalize(path).with_context(|| format_loc!("{} could not be canonicalized", path)))
+		.collect::<anyhow::Result<Vec<_>>>()?;
 
 	let index = Index::default();
 
@@ -148,26 +190,25 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 	}
 
 	let mut ts_paths = serde_json::Map::new();
-	let pwd = current_dir().into_diagnostic()?;
+	let pwd = current_dir()?;
 
 	let mut includes = vec![];
 	let mut type_roots = vec![];
-	let interner = interner();
 
 	let defines = Arc::new(tsconfig::DefineIndex::default());
 
 	let mut outputs = tokio::task::JoinSet::new();
 
 	for entry in &index.roots {
-		let root = pathdiff::diff_paths(entry.key(), &pwd)
-			.ok_or_else(|| diagnostic!("Cannot diff {:?} to pwd", entry.key()))?;
+		let root =
+			pathdiff::diff_paths(entry.key(), &pwd).ok_or_else(|| errloc!("Cannot diff {:?} to pwd", entry.key()))?;
 
 		includes.push(Value::String(root.join("**/static/src").to_string_lossy().into_owned()));
 		type_roots.push(Value::String(
 			root.join("web/tooling/types").to_string_lossy().into_owned(),
 		));
 		for (module, path) in entry.value().iter() {
-			let module = interner.resolve(module);
+			let module = _R(*module);
 			ts_paths
 				.entry(format!("@{module}/*"))
 				.or_insert_with(|| Value::Array(vec![]))
@@ -183,13 +224,12 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 		let scripts = globwalk::glob_builder(entry.key().join("**/*.js").to_string_lossy())
 			.file_type(FileType::FILE | FileType::SYMLINK)
 			.follow_links(true)
-			.build()
-			.into_diagnostic()?;
+			.build()?;
 		for js in scripts {
 			let Ok(js) = js else { continue };
 			let path = js.path().to_path_buf();
-			let path = pathdiff::diff_paths(&path, &pwd)
-				.ok_or_else(|| diagnostic!("Cannot diff {} to pwd", path.display()))?;
+			let path =
+				pathdiff::diff_paths(&path, &pwd).ok_or_else(|| errloc!("Cannot diff {} to pwd", path.display()))?;
 			let defines = Arc::clone(&defines);
 			outputs.spawn(tsconfig::gather_defines(path, defines));
 		}
@@ -208,7 +248,7 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 	}
 
 	for entry in defines.iter() {
-		let location = Value::String(interner.resolve(entry.key()).to_string());
+		let location = Value::String(_R(*entry.key()).to_string());
 		for define in entry.value() {
 			ts_paths
 				.entry(define.to_string())
@@ -230,82 +270,24 @@ pub async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> miette::Res
 			"typeRoots": type_roots,
 			"paths": ts_paths,
 		},
-		"exclude": [
-			"/**/*.po",
-			"/**/*.py",
-			"/**/*.pyc",
-			"/**/*.xml",
-			"/**/*.png",
-			"/**/*.md",
-			"/**/*.dat",
-			"/**/*.scss",
-			"/**/*.jpg",
-			"/**/*.svg",
-			"/**/*.pot",
-			"/**/*.csv",
-			"/**/*.mo",
-			"/**/*.txt",
-			"/**/*.less",
-			"/**/*.bcmap",
-			"/**/*.properties",
-			"/**/*.html",
-			"/**/*.ttf",
-			"/**/*.rst",
-			"/**/*.css",
-			"/**/*.pack",
-			"/**/*.idx",
-			"/**/*.h",
-			"/**/*.map",
-			"/**/*.gif",
-			"/**/*.sample",
-			"/**/*.doctree",
-			"/**/*.so",
-			"/**/*.pdf",
-			"/**/*.xslt",
-			"/**/*.conf",
-			"/**/*.woff",
-			"/**/*.xsd",
-			"/**/*.eot",
-			"/**/*.jst",
-			"/**/*.flow",
-			"/**/*.sh",
-			"/**/*.yml",
-			"/**/*.pfb",
-			"/**/*.jpeg",
-			"/**/*.crt",
-			"/**/*.template",
-			"/**/*.pxd",
-			"/**/*.dylib",
-			"/**/*.pem",
-			"/**/*.rng",
-			"/**/*.xsl",
-			"/**/*.xls",
-			"/**/*.cfg",
-			"/**/*.pyi",
-			"/**/*.pth",
-			"/**/*.markdown",
-			"/**/*.key",
-			"/**/*.ico"
-		]
 	}};
 
 	let output = output.unwrap_or("tsconfig.json");
 	if output == "-" {
-		serde_json::to_writer_pretty(stdout(), &tsconfig).into_diagnostic()
+		serde_json::to_writer_pretty(stdout(), &tsconfig)?;
 	} else {
 		let file = std::fs::OpenOptions::new()
 			.write(true)
 			.truncate(true)
 			.create(true)
-			.open(output)
-			.into_diagnostic()?;
-		serde_json::to_writer_pretty(file, &tsconfig).into_diagnostic()?;
+			.open(output)?;
+		serde_json::to_writer_pretty(file, &tsconfig)?;
 		eprintln!("TypeScript config file generated at {output}");
-		Ok(())
 	}
+	Ok(())
 }
 
-pub fn init(addons_path: &[&str], output: Option<&str>) -> miette::Result<()> {
+fn init(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<()> {
 	let config = Config {
 		module: Some(ModuleConfig {
 			roots: Some(addons_path.iter().map(ToString::to_string).collect()),
@@ -316,21 +298,20 @@ pub fn init(addons_path: &[&str], output: Option<&str>) -> miette::Result<()> {
 	};
 	let output = output.unwrap_or(".odoo_lsp");
 	if output == "-" {
-		serde_json::to_writer_pretty(stdout(), &config).into_diagnostic()
+		serde_json::to_writer_pretty(stdout(), &config)?;
 	} else {
 		let file = std::fs::OpenOptions::new()
 			.write(true)
 			.truncate(true)
 			.create(true)
-			.open(output)
-			.into_diagnostic()?;
-		serde_json::to_writer_pretty(file, &config).into_diagnostic()?;
+			.open(output)?;
+		serde_json::to_writer_pretty(file, &config)?;
 		eprintln!("Config file generated at {output}");
-		Ok(())
 	}
+	Ok(())
 }
 
-pub fn self_update(nightly: bool) -> miette::Result<()> {
+fn self_update(nightly: bool) -> anyhow::Result<()> {
 	const _: () = {
 		if option_env!("CI").is_some() {
 			assert!(!GIT_VERSION.is_empty(), "Git tag must be present when running in CI");
@@ -349,10 +330,8 @@ pub fn self_update(nightly: bool) -> miette::Result<()> {
 		let mut releases = github::ReleaseList::configure()
 			.repo_owner("Desdaemon")
 			.repo_name("odoo-lsp")
-			.build()
-			.into_diagnostic()?
-			.fetch()
-			.into_diagnostic()?;
+			.build()?
+			.fetch()?;
 		releases.sort_unstable_by(|a, z| z.date.cmp(&a.date));
 		if GIT_VERSION.starts_with("nightly") {
 			releases.retain(|rel| rel.version.as_str() > GIT_VERSION);
@@ -365,7 +344,7 @@ pub fn self_update(nightly: bool) -> miette::Result<()> {
 		}
 	}
 
-	let status = task.build().into_diagnostic()?.update().into_diagnostic()?;
+	let status = task.build()?.update()?;
 	match status {
 		Status::UpToDate(current) => eprintln!("odoo-lsp is already at the latest version: {current}"),
 		Status::Updated(new) => eprintln!("Updated odoo-lsp to {new}"),

@@ -1,21 +1,21 @@
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
+use anyhow::anyhow;
 use dashmap::DashMap;
+use derive_more::Deref;
 use globwalk::FileType;
 use ignore::gitignore::Gitignore;
 use ignore::Match;
 use lasso::{Spur, ThreadedRodeo};
-use miette::{diagnostic, IntoDiagnostic};
 use ropey::Rope;
 use smart_default::SmartDefault;
 use tower_lsp_server::lsp_types::notification::Progress;
 use tower_lsp_server::lsp_types::request::{ShowDocument, ShowMessageRequest};
-use tower_lsp_server::lsp_types::*;
-use tracing::{debug, info, warn};
+use tower_lsp_server::{lsp_types::*, Client};
+use tracing::{debug, warn};
 use tree_sitter::QueryCursor;
 use ts_macros::query;
 use xmlparser::{Token, Tokenizer};
@@ -23,12 +23,12 @@ use xmlparser::{Token, Tokenizer};
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
 use crate::utils::{path_contains, ts_range_to_lsp_range, ByteOffset, ByteRange, MinLoc, RangeExt};
-use crate::{format_loc, ok, ImStr};
+use crate::{errloc, format_loc, loc, ok, ImStr};
 
 mod record;
 pub use record::{RecordId, SymbolMap, SymbolSet};
 mod symbol;
-pub use symbol::{interner, PathSymbol, Symbol};
+pub use symbol::{PathSymbol, Symbol, _G, _I, _P, _R};
 mod template;
 pub use crate::template::{Template, TemplateName};
 pub use template::TemplateIndex;
@@ -41,15 +41,9 @@ use crate::template::{gather_templates, NewTemplate};
 
 pub type Interner = Wrapper<ThreadedRodeo>;
 
-#[derive(Default)]
-pub struct Wrapper<T>(T);
-
-impl Deref for Interner {
-	type Target = ThreadedRodeo;
-	fn deref(&self) -> &Self::Target {
-		&self.0
-	}
-}
+#[derive(Default, Deref)]
+#[repr(transparent)]
+pub struct Wrapper<T>(#[deref] T);
 
 impl Interner {
 	fn get_counter(&self) -> &'static DashMap<Spur, u32> {
@@ -63,38 +57,6 @@ impl Interner {
 	}
 	pub fn get_or_intern_path(&self, path: &Path) -> Spur {
 		self.get_or_intern(path.to_string_lossy())
-	}
-	pub fn report_usage(&self) -> serde_json::Value {
-		let items = self
-			.get_counter()
-			.iter()
-			.map(|entry| (*entry.key(), *entry.value()))
-			.collect::<Vec<_>>();
-
-		let most_common = {
-			let mut items = items.clone();
-			items.sort_by(|(_, a), (_, z)| z.cmp(a));
-			items
-				.into_iter()
-				.take(20)
-				.map(|(key, value)| (self.resolve(&key), value))
-				.collect::<Vec<_>>()
-		};
-
-		let longest = {
-			let mut items = items
-				.into_iter()
-				.map(|(key, value)| (self.resolve(&key), value))
-				.collect::<Vec<_>>();
-			items.sort_by(|(a, _), (z, _)| z.len().cmp(&a.len()));
-			items.truncate(30);
-			items
-		};
-
-		serde_json::json!({
-			"most_common": most_common,
-			"longest": longest,
-		})
 	}
 }
 
@@ -118,6 +80,7 @@ pub type ModuleName = Symbol<Module>;
 pub enum Module {}
 
 enum Output {
+	Nothing,
 	Xml {
 		records: Vec<Record>,
 		templates: Vec<NewTemplate>,
@@ -144,10 +107,18 @@ pub struct AddRootResults {
 }
 
 impl Index {
-	pub fn mark_n_sweep(&self) {
-		let pre = self.records.len();
+	pub fn delete_marked_entries(&self) {
 		self.records.retain(|_, record| !record.deleted);
-		info!("(mark_n_sweep) deleted {} records", pre - self.records.len());
+		self.models.retain(|_, model| !model.deleted);
+
+		for mut model in self.models.iter_mut() {
+			let before = model.ancestors.len();
+			model.ancestors.retain(|key| self.models.contains_key(key));
+			if model.ancestors.len() != before {
+				model.fields = None;
+				model.methods = None;
+			}
+		}
 	}
 	#[tracing::instrument(skip_all, fields(root=format!("{}", root.display())), ret)]
 	pub async fn add_root(
@@ -155,13 +126,12 @@ impl Index {
 		root: &Path,
 		progress: Option<(&tower_lsp_server::Client, ProgressToken)>,
 		tsconfig: bool,
-	) -> miette::Result<Option<AddRootResults>> {
+	) -> anyhow::Result<Option<AddRootResults>> {
 		if self.roots.contains_key(root) {
 			return Ok(None);
 		}
 
 		let t0 = tokio::time::Instant::now();
-		// let root = root.display();
 		let manifests = ok!(
 			globwalk::glob_builder(root.join("**/__manifest__.py").to_string_lossy())
 				.file_type(FileType::FILE | FileType::SYMLINK)
@@ -181,8 +151,7 @@ impl Index {
 
 		let mut module_count = 0;
 		let mut outputs = tokio::task::JoinSet::new();
-		let interner = interner();
-		let root_key = interner.get_or_intern(root.to_string_lossy());
+		let root_key = _I(root.to_string_lossy());
 		for manifest in manifests {
 			let manifest = match manifest {
 				Ok(manifest) => manifest,
@@ -222,7 +191,7 @@ impl Index {
 					})
 					.await;
 			}
-			let module_key = interner.get_or_intern(&module_name);
+			let module_key = _I(&module_name);
 			let module_path = ok!(
 				module_dir.strip_prefix(root),
 				"module_dir={:?} is not a subpath of root={:?}",
@@ -237,39 +206,8 @@ impl Index {
 			if let Some(duplicate) = duplicate {
 				warn!(old = %duplicate, new = ?module_path, "duplicate module {module_name}");
 				if let (Some((client, _)), "base") = (&progress, module_name.as_str()) {
-					let resp = client
-						.send_request::<ShowMessageRequest>(ShowMessageRequestParams {
-							typ: MessageType::WARNING,
-							message: concat!(
-								"Duplicate base module found. The language server's performance may be affected.\n",
-								"Please configure your workspace (or .odoo_lsp) to only include one version of Odoo as described in the wiki.",
-							)
-							.to_string(),
-							actions: Some(vec![
-								MessageActionItem {
-									title: "Go to odoo-lsp wiki".to_string(),
-									properties: Default::default(),
-								},
-								MessageActionItem {
-									title: "Dismiss".to_string(),
-									properties: Default::default(),
-								},
-							]),
-						})
-						.await;
-					match resp {
-						Ok(Some(resp)) if resp.title == "Go to odoo-lsp wiki" => {
-							_ = client
-								.send_request::<ShowDocument>(ShowDocumentParams {
-									uri: Uri::from_str("https://github.com/Desdaemon/odoo-lsp/wiki#usage").unwrap(),
-									external: Some(true),
-									take_focus: None,
-									selection: None,
-								})
-								.await;
-						}
-						_ => {}
-					}
+					let client = (*client).clone();
+					outputs.spawn(Self::notify_duplicate_base(client));
 				}
 			}
 			if tsconfig {
@@ -345,15 +283,16 @@ impl Index {
 				}
 			};
 			match outputs {
+				Output::Nothing => {}
 				Output::Xml { records, templates } => {
 					record_count += records.len();
-					self.records.append(None, records, interner).await;
+					self.records.append(None, records).await;
 					template_count += templates.len();
 					self.templates.append(templates).await;
 				}
 				Output::Models { path, models } => {
 					model_count += models.len();
-					self.models.append(path, interner, false, &models).await;
+					self.models.append(path, false, &models).await;
 				}
 				Output::Components(components) => {
 					component_count += components.len();
@@ -382,11 +321,58 @@ impl Index {
 			elapsed: t0.elapsed(),
 		}))
 	}
+	async fn notify_duplicate_base(client: Client) -> anyhow::Result<Output> {
+		let resp = client
+			.send_request::<ShowMessageRequest>(ShowMessageRequestParams {
+				typ: MessageType::WARNING,
+				message: concat!(
+					"Duplicate base module found. The language server's performance may be affected.\n",
+					"Please configure your workspace (or .odoo_lsp) to only include one version of Odoo as described in the wiki.",
+				)
+				.to_string(),
+				actions: Some(vec![
+					MessageActionItem {
+						title: "Go to odoo-lsp wiki".to_string(),
+						properties: Default::default(),
+					},
+					MessageActionItem {
+						title: "Dismiss".to_string(),
+						properties: Default::default(),
+					},
+				]),
+			})
+			.await;
+		match resp {
+			Ok(Some(resp)) if resp.title == "Go to odoo-lsp wiki" => {
+				_ = client
+					.send_request::<ShowDocument>(ShowDocumentParams {
+						uri: Uri::from_str("https://github.com/Desdaemon/odoo-lsp/wiki#usage").unwrap(),
+						external: Some(true),
+						take_focus: None,
+						selection: None,
+					})
+					.await;
+			}
+			_ => {}
+		}
+
+		Ok(Output::Nothing)
+	}
 	pub fn remove_root(&self, root: &Path) {
 		self.roots.remove(root);
 		for mut entry in self.records.iter_mut() {
-			let module = interner().resolve(&entry.module);
+			let module = _R(entry.module);
 			if path_contains(root, module) {
+				entry.deleted = true;
+			}
+		}
+
+		for mut entry in self.models.iter_mut() {
+			if entry
+				.base
+				.as_ref()
+				.is_some_and(|base| path_contains(root, base.0.path.to_path()))
+			{
 				entry.deleted = true;
 			}
 		}
@@ -398,7 +384,7 @@ impl Index {
 			if let Ok(path) = path.strip_prefix(entry.key()) {
 				for component in path.components() {
 					if let Component::Normal(norm) = component {
-						if let Some(module) = interner().get(norm.to_string_lossy()) {
+						if let Some(module) = _G(norm.to_string_lossy()) {
 							if entry.value().contains_key(&module.into()) {
 								return Some(module.into());
 							}
@@ -412,7 +398,7 @@ impl Index {
 	}
 }
 
-async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> miette::Result<Output> {
+async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> anyhow::Result<Output> {
 	let path_uri = PathSymbol::strip_root(root, &path);
 	let file = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
 	let file = String::from_utf8_lossy(&file);
@@ -490,7 +476,7 @@ query! {
   (#match? @NAME "^_(name|inherits?)$"))
 }
 
-async fn add_root_py(root: Spur, path: PathBuf) -> miette::Result<Output> {
+async fn add_root_py(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
 	let contents = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
 
 	let path = PathSymbol::strip_root(root, &path);
@@ -498,15 +484,13 @@ async fn add_root_py(root: Spur, path: PathBuf) -> miette::Result<Output> {
 	Ok(Output::Models { path, models })
 }
 
-pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
+pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 	let mut parser = tree_sitter::Parser::new();
-	parser
-		.set_language(&tree_sitter_python::LANGUAGE.into())
-		.into_diagnostic()?;
+	parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
 
 	let ast = parser
 		.parse(contents, None)
-		.ok_or_else(|| diagnostic!("AST not parsed"))?;
+		.ok_or_else(|| anyhow!("{} AST not parsed", loc!()))?;
 	let query = ModelQuery::query();
 	let mut cursor = QueryCursor::new();
 
@@ -521,11 +505,11 @@ pub fn index_models(contents: &[u8]) -> miette::Result<Vec<Model>> {
 		let model_node = match_
 			.nodes_for_capture_index(ModelQuery::Model as _)
 			.next()
-			.ok_or_else(|| diagnostic!("(index_models) model_node"))?;
+			.ok_or_else(|| errloc!("model_node"))?;
 		let capture = match_
 			.nodes_for_capture_index(ModelQuery::Name as _)
 			.next()
-			.ok_or_else(|| diagnostic!("(index_models) name"))?;
+			.ok_or_else(|| errloc!("capture"))?;
 		let model = models.entry(model_node.id()).or_insert_with(|| NewModel {
 			name: None,
 			range: model_node.range(),

@@ -26,12 +26,14 @@ pub mod fs {
 
 #[cfg(test)]
 pub mod cases {
-	use crate::index::{index_models, interner, PathSymbol};
+	use crate::index::{index_models, PathSymbol};
 	use crate::model::ModelIndex;
 	use crate::test_utils;
 	use std::path::Path;
 
 	pub mod foo {
+		use crate::index::_I;
+
 		use super::*;
 		pub const FOO_PY: &[u8] = br#"
 class Foo(Model):
@@ -72,9 +74,9 @@ class Quux(Model):
 			let index = ModelIndex::default();
 			let foo_models = index_models(FOO_PY).unwrap();
 
-			let root = interner().get_or_intern_static(ROOT);
+			let root = _I(ROOT);
 			let path = PathSymbol::strip_root(root, Path::new(FOO_PY_PATH));
-			rt.block_on(index.append(path, interner(), false, &foo_models[..]));
+			rt.block_on(index.append(path, false, &foo_models[..]));
 			index
 		}
 	}

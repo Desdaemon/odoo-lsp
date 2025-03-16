@@ -8,15 +8,14 @@ use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
 
 use lasso::Spur;
-use miette::{diagnostic, miette};
-use odoo_lsp::index::{index_models, interner, Index, PathSymbol};
+use odoo_lsp::index::{index_models, Index, PathSymbol, _G, _I, _R};
 use ropey::Rope;
 use tower_lsp_server::lsp_types::*;
 use tracing::{debug, instrument, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor, QueryMatch, Tree};
 
 use odoo_lsp::model::{ModelName, ModelType, PropertyKind, ResolveMappedError};
-use odoo_lsp::utils::*;
+use odoo_lsp::{errloc, utils::*};
 use odoo_lsp::{format_loc, some};
 use ts_macros::query;
 
@@ -168,14 +167,14 @@ struct Mapped<'text> {
 
 impl Backend {
 	#[tracing::instrument(skip_all, fields(uri))]
-	pub fn on_change_python(&self, text: &Text, uri: &Uri, rope: Rope, old_rope: Option<Rope>) -> miette::Result<()> {
+	pub fn on_change_python(&self, text: &Text, uri: &Uri, rope: Rope, old_rope: Option<Rope>) -> anyhow::Result<()> {
 		let mut parser = Parser::new();
 		parser
 			.set_language(&tree_sitter_python::LANGUAGE.into())
 			.expect("bug: failed to init python parser");
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)
 	}
-	pub async fn update_models(&self, text: Text, path: &Path, root: Spur, rope: Rope) -> miette::Result<()> {
+	pub async fn update_models(&self, text: Text, path: &Path, root: Spur, rope: Rope) -> anyhow::Result<()> {
 		let text = match text {
 			Text::Full(text) => Cow::from(text),
 			// TODO: Limit range of possible updates based on delta
@@ -183,32 +182,63 @@ impl Backend {
 		};
 		let models = index_models(text.as_bytes())?;
 		let path = PathSymbol::strip_root(root, path);
-		self.index.models.append(path, interner(), true, &models).await;
+		self.index.models.append(path, true, &models).await;
 		for model in models {
 			match model.type_ {
 				ModelType::Base { name, ancestors } => {
-					let model_key = interner().get(&name).unwrap();
+					let model_key = _G(&name).unwrap();
 					let mut entry = self
 						.index
 						.models
 						.try_get_mut(&model_key.into())
 						.expect(format_loc!("deadlock"))
 						.unwrap();
-					entry.ancestors.extend(
-						ancestors
-							.into_iter()
-							.map(|sym| ModelName::from(interner().get_or_intern(&sym))),
-					);
+					entry
+						.ancestors
+						.extend(ancestors.into_iter().map(|sym| ModelName::from(_I(&sym))));
 					drop(entry);
 					self.index.models.populate_properties(model_key.into(), &[path]);
 				}
 				ModelType::Inherit(inherits) => {
 					let Some(model) = inherits.first() else { continue };
-					let model_key = interner().get(model).unwrap();
+					let model_key = _G(model).unwrap();
 					self.index.models.populate_properties(model_key.into(), &[path]);
 				}
 			}
 		}
+		Ok(())
+	}
+	pub async fn did_save_python(&self, uri: Uri, root: Spur) -> anyhow::Result<()> {
+		let path = uri.to_file_path().unwrap();
+		let zone;
+		_ = {
+			let mut document = self
+				.document_map
+				.get_mut(uri.path().as_str())
+				.ok_or_else(|| errloc!("(did_save) did not build document"))?;
+			zone = document.damage_zone.take();
+			let rope = document.rope.clone();
+			let text = Cow::from(&document.rope).into_owned();
+			self.update_models(Text::Full(text), &path, root, rope)
+		}
+		.await
+		.inspect_err(|err| warn!("{err:?}"));
+		if zone.is_some() {
+			debug!("diagnostics");
+			{
+				let mut document = self.document_map.get_mut(uri.path().as_str()).unwrap();
+				self.diagnose_python(
+					uri.path().as_str(),
+					&document.rope.clone(),
+					zone,
+					&mut document.diagnostics_cache,
+				);
+				let diags = document.diagnostics_cache.clone();
+				self.client.publish_diagnostics(uri, diags, None)
+			}
+			.await;
+		}
+
 		Ok(())
 	}
 	pub async fn python_completions(
@@ -216,7 +246,7 @@ impl Backend {
 		params: CompletionParams,
 		ast: Tree,
 		rope: Rope,
-	) -> miette::Result<Option<CompletionResponse>> {
+	) -> anyhow::Result<Option<CompletionResponse>> {
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, &rope) else {
 			warn!("invalid position {:?}", params.text_document_position.position);
 			return Ok(None);
@@ -230,9 +260,13 @@ impl Backend {
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
 		let query = PyCompletions::query();
+		let completions_limit = self
+			.workspaces
+			.find_workspace_of(&path, |_, ws| ws.completions.limit)
+			.unwrap_or_else(|| self.project_config.completions_limit.load(Relaxed));
 		let mut this_model = ThisModel::default();
 		// FIXME: This hack is necessary to drop !Send locals before await points.
-		let mut early_return = EarlyReturn::<miette::Result<_>>::default();
+		let mut early_return = EarlyReturn::<anyhow::Result<_>>::default();
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
 			'match_: for match_ in cursor.matches(query, root, contents) {
@@ -254,7 +288,7 @@ impl Backend {
 									model.byte_range().map_unit(ByteOffset),
 									contents,
 								)?;
-								Some(interner().resolve(&model))
+								Some(_R(model))
 							};
 							model_filter = model()
 						}
@@ -264,7 +298,7 @@ impl Backend {
 							let range = range.map_unit(ByteOffset);
 							let rope = rope.clone();
 							early_return.lift(move || async move {
-								let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
+								let mut items = MaxVec::new(completions_limit);
 								self.complete_xml_id(&needle, range, rope, model_filter, current_module, &mut items)
 									.await?;
 								Ok(Some(CompletionResponse::List(CompletionList {
@@ -290,7 +324,7 @@ impl Backend {
 								let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 								let rope = rope.clone();
 								early_return.lift(|| async move {
-									let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
+									let mut items = MaxVec::new(completions_limit);
 									self.complete_model(
 										&needle,
 										range.shrink(1).map_unit(ByteOffset),
@@ -329,15 +363,15 @@ impl Backend {
 							// range:  foo.bar.baz
 							// needle: foo.ba
 							let mut range = range;
-							let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
+							let mut items = MaxVec::new(completions_limit);
 							let mut needle = needle.as_ref();
-							let mut model = some!(interner().get(model));
+							let mut model = some!(_G(model));
 							if !single_field {
 								some!((self.index.models)
 									.resolve_mapped(&mut model, &mut needle, Some(&mut range))
 									.ok());
 							}
-							let model_name = interner().resolve(&model);
+							let model_name = _R(model);
 							let prop_type = if matches!(mapstr, PyCompletions::Compute) {
 								Some(PropertyKind::Method)
 							} else {
@@ -393,7 +427,7 @@ impl Backend {
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 							let rope = rope.clone();
 							early_return.lift(|| async move {
-								let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
+								let mut items = MaxVec::new(completions_limit);
 								self.complete_model(
 									&needle,
 									range.shrink(1).map_unit(ByteOffset),
@@ -456,9 +490,9 @@ impl Backend {
 							// range:  foo.bar.baz
 							// needle: foo.ba
 							let mut range = range;
-							let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
+							let mut items = MaxVec::new(completions_limit);
 							let mut needle = needle.as_ref();
-							let mut model = some!(interner().get(model));
+							let mut model = some!(_G(model));
 							if !single_field {
 								some!(self
 									.index
@@ -466,7 +500,7 @@ impl Backend {
 									.resolve_mapped(&mut model, &mut needle, Some(&mut range))
 									.ok());
 							}
-							let model_name = interner().resolve(&model);
+							let model_name = _R(model);
 							self.complete_property_name(
 								needle,
 								range,
@@ -487,7 +521,7 @@ impl Backend {
 			if early_return.is_none() {
 				let (model, needle, range) = some!(self.attribute_at_offset(offset, root, contents));
 				let rope = rope.clone();
-				let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
+				let mut items = MaxVec::new(completions_limit);
 				self.complete_property_name(
 					&needle,
 					range.map_unit(ByteOffset),
@@ -565,7 +599,7 @@ impl Backend {
 		let model;
 		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next() {
 			let model_ = (self.index).model_of_range(root, local_model.byte_range().map_unit(ByteOffset), contents)?;
-			model = interner().resolve(&model_).to_string();
+			model = _R(model_).to_string();
 		} else if let Some(field_model) = match_.nodes_for_capture_index(PyCompletions::Model as _).next() {
 			// A sibling @MODEL node; this is defined on the `fields.*(comodel_name='@MODEL', domain=[..])` pattern
 			model = String::from_utf8_lossy(&contents[field_model.byte_range().shrink(1)]).into_owned();
@@ -609,14 +643,14 @@ impl Backend {
 			range: range.map_unit(ByteOffset),
 		})
 	}
-	pub fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
+	pub fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> anyhow::Result<Option<Location>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
 			.get(uri.path().as_str())
-			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path().as_str()))?;
+			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
-			return Err(miette!("could not find offset for {}", uri.path().as_str()));
+			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
 		};
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
@@ -667,11 +701,11 @@ impl Backend {
 							false,
 						) {
 							let mut needle = mapped.needle.as_ref();
-							let mut model = interner().get_or_intern(mapped.model);
+							let mut model = _I(mapped.model);
 							if !mapped.single_field {
 								some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 							}
-							let model = interner().resolve(&model);
+							let model = _R(model);
 							return self.jump_def_property_name(needle, model);
 						}
 					}
@@ -708,8 +742,7 @@ impl Backend {
 	) -> Option<(&'out str, Cow<'out, str>, core::ops::Range<usize>)> {
 		let (lhs, field, range) = Self::attribute_node_at_offset(offset, root, contents)?;
 		let model = (self.index).model_of_range(root, lhs.byte_range().map_unit(ByteOffset), contents)?;
-		let model = interner().resolve(&model);
-		Some((model, field, range))
+		Some((_R(model), field, range))
 	}
 	/// Resolves the attribute at the cursor offset.
 	/// Returns `(object, field, range)`
@@ -798,13 +831,13 @@ impl Backend {
 
 		Some((lhs, field, range))
 	}
-	pub fn python_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
+	pub fn python_references(&self, params: ReferenceParams, rope: Rope) -> anyhow::Result<Option<Vec<Location>>> {
 		let ByteOffset(offset) = some!(position_to_offset(params.text_document_position.position, &rope));
 		let uri = &params.text_document_position.text_document.uri;
 		let ast = self
 			.ast_map
 			.get(uri.path().as_str())
-			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path().as_str()))?;
+			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
 		let contents = Cow::from(rope.clone());
@@ -825,7 +858,7 @@ impl Backend {
 							break 'match_;
 						};
 						let slice = Cow::from(slice);
-						return self.record_references(&slice, current_module);
+						return self.record_references(&path, &slice, current_module);
 					}
 					Some(PyCompletions::Model) => {
 						let range = capture.node.byte_range();
@@ -841,8 +874,8 @@ impl Backend {
 								break 'match_;
 							};
 							let slice = Cow::from(slice);
-							let slice = some!(interner().get(slice));
-							return self.model_references(&slice.into());
+							let slice = some!(_G(slice));
+							return self.model_references(&path, &slice.into());
 						} else if range.end < offset {
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
@@ -876,14 +909,14 @@ impl Backend {
 		self.method_references(&prop, model)
 	}
 
-	pub fn python_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
+	pub fn python_hover(&self, params: HoverParams, rope: Rope) -> anyhow::Result<Option<Hover>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
 			.get(uri.path().as_str())
-			.ok_or_else(|| diagnostic!("Did not build AST for {}", uri.path().as_str()))?;
+			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
 		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
-			Err(diagnostic!("could not find offset for {}", uri.path().as_str()))?
+			Err(errloc!("could not find offset for {}", uri.path().as_str()))?
 		};
 
 		let contents = Cow::from(rope.clone());
@@ -921,7 +954,7 @@ impl Backend {
 							false,
 						));
 						let mut needle = mapped.needle.as_ref();
-						let mut model = interner().get_or_intern(mapped.model);
+						let mut model = _I(mapped.model);
 						let mut range = mapped.range;
 						if !mapped.single_field {
 							some!(self
@@ -930,7 +963,7 @@ impl Backend {
 								.resolve_mapped(&mut model, &mut needle, Some(&mut range))
 								.ok());
 						}
-						let model = interner().resolve(&model);
+						let model = _R(model);
 						return self.hover_property_name(needle, model, offset_range_to_lsp_range(range, rope.clone()));
 					}
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
@@ -964,7 +997,7 @@ impl Backend {
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
 		let lsp_range = ts_range_to_lsp_range(needle.range());
 		let model = some!((self.index).model_of_range(root, needle.byte_range().map_unit(ByteOffset), contents));
-		let model = interner().resolve(&model);
+		let model = _R(model);
 		let identifier =
 			(needle.kind() == "identifier").then(|| String::from_utf8_lossy(&contents[needle.byte_range()]));
 		self.hover_model(model, Some(lsp_range), true, identifier.as_deref())
@@ -1016,7 +1049,7 @@ impl Backend {
 							continue;
 						}
 						let xml_id = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
-						let xml_id_key = interner().get(&xml_id);
+						let xml_id_key = _G(&xml_id);
 						let mut id_found = false;
 						if let Some(id) = xml_id_key {
 							id_found = self.index.records.contains_key(&id.into());
@@ -1036,7 +1069,7 @@ impl Backend {
 								// diagnose only, do not tag
 								let range = capture.node.byte_range().shrink(1);
 								let model = String::from_utf8_lossy(&contents[range.clone()]);
-								let model_key = interner().get(&model);
+								let model_key = _G(&model);
 								let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 								if !has_model.unwrap_or(false) {
 									diagnostics.push(Diagnostic {
@@ -1158,7 +1191,7 @@ impl Backend {
 							}
 
 							// HACK: fix this issue where the model name is just empty
-							if interner().resolve(&model_name).is_empty() {
+							if _R(model_name).is_empty() {
 								return ControlFlow::Continue(entered);
 							}
 
@@ -1167,7 +1200,7 @@ impl Backend {
 								severity: Some(DiagnosticSeverity::ERROR),
 								message: format!(
 									"Model `{}` has no property `{}`",
-									interner().resolve(&model_name),
+									_R(model_name),
 									String::from_utf8_lossy(&contents[attribute.byte_range()]),
 								),
 								..Default::default()
@@ -1192,7 +1225,7 @@ impl Backend {
 					b"comodel_name" => {
 						let range = node.byte_range().shrink(1);
 						let model = String::from_utf8_lossy(&contents[range.clone()]);
-						let model_key = interner().get(&model);
+						let model_key = _G(&model);
 						let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 						if !has_model.unwrap_or(false) {
 							diagnostics.push(Diagnostic {
@@ -1271,7 +1304,7 @@ impl Backend {
 		else {
 			return;
 		};
-		let mut model = interner().get_or_intern(&model);
+		let mut model = _I(&model);
 		let mut needle = needle.as_ref();
 		if single_field {
 			if let Some(dot) = needle.find('.') {
@@ -1319,7 +1352,7 @@ impl Backend {
 			if MAPPED_BUILTINS.contains(needle) {
 				return;
 			}
-			if let Some(key) = interner().get(needle) {
+			if let Some(key) = _G(needle) {
 				if expect_field {
 					let Some(fields) = entry.fields.as_ref() else { return };
 					has_property = fields.contains_key(&key.into())
@@ -1335,7 +1368,7 @@ impl Backend {
 				severity: Some(DiagnosticSeverity::ERROR),
 				message: format!(
 					"Model `{}` has no {} `{needle}`",
-					interner().resolve(&model),
+					_R(model),
 					if expect_field { "field" } else { "method" }
 				),
 				..Default::default()

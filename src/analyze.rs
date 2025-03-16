@@ -10,7 +10,7 @@ use tree_sitter::{Node, Parser, QueryCursor};
 
 use crate::{
 	format_loc,
-	index::{interner, Index, Symbol},
+	index::{Index, Symbol, _G, _R},
 	model::{Method, MethodReturnType, ModelEntry, ModelName, PropertyKind},
 	test_utils,
 	utils::{lsp_range_to_offset_range, ByteRange, Erase, PreTravel, RangeExt, TryResultExt},
@@ -446,15 +446,11 @@ impl Index {
 				let mapped = call.named_child(1)?.named_child(0)?;
 				match mapped.kind() {
 					"string" => {
-						let mut model = model.into();
+						let mut model: Spur = model.into();
 						let mapped = String::from_utf8_lossy(&contents[mapped.byte_range().shrink(1)]);
 						let mut mapped = mapped.as_ref();
 						self.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
-						self.type_of_attribute(
-							&Type::Model(interner().resolve(&model).into()),
-							mapped.as_bytes(),
-							scope,
-						)
+						self.type_of_attribute(&Type::Model(_R(model).into()), mapped.as_bytes(), scope)
 					}
 					"lambda" => {
 						// (lambda (lambda_parameters)? body: (_))
@@ -463,7 +459,7 @@ impl Index {
 							let first_arg = params.named_child(0)?;
 							if first_arg.kind() == "identifier" {
 								let first_arg = String::from_utf8_lossy(&contents[first_arg.byte_range()]);
-								scope.insert(first_arg.into_owned(), Type::Model(interner().resolve(&model).into()));
+								scope.insert(first_arg.into_owned(), Type::Model(_R(model).into()));
 							}
 						}
 						let body = mapped.child_by_field_name(b"body")?;
@@ -473,9 +469,9 @@ impl Index {
 				}
 			}
 			Type::Method(model, method) => {
-				let method = interner().get(&method)?;
+				let method = _G(&method)?;
 				let ret_model = self.resolve_method_returntype(method.into(), *model)?;
-				Some(Type::Model(interner().resolve(&ret_model).into()))
+				Some(Type::Model(_R(ret_model).into()))
 			}
 			Type::Env | Type::Record(..) | Type::Model(..) | Type::Value => None,
 		}
@@ -496,9 +492,9 @@ impl Index {
 			func if MODEL_METHODS.contains(func) => match lhs {
 				Type::Model(model) => Some(Type::ModelFn(model)),
 				Type::Record(xml_id) => {
-					let xml_id = interner().get(xml_id)?;
+					let xml_id = _G(xml_id)?;
 					let record = self.records.get(&xml_id.into())?;
-					Some(Type::ModelFn(interner().resolve(record.model.as_deref()?).into()))
+					Some(Type::ModelFn(_R(*record.model.as_deref()?).into()))
 				}
 				_ => None,
 			},
@@ -510,13 +506,13 @@ impl Index {
 		let model = self.try_resolve_model(type_, scope)?;
 		let attr = String::from_utf8_lossy(attr);
 		let model_entry = self.models.populate_properties(model, &[])?;
-		let attr_key = interner().get(attr.as_ref())?;
+		let attr_key = _G(attr.as_ref())?;
 		let attr_kind = model_entry.prop_kind(attr_key)?;
 		match attr_kind {
 			PropertyKind::Field => {
 				drop(model_entry);
 				let relation = self.models.resolve_related_field(attr_key.into(), model.into())?;
-				Some(Type::Model(interner().resolve(&relation).into()))
+				Some(Type::Model(_R(relation).into()))
 			}
 			PropertyKind::Method => Some(Type::Method(model, attr.as_ref().into())),
 		}
@@ -526,7 +522,7 @@ impl Index {
 			let model = self.try_resolve_model(type_, scope)?;
 			let attr = String::from_utf8_lossy(attr);
 			let entry = self.models.populate_properties(model, &[])?;
-			let attr = interner().get(attr.as_ref())?;
+			let attr = _G(attr.as_ref())?;
 			entry.prop_kind(attr).map(|_| ())
 		})()
 		.is_some()
@@ -534,10 +530,10 @@ impl Index {
 	/// Call this method if it's unclear whether `type_` is a [`Type::Model`] and you just want the model's name.
 	pub fn try_resolve_model(&self, type_: &Type, scope: &Scope) -> Option<ModelName> {
 		match type_ {
-			Type::Model(model) => Some(interner().get(model)?.into()),
+			Type::Model(model) => Some(_G(model)?.into()),
 			Type::Record(xml_id) => {
 				// TODO: Refactor into method
-				let xml_id = interner().get(xml_id)?;
+				let xml_id = _G(xml_id)?;
 				let record = self.records.get(&xml_id.into())?;
 				record.model
 			}
@@ -580,11 +576,7 @@ impl Index {
 	}
 	pub fn resolve_method_returntype(&self, method: Symbol<Method>, model: Spur) -> Option<Symbol<ModelEntry>> {
 		#[cfg(debug_assertions)]
-		trace!(
-			method = interner().resolve(&method),
-			model = interner().resolve(&model),
-			"resolve_method_returntype"
-		);
+		trace!(method = _R(method), model = _R(model), "resolve_method_returntype");
 
 		_ = self.models.populate_properties(model.into(), &[]);
 		let mut model_entry = self.models.get_mut(&model.into())?;
@@ -754,11 +746,8 @@ mod tests {
 	use tree_sitter::{Parser, QueryCursor};
 
 	use crate::analyze::FieldCompletion;
-	use crate::{
-		index::{interner, Index},
-		test_utils::cases::foo::prepare_foo_index,
-		utils::position_to_offset,
-	};
+	use crate::index::{_I, _R};
+	use crate::{index::Index, test_utils::cases::foo::prepare_foo_index, utils::position_to_offset};
 
 	#[test]
 	fn test_field_completion() {
@@ -831,12 +820,7 @@ class Foo(models.Model):
 		};
 
 		assert_eq!(
-			index
-				.resolve_method_returntype(
-					interner().get_or_intern_static("test").into(),
-					interner().get_or_intern_static("bar")
-				)
-				.map(|model| interner().resolve(&model)),
+			index.resolve_method_returntype(_I("test").into(), _I("bar")).map(_R),
 			Some("foo")
 		)
 	}
@@ -849,12 +833,7 @@ class Foo(models.Model):
 		};
 
 		assert_eq!(
-			index
-				.resolve_method_returntype(
-					interner().get_or_intern_static("test").into(),
-					interner().get_or_intern_static("quux")
-				)
-				.map(|model| interner().resolve(&model)),
+			index.resolve_method_returntype(_I("test").into(), _I("quux")).map(_R),
 			Some("foo")
 		)
 	}

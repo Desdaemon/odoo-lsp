@@ -27,7 +27,7 @@ macro_rules! some {
 		match $opt {
 			Some(it) => it,
 			None => {
-				tracing::trace!("{}", $crate::format_loc!("{}", concat!(stringify!($opt), " = None")));
+				tracing::trace!(concat!(stringify!($opt), " = None"));
 				return Ok(None);
 			}
 		}
@@ -37,11 +37,9 @@ macro_rules! some {
 /// Early return, with optional message passed to [`format_loc`](crate::format_loc!).
 #[macro_export]
 macro_rules! ok {
-    ($res:expr $(,)?) => {
-        miette::IntoDiagnostic::into_diagnostic($res)?
-    };
+    ($res:expr $(,)?) => { ($res)? };
     ($res:expr, $($tt:tt)+) => {
-    	miette::WrapErr::wrap_err_with(miette::IntoDiagnostic::into_diagnostic($res), || format_loc!($($tt)+))?
+		anyhow::Context::with_context($res, || format_loc!($($tt)+))?
     }
 }
 
@@ -292,6 +290,13 @@ macro_rules! loc {
 	() => {
 		concat!("[", file!(), ":", line!(), ":", column!(), "]")
 	};
+}
+
+#[macro_export]
+macro_rules! errloc {
+	($msg:literal $(, $($tt:tt)* )?) => {
+		::anyhow::anyhow!(concat!($crate::loc!(), " ", $msg) $(, $($tt)* )?)
+	}
 }
 
 /// [format] preceded with file location information.

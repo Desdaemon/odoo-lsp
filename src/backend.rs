@@ -4,51 +4,98 @@
 //! This is the final destination in the flowchart.
 
 use std::borrow::Cow;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
+use derive_more::{Deref, DerefMut};
 use fomat_macros::fomat;
 use globwalk::FileType;
-use lasso::Spur;
-use miette::{diagnostic, miette};
 use odoo_lsp::component::{Prop, PropDescriptor};
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
+use smart_default::SmartDefault;
 use tower_lsp_server::lsp_types::*;
 use tower_lsp_server::Client;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 use tree_sitter::{Parser, Tree};
 
-use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
-use odoo_lsp::index::{interner, Component, Index, Interner, ModuleName, RecordId, Symbol, SymbolSet};
+use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig};
+use odoo_lsp::index::{Component, Index, ModuleName, RecordId, Symbol, SymbolSet, _G, _I, _P, _R};
 use odoo_lsp::model::{Field, FieldKind, Method, ModelEntry, ModelLocation, ModelName, PropertyKind};
 use odoo_lsp::record::Record;
-use odoo_lsp::{format_loc, some, utils::*};
+use odoo_lsp::{errloc, format_loc, some, utils::*};
 
+#[derive(Deref)]
 pub struct Backend {
 	pub client: Client,
+	#[deref]
+	pub inner: BackendInner,
+}
+
+#[derive(SmartDefault)]
+pub struct BackendInner {
 	/// fs path -> rope, diagnostics etc.
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub document_map: DashMap<String, Document>,
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub record_ranges: DashMap<String, Box<[ByteRange]>>,
+	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub ast_map: DashMap<String, Tree>,
 	pub index: Index,
-	/// Roots added during initial setup. Not to be confused with [Index::roots].
-	pub roots: DashSet<PathBuf>,
-	pub capabilities: Capabilities,
+	pub workspaces: Workspaces,
 	pub root_setup: CondVar,
+	pub capabilities: Capabilities,
+	pub project_config: BackendConfig,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct Workspace {
+	// pub symbols: SymbolsConfig,
+	pub completions: CompletionsConfig,
+	pub references: ReferencesConfig,
+}
+
+#[derive(SmartDefault)]
+pub struct BackendConfig {
+	#[default(200.into())]
 	pub symbols_limit: AtomicUsize,
-	pub references_limit: AtomicUsize,
+	#[default(200.into())]
 	pub completions_limit: AtomicUsize,
+	#[default(200.into())]
+	pub references_limit: AtomicUsize,
+}
+
+#[derive(Deref, DerefMut, SmartDefault, Debug)]
+pub struct Workspaces {
+	#[deref]
+	#[default(_code = "DashMap::with_shard_amount(4)")]
+	inner: DashMap<PathBuf, Workspace>,
+}
+
+impl Workspaces {
+	#[inline]
+	pub fn find_workspace_of<T>(&self, path: &Path, mut func: impl FnMut(&Path, &Workspace) -> Option<T>) -> Option<T> {
+		for ws in &self.inner {
+			if path.starts_with(&ws.key()) {
+				if let Some(res) = func(&ws.key(), &ws) {
+					return Some(res);
+				}
+			}
+		}
+		None
+	}
 }
 
 #[derive(Debug, Default)]
 pub struct Capabilities {
-	pub dynamic_config: AtomicBool,
-	/// Whether the client is expected to explicitly request for diagnostics.
+	pub can_notify_changed_config: AtomicBool,
+	pub can_notify_changed_watched_files: AtomicBool,
+	/// Whether the client is able and expected to explicitly request for diagnostics.
 	pub pull_diagnostics: AtomicBool,
-	/// Whether workspace/workspaceFolders can be called.
+	/// Whether [`workspace/workspaceFolders`][request::WorkspaceFoldersRequest] can be called.
 	pub workspace_folders: AtomicBool,
 }
 
@@ -104,6 +151,68 @@ impl Backend {
 	/// Maximum file line count to process diagnostics each on_change
 	pub const DIAGNOSTICS_LINE_LIMIT: usize = 1200;
 
+	#[inline]
+	pub fn new(client: Client) -> Self {
+		Self {
+			client,
+			inner: Default::default(),
+		}
+	}
+
+	pub fn init_workspaces(&self, params: &InitializeParams) {
+		let mut workspaces = params
+			.workspace_folders
+			.as_ref()
+			.map(|dirs| {
+				dirs.iter()
+					.filter_map(|wsdir| {
+						let Some(path) = wsdir.uri.to_file_path() else {
+							error!("{:?} does not resolve to a proper path, ignoring", wsdir.uri);
+							return None;
+						};
+						Some(path.into_owned())
+					})
+					.collect::<Vec<_>>()
+			})
+			.unwrap_or_default();
+		if workspaces.is_empty() {
+			#[allow(deprecated)]
+			if let Some(root) = params
+				.root_uri
+				.as_ref()
+				.and_then(|uri| uri.to_file_path())
+				.or_else(|| params.root_path.as_deref().map(Path::new).map(Cow::<Path>::from))
+			{
+				workspaces.push(root.into_owned());
+			}
+		}
+		if workspaces.is_empty() {
+			if let Ok(pwd) = std::env::current_dir() {
+				workspaces.push(pwd);
+			}
+		}
+		if workspaces.is_empty() {
+			warn!("No workspace folders were detected");
+		}
+
+		'outer: for dir in workspaces {
+			for choice in [".odoo_lsp", ".odoo_lsp.json"] {
+				let workspace = Path::new(&dir);
+				let path = workspace.join(choice);
+				let Ok(file) = std::fs::File::open(&path) else { continue };
+				match serde_json::from_reader(file) {
+					Ok(config) => {
+						self.on_change_config(config, Some(workspace));
+						continue 'outer;
+					}
+					Err(err) => error!("could not parse config at {}:\n{err}", path.display()),
+				}
+				break;
+			}
+			self.workspaces.insert(dir, Workspace::default());
+		}
+	}
+
 	#[tracing::instrument(skip_all, ret)]
 	pub fn find_root_of(&self, path: &Path) -> Option<PathBuf> {
 		for root_ in self.index.roots.iter() {
@@ -114,7 +223,7 @@ impl Backend {
 		None
 	}
 	#[instrument(skip_all)]
-	pub async fn on_change(&self, params: TextDocumentItem) -> miette::Result<()> {
+	pub async fn on_change(&self, params: TextDocumentItem) -> anyhow::Result<()> {
 		let split_uri = params.uri.path().as_str().rsplit_once('.');
 		let rope;
 		let path;
@@ -138,8 +247,8 @@ impl Backend {
 			path = params.uri.to_file_path().unwrap();
 			let root_path = self
 				.find_root_of(&path)
-				.ok_or_else(|| miette!("file not under any root"))?;
-			root = interner().get_or_intern_path(&root_path);
+				.ok_or_else(|| errloc!("file not under any root"))?;
+			root = _P(root_path);
 			eager_diagnostics = self.eager_diagnostics(params.open, &rope);
 		};
 		match (split_uri, params.language) {
@@ -163,7 +272,7 @@ impl Backend {
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
 				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
 			}
-			other => return Err(miette!("Unhandled language: {other:?}")),
+			other => return Err(errloc!("Unhandled language: {:?}", other)),
 		}
 
 		if eager_diagnostics {
@@ -181,67 +290,23 @@ impl Backend {
 
 		Ok(())
 	}
-	pub async fn did_save_impl(&self, params: DidSaveTextDocumentParams) -> miette::Result<()> {
+	pub async fn did_save_impl(&self, params: DidSaveTextDocumentParams) -> anyhow::Result<()> {
 		let uri = params.text_document.uri;
 		debug!("{}", uri.path().as_str());
 		let (_, extension) = uri
 			.path()
 			.as_str()
 			.rsplit_once('.')
-			.ok_or_else(|| diagnostic!("no extension"))?;
+			.ok_or_else(|| errloc!("no extension"))?;
 		let path = uri.to_file_path().unwrap();
-		let root = self.find_root_of(&path).ok_or_else(|| diagnostic!("out of root"))?;
-		let root = interner().get_or_intern_path(&root);
+		let root = self.find_root_of(&path).ok_or_else(|| errloc!("out of root"))?;
+		let root = _P(&root);
 
 		match extension {
 			"py" => self.did_save_python(uri, root).await?,
 			"xml" => self.did_save_xml(uri, root).await?,
 			_ => {}
 		}
-		Ok(())
-	}
-	pub async fn did_save_python(&self, uri: Uri, root: Spur) -> miette::Result<()> {
-		let path = uri.to_file_path().unwrap();
-		let zone;
-		_ = {
-			let mut document = self
-				.document_map
-				.get_mut(uri.path().as_str())
-				.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
-			zone = document.damage_zone.take();
-			let rope = document.rope.clone();
-			let text = Cow::from(&document.rope).into_owned();
-			self.update_models(Text::Full(text), &path, root, rope)
-		}
-		.await
-		.inspect_err(|err| warn!("{err:?}"));
-		if zone.is_some() {
-			debug!("diagnostics");
-			{
-				let mut document = self.document_map.get_mut(uri.path().as_str()).unwrap();
-				self.diagnose_python(
-					uri.path().as_str(),
-					&document.rope.clone(),
-					zone,
-					&mut document.diagnostics_cache,
-				);
-				let diags = document.diagnostics_cache.clone();
-				self.client.publish_diagnostics(uri, diags, None)
-			}
-			.await;
-		}
-
-		Ok(())
-	}
-	pub async fn did_save_xml(&self, uri: Uri, root: Spur) -> miette::Result<()> {
-		let rope = {
-			let document = self
-				.document_map
-				.get(uri.path().as_str())
-				.ok_or_else(|| diagnostic!("(did_save) did not build document"))?;
-			document.rope.clone()
-		};
-		self.update_xml(root, &Text::Delta(vec![]), &uri, rope, true).await?;
 		Ok(())
 	}
 	/// Whether diagnostics should be processed/pushed with each `on_change`.
@@ -256,7 +321,7 @@ impl Backend {
 		rope: Rope,
 		old_rope: Option<Rope>,
 		mut parser: Parser,
-	) -> miette::Result<()> {
+	) -> anyhow::Result<()> {
 		let ast = self
 			.ast_map
 			.try_get_mut(uri.path().as_str())
@@ -264,14 +329,14 @@ impl Backend {
 		let ast = match (text, ast) {
 			(Text::Full(full), _) => parser.parse(full, None),
 			(Text::Delta(delta), Some(mut ast)) => {
-				let old_rope = old_rope.ok_or_else(|| diagnostic!("delta requires old rope"))?;
+				let old_rope = old_rope.ok_or_else(|| errloc!("delta requires old rope"))?;
 				for change in delta {
 					// TODO: Handle full text changes in delta
-					let range = change.range.ok_or_else(|| diagnostic!("delta without range"))?;
-					let start = position_to_offset(range.start, &rope).ok_or_else(|| diagnostic!("delta start"))?;
+					let range = change.range.ok_or_else(|| errloc!("delta without range"))?;
+					let start = position_to_offset(range.start, &rope).ok_or_else(|| errloc!("delta start"))?;
 					// The old rope is used to calculate the *old* range-end, because
 					// the diff may have caused it to fall out of the new rope's bounds.
-					let end = position_to_offset(range.end, &old_rope).ok_or_else(|| diagnostic!("delta end"))?;
+					let end = position_to_offset(range.end, &old_rope).ok_or_else(|| errloc!("delta end"))?;
 					let len_new = change.text.len();
 					let start_position = tree_sitter::Point {
 						row: range.start.line as usize,
@@ -283,8 +348,8 @@ impl Backend {
 					};
 					// calculate new_end_position using rope
 					let new_end_offset = ByteOffset(start.0 + len_new);
-					let new_end_position = offset_to_position(new_end_offset, rope.clone())
-						.ok_or_else(|| diagnostic!("new_end_position"))?;
+					let new_end_position =
+						offset_to_position(new_end_offset, rope.clone()).ok_or_else(|| errloc!("new_end_position"))?;
 					let new_end_position = tree_sitter::Point {
 						row: new_end_position.line as usize,
 						column: new_end_position.character as usize,
@@ -302,9 +367,9 @@ impl Backend {
 				let slice = Cow::from(rope.slice(..));
 				parser.parse(slice.as_bytes(), Some(&ast))
 			}
-			(Text::Delta(_), None) => Err(diagnostic!("(update_ast) got delta but no ast"))?,
+			(Text::Delta(_), None) => Err(errloc!("(update_ast) got delta but no ast"))?,
 		};
-		let ast = ast.ok_or_else(|| diagnostic!("No AST was parsed"))?;
+		let ast = ast.ok_or_else(|| errloc!("No AST was parsed"))?;
 		self.ast_map.insert(uri.path().as_str().to_string(), ast);
 		Ok(())
 	}
@@ -316,26 +381,25 @@ impl Backend {
 		model_filter: Option<&str>,
 		current_module: ModuleName,
 		items: &mut MaxVec<CompletionItem>,
-	) -> miette::Result<()> {
+	) -> anyhow::Result<()> {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_xml_id) range"))?;
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_xml_id) range"))?;
 		let by_prefix = self.index.records.by_prefix.read().await;
-		let model_filter = model_filter.and_then(|model| interner().get(model).map(ModelName::from));
+		let model_filter = model_filter.and_then(|model| _G(model).map(ModelName::from));
 		fn to_completion_items(
 			record: &Record,
 			current_module: ModuleName,
 			range: Range,
 			scoped: bool,
-			interner: &Interner,
 		) -> CompletionItem {
 			let label = if record.module == current_module && !scoped {
 				record.id.to_string()
 			} else {
-				record.qualified_id(interner)
+				record.qualified_id()
 			};
-			let model = record.model.as_ref().map(|model| interner.resolve(model).to_string());
+			let model = record.model.as_ref().map(|model| _R(*model).to_string());
 			CompletionItem {
 				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 					new_text: label.clone(),
@@ -348,16 +412,15 @@ impl Backend {
 				..Default::default()
 			}
 		}
-		let interner = interner();
 		if let Some((module, needle)) = needle.split_once('.') {
-			let Some(module) = interner.get(module).map(Into::into) else {
+			let Some(module) = _G(module).map(Into::into) else {
 				return Ok(());
 			};
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter().flat_map(|key| {
 					self.index.records.get(key).and_then(|record| {
 						(record.module == module && (model_filter.is_none() || record.model == model_filter))
-							.then(|| to_completion_items(&record, current_module, range, true, interner))
+							.then(|| to_completion_items(&record, current_module, range, true))
 					})
 				})
 			});
@@ -367,7 +430,7 @@ impl Backend {
 				keys.iter().flat_map(|key| {
 					self.index.records.get(key).and_then(|record| {
 						(model_filter.is_none() || record.model == model_filter)
-							.then(|| to_completion_items(&record, current_module, range, false, interner))
+							.then(|| to_completion_items(&record, current_module, range, false))
 					})
 				})
 			});
@@ -385,13 +448,13 @@ impl Backend {
 		rope: Rope,
 		for_only_prop: Option<PropertyKind>,
 		items: &mut MaxVec<CompletionItem>,
-	) -> miette::Result<()> {
+	) -> anyhow::Result<()> {
 		debug!("needle=`{needle}` model=`{model}`");
 		if !items.has_space() {
 			return Ok(());
 		}
-		let model_key = interner().get_or_intern(&model);
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("range"))?;
+		let model_key = _I(&model);
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("range"))?;
 		let Some(model_entry) = self.index.models.populate_properties(model_key.into(), &[]) else {
 			return Ok(());
 		};
@@ -431,20 +494,20 @@ impl Backend {
 		range: ByteRange,
 		rope: Rope,
 		items: &mut MaxVec<CompletionItem>,
-	) -> miette::Result<()> {
+	) -> anyhow::Result<()> {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_model) range"))?;
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_model) range"))?;
 		let by_prefix = self.index.models.by_prefix.read().await;
 		let matches = by_prefix
 			.iter_prefix(needle.as_bytes())
 			.flat_map(|(_, key)| self.index.models.get(key))
 			.map(|model| {
-				let label = interner().resolve(model.key()).to_string();
+				let label = _R(*model.key()).to_string();
 				let module = model.base.as_ref().and_then(|base| {
 					let module = self.index.module_of_path(&base.0.path.to_path())?;
-					Some(interner().resolve(&module).to_string())
+					Some(_R(module).to_string())
 				});
 				CompletionItem {
 					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
@@ -467,16 +530,14 @@ impl Backend {
 		range: ByteRange,
 		rope: Rope,
 		items: &mut MaxVec<CompletionItem>,
-	) -> miette::Result<()> {
+	) -> anyhow::Result<()> {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let range =
-			offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_template_name) range"))?;
-		let interner = interner();
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_template_name) range"))?;
 		let by_prefix = self.index.templates.by_prefix.read().await;
 		let matches = by_prefix.iter_prefix(needle.as_bytes()).map(|(_, key)| {
-			let label = interner.resolve(key).to_string();
+			let label = _R(*key).to_string();
 			CompletionItem {
 				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 					new_text: label.clone(),
@@ -498,18 +559,16 @@ impl Backend {
 		rope: Rope,
 		component: &str,
 		items: &mut MaxVec<CompletionItem>,
-	) -> miette::Result<()> {
-		let component = interner()
-			.get(component)
-			.ok_or_else(|| diagnostic!("(complete_component_prop) component"))?;
+	) -> anyhow::Result<()> {
+		let component = _G(component).ok_or_else(|| errloc!("(complete_component_prop) component"))?;
 		let component = self
 			.index
 			.components
 			.get(&component.into())
-			.ok_or_else(|| diagnostic!("component"))?;
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_prop_of) range"))?;
+			.ok_or_else(|| errloc!("component"))?;
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_prop_of) range"))?;
 		let completions = component.props.iter().map(|(prop, desc)| {
-			let prop = interner().resolve(&prop);
+			let prop = _R(prop);
 			CompletionItem {
 				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
 					new_text: prop.to_string(),
@@ -530,8 +589,8 @@ impl Backend {
 		range: ByteRange,
 		rope: Rope,
 		items: &mut MaxVec<CompletionItem>,
-	) -> miette::Result<()> {
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_widget) range"))?;
+	) -> anyhow::Result<()> {
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_widget) range"))?;
 		let completions = self.index.widgets.iter().flat_map(|widget| {
 			let widget = widget.key().to_string();
 			Some(CompletionItem {
@@ -552,8 +611,8 @@ impl Backend {
 		range: ByteRange,
 		rope: Rope,
 		items: &mut MaxVec<CompletionItem>,
-	) -> miette::Result<()> {
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| diagnostic!("(complete_action_tag) range"))?;
+	) -> anyhow::Result<()> {
+		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_action_tag) range"))?;
 		let completions = self.index.actions.iter().flat_map(|tag| {
 			let tag = tag.key().to_string();
 			Some(CompletionItem {
@@ -569,13 +628,13 @@ impl Backend {
 		items.extend(completions);
 		Ok(())
 	}
-	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Uri) -> miette::Result<Option<Location>> {
+	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Uri) -> anyhow::Result<Option<Location>> {
 		let mut value = Cow::from(cursor_value);
 		let path = some!(uri.to_file_path());
 		if !value.contains('.') {
 			'unscoped: {
 				if let Some(module) = self.index.module_of_path(&path) {
-					value = format!("{}.{value}", interner().resolve(&module)).into();
+					value = format!("{}.{value}", _R(module)).into();
 					break 'unscoped;
 				}
 				debug!(
@@ -586,11 +645,11 @@ impl Backend {
 				return Ok(None);
 			}
 		}
-		let record_id = some!(interner().get(value));
+		let record_id = some!(_G(value));
 		Ok((self.index.records.get(&record_id.into())).map(|record| record.location.clone().into()))
 	}
-	pub fn jump_def_model(&self, model: &str) -> miette::Result<Option<Location>> {
-		let model = some!(interner().get(model));
+	pub fn jump_def_model(&self, model: &str) -> anyhow::Result<Option<Location>> {
+		let model = some!(_G(model));
 		match (self.index.models.get(&model.into())).and_then(|model| model.base.as_ref().cloned()) {
 			Some(ModelLocation(base, _)) => Ok(Some(base.into())),
 			None => Ok(None),
@@ -602,8 +661,8 @@ impl Backend {
 		range: Option<Range>,
 		definition: bool,
 		identifier: Option<&str>,
-	) -> miette::Result<Option<Hover>> {
-		let model_key = some!(interner().get(model_str_key));
+	) -> anyhow::Result<Option<Hover>> {
+		let model_key = some!(_G(model_str_key));
 		let model = some!(self.index.models.get(&model_key.into()));
 		Ok(Some(Hover {
 			range,
@@ -614,7 +673,7 @@ impl Backend {
 		}))
 	}
 	pub fn hover_component(&self, name: &str, range: Option<Range>) -> Option<Hover> {
-		let key = interner().get(name)?;
+		let key = _G(name)?;
 		let component = self.index.components.get(&key.into())?;
 		let module = component
 			.location
@@ -625,7 +684,7 @@ impl Backend {
 			"(component) class " (name) "\n"
 			"```"
 			if let Some(module) = module {
-				"\n*Defined in:* `" (interner().resolve(&module)) "`"
+				"\n*Defined in:* `" (_R(module)) "`"
 			}
 		);
 		Some(Hover {
@@ -634,7 +693,7 @@ impl Backend {
 		})
 	}
 	pub fn hover_template(&self, name: &str, range: Option<Range>) -> Option<Hover> {
-		let key = interner().get(name)?;
+		let key = _G(name)?;
 		let template = self.index.templates.get(&key.into())?;
 		let module = template
 			.location
@@ -645,7 +704,7 @@ impl Backend {
 			"<t t-name=\"" (name) "\"/>\n"
 			"```"
 			if let Some(module) = module {
-				"\n*Defined in:* `" (interner().resolve(&module)) "`"
+				"\n*Defined in:* `" (_R(module)) "`"
 			}
 		);
 		Some(Hover {
@@ -653,35 +712,35 @@ impl Backend {
 			range,
 		})
 	}
-	pub fn jump_def_property_name(&self, property: &str, model: &str) -> miette::Result<Option<Location>> {
-		let model_key = interner().get_or_intern(model);
+	pub fn jump_def_property_name(&self, property: &str, model: &str) -> anyhow::Result<Option<Location>> {
+		let model_key = _I(model);
 		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
-		let prop = some!(interner().get(property));
+		let prop = some!(_G(property));
 		if let Some(field) = entry.fields.as_ref().and_then(|fields| fields.get(&prop.into())) {
-			Ok(Some(field.location.clone().into()))
+			Ok(Some(field.location.deref().clone().into()))
 		} else if let Some(method) = entry.methods.as_ref().and_then(|methods| methods.get(&prop.into())) {
-			Ok(Some(some!(method.locations.first().cloned()).into()))
+			Ok(Some(some!(method.locations.first()).deref().clone().into()))
 		} else {
 			Ok(None)
 		}
 	}
-	pub fn jump_def_template_name(&self, name: &str) -> miette::Result<Option<Location>> {
-		let name = some!(interner().get(name));
+	pub fn jump_def_template_name(&self, name: &str) -> anyhow::Result<Option<Location>> {
+		let name = some!(_G(name));
 		let entry = some!(self.index.templates.get(&name.into()));
 		let location = some!(&entry.value().location);
 		Ok(Some(location.clone().into()))
 	}
-	pub fn jump_def_component_prop(&self, component: &str, prop: &str) -> miette::Result<Option<Location>> {
-		let component = some!(interner().get(component));
-		let prop = some!(interner().get(prop));
+	pub fn jump_def_component_prop(&self, component: &str, prop: &str) -> anyhow::Result<Option<Location>> {
+		let component = some!(_G(component));
+		let prop = some!(_G(prop));
 		let prop = some!(self.find_prop_recursive(&component.into(), &prop.into()));
 		Ok(Some(prop.location.into()))
 	}
-	pub fn jump_def_widget(&self, widget: &str) -> miette::Result<Option<Location>> {
+	pub fn jump_def_widget(&self, widget: &str) -> anyhow::Result<Option<Location>> {
 		let field = some!(self.index.widgets.get(widget.as_bytes()));
 		Ok(Some(field.value().clone().into()))
 	}
-	pub fn jump_def_action_tag(&self, tag: &str) -> miette::Result<Option<Location>> {
+	pub fn jump_def_action_tag(&self, tag: &str) -> anyhow::Result<Option<Location>> {
 		let field = some!(self.index.actions.get(tag.as_bytes()));
 		Ok(Some(field.value().clone().into()))
 	}
@@ -697,10 +756,10 @@ impl Backend {
 		}
 		None
 	}
-	pub fn hover_property_name(&self, name: &str, model: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
-		let model_key = interner().get_or_intern(model);
+	pub fn hover_property_name(&self, name: &str, model: &str, range: Option<Range>) -> anyhow::Result<Option<Hover>> {
+		let model_key = _I(model);
 		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
-		let prop = some!(interner().get(name));
+		let prop = some!(_G(name));
 		if let Some(field) = entry.fields.as_ref().and_then(|fields| fields.get(&prop.into())) {
 			Ok(Some(Hover {
 				range,
@@ -715,10 +774,7 @@ impl Backend {
 			.is_some_and(|methods| methods.contains_key(&prop.into()))
 		{
 			drop(entry);
-			let rtype = self
-				.index
-				.resolve_method_returntype(prop.into(), model_key)
-				.map(|model| interner().resolve(&model));
+			let rtype = self.index.resolve_method_returntype(prop.into(), model_key).map(_R);
 			let model = self.index.models.get(&model_key.into()).unwrap();
 			let method = model.methods.as_ref().unwrap().get(&prop.into()).unwrap();
 			Ok(Some(Hover {
@@ -732,11 +788,11 @@ impl Backend {
 			Ok(None)
 		}
 	}
-	pub fn hover_record(&self, xml_id: &str, range: Option<Range>) -> miette::Result<Option<Hover>> {
-		let key = some!(interner().get(xml_id));
+	pub fn hover_record(&self, xml_id: &str, range: Option<Range>) -> anyhow::Result<Option<Hover>> {
+		let key = some!(_G(xml_id));
 		let record = some!(self.index.records.get(&key.into()));
 		let model = match record.model.as_ref() {
-			Some(model) => interner().resolve(model),
+			Some(model) => _R(*model),
 			None => "<unknown>",
 		};
 		let value = format!("<record id=\"{xml_id}\" model=\"{model}\"/>");
@@ -748,13 +804,16 @@ impl Backend {
 			range,
 		}))
 	}
-	pub fn model_references(&self, model: &ModelName) -> miette::Result<Option<Vec<Location>>> {
+	pub fn model_references(&self, path: &Path, model: &ModelName) -> anyhow::Result<Option<Vec<Location>>> {
 		let record_locations = self
 			.index
 			.records
 			.by_model(model)
 			.map(|record| record.location.clone().into());
-		let limit = self.references_limit.load(Relaxed);
+		let limit = self
+			.workspaces
+			.find_workspace_of(path, |_, ws| ws.references.limit)
+			.unwrap_or_else(|| self.project_config.references_limit.load(Relaxed));
 		if let Some(entry) = self.index.models.get(model) {
 			let inherit_locations = entry.descendants.iter().map(|loc| loc.0.clone().into());
 			Ok(Some(inherit_locations.chain(record_locations).take(limit).collect()))
@@ -762,29 +821,34 @@ impl Backend {
 			Ok(Some(record_locations.take(limit).collect()))
 		}
 	}
-	pub fn method_references(&self, prop: &str, model: &str) -> miette::Result<Option<Vec<Location>>> {
-		let model_key = interner().get_or_intern(model);
+	pub fn method_references(&self, prop: &str, model: &str) -> anyhow::Result<Option<Vec<Location>>> {
+		let model_key = _I(model);
 		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
-		let prop = some!(interner().get(prop));
+		let prop = some!(_G(prop));
 		let method = some!(some!(entry.methods.as_ref()).get(&prop.into()));
-		Ok(Some(method.locations.iter().map(|loc| loc.clone().into()).collect()))
+		Ok(Some(
+			method.locations.iter().map(|loc| loc.deref().clone().into()).collect(),
+		))
 	}
 	pub fn record_references(
 		&self,
+		path: &Path,
 		inherit_id: &str,
 		current_module: Option<ModuleName>,
-	) -> miette::Result<Option<Vec<Location>>> {
-		let interner = &interner();
+	) -> anyhow::Result<Option<Vec<Location>>> {
 		let inherit_id = if inherit_id.contains('.') {
 			Cow::from(inherit_id)
 		} else if let Some(current_module) = current_module {
-			Cow::from(format!("{}.{}", interner.resolve(&current_module), inherit_id))
+			Cow::from(format!("{}.{}", _R(current_module), inherit_id))
 		} else {
 			debug!("No current module to resolve the XML ID {inherit_id}");
 			return Ok(None);
 		};
-		let inherit_id = RecordId::from(some!(interner.get(inherit_id)));
-		let limit = self.references_limit.load(Relaxed);
+		let inherit_id = RecordId::from(some!(_G(inherit_id)));
+		let limit = self
+			.workspaces
+			.find_workspace_of(path, |_, ws| ws.references.limit)
+			.unwrap_or_else(|| self.project_config.references_limit.load(Relaxed));
 		let locations = self
 			.index
 			.records
@@ -793,8 +857,8 @@ impl Backend {
 			.take(limit);
 		Ok(Some(locations.collect()))
 	}
-	pub fn template_references(&self, name: &str, include_definition: bool) -> miette::Result<Option<Vec<Location>>> {
-		let name = some!(interner().get(name));
+	pub fn template_references(&self, name: &str, include_definition: bool) -> anyhow::Result<Option<Vec<Location>>> {
+		let name = some!(_G(name));
 		let template = some!(self.index.templates.get(&name.into()));
 		let definition_location = if include_definition {
 			template.value().location.clone().map(Location::from)
@@ -847,14 +911,14 @@ impl Backend {
 				"```  \n"
 			}
 			if let Some(module) = module {
-				"*Defined in:* `" (interner().resolve(&module)) "`  \n"
+				"*Defined in:* `" (_R(module)) "`  \n"
 			}
 			for (idx, descendant) in descendants
 				.by_ref()
 				.take(Self::INHERITS_LIMIT)
 				.enumerate()
 			{
-				if idx == 0 { "*Inherited in:* " } "`" (interner().resolve(&descendant)) "`"
+				if idx == 0 { "*Inherited in:* " } "`" (_R(descendant)) "`"
 			} sep { ", " }
 			match descendants.count() {
 				0 => {}
@@ -874,10 +938,10 @@ impl Backend {
 		fomat! {
 			if signature {
 				"```python\n"
-				"(field) " (interner().resolve(&field.type_)) r#"("#
+				"(field) " (_R(field.type_)) r#"("#
 				match &field.kind {
 					FieldKind::Value | FieldKind::Related(_) => {}
-					FieldKind::Relational(relation) => { "\"" (interner().resolve(relation)) "\", " }
+					FieldKind::Relational(relation) => { "\"" (_R(*relation)) "\", " }
 				}
 				"…)\n```  \n"
 			}
@@ -885,7 +949,7 @@ impl Backend {
 				.index
 				.module_of_path(&field.location.path.to_path())
 			{
-				"*Defined in:* `" (interner().resolve(&module)) "`  \n"
+				"*Defined in:* `" (_R(module)) "`  \n"
 			}
 			if let Some(help) = &field.help { (help.to_string()) }
 		}
@@ -897,14 +961,14 @@ impl Backend {
 				let rest = rest.iter().filter_map(|override_| {
 					self.index
 						.module_of_path(&override_.path.to_path())
-						.map(|module| (interner().resolve(&module), override_, override_.range))
+						.map(|module| (_R(module), override_, override_.range))
 				});
 				fomat! {
 					if let Some(module) = self
 						.index
 						.module_of_path(&first.path.to_path())
 					{
-						"*Defined in:* `" (interner().resolve(&module)) "`  \n"
+						"*Defined in:* `" (_R(module)) "`  \n"
 					}
 					if let Some(help) = &method.docstring {
 						match help.to_string() {
@@ -933,35 +997,48 @@ impl Backend {
 			(origin_fragment)
 		}
 	}
-	pub async fn on_change_config(&self, config: Config) {
+	/// If `roots` is not given, only `project_config` will be updated.
+	pub fn on_change_config(&self, config: Config, root: Option<&Path>) {
 		let Config {
 			symbols,
 			references,
 			module,
 			completions,
 		} = config;
-		if let Some(SymbolsConfig { limit: Some(limit) }) = symbols {
-			self.symbols_limit.store(limit as usize, Relaxed);
-		}
-		if let Some(ReferencesConfig { limit: Some(limit) }) = references {
-			self.references_limit.store(limit as usize, Relaxed);
-		}
-		if let Some(CompletionsConfig { limit: Some(limit) }) = completions {
-			self.completions_limit.store(limit as usize, Relaxed);
-		}
-		let Some(ModuleConfig { roots: Some(roots), .. }) = module else {
+
+		let Some(root) = root else {
+			warn!("TODO: discarding project config for `module`: {:?}", module);
+			if let Some(limit) = completions.and_then(|c| c.limit) {
+				self.project_config.completions_limit.store(limit, Relaxed);
+			}
+			if let Some(limit) = references.and_then(|c| c.limit) {
+				self.project_config.references_limit.store(limit, Relaxed);
+			}
+			if let Some(limit) = symbols.and_then(|c| c.limit) {
+				self.project_config.symbols_limit.store(limit, Relaxed);
+			}
 			return;
 		};
-		if !roots.is_empty() {
-			self.roots.clear();
-		}
-		for root in roots {
-			let Ok(root) = Path::new(&root).canonicalize() else {
+
+		let root_config = Workspace {
+			// symbols: symbols.unwrap_or_default(),
+			references: references.unwrap_or_default(),
+			completions: completions.unwrap_or_default(),
+		};
+
+		let Some(ModuleConfig { roots: Some(subroots) }) = module else {
+			self.workspaces.insert(root.to_path_buf(), root_config);
+			return;
+		};
+
+		for subroot in subroots {
+			let path = root.join(&subroot);
+			let Ok(root) = path.canonicalize() else {
 				continue;
 			};
 			let root_display = root.to_string_lossy();
 			if root_display.contains('*') {
-				let Ok(glob) = globwalk::glob_builder(root.to_string_lossy())
+				let Ok(glob) = globwalk::glob_builder(root_display)
 					.file_type(FileType::DIR | FileType::SYMLINK)
 					.build()
 				else {
@@ -969,17 +1046,16 @@ impl Backend {
 				};
 				for dir_entry in glob {
 					let Ok(root) = dir_entry else { continue };
-					self.roots.insert(root.path().to_owned());
+					self.workspaces.insert(root.path().to_owned(), root_config.clone());
 				}
-			} else if tokio::fs::try_exists(&root).await.unwrap_or(false) {
-				self.roots.insert(root.clone());
+			} else if std::fs::exists(&root).unwrap_or(false) {
+				self.workspaces.insert(root.clone(), root_config.clone());
 			}
 		}
-		// self.added_roots_root.store(true, Relaxed);
 	}
 	pub fn ensure_nonoverlapping_roots(&self) {
 		let mut redundant = vec![];
-		let mut roots = self.roots.iter().map(|r| r.as_path().to_owned()).collect::<Vec<_>>();
+		let mut roots = self.workspaces.iter().map(|r| r.key().to_owned()).collect::<Vec<_>>();
 		roots.sort_unstable_by_key(|root| root.as_os_str().len());
 		info!("{roots:?}");
 		for lhs in 1..roots.len() {
@@ -1001,7 +1077,7 @@ impl Backend {
 			);
 		}
 		for root in redundant {
-			self.roots.remove(Path::new(root));
+			self.workspaces.remove(Path::new(root));
 		}
 	}
 	pub fn completion_resolve_field(&self, completion: &mut CompletionItem) -> Option<()> {
@@ -1009,8 +1085,8 @@ impl Backend {
 			.data
 			.take()
 			.and_then(|raw| serde_json::from_value(raw).ok())?;
-		let field = interner().get(&completion.label)?;
-		let model = interner().get(model)?;
+		let field = _G(&completion.label)?;
+		let model = _G(model)?;
 		let mut entry = self
 			.index
 			.models
@@ -1020,11 +1096,11 @@ impl Backend {
 		let field_entry = fields.get(&field.into()).cloned()?;
 		drop(entry);
 
-		let type_ = interner().resolve(&field_entry.type_);
+		let type_ = _R(field_entry.type_);
 		completion.detail = match self.index.models.resolve_related_field(field.into(), model) {
 			None => Some(format!("{type_}(…)")),
 			Some(relation) => {
-				let relation = interner().resolve(&relation);
+				let relation = _R(relation);
 				Some(format!("{type_}(\"{relation}\", …)"))
 			}
 		};
@@ -1040,13 +1116,10 @@ impl Backend {
 			.data
 			.take()
 			.and_then(|raw| serde_json::from_value(raw).ok())?;
-		let method = interner().get(&completion.label)?;
-		let model_key = interner().get(&model)?;
-		let method_name = interner().resolve(&method);
-		let rtype = self
-			.index
-			.resolve_method_returntype(method.into(), model_key)
-			.map(|model| interner().resolve(&model));
+		let method = _G(&completion.label)?;
+		let model_key = _G(&model)?;
+		let method_name = _R(method);
+		let rtype = self.index.resolve_method_returntype(method.into(), model_key).map(_R);
 		let entry = self.index.models.get(&model_key.into())?;
 		let methods = entry.methods.as_ref()?;
 		let method_entry = methods.get(&method.into())?;

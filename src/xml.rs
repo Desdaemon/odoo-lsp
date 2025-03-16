@@ -8,9 +8,8 @@ use std::sync::Arc;
 
 use fomat_macros::fomat;
 use lasso::Spur;
-use miette::diagnostic;
 use odoo_lsp::component::{ComponentTemplate, PropType};
-use odoo_lsp::index::{interner, Index, PathSymbol};
+use odoo_lsp::index::{Index, PathSymbol, _G, _I, _R};
 use odoo_lsp::model::{Field, FieldKind, PropertyKind};
 use odoo_lsp::template::gather_templates;
 use ropey::{Rope, RopeSlice};
@@ -20,7 +19,7 @@ use tree_sitter::Parser;
 use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
 
 use odoo_lsp::record::Record;
-use odoo_lsp::{some, utils::*, ImStr};
+use odoo_lsp::{errloc, some, utils::*, ImStr};
 
 #[derive(Debug)]
 enum RefKind<'a> {
@@ -62,7 +61,7 @@ impl Backend {
 		uri: &Uri,
 		rope: Rope,
 		did_save: bool,
-	) -> miette::Result<()> {
+	) -> anyhow::Result<()> {
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
 			// Assume rope is up to date
@@ -70,12 +69,13 @@ impl Backend {
 		};
 		let mut reader = Tokenizer::from(text.as_ref());
 		let mut record_ranges = vec![];
-		let interner = interner();
-		let path = uri.to_file_path().ok_or_else(|| diagnostic!("uri.to_file_path failed"))?;
+		let path = uri
+			.to_file_path()
+			.ok_or_else(|| errloc!("uri.to_file_path failed"))?;
 		let current_module = self
 			.index
 			.module_of_path(&path)
-			.ok_or_else(|| diagnostic!("module_of_path for {} failed", uri.path().as_str()))?;
+			.ok_or_else(|| errloc!("module_of_path for {} failed", uri.path().as_str()))?;
 		let mut record_prefix = if did_save {
 			Some(self.index.records.by_prefix.write().await)
 		} else {
@@ -132,11 +132,7 @@ impl Backend {
 						if let Some(prefix) = record_prefix.as_mut() {
 							self.index
 								.records
-								.insert(
-									interner.get_or_intern(record.qualified_id(interner)).into(),
-									record,
-									Some(prefix),
-								)
+								.insert(_I(record.qualified_id()).into(), record, Some(prefix))
 								.await;
 						}
 					} else if local.as_str() == "templates" {
@@ -167,12 +163,12 @@ impl Backend {
 		rope: &'rope Rope,
 		uri: &Uri,
 		position: Position,
-	) -> miette::Result<(RopeSlice<'rope>, ByteOffset, usize)> {
+	) -> anyhow::Result<(RopeSlice<'rope>, ByteOffset, usize)> {
 		let ranges = self
 			.record_ranges
 			.get(uri.path().as_str())
-			.ok_or_else(|| diagnostic!("Did not build record ranges for {}", uri.path().as_str()))?;
-		let mut offset_at_cursor = position_to_offset(position, rope).ok_or_else(|| diagnostic!("offset_at_cursor"))?;
+			.ok_or_else(|| errloc!("Did not build record ranges for {}", uri.path().as_str()))?;
+		let mut offset_at_cursor = position_to_offset(position, rope).ok_or_else(|| errloc!("offset_at_cursor"))?;
 		let Ok(record) = ranges.value().binary_search_by(|range| {
 			if offset_at_cursor < range.start {
 				Ordering::Greater
@@ -199,11 +195,22 @@ impl Backend {
 
 		Ok((slice, offset_at_cursor, relative_offset))
 	}
+	pub async fn did_save_xml(&self, uri: Uri, root: Spur) -> anyhow::Result<()> {
+		let rope = {
+			let document = self
+				.document_map
+				.get(uri.path().as_str())
+				.ok_or_else(|| errloc!("(did_save) did not build document"))?;
+			document.rope.clone()
+		};
+		self.update_xml(root, &Text::Delta(vec![]), &uri, rope, true).await?;
+		Ok(())
+	}
 	pub async fn xml_completions(
 		&self,
 		params: CompletionParams,
 		rope: Rope,
-	) -> miette::Result<Option<CompletionResponse>> {
+	) -> anyhow::Result<Option<CompletionResponse>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
 		let (slice, offset_at_cursor, relative_offset) = self.record_slice(&rope, uri, position)?;
@@ -213,7 +220,11 @@ impl Backend {
 
 		let current_module = self.index.module_of_path(&path).expect("must be in a module");
 
-		let mut items = MaxVec::new(self.completions_limit.load(Relaxed));
+		let completions_limit = self
+			.workspaces
+			.find_workspace_of(&path, |_, ws| ws.completions.limit)
+			.unwrap_or_else(|| self.project_config.completions_limit.load(Relaxed));
+		let mut items = MaxVec::new(completions_limit);
 		let XmlRefs {
 			ref_at_cursor,
 			ref_kind,
@@ -228,11 +239,11 @@ impl Backend {
 		match record_field {
 			RefKind::Ref(relation) => {
 				let model_key = some!(model_filter);
-				let model = some!(interner().get(&model_key));
+				let model = some!(_G(&model_key));
 				let relation = {
 					let fields = some!(self.index.models.populate_properties(model.into(), &[])).downgrade();
 					let fields = some!(fields.fields.as_ref());
-					let relation = some!(interner().get(relation));
+					let relation = some!(_G(relation));
 					let Some(Field {
 						kind: FieldKind::Relational(relation),
 						..
@@ -246,8 +257,7 @@ impl Backend {
 					needle,
 					replace_range,
 					rope.clone(),
-					#[allow(clippy::needless_borrow)]
-					Some(interner().resolve(&relation)),
+					Some(_R(relation)),
 					current_module,
 					&mut items,
 				)
@@ -265,9 +275,9 @@ impl Backend {
 				);
 				if !access.is_empty() {
 					needle = mapped.as_str();
-					let mut model = interner().get_or_intern(model_filter);
+					let mut model = _I(model_filter);
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
-					model_filter = interner().resolve(&model).to_string();
+					model_filter = _R(model).to_string();
 				}
 				self.complete_property_name(
 					needle,
@@ -312,7 +322,7 @@ impl Backend {
 								..Default::default()
 							};
 						};
-						let model_name = interner().resolve(&model);
+						let model_name = _R(model);
 						let documentation = self.index.models.get(&model).map(|model| {
 							Documentation::MarkupContent(MarkupContent {
 								kind: MarkupKind::Markdown,
@@ -345,7 +355,7 @@ impl Backend {
 				self.complete_property_name(
 					needle,
 					range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)),
-					interner().resolve(&model).to_string(),
+					_R(model).to_string(),
 					rope.clone(),
 					None, // Field would be better, but leave this here at least until @property is implemented
 					&mut items,
@@ -365,7 +375,7 @@ impl Backend {
 			items: items.into_inner(),
 		})))
 	}
-	pub fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> miette::Result<Option<Location>> {
+	pub fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> anyhow::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
@@ -392,9 +402,9 @@ impl Backend {
 				);
 				if !access.is_empty() {
 					needle = mapped.as_str();
-					let mut model = interner().get_or_intern(model_filter);
+					let mut model = _I(model_filter);
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
-					model_filter = interner().resolve(&model).to_string();
+					model_filter = _R(model).to_string();
 				}
 				self.jump_def_property_name(needle, &model_filter)
 			}
@@ -416,22 +426,22 @@ impl Backend {
 				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), contents));
 				let model = some!(self.index.type_of(object, &scope, contents));
 				let model = some!(self.index.try_resolve_model(&model, &Scope::default()));
-				self.jump_def_property_name(&field, interner().resolve(&model))
+				self.jump_def_property_name(&field, _R(model))
 			}
 			Some(RefKind::Component) => {
-				let component = some!(interner().get(needle));
+				let component = some!(_G(needle));
 				let component = some!(self.index.components.get(&component.into()));
 				let Some(ComponentTemplate::Name(template)) = component.template.as_ref() else {
 					return Ok(None);
 				};
-				self.jump_def_template_name(interner().resolve(template))
+				self.jump_def_template_name(_R(*template))
 			}
 			Some(RefKind::Widget) => self.jump_def_widget(needle),
 			Some(RefKind::ActionTag) => self.jump_def_action_tag(needle),
 			None => Ok(None),
 		}
 	}
-	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> miette::Result<Option<Vec<Location>>> {
+	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> anyhow::Result<Option<Vec<Location>>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
 		let path = some!(uri.to_file_path());
@@ -448,10 +458,10 @@ impl Backend {
 		let current_module = self.index.module_of_path(&path);
 		match ref_kind {
 			Some(RefKind::Model) => {
-				let model = some!(interner().get(cursor_value));
-				self.model_references(&model.into())
+				let model = some!(_G(cursor_value));
+				self.model_references(&path, &model.into())
 			}
-			Some(RefKind::Ref(_)) | Some(RefKind::Id) => self.record_references(cursor_value, current_module),
+			Some(RefKind::Ref(_)) | Some(RefKind::Id) => self.record_references(&path, cursor_value, current_module),
 			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.template_references(cursor_value, true),
 			Some(RefKind::TName) => self.template_references(cursor_value, false),
 			Some(RefKind::PyExpr(_))
@@ -463,7 +473,7 @@ impl Backend {
 			| None => Ok(None),
 		}
 	}
-	pub fn xml_hover(&self, params: HoverParams, rope: Rope) -> miette::Result<Option<Hover>> {
+	pub fn xml_hover(&self, params: HoverParams, rope: Rope) -> anyhow::Result<Option<Hover>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let path = some!(uri.to_file_path());
@@ -491,7 +501,7 @@ impl Backend {
 					self.hover_record(needle, lsp_range)
 				} else {
 					let current_module = some!(current_module);
-					let xml_id = format!("{}.{}", interner().resolve(&current_module), needle);
+					let xml_id = format!("{}.{}", _R(current_module), needle);
 					self.hover_record(&xml_id, lsp_range)
 				}
 			}
@@ -504,9 +514,9 @@ impl Backend {
 				);
 				if !access.is_empty() {
 					needle = mapped.as_str();
-					let mut model = interner().get_or_intern(model_filter);
+					let mut model = _I(model_filter);
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
-					model_filter = interner().resolve(&model).to_string();
+					model_filter = _R(model).to_string();
 				}
 				self.hover_property_name(needle, &model_filter, lsp_range)
 			}
@@ -515,7 +525,7 @@ impl Backend {
 				let xml_id = if needle.contains('.') {
 					Cow::from(needle)
 				} else {
-					format!("{}.{}", interner().resolve(&current_module), needle).into()
+					format!("{}.{}", _R(current_module), needle).into()
 				};
 				self.hover_record(&xml_id, lsp_range)
 			}
@@ -538,7 +548,7 @@ impl Backend {
 						rope.clone(),
 					);
 					if let Some(model) = (self.index).try_resolve_model(scope_type, &scope) {
-						return self.hover_model(interner().resolve(&model), lsp_range, true, Some(&needle));
+						return self.hover_model(_R(model), lsp_range, true, Some(&needle));
 					}
 					return Ok(Some(Hover {
 						range: lsp_range,
@@ -553,7 +563,7 @@ impl Backend {
 				let anchor = ref_range.start + relative_offset;
 				self.hover_property_name(
 					&field,
-					interner().resolve(&model),
+					_R(model),
 					offset_range_to_lsp_range(range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)), rope.clone()),
 				)
 			}
@@ -566,8 +576,8 @@ impl Backend {
 					}
 					needle = handler;
 				}
-				let prop = some!(interner().get(needle));
-				let component = some!(interner().get(component_key));
+				let prop = some!(_G(needle));
+				let component = some!(_G(component_key));
 				let component = some!(self.index.components.get(&component.into()));
 				let field = some!(component.props.get(&prop.into()));
 				let type_descriptor = field.type_ & !(PropType::Optional | PropType::Array);
@@ -616,7 +626,7 @@ impl Backend {
 			}
 		}
 	}
-	pub fn xml_code_actions(&self, params: CodeActionParams, rope: Rope) -> miette::Result<Option<CodeActionResponse>> {
+	pub fn xml_code_actions(&self, params: CodeActionParams, rope: Rope) -> anyhow::Result<Option<CodeActionResponse>> {
 		let uri = &params.text_document.uri;
 		let position = params.range.start;
 		let (slice, offset_at_cursor, _) = self.record_slice(&rope, uri, position)?;
@@ -646,7 +656,7 @@ impl Backend {
 		offset_at_cursor: ByteOffset,
 		reader: &mut Tokenizer<'read>,
 		slice: &'read RopeSlice<'read>,
-	) -> miette::Result<XmlRefs<'read>> {
+	) -> anyhow::Result<XmlRefs<'read>> {
 		let mut tag = None;
 		let mut ref_at_cursor = None::<(&str, core::ops::Range<usize>)>;
 		let mut ref_kind = None;
@@ -1034,13 +1044,13 @@ impl Backend {
 		identifier: &str,
 		mut root: tree_sitter::Node,
 		contents: &[u8],
-	) -> miette::Result<()> {
+	) -> anyhow::Result<()> {
 		normalize(&mut root);
 		let type_ = self.index.type_of(root, scope, contents).unwrap_or(Type::Value);
 		let type_ = self
 			.index
 			.try_resolve_model(&type_, scope)
-			.map(|model| Type::Model(interner().resolve(&model).into()))
+			.map(|model| Type::Model(_R(model).into()))
 			.unwrap_or(type_);
 		scope.insert(identifier.to_string(), type_);
 		Ok(())

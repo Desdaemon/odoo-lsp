@@ -1,14 +1,12 @@
-use lasso::ThreadedRodeo;
-use miette::diagnostic;
 use ropey::Rope;
 use tower_lsp_server::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::index::{interner, ModuleName, PathSymbol, RecordId};
+use crate::index::{ModuleName, PathSymbol, RecordId, _I, _R};
 use crate::model::ModelName;
 use crate::utils::{offset_to_position, position_to_offset};
 use crate::utils::{ByteOffset, MinLoc};
-use crate::{some, ImStr};
+use crate::{errloc, some, ImStr};
 
 #[derive(Debug)]
 pub struct Record {
@@ -21,8 +19,8 @@ pub struct Record {
 }
 
 impl Record {
-	pub fn qualified_id(&self, interner: &ThreadedRodeo) -> String {
-		format!("{}.{}", interner.resolve(&self.module), self.id)
+	pub fn qualified_id(&self) -> String {
+		format!("{}.{}", _R(self.module), self.id)
 	}
 	pub fn from_reader(
 		offset: ByteOffset,
@@ -30,7 +28,7 @@ impl Record {
 		path: PathSymbol,
 		reader: &mut Tokenizer,
 		rope: Rope,
-	) -> miette::Result<Option<Self>> {
+	) -> anyhow::Result<Option<Self>> {
 		let mut id = None;
 		let mut model = None;
 		let mut inherit_id = None;
@@ -38,7 +36,7 @@ impl Record {
 		// nested records are a thing apparently
 		let mut stack = 1;
 		let mut in_record = true;
-		let start = offset_to_position(offset, rope.clone()).ok_or_else(|| diagnostic!("fail(start): {path}"))?;
+		let start = offset_to_position(offset, rope.clone()).ok_or_else(|| errloc!("{}", path))?;
 
 		loop {
 			match reader.next() {
@@ -51,7 +49,7 @@ impl Record {
 							id = Some(value.as_str().into());
 						}
 					}
-					"model" => model = Some(interner().get_or_intern(value.as_str()).into()),
+					"model" => model = Some(_I(value.as_str()).into()),
 					_ => {}
 				},
 				Some(Ok(Token::ElementStart { local, .. })) => {
@@ -64,13 +62,9 @@ impl Record {
 							continue;
 						};
 						if maybe_inherit_id.contains('.') {
-							inherit_id = Some(interner().get_or_intern(maybe_inherit_id).into());
+							inherit_id = Some(_I(maybe_inherit_id).into());
 						} else {
-							inherit_id = Some(
-								interner()
-									.get_or_intern(format!("{}.{maybe_inherit_id}", interner().resolve(&module)))
-									.into(),
-							);
+							inherit_id = Some(_I(format!("{}.{maybe_inherit_id}", _R(module))).into());
 						}
 					}
 				}
@@ -109,8 +103,8 @@ impl Record {
 			}
 		}
 		let id = some!(id);
-		let end = end.ok_or_else(|| diagnostic!("Unbound range for record"))?;
-		let end = offset_to_position(end, rope.clone()).ok_or_else(|| diagnostic!("fail(end): {path}"))?;
+		let end = end.ok_or_else(|| errloc!("Unbound range for record"))?;
+		let end = offset_to_position(end, rope.clone()).ok_or_else(|| errloc!("{}", path))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {
@@ -128,9 +122,8 @@ impl Record {
 		path: PathSymbol,
 		reader: &mut Tokenizer,
 		rope: Rope,
-	) -> miette::Result<Option<Self>> {
-		let start =
-			offset_to_position(offset, rope.clone()).ok_or_else(|| diagnostic!("fail(start,template): {path}"))?;
+	) -> anyhow::Result<Option<Self>> {
+		let start = offset_to_position(offset, rope.clone()).ok_or_else(|| errloc!("{}", path))?;
 		let mut id = None;
 		let mut inherit_id = None;
 		let mut end = None;
@@ -150,13 +143,9 @@ impl Record {
 					}
 					"inherit_id" => {
 						if value.contains('.') {
-							inherit_id = Some(interner().get_or_intern(value.as_str()).into());
+							inherit_id = Some(_I(value.as_str()).into());
 						} else {
-							inherit_id = Some(
-								interner()
-									.get_or_intern(format!("{}.{value}", interner().resolve(&module)))
-									.into(),
-							)
+							inherit_id = Some(_I(format!("{}.{value}", _R(module))).into())
 						}
 					}
 					_ => {}
@@ -206,14 +195,14 @@ impl Record {
 				_ => {}
 			}
 		}
-		let end = end.ok_or_else(|| diagnostic!("Unbound range for template"))?;
-		let end = offset_to_position(end, rope).ok_or_else(|| diagnostic!("fail(end,template): {path}"))?;
+		let end = end.ok_or_else(|| errloc!("Unbound range for template"))?;
+		let end = offset_to_position(end, rope).ok_or_else(|| errloc!("{}", path))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {
 			id: some!(id),
 			deleted: false,
-			model: Some(interner().get_or_intern_static("ir.ui.view").into()),
+			model: Some(_I("ir.ui.view").into()),
 			module,
 			inherit_id,
 			location: MinLoc { path, range },
@@ -225,11 +214,10 @@ impl Record {
 		path: PathSymbol,
 		reader: &mut Tokenizer,
 		rope: Rope,
-	) -> miette::Result<Option<Self>> {
+	) -> anyhow::Result<Option<Self>> {
 		let mut id = None;
 		let mut end = None;
-		let start =
-			offset_to_position(offset, rope.clone()).ok_or_else(|| diagnostic!("fail(start,menuitem): {path}"))?;
+		let start = offset_to_position(offset, rope.clone()).ok_or_else(|| errloc!("{}", path))?;
 
 		loop {
 			match reader.next() {
@@ -258,14 +246,14 @@ impl Record {
 		}
 
 		let id = some!(id);
-		let end = end.ok_or_else(|| diagnostic!("Unbound range for menuitem"))?;
-		let end = offset_to_position(end, rope).ok_or_else(|| diagnostic!("fail(end,menuitem): {path}"))?;
+		let end = end.ok_or_else(|| errloc!("Unbound range for menuitem"))?;
+		let end = offset_to_position(end, rope).ok_or_else(|| errloc!("{}", path))?;
 		let range = Range { start, end };
 
 		Ok(Some(Self {
 			id,
 			deleted: false,
-			model: Some(interner().get_or_intern_static("ir.ui.menu").into()),
+			model: Some(_I("ir.ui.menu").into()),
 			module,
 			inherit_id: None,
 			location: MinLoc { path, range },

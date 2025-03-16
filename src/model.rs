@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
+use derive_more::{Deref, DerefMut};
 use lasso::Spur;
-use miette::{diagnostic, Diagnostic, IntoDiagnostic};
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use smart_default::SmartDefault;
@@ -18,10 +18,10 @@ use tracing::{debug, error, info, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
-use crate::index::{interner, Interner, PathSymbol, Symbol};
+use crate::index::{PathSymbol, Symbol, _G, _I, _R};
 use crate::str::Text;
 use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt};
-use crate::{format_loc, test_utils, ImStr};
+use crate::{errloc, format_loc, test_utils, ImStr};
 
 #[derive(Clone, Debug)]
 pub struct Model {
@@ -72,6 +72,7 @@ pub struct ModelEntry {
 	pub methods: Option<HashMap<Symbol<Method>, Arc<Method>>>,
 	pub properties_by_prefix: qp_trie::Trie<&'static [u8], PropertyKind>,
 	pub docstring: Option<Text>,
+	pub deleted: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -91,15 +92,30 @@ pub enum PropertyKind {
 pub struct Field {
 	pub kind: FieldKind,
 	pub type_: Spur,
-	pub location: MinLoc,
+	pub location: TrackedMinLoc,
 	pub help: Option<Text>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Method {
 	pub return_type: MethodReturnType,
-	pub locations: Vec<MinLoc>,
+	pub locations: Vec<TrackedMinLoc>,
 	pub docstring: Option<Text>,
+}
+
+#[derive(Deref, DerefMut, Clone, Debug)]
+pub struct TrackedMinLoc {
+	#[deref]
+	#[deref_mut]
+	inner: MinLoc,
+	pub active: bool,
+}
+
+impl From<MinLoc> for TrackedMinLoc {
+	#[inline]
+	fn from(inner: MinLoc) -> Self {
+		Self { inner, active: true }
+	}
 }
 
 #[derive(Clone, Debug, Default)]
@@ -121,12 +137,13 @@ impl Field {
 			location,
 			help,
 		} = other;
-		debug!("TODO Field inheritance location {location}");
+		debug!("TODO Field inheritance location {location:?}");
 		match &mut self_.kind {
 			FieldKind::Value | FieldKind::Related(_) => self_.kind = kind.clone(),
 			FieldKind::Relational(_) => {}
 		}
 		self_.type_ = *type_;
+		self_.location.active = true;
 		if let Some(help) = help {
 			self_.help = Some(help.clone());
 		}
@@ -143,12 +160,12 @@ impl Method {
 			.enumerate()
 			.rfind(|(_, loc)| loc.path == location.path)
 		else {
-			self_.locations.push(location);
+			self_.locations.push(location.into());
 			return;
 		};
 
 		let Some(top_level_scope) = top_level_scope else {
-			self_.locations.insert(idx + 1, location);
+			self_.locations.insert(idx + 1, location.into());
 			return;
 		};
 
@@ -158,10 +175,11 @@ impl Method {
 				&& (loc.range.start >= top_level_scope.start && loc.range.end <= top_level_scope.end)
 		}) {
 			loc.range = location.range;
+			loc.active = true;
 			return;
 		}
 
-		self_.locations.insert(idx + 1, location);
+		self_.locations.insert(idx + 1, location.into());
 	}
 	pub fn merge(self: &mut Arc<Self>, other: &Self) {
 		let self_ = Arc::make_mut(self);
@@ -191,10 +209,13 @@ impl Method {
 				}
 			}
 			let (Some(first), Some(last)) = (first, last) else {
-				(self_.locations).extend(ranges.into_iter().map(|range| MinLoc { path, range }));
+				(self_.locations).extend(ranges.into_iter().map(|range| MinLoc { path, range }.into()));
 				continue;
 			};
-			(self_.locations).splice(first..=last, ranges.into_iter().map(|range| MinLoc { path, range }));
+			(self_.locations).splice(
+				first..=last,
+				ranges.into_iter().map(|range| MinLoc { path, range }.into()),
+			);
 		}
 	}
 }
@@ -245,19 +266,28 @@ query! {
       (function_definition (identifier) @METHOD) @METHOD_BODY) ]))
 }
 
-#[derive(Diagnostic, thiserror::Error, Debug)]
+#[derive(Debug)]
 pub enum ResolveMappedError {
-	#[error("Tried to access a field on a non-relational field")]
 	NonRelational,
 }
 
+impl Display for ResolveMappedError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::NonRelational => f.write_str("Tried to access a field on a non-relational field"),
+		}
+	}
+}
+
+impl core::error::Error for ResolveMappedError {}
+
 impl ModelIndex {
-	pub async fn append(&self, path: PathSymbol, interner: &Interner, replace: bool, items: &[Model]) {
+	pub async fn append(&self, path: PathSymbol, replace: bool, items: &[Model]) {
 		let mut by_prefix = self.by_prefix.write().await;
 		for item in items {
 			match &item.type_ {
 				ModelType::Base { name: base, ancestors } => {
-					let name = interner.get_or_intern(base).into();
+					let name = _I(base).into();
 					by_prefix.insert(base.clone(), name);
 					let mut entry = self.entry(name).or_default();
 					if entry.base.is_none() || replace {
@@ -270,11 +300,11 @@ impl ModelIndex {
 						));
 						entry
 							.ancestors
-							.extend(ancestors.iter().map(|sym| ModelName::from(interner.get_or_intern(sym))));
+							.extend(ancestors.iter().map(|sym| ModelName::from(_I(sym))));
 					} else {
 						warn!(
 							"Conflicting bases for {}:\nfirst={}\n  new={}",
-							interner.resolve(&name),
+							_R(name),
 							entry.base.as_ref().unwrap(),
 							ModelLocation(
 								MinLoc {
@@ -289,14 +319,14 @@ impl ModelIndex {
 				ModelType::Inherit(inherits) => {
 					if replace {
 						for inherit in inherits {
-							let Some(inherit) = interner.get(inherit) else { continue };
+							let Some(inherit) = _G(inherit) else { continue };
 							if let Some(mut entry) = self.get_mut(&inherit.into()) {
 								entry.descendants.retain(|loc| loc.0.path != path)
 							}
 						}
 					}
 					if let Some((primary, ancestors)) = inherits.split_first() {
-						let inherit = interner.get_or_intern(primary).into();
+						let inherit = _I(primary).into();
 						let mut entry = self.entry(inherit).or_default();
 						entry.descendants.push(ModelLocation(
 							MinLoc {
@@ -307,7 +337,7 @@ impl ModelIndex {
 						));
 						entry
 							.ancestors
-							.extend(ancestors.iter().map(|sym| ModelName::from(interner.get_or_intern(sym))));
+							.extend(ancestors.iter().map(|sym| ModelName::from(_I(sym))));
 					}
 				}
 			}
@@ -323,7 +353,7 @@ impl ModelIndex {
 		model: ModelName,
 		locations_filter: &[PathSymbol],
 	) -> Option<RefMut<'model, ModelName, ModelEntry>> {
-		let model_name = interner().resolve(&model);
+		let model_name = _R(model);
 		let mut entry = self.try_get_mut(&model).expect(format_loc!("deadlock"))?;
 		if entry.fields.is_some() && entry.methods.is_some() && locations_filter.is_empty() {
 			return Some(entry);
@@ -421,16 +451,17 @@ impl ModelIndex {
 					if let (Some(field), Some(type_)) = (field, type_) {
 						let range = ts_range_to_lsp_range(field.range());
 						let field_str = String::from_utf8_lossy(&contents[field.byte_range()]);
-						let field = interner().get_or_intern(&field_str);
+						let field = _I(&field_str);
 						let type_ = String::from_utf8_lossy(&contents[type_]);
 						let location = MinLoc {
 							path: location.path,
 							range,
-						};
+						}
+						.into();
 						let help = help.map(|help| Text::try_from(help.as_ref()).unwrap());
 						let kind = if let Some(relation) = relation {
 							let relation = String::from_utf8_lossy(&contents[relation]);
-							let relation = interner().get_or_intern(&relation);
+							let relation = _I(&relation);
 							FieldKind::Relational(relation)
 						} else if let Some(related) = related {
 							FieldKind::Related(String::from_utf8_lossy(&contents[related]).as_ref().into())
@@ -440,7 +471,7 @@ impl ModelIndex {
 							}
 							FieldKind::Value
 						};
-						let type_ = interner().get_or_intern(&type_);
+						let type_ = _I(&type_);
 						fields.push((
 							field,
 							Field {
@@ -453,7 +484,7 @@ impl ModelIndex {
 					}
 					if let (Some(method), Some(body)) = (method_name, method_body) {
 						let method_str = String::from_utf8_lossy(&contents[method.byte_range()]);
-						let method = interner().get_or_intern(&method_str);
+						let method = _I(&method_str);
 						let range = ts_range_to_lsp_range(body.range());
 						let top_level_scope = ast
 							.root_node()
@@ -477,6 +508,35 @@ impl ModelIndex {
 		let mut out_methods = entry.methods.take().unwrap_or_default();
 		let mut properties_set = core::mem::take(&mut entry.properties_by_prefix);
 
+		if !locations_filter.is_empty() {
+			// fields and methods might have been deleted
+			let locations_filter = locations_filter
+				.iter()
+				.map(|filter| filter.to_path())
+				.collect::<Vec<_>>();
+
+			for (_, field) in out_fields.iter_mut() {
+				if locations_filter
+					.iter()
+					.any(|filter| filter.starts_with(field.location.path.to_path()))
+				{
+					Arc::make_mut(field).location.active = false;
+				}
+			}
+
+			for (_, method) in out_methods.iter_mut() {
+				let method = Arc::make_mut(method);
+				for loc in method.locations.iter_mut() {
+					if locations_filter
+						.iter()
+						.any(|filter| filter.starts_with(loc.path.to_path()))
+					{
+						loc.active = false;
+					}
+				}
+			}
+		}
+
 		// drop to prevent deadlock
 		drop(entry);
 
@@ -485,7 +545,7 @@ impl ModelIndex {
 			if let Some(entry) = self.populate_properties(ancestor, locations_filter) {
 				if let Some(fields) = entry.fields.as_ref() {
 					for (name, field) in fields {
-						properties_set.insert(interner().resolve(name).as_bytes(), PropertyKind::Field);
+						properties_set.insert(_R(*name).as_bytes(), PropertyKind::Field);
 						match out_fields.entry(*name) {
 							Entry::Occupied(mut old_field) => {
 								old_field.get_mut().merge(field);
@@ -498,7 +558,7 @@ impl ModelIndex {
 				}
 				if let Some(methods) = entry.methods.as_ref() {
 					for (name, method) in methods {
-						properties_set.insert(interner().resolve(name).as_bytes(), PropertyKind::Method);
+						properties_set.insert(_R(*name).as_bytes(), PropertyKind::Method);
 						match out_methods.entry(*name) {
 							Entry::Occupied(mut old_method) => {
 								old_method.get_mut().merge(method);
@@ -523,7 +583,7 @@ impl ModelIndex {
 					empty.insert(field.into());
 				}
 			}
-			properties_set.insert(interner().resolve(&key).as_bytes(), PropertyKind::Field);
+			properties_set.insert(_R(key).as_bytes(), PropertyKind::Field);
 		}
 
 		for (key, top_level_scope, method_location) in methods.into_iter().flatten() {
@@ -535,14 +595,24 @@ impl ModelIndex {
 					empty.insert(
 						Method {
 							return_type: Default::default(),
-							locations: vec![method_location],
+							locations: vec![method_location.into()],
 							docstring: None,
 						}
 						.into(),
 					);
 				}
 			}
-			properties_set.insert(interner().resolve(&key).as_bytes(), PropertyKind::Method);
+			properties_set.insert(_R(key).as_bytes(), PropertyKind::Method);
+		}
+
+		if !locations_filter.is_empty() {
+			// updating done, let's delete dead locations
+			out_fields.retain(|_, field| field.location.active);
+			out_methods.retain(|_, method| {
+				let method = Arc::make_mut(method);
+				method.locations.retain(|loc| loc.active);
+				!method.locations.is_empty()
+			});
 		}
 
 		info!(
@@ -572,36 +642,31 @@ impl ModelIndex {
 		mut range: Option<&mut ByteRange>,
 	) -> Result<(), ResolveMappedError> {
 		while let Some((lhs, rhs)) = needle.split_once('.') {
-			trace!("(resolved_mapped) `{needle}` model=`{}`", interner().resolve(model));
-			let mut resolved = interner()
-				.get(lhs)
-				.and_then(|key| self.resolve_related_field(key.into(), *model));
-			if let Some(normalized) = &resolved {
-				trace!("(resolved_mapped) prenormalized: {}", interner().resolve(normalized));
+			trace!("(resolved_mapped) `{needle}` model=`{}`", _R(*model));
+			let mut resolved = _G(lhs).and_then(|key| self.resolve_related_field(key.into(), *model));
+			if let Some(normalized) = resolved {
+				trace!("(resolved_mapped) prenormalized: {}", _R(normalized));
 			}
 			// lhs: foo
 			// rhs: ba
 			if resolved.is_none() {
 				let Some(model_entry) = self.populate_properties((*model).into(), &[]) else {
-					debug!(
-						"tried to resolve before fields are populated for `{}`",
-						interner().resolve(model)
-					);
+					debug!("tried to resolve before fields are populated for `{}`", _R(*model));
 					return Ok(());
 				};
-				let field = interner().get(lhs);
+				let field = _G(lhs);
 				let field = field.and_then(|field| model_entry.fields.as_ref()?.get(&field.into()));
 				match field.as_ref().map(|f| &f.kind) {
 					Some(FieldKind::Relational(rel)) => resolved = Some(*rel),
 					None | Some(FieldKind::Value) => return Err(ResolveMappedError::NonRelational),
 					Some(FieldKind::Related(..)) => {
 						drop(model_entry);
-						resolved = self.resolve_related_field(interner().get(lhs).unwrap().into(), *model);
+						resolved = self.resolve_related_field(_G(lhs).unwrap().into(), *model);
 					}
 				}
 			}
 			let Some(rel) = resolved else {
-				warn!("unresolved field `{}`.`{lhs}`", interner().resolve(model));
+				warn!("unresolved field `{}`.`{lhs}`", _R(*model));
 				*needle = lhs;
 				if let Some(range) = range.as_mut() {
 					let end = range.start.0 + lhs.len();
@@ -638,15 +703,15 @@ impl ModelIndex {
 		if let FieldKind::Related(related) = &field_entry.kind {
 			trace!(
 				"(normalize_field_relation) related={related} field={} model={}",
-				interner().resolve(&field),
-				interner().resolve(&model)
+				_R(field),
+				_R(model)
 			);
 			let related = related.clone();
 			let mut related = related.as_str();
 			drop(entry);
 			if self.resolve_mapped(&mut field_model, &mut related, None).is_ok() {
 				// resolved_mapped took us to the final field, now we need to resolve it to a model
-				let related_key = interner().get(related)?;
+				let related_key = _G(related)?;
 				let field_model = self.resolve_related_field(related_key.into(), field_model)?;
 
 				kind = FieldKind::Relational(field_model);
@@ -680,26 +745,22 @@ query! {
 }
 
 impl ModelEntry {
-	pub fn resolve_details(&mut self) -> miette::Result<()> {
+	pub fn resolve_details(&mut self) -> anyhow::Result<()> {
 		let Some(ModelLocation(loc, byte_range)) = &self.base else {
 			return Ok(());
 		};
 		if self.docstring.is_none() {
-			let contents = std::fs::read(loc.path.to_path()).into_diagnostic()?;
+			let contents = std::fs::read(loc.path.to_path())?;
 			let mut parser = Parser::new();
-			parser
-				.set_language(&tree_sitter_python::LANGUAGE.into())
-				.into_diagnostic()?;
-			let ast = parser
-				.parse(&contents, None)
-				.ok_or_else(|| diagnostic!("AST not parsed"))?;
+			parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
+			let ast = parser.parse(&contents, None).ok_or_else(|| errloc!("AST not parsed"))?;
 			let query = ModelHelp::query();
 			let mut cursor = QueryCursor::new();
 			cursor.set_byte_range(byte_range.erase());
 			for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
 				if let Some(docstring) = match_.nodes_for_capture_index(0).next() {
 					let contents = String::from_utf8_lossy(&contents[docstring.byte_range()]);
-					self.docstring = Some(Text::try_from(contents.trim()).into_diagnostic()?);
+					self.docstring = Some(Text::try_from(contents.trim())?);
 					return Ok(());
 				}
 			}
@@ -766,7 +827,7 @@ mod tests {
 	use tree_sitter::{Parser, QueryCursor};
 
 	use crate::{
-		index::{interner, ModelQuery},
+		index::{ModelQuery, _I, _R},
 		test_utils::cases::foo::{prepare_foo_index, FOO_PY},
 	};
 
@@ -835,31 +896,22 @@ mod tests {
 	fn test_populate_properties() {
 		let index = prepare_foo_index();
 
-		let foo = index
-			.populate_properties(interner().get_or_intern_static("foo").into(), &[])
-			.unwrap();
+		let foo = index.populate_properties(_I("foo").into(), &[]).unwrap();
 
 		assert_eq!(
-			foo.fields
-				.as_ref()
-				.unwrap()
-				.keys()
-				.next()
-				.map(|sym| interner().resolve(sym)),
+			foo.fields.as_ref().unwrap().keys().next().map(|sym| _R(*sym)),
 			Some("bar")
 		);
 		drop(foo);
 
-		let bar = index
-			.populate_properties(interner().get_or_intern_static("bar").into(), &[])
-			.unwrap();
+		let bar = index.populate_properties(_I("bar").into(), &[]).unwrap();
 
 		let bar_fields = bar
 			.fields
 			.as_ref()
 			.unwrap()
 			.keys()
-			.map(|sym| interner().resolve(sym))
+			.map(|sym| _R(*sym))
 			.collect::<HashSet<_>>();
 		assert_eq!(bar_fields.len(), 2);
 		assert!(bar_fields.contains("baz"));

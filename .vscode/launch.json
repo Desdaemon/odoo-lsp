@@ -71,13 +71,13 @@
 			"name": "Attach to LSP",
 			"type": "lldb",
 			"request": "attach",
-			"program": "odoo-lsp"
+
 		}
 	],
 	"compounds": [
 		{
 			"name": "Client + Server",
-			"configurations": ["Launch Client", "Attach to Server"]
+			"configurations": ["Launch Client", "Attach to LSP"]
 		}
 	]
 }
