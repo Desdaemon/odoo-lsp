@@ -20,6 +20,9 @@ pub use visitor::PreTravel;
 
 use crate::index::PathSymbol;
 
+#[cfg(not(windows))]
+pub use std::fs::canonicalize as strict_canonicalize;
+
 /// Unwraps the option in the context of a function that returns [`Result<Option<_>>`].
 #[macro_export]
 macro_rules! some {
@@ -507,15 +510,51 @@ pub trait UriExt {
 
 impl UriExt for tower_lsp_server::lsp_types::Uri {
 	fn to_file_path(&self) -> Option<Cow<Path>> {
-		Some(match self.path().as_estr().decode().into_string_lossy() {
+		let path = match self.path().as_estr().decode().into_string_lossy() {
 			Cow::Borrowed(ref_) => Cow::Borrowed(Path::new(ref_)),
 			Cow::Owned(owned) => Cow::Owned(PathBuf::from(owned)),
-		})
+		};
+
+		#[cfg(windows)]
+		{
+			let authority = self.authority().expect("url has no authority component");
+			let host = authority.host().as_str();
+			if host.is_empty() {
+				// very high chance this is a `file:///` uri
+				// in which case the path will include a leading slash we need to remove
+				let host = path.to_string_lossy();
+				let host = &host[1..];
+				return Some(Cow::Owned(PathBuf::from(host)));
+			}
+
+			let host = format!("{host}:");
+			Some(Cow::Owned(
+				Path::new(&host).components().chain(path.components()).collect(),
+			))
+		}
+
+		#[cfg(not(windows))]
+		Some(path)
 	}
 }
 
 pub fn from_file_path(path: &Path) -> Option<Uri> {
-	Uri::from_str(&format!("file://{}", path.as_os_str().to_string_lossy(),)).ok()
+	let fragment = if !path.is_absolute() {
+		Cow::from(strict_canonicalize(path).ok()?)
+	} else {
+		Cow::from(path)
+	};
+
+	#[cfg(windows)]
+	{
+		// we want to parse a triple-slash path for Windows paths
+		// it's a shorthand for `file://localhost/C:/Windows` with the `localhost` omitted
+		let raw = format!("file:///{}", fragment.to_string_lossy().replace("\\", "/"));
+		Uri::from_str(&raw).ok()
+	}
+
+	#[cfg(not(windows))]
+	Uri::from_str(&format!("file://{}", fragment.to_string_lossy())).ok()
 }
 
 static WSL: LazyLock<bool> = LazyLock::new(|| {
@@ -561,19 +600,80 @@ pub fn to_display_path(path: impl AsRef<Path>) -> String {
 	path.as_ref().to_string_lossy().into_owned()
 }
 
+/// On Windows, rewrites the wide path prefix `\\?\C:` to `C:`  
+/// Source: https://stackoverflow.com/a/70970317
+#[inline]
+#[cfg(windows)]
+pub fn strict_canonicalize<P: AsRef<Path>>(path: P) -> anyhow::Result<PathBuf> {
+	use anyhow::Context;
+
+	fn impl_(path: PathBuf) -> anyhow::Result<PathBuf> {
+		let head = path.components().next().context("empty path")?;
+		let disk_;
+		let head = if let std::path::Component::Prefix(prefix) = head {
+			if let std::path::Prefix::VerbatimDisk(disk) = prefix.kind() {
+				disk_ = format!("{}:", disk as char);
+				Path::new(&disk_)
+					.components()
+					.next()
+					.context("failed to parse disk component")?
+			} else {
+				head
+			}
+		} else {
+			head
+		};
+		Ok(std::iter::once(head).chain(path.components().skip(1)).collect())
+	}
+	let canon = std::fs::canonicalize(path)?;
+	impl_(canon)
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{to_display_path, WSL};
+	use std::{path::Path, str::FromStr};
+
+	use crate::utils::{strict_canonicalize, DisplayExt};
+
+	use super::{from_file_path, to_display_path, UriExt, WSL};
+	use pretty_assertions::assert_eq;
+	use tower_lsp_server::lsp_types::Uri;
 
 	#[test]
 	fn test_to_display_path() {
-		if !*WSL {
-			return;
+		if *WSL {
+			assert_eq!(to_display_path("/mnt/c"), r"C:\");
+			let unix_path = to_display_path("/usr");
+			assert!(unix_path.starts_with(r"\\wsl"));
+			assert!(unix_path.ends_with(r"\usr"));
 		}
+	}
 
-		assert_eq!(to_display_path("/mnt/c"), r"C:\");
-		let unix_path = to_display_path("/usr");
-		assert!(unix_path.starts_with(r"\\wsl"));
-		assert!(unix_path.ends_with(r"\usr"));
+	#[test]
+	#[cfg(windows)]
+	fn test_idempotent_canonicalization() {
+		let lhs = strict_canonicalize(Path::new(".")).unwrap();
+		let rhs = strict_canonicalize(&lhs).unwrap();
+		assert_eq!(lhs, rhs);
+	}
+
+	#[test]
+	fn test_path_roundtrip_conversion() {
+		let src = strict_canonicalize(Path::new(".")).unwrap();
+		let conv = from_file_path(&src).unwrap();
+		let roundtrip = conv.to_file_path().unwrap();
+		assert_eq!(src, roundtrip, "conv={conv:?} conv_display={}", conv.display());
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn test_windows_uri_roundtrip_conversion() {
+		let uri = Uri::from_str("file:///C:/Windows").unwrap();
+		let path = uri.to_file_path().unwrap();
+		assert_eq!(&path, Path::new("C:/Windows"), "uri={uri:?}");
+
+		let conv = from_file_path(&path).unwrap();
+
+		assert_eq!(uri, conv, "path={path:?} left={} right={}", uri.as_str(), conv.as_str());
 	}
 }

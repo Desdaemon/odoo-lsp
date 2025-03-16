@@ -1,9 +1,10 @@
-use std::{env::current_dir, fs::canonicalize, io::stdout, process::exit, sync::Arc};
+use std::{env::current_dir, io::stdout, process::exit, sync::Arc};
 
 use anyhow::Context;
 use globwalk::FileType;
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{Index, _R};
+use odoo_lsp::utils::strict_canonicalize;
 use odoo_lsp::{errloc, format_loc, loc};
 use self_update::{backends::github, Status};
 use serde_json::Value;
@@ -179,7 +180,7 @@ pub async fn run(args: Args<'_>) -> bool {
 async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<()> {
 	let addons_path = addons_path
 		.iter()
-		.map(|path| canonicalize(path).with_context(|| format_loc!("{} could not be canonicalized", path)))
+		.map(|path| strict_canonicalize(path).with_context(|| format_loc!("{} could not be canonicalized", path)))
 		.collect::<anyhow::Result<Vec<_>>>()?;
 
 	let index = Index::default();
