@@ -658,7 +658,7 @@ impl LanguageServer for Backend {
 			.workspaces
 			.iter()
 			.map(|entry| {
-				let scope_uri = from_file_path(entry.key());
+				let scope_uri = uri_from_file_path(entry.key());
 				ConfigurationItem {
 					section: Some("odoo-lsp".into()),
 					scope_uri,
@@ -884,7 +884,7 @@ impl LanguageServer for Backend {
 			_ = self
 				.client
 				.show_document(ShowDocumentParams {
-					uri: from_file_path(&location.path.to_path()).unwrap(),
+					uri: uri_from_file_path(&location.path.to_path()).unwrap(),
 					external: Some(false),
 					take_focus: Some(true),
 					selection: Some(location.range),

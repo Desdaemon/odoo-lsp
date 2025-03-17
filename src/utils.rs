@@ -538,7 +538,7 @@ impl UriExt for tower_lsp_server::lsp_types::Uri {
 	}
 }
 
-pub fn from_file_path(path: &Path) -> Option<Uri> {
+pub fn uri_from_file_path(path: &Path) -> Option<Uri> {
 	let fragment = if !path.is_absolute() {
 		Cow::from(strict_canonicalize(path).ok()?)
 	} else {
@@ -635,7 +635,7 @@ mod tests {
 
 	use crate::utils::{strict_canonicalize, DisplayExt};
 
-	use super::{from_file_path, to_display_path, UriExt, WSL};
+	use super::{to_display_path, uri_from_file_path, UriExt, WSL};
 	use pretty_assertions::assert_eq;
 	use tower_lsp_server::lsp_types::Uri;
 
@@ -660,7 +660,7 @@ mod tests {
 	#[test]
 	fn test_path_roundtrip_conversion() {
 		let src = strict_canonicalize(Path::new(".")).unwrap();
-		let conv = from_file_path(&src).unwrap();
+		let conv = uri_from_file_path(&src).unwrap();
 		let roundtrip = conv.to_file_path().unwrap();
 		assert_eq!(src, roundtrip, "conv={conv:?} conv_display={}", conv.display());
 	}
@@ -672,7 +672,7 @@ mod tests {
 		let path = uri.to_file_path().unwrap();
 		assert_eq!(&path, Path::new("C:/Windows"), "uri={uri:?}");
 
-		let conv = from_file_path(&path).unwrap();
+		let conv = uri_from_file_path(&path).unwrap();
 
 		assert_eq!(uri, conv, "path={path:?} left={} right={}", uri.as_str(), conv.as_str());
 	}

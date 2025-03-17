@@ -14,7 +14,6 @@ use lasso::{Spur, ThreadedRodeo};
 use request::WorkDoneProgressCreate;
 use ropey::Rope;
 use smart_default::SmartDefault;
-use tower_lsp_server::lsp_types::request::{ShowDocument, ShowMessageRequest};
 use tower_lsp_server::{lsp_types::*, Client};
 use tracing::{debug, warn};
 use tree_sitter::QueryCursor;
@@ -23,7 +22,7 @@ use xmlparser::{Token, Tokenizer};
 
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
-use crate::utils::{path_contains, ts_range_to_lsp_range, ByteOffset, ByteRange, MinLoc, RangeExt};
+use crate::utils::{path_contains, ts_range_to_lsp_range, uri_from_file_path, ByteOffset, ByteRange, MinLoc, RangeExt};
 use crate::{errloc, format_loc, loc, ok, ImStr};
 
 mod record;
@@ -210,9 +209,12 @@ impl Index {
 				.or_default()
 				.insert(module_key.into(), module_path.to_str().expect("non-utf8 path").into());
 			if let Some(duplicate) = duplicate {
-				warn!(old = %duplicate, new = ?module_path, "duplicate module {module_name}");
-				if let Some(client) = client.clone() {
-					outputs.spawn(Self::notify_duplicate_base(client));
+				if let (Some(client), "base") = (client.clone(), module_name.as_str()) {
+					tokio::spawn(Self::notify_duplicate_base(
+						client,
+						duplicate,
+						module_path.to_path_buf(),
+					));
 				}
 			}
 			if tsconfig {
@@ -339,16 +341,16 @@ impl Index {
 			elapsed: t0.elapsed(),
 		}))
 	}
-	async fn notify_duplicate_base(client: Client) -> anyhow::Result<Output> {
+	async fn notify_duplicate_base(client: Client, old_path: ImStr, new_path: PathBuf) -> anyhow::Result<Output> {
 		let resp = client
-			.send_request::<ShowMessageRequest>(ShowMessageRequestParams {
-				typ: MessageType::WARNING,
-				message: concat!(
+			.show_message_request(
+				MessageType::WARNING,
+				concat!(
 					"Duplicate base module found. The language server's performance may be affected.\n",
 					"Please configure your workspace (or .odoo_lsp) to only include one version of Odoo as described in the wiki.",
 				)
 				.to_string(),
-				actions: Some(vec![
+				Some(vec![
 					MessageActionItem {
 						title: "Go to odoo-lsp wiki".to_string(),
 						properties: Default::default(),
@@ -357,16 +359,38 @@ impl Index {
 						title: "Dismiss".to_string(),
 						properties: Default::default(),
 					},
+					MessageActionItem {
+						title: "Show conflicting modules".to_string(),
+						properties: Default::default(),
+					},
 				]),
-			})
+			)
 			.await;
 		match resp {
 			Ok(Some(resp)) if resp.title == "Go to odoo-lsp wiki" => {
 				_ = client
-					.send_request::<ShowDocument>(ShowDocumentParams {
+					.show_document(ShowDocumentParams {
 						uri: Uri::from_str("https://github.com/Desdaemon/odoo-lsp/wiki#usage").unwrap(),
 						external: Some(true),
 						take_focus: None,
+						selection: None,
+					})
+					.await;
+			}
+			Ok(Some(resp)) if resp.title == "Show conflicting modules" => {
+				_ = client
+					.show_document(ShowDocumentParams {
+						uri: uri_from_file_path(Path::new(old_path.as_str())).unwrap(),
+						external: Some(false),
+						take_focus: Some(true),
+						selection: None,
+					})
+					.await;
+				_ = client
+					.show_document(ShowDocumentParams {
+						uri: uri_from_file_path(&new_path).unwrap(),
+						external: Some(false),
+						take_focus: Some(false),
 						selection: None,
 					})
 					.await;
