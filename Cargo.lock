@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "odoo-lsp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-lsp",
@@ -2525,7 +2525,7 @@ dependencies = [
 
 [[package]]
 name = "ts-macros"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
