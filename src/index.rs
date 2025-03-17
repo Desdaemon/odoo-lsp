@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -10,9 +11,9 @@ use globwalk::FileType;
 use ignore::gitignore::Gitignore;
 use ignore::Match;
 use lasso::{Spur, ThreadedRodeo};
+use request::WorkDoneProgressCreate;
 use ropey::Rope;
 use smart_default::SmartDefault;
-use tower_lsp_server::lsp_types::notification::Progress;
 use tower_lsp_server::lsp_types::request::{ShowDocument, ShowMessageRequest};
 use tower_lsp_server::{lsp_types::*, Client};
 use tracing::{debug, warn};
@@ -124,11 +125,27 @@ impl Index {
 	pub async fn add_root(
 		&self,
 		root: &Path,
-		progress: Option<(&tower_lsp_server::Client, ProgressToken)>,
+		client: Option<Client>,
 		tsconfig: bool,
 	) -> anyhow::Result<Option<AddRootResults>> {
 		if self.roots.contains_key(root) {
 			return Ok(None);
+		}
+
+		let token = ProgressToken::String(format!(
+			"odoo-lsp/indexing/{}",
+			root.file_name().and_then(|ostr| ostr.to_str()).unwrap_or("<<invalid>>")
+		));
+
+		let mut progress = None;
+		if let Some(client) = client.as_ref() {
+			if client
+				.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
+				.await
+				.is_ok()
+			{
+				progress = Some(Arc::new(client.progress(token, "Indexing").begin().await));
+			}
 		}
 
 		let t0 = tokio::time::Instant::now();
@@ -180,17 +197,6 @@ impl Index {
 			}
 			module_count += 1;
 			let module_name = module_dir.file_name().unwrap().to_string_lossy().to_string();
-			if let Some((client, token)) = &progress {
-				_ = client
-					.send_notification::<Progress>(ProgressParams {
-						token: token.clone(),
-						value: ProgressParamsValue::WorkDone(WorkDoneProgress::Report(WorkDoneProgressReport {
-							message: Some(module_name.clone()),
-							..Default::default()
-						})),
-					})
-					.await;
-			}
 			let module_key = _I(&module_name);
 			let module_path = ok!(
 				module_dir.strip_prefix(root),
@@ -205,8 +211,7 @@ impl Index {
 				.insert(module_key.into(), module_path.to_str().expect("non-utf8 path").into());
 			if let Some(duplicate) = duplicate {
 				warn!(old = %duplicate, new = ?module_path, "duplicate module {module_name}");
-				if let (Some((client, _)), "base") = (&progress, module_name.as_str()) {
-					let client = (*client).clone();
+				if let Some(client) = client.clone() {
 					outputs.spawn(Self::notify_duplicate_base(client));
 				}
 			}
@@ -264,6 +269,12 @@ impl Index {
 				outputs.spawn(registry::add_root_js(root_key, path.clone()));
 				outputs.spawn(component::add_root_js(root_key, path));
 			}
+			if let Some(progress) = progress.clone() {
+				outputs.spawn(async move {
+					progress.report(module_name.clone()).await;
+					Ok(Output::Nothing)
+				});
+			}
 		}
 
 		let mut record_count = 0;
@@ -312,6 +323,13 @@ impl Index {
 				}
 			}
 		}
+		if let Some(progress) = progress.take() {
+			Arc::into_inner(progress)
+				.unwrap()
+				.finish_with_message(format!("completed for {}", root.to_string_lossy()))
+				.await;
+		}
+
 		Ok(Some(AddRootResults {
 			module_count,
 			record_count,

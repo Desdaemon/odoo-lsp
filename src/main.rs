@@ -331,34 +331,13 @@ impl LanguageServer for Backend {
 			_ = self.client.register_capability(registrations).await;
 		}
 
-		let token = NumberOrString::String("odoo-lsp/postinit".to_string());
-		let mut progress = None;
-		if self
-			.client
-			.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
-			.await
-			.is_ok()
-		{
-			_ = self
-				.client
-				.send_notification::<Progress>(ProgressParams {
-					token: token.clone(),
-					value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
-						title: "Indexing".to_string(),
-						..Default::default()
-					})),
-				})
-				.await;
-			progress = Some((&self.client, token.clone()));
-		}
-
 		let _blocker = self.root_setup.block();
 		self.ensure_nonoverlapping_roots();
 		info!(workspaces = ?self.workspaces);
 
 		for ws in self.workspaces.iter() {
 			match (self.index)
-				.add_root(Path::new(ws.key()), progress.clone(), false)
+				.add_root(Path::new(ws.key()), Some(self.client.clone()), false)
 				.await
 			{
 				Ok(Some(results)) => {
@@ -381,16 +360,6 @@ impl LanguageServer for Backend {
 			}
 		}
 		drop(_blocker);
-
-		if progress.is_some() {
-			_ = self
-				.client
-				.send_notification::<Progress>(ProgressParams {
-					token,
-					value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(Default::default())),
-				})
-				.await;
-		}
 	}
 	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path().as_str()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -428,7 +397,7 @@ impl LanguageServer for Backend {
 					if let Some(file_path) = path_.parent().and_then(|p| p.parent()) {
 						_ = self
 							.index
-							.add_root(file_path, None, false)
+							.add_root(file_path, Some(self.client.clone()), false)
 							.await
 							.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
 						break;

@@ -152,7 +152,7 @@ impl Field {
 }
 
 impl Method {
-	pub fn add_override(self: &mut Arc<Self>, location: MinLoc, top_level_scope: Option<Range>) {
+	pub fn add_override(self: &mut Arc<Self>, location: MinLoc, top_level_scope: Option<Range>, base: bool) {
 		let self_ = Arc::make_mut(self);
 		let Some((idx, _)) = self_
 			.locations
@@ -160,7 +160,11 @@ impl Method {
 			.enumerate()
 			.rfind(|(_, loc)| loc.path == location.path)
 		else {
-			self_.locations.push(location.into());
+			if base {
+				self_.locations.insert(0, location.into());
+			} else {
+				self_.locations.push(location.into());
+			}
 			return;
 		};
 
@@ -484,6 +488,7 @@ impl ModelIndex {
 					}
 					if let (Some(method), Some(body)) = (method_name, method_body) {
 						let method_str = String::from_utf8_lossy(&contents[method.byte_range()]);
+						let calls_super = String::from_utf8_lossy(&contents[body.byte_range()]).contains("super(");
 						let method = _I(&method_str);
 						let range = ts_range_to_lsp_range(body.range());
 						let top_level_scope = ast
@@ -493,6 +498,7 @@ impl ModelIndex {
 						methods.push((
 							method,
 							top_level_scope,
+							calls_super,
 							MinLoc {
 								path: location.path,
 								range,
@@ -586,10 +592,12 @@ impl ModelIndex {
 			properties_set.insert(_R(key).as_bytes(), PropertyKind::Field);
 		}
 
-		for (key, top_level_scope, method_location) in methods.into_iter().flatten() {
+		for (key, top_level_scope, calls_super, method_location) in methods.into_iter().flatten() {
 			match out_methods.entry(key.into()) {
 				Entry::Occupied(mut old_method) => {
-					old_method.get_mut().add_override(method_location, top_level_scope);
+					old_method
+						.get_mut()
+						.add_override(method_location, top_level_scope, !calls_super);
 				}
 				Entry::Vacant(empty) => {
 					empty.insert(
