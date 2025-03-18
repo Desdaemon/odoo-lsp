@@ -490,14 +490,12 @@ impl Backend {
 	pub async fn complete_model(
 		&self,
 		needle: &str,
-		range: ByteRange,
-		rope: Rope,
+		range: Range,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_model) range"))?;
 		let by_prefix = self.index.models.by_prefix.read().await;
 		let matches = by_prefix
 			.iter_prefix(needle.as_bytes())
@@ -509,10 +507,9 @@ impl Backend {
 					Some(_R(module).to_string())
 				});
 				CompletionItem {
-					text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+					text_edit: Some(CompletionTextEdit::Edit(TextEdit {
 						new_text: label.clone(),
-						insert: range,
-						replace: range,
+						range,
 					})),
 					label,
 					detail: module,
@@ -526,14 +523,12 @@ impl Backend {
 	pub async fn complete_template_name(
 		&self,
 		needle: &str,
-		range: ByteRange,
-		rope: Rope,
+		range: Range,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_template_name) range"))?;
 		let by_prefix = self.index.templates.by_prefix.read().await;
 		let matches = by_prefix.iter_prefix(needle.as_bytes()).map(|(_, key)| {
 			let label = _R(*key).to_string();
@@ -1154,4 +1149,3 @@ impl Text {
 		(!out.is_empty()).then(|| out.map_unit(ByteOffset))
 	}
 }
-

@@ -322,16 +322,11 @@ impl Backend {
 								};
 								let relative_offset = range.start;
 								let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-								let rope = rope.clone();
-								early_return.lift(|| async move {
+								let range =
+									some!(offset_range_to_lsp_range(range.shrink(1).map_unit(ByteOffset), rope.clone()));
+								early_return.lift(move || async move {
 									let mut items = MaxVec::new(completions_limit);
-									self.complete_model(
-										&needle,
-										range.shrink(1).map_unit(ByteOffset),
-										rope.clone(),
-										&mut items,
-									)
-									.await?;
+									self.complete_model(&needle, range, &mut items).await?;
 									Ok(Some(CompletionResponse::List(CompletionList {
 										is_incomplete: !items.has_space(),
 										items: items.into_inner(),
@@ -399,7 +394,7 @@ impl Backend {
 							if matches!(descriptor, b"comodel_name" | b"domain") {
 								field_descriptors.push((descriptor, desc_value));
 							}
-							if desc_value.byte_range().contains(&offset) {
+							if desc_value.byte_range().contains_end(offset) {
 								field_descriptor_in_offset = Some((descriptor, desc_value));
 							}
 						}
@@ -425,16 +420,10 @@ impl Backend {
 							};
 							let relative_offset = range.start;
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-							let rope = rope.clone();
-							early_return.lift(|| async move {
+							let range = some!(offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()));
+							early_return.lift(move || async move {
 								let mut items = MaxVec::new(completions_limit);
-								self.complete_model(
-									&needle,
-									range.shrink(1).map_unit(ByteOffset),
-									rope.clone(),
-									&mut items,
-								)
-								.await?;
+								self.complete_model(&needle, range, &mut items).await?;
 								Ok(Some(CompletionResponse::List(CompletionList {
 									is_incomplete: !items.has_space(),
 									items: items.into_inner(),

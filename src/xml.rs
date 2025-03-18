@@ -69,9 +69,7 @@ impl Backend {
 		};
 		let mut reader = Tokenizer::from(text.as_ref());
 		let mut record_ranges = vec![];
-		let path = uri
-			.to_file_path()
-			.ok_or_else(|| errloc!("uri.to_file_path failed"))?;
+		let path = uri.to_file_path().ok_or_else(|| errloc!("uri.to_file_path failed"))?;
 		let current_module = self
 			.index
 			.module_of_path(&path)
@@ -264,8 +262,8 @@ impl Backend {
 				.await?
 			}
 			RefKind::Model => {
-				self.complete_model(needle, replace_range, rope.clone(), &mut items)
-					.await?
+				let range = some!(offset_range_to_lsp_range(replace_range, rope.clone()));
+				self.complete_model(needle, range, &mut items).await?
 			}
 			RefKind::PropertyName(access) => {
 				let mut model_filter = some!(model_filter);
@@ -289,8 +287,8 @@ impl Backend {
 				)?;
 			}
 			RefKind::TInherit | RefKind::TCall => {
-				self.complete_template_name(needle, replace_range, rope.clone(), &mut items)
-					.await?;
+				let range = some!(offset_range_to_lsp_range(replace_range, rope.clone()));
+				self.complete_template_name(needle, range, &mut items).await?;
 			}
 			RefKind::PropOf(component) => {
 				self.complete_component_prop(/*needle,*/ replace_range, rope.clone(), component, &mut items)?;

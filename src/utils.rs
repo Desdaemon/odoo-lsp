@@ -434,37 +434,12 @@ impl Drop for Blocker<'_> {
 	}
 }
 
-// /// Custom display trait to bypass orphan rules.
-// /// Implemented on [`Option<_>`] to default to printing nothing.
+/// Custom display trait to bypass orphan rules.
+/// Implemented on [`Option<_>`] to default to printing nothing.
 pub trait DisplayExt {
 	fn display(self) -> impl Display;
 }
 
-// impl<T: Display> DisplayExt for Option<T> {
-// 	fn display(&self) -> impl Display {
-// 		#[repr(transparent)]
-// 		struct OptionDisplay<'a, T>(Option<&'a T>);
-// 		impl<T: Display> Display for OptionDisplay<'_, T> {
-// 			#[inline]
-// 			fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> std::fmt::Result {
-// 				match &self.0 {
-// 					Some(value) => value.fmt(f),
-// 					None => Ok(()),
-// 				}
-// 			}
-// 		}
-// 		OptionDisplay(self.as_ref())
-// 	}
-// }
-
-// impl<T: Display> DisplayExt for Option<&T> {
-// 	fn display(self) -> impl Display {
-// 		match self {
-// 			Some(value) => value as &dyn Display,
-// 			None => &"" as &dyn Display,
-// 		}
-// 	}
-// }
 impl<T: Display> DisplayExt for Option<T> {
 	fn display(self) -> impl Display {
 		struct Adapter<T>(Option<T>);
@@ -631,13 +606,12 @@ pub fn strict_canonicalize<P: AsRef<Path>>(path: P) -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-	use std::{path::Path, str::FromStr};
+	use std::path::Path;
 
 	use crate::utils::{strict_canonicalize, DisplayExt};
 
 	use super::{to_display_path, uri_from_file_path, UriExt, WSL};
 	use pretty_assertions::assert_eq;
-	use tower_lsp_server::lsp_types::Uri;
 
 	#[test]
 	fn test_to_display_path() {
@@ -668,6 +642,9 @@ mod tests {
 	#[test]
 	#[cfg(windows)]
 	fn test_windows_uri_roundtrip_conversion() {
+		use std::str::FromStr;
+		use tower_lsp_server::lsp_types::Uri;
+
 		let uri = Uri::from_str("file:///C:/Windows").unwrap();
 		let path = uri.to_file_path().unwrap();
 		assert_eq!(&path, Path::new("C:/Windows"), "uri={uri:?}");
