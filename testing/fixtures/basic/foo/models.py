@@ -13,6 +13,8 @@ class Foo(Model):
         #^type Method(Symbol<ModelEntry>("foo"), "completions")
         self.env["bar"]
         #         ^complete bar derived.bar foo foob
+        self.env['bogus']
+        #         ^diag `bogus` is not a valid model name
         self._where_calc([('bar', '=', '123')])
         #                   ^complete bar foo_m2m foo_m2o foo_o2m
         self.flush_model(['bar'])
