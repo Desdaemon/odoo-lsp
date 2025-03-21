@@ -200,13 +200,14 @@ async fn fixture_test(#[files("testing/fixtures/*")] root: PathBuf) {
 									position: *position,
 								})
 								.await;
-							if let Ok(Some(actual)) = r#type {
-								if expected != &actual {
+							if let Ok(actual) = r#type {
+								let actual = actual.as_deref().unwrap_or("None");
+								if expected != actual {
 									format!(
 										"[type] in {path}:{}:{}\n{}",
 										position.line + 1,
 										position.character + 1,
-										StrComparison::new(expected, &actual),
+										StrComparison::new(expected, actual),
 									)
 								} else {
 									String::new()

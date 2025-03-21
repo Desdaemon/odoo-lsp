@@ -54,6 +54,8 @@ pub enum Type {
 	Record(ImStr),
 	Super,
 	Method(ModelName, ImStr),
+	/// `odoo.http.request`
+	HttpRequest,
 	/// Can never be resolved, useful for non-model bindings.
 	Value,
 }
@@ -410,7 +412,13 @@ impl Index {
 				if key == "super" {
 					return Some(Type::Super);
 				}
-				scope.get(key).cloned()
+				if let Some(type_) = scope.get(key.as_ref()) {
+					return Some(type_.clone());
+				}
+				if key == "request" {
+					return Some(Type::HttpRequest);
+				}
+				None
 			}
 			"assignment" => {
 				let rhs = node.named_child(1)?;
@@ -473,7 +481,7 @@ impl Index {
 				let ret_model = self.resolve_method_returntype(method.into(), *model)?;
 				Some(Type::Model(_R(ret_model).into()))
 			}
-			Type::Env | Type::Record(..) | Type::Model(..) | Type::Value => None,
+			Type::Env | Type::Record(..) | Type::Model(..) | Type::HttpRequest | Type::Value => None,
 		}
 	}
 	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &[u8]) -> Option<Type> {
@@ -481,7 +489,7 @@ impl Index {
 		let lhs = self.type_of(lhs, scope, contents)?;
 		let rhs = attribute.named_child(1)?;
 		match &contents[rhs.byte_range()] {
-			b"env" if matches!(lhs, Type::Model(..) | Type::Record(..)) => Some(Type::Env),
+			b"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
 			b"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
 			b"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
 			b"company" | b"companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
