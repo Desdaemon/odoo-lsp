@@ -19,7 +19,6 @@ use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
 use crate::index::{PathSymbol, Symbol, _G, _I, _R};
-use crate::str::Text;
 use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt};
 use crate::{errloc, format_loc, test_utils, ImStr};
 
@@ -71,7 +70,7 @@ pub struct ModelEntry {
 	pub fields: Option<HashMap<Symbol<Field>, Arc<Field>>>,
 	pub methods: Option<HashMap<Symbol<Method>, Arc<Method>>>,
 	pub properties_by_prefix: qp_trie::Trie<&'static [u8], PropertyKind>,
-	pub docstring: Option<Text>,
+	pub docstring: Option<ImStr>,
 	pub deleted: bool,
 }
 
@@ -93,14 +92,14 @@ pub struct Field {
 	pub kind: FieldKind,
 	pub type_: Spur,
 	pub location: TrackedMinLoc,
-	pub help: Option<Text>,
+	pub help: Option<ImStr>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Method {
 	pub return_type: MethodReturnType,
 	pub locations: Vec<TrackedMinLoc>,
-	pub docstring: Option<Text>,
+	pub docstring: Option<ImStr>,
 }
 
 #[derive(Deref, DerefMut, Clone, Debug)]
@@ -462,7 +461,7 @@ impl ModelIndex {
 							range,
 						}
 						.into();
-						let help = help.map(|help| Text::try_from(help.as_ref()).unwrap());
+						let help = help.as_deref().map(ImStr::from);
 						let kind = if let Some(relation) = relation {
 							let relation = String::from_utf8_lossy(&contents[relation]);
 							let relation = _I(&relation);
@@ -768,11 +767,11 @@ impl ModelEntry {
 			for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
 				if let Some(docstring) = match_.nodes_for_capture_index(0).next() {
 					let contents = String::from_utf8_lossy(&contents[docstring.byte_range()]);
-					self.docstring = Some(Text::try_from(contents.trim())?);
+					self.docstring = Some(ImStr::from(contents.trim()));
 					return Ok(());
 				}
 			}
-			self.docstring = Some(Text::try_from("").unwrap());
+			self.docstring = Some(ImStr::from_static(""));
 		}
 
 		Ok(())

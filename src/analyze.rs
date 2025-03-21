@@ -682,8 +682,8 @@ impl Index {
 			None => method.return_type = MethodReturnType::Value,
 		}
 
-		let docstring = Self::method_docstring(fn_scope, contents)
-			.and_then(|doc| crate::str::Text::try_from(String::from_utf8_lossy(doc).as_ref()).ok());
+		let docstring =
+			Self::method_docstring(fn_scope, contents).map(|doc| ImStr::from(String::from_utf8_lossy(doc).as_ref()));
 		method.docstring = docstring;
 
 		type_

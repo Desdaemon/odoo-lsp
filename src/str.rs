@@ -1,25 +1,24 @@
 use core::mem::size_of;
-use std::borrow::{Borrow, Cow};
-use std::fmt::{Debug, Display};
-use std::io::{Read, Write};
+use std::borrow::Borrow;
+use std::fmt::Display;
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 
 use const_format::assertcp_eq;
-use libflate::deflate::{Decoder, Encoder};
 use num_enum::IntoPrimitive;
 use num_enum::TryFromPrimitive;
 
-/// Immutable, [String]-sized clone-friendly string.
+/// Immutable, [`String`]-sized clone-friendly string.
 #[derive(Clone)]
-pub struct ImStr(pub(crate) Repr);
+pub struct ImStr(Repr);
 
 const INLINE_BYTES: usize = if cfg!(target_pointer_width = "64") { 23 } else { 11 };
 #[derive(Clone)]
 pub(crate) enum Repr {
 	Arc(Arc<str>),
 	Inline(u23, [u8; INLINE_BYTES]),
+	Static(&'static str),
 }
 
 #[allow(non_camel_case_types)]
@@ -38,6 +37,7 @@ impl Deref for ImStr {
 	fn deref(&self) -> &Self::Target {
 		match &self.0 {
 			Repr::Arc(inner) => inner,
+			Repr::Static(inner) => inner,
 			Repr::Inline(len, bytes) => {
 				let slice = &bytes[..(*len as usize)];
 				unsafe { std::str::from_utf8_unchecked(slice) }
@@ -144,17 +144,10 @@ impl ImStr {
 	pub fn as_str(&self) -> &str {
 		self.deref()
 	}
-}
-
-/// [String]-sized clone-friendly container optimized for freeform text.
-#[derive(Clone)]
-pub struct Text(TextRepr);
-
-#[derive(Clone)]
-enum TextRepr {
-	Inline(u23, [u8; INLINE_BYTES]),
-	Arc(Arc<str>),
-	Compressed(Arc<[u8]>),
+	#[inline]
+	pub const fn from_static(inner: &'static str) -> Self {
+		Self(Repr::Static(inner))
+	}
 }
 
 const _: () = {
@@ -164,80 +157,8 @@ const _: () = {
 		"ImStr must be as large as String"
 	);
 	assertcp_eq!(
-		size_of::<Text>(),
-		size_of::<String>(),
-		"Text must be as large as String"
+		size_of::<Option<ImStr>>(),
+		size_of::<ImStr>(),
+		"An optional ImStr must be as large as ImStr"
 	);
 };
-
-impl Debug for Text {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match &self.0 {
-			TextRepr::Inline(..) | TextRepr::Arc(..) => Debug::fmt(&self.to_string(), f),
-			TextRepr::Compressed(..) => f.debug_tuple("Text").field(&"<compressed>").finish(),
-		}
-	}
-}
-
-impl TryFrom<&str> for Text {
-	type Error = std::io::Error;
-	fn try_from(value: &str) -> Result<Self, Self::Error> {
-		let bytes = value.as_bytes();
-		if bytes.len() <= INLINE_BYTES {
-			let mut buf = [0u8; INLINE_BYTES];
-			let slice = &mut buf[..bytes.len()];
-			slice.copy_from_slice(bytes);
-			return Ok(Text(TextRepr::Inline(u23::try_from(bytes.len() as u8).unwrap(), buf)));
-		}
-		// TODO: Basic heuristics for determining cost/benefit ratio of compression
-		let mut enc = Encoder::new(Vec::new());
-		enc.write_all(bytes)?;
-		let data = enc.finish().into_result()?;
-		if data.len() >= bytes.len() {
-			Ok(Self(TextRepr::Arc(value.into())))
-		} else {
-			Ok(Self(TextRepr::Compressed(data.into())))
-		}
-	}
-}
-
-impl Text {
-	pub fn to_string(&self) -> Cow<str> {
-		match &self.0 {
-			TextRepr::Inline(len, bytes) => {
-				let slice = &bytes[..(*len as usize)];
-				let slice = unsafe { std::str::from_utf8_unchecked(slice) };
-				Cow::Borrowed(slice)
-			}
-			TextRepr::Arc(ptr) => Cow::Borrowed(ptr),
-			TextRepr::Compressed(encoded) => {
-				let mut buf = vec![];
-				let mut dec = Decoder::new(&encoded[..]);
-				dec.read_to_end(&mut buf).expect("decoding error");
-				// SAFETY: As long as the decoder returns valid UTF-8.
-				let str = unsafe { String::from_utf8_unchecked(buf) };
-				Cow::Owned(str)
-			}
-		}
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::Text;
-
-	#[test]
-	fn test_sanity_check() {
-		const TEXTS: &[&str] = &[
-			"Short text",
-			"Short text goes over 22",
-			"Hey there, you, you're awake. You were trying to cross the border?",
-			"The quick brown fox jumps over the lazy dog. Five plus five equals ten, a monad is a monoid in the category of endofunctors."
-		];
-		for text in TEXTS {
-			let enc = Text::try_from(*text).unwrap();
-			let dec = enc.to_string();
-			assert_eq!(*text, dec);
-		}
-	}
-}
