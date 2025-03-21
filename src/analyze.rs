@@ -5,15 +5,15 @@ use std::{borrow::Borrow, collections::HashMap, fmt::Debug, iter::FusedIterator,
 
 use lasso::Spur;
 use ropey::Rope;
-use tracing::{instrument, trace};
+use tracing::instrument;
 use tree_sitter::{Node, Parser, QueryCursor};
 
 use crate::{
 	format_loc,
-	index::{Index, Symbol, _G, _R},
+	index::{Index, Symbol, _G, _I, _R},
 	model::{Method, MethodReturnType, ModelEntry, ModelName, PropertyKind},
 	test_utils,
-	utils::{lsp_range_to_offset_range, ByteRange, Erase, PreTravel, RangeExt, TryResultExt},
+	utils::{lsp_range_to_offset_range, ByteRange, PreTravel, RangeExt, TryResultExt},
 	ImStr,
 };
 use ts_macros::query;
@@ -105,6 +105,7 @@ impl Scope {
 		}
 		impl_(self, key.borrow())
 	}
+	#[instrument(level = "trace", ret, skip(self))]
 	pub fn insert(&mut self, key: String, value: Type) {
 		self.variables.insert(key, value);
 	}
@@ -191,10 +192,9 @@ impl Index {
 		let (type_at_cursor, scope) = self.type_of_range(node, range, contents)?;
 		self.try_resolve_model(&type_at_cursor, &scope)
 	}
-	pub fn type_of_range(&self, node: Node<'_>, range: ByteRange, contents: &[u8]) -> Option<(Type, Scope)> {
-		trace!(target: "type_of_range", "{}", String::from_utf8_lossy(&contents[range.erase()]));
+	pub fn type_of_range(&self, root: Node<'_>, range: ByteRange, contents: &[u8]) -> Option<(Type, Scope)> {
 		// Phase 1: Determine the scope.
-		let (self_type, fn_scope, self_param) = determine_scope(node, contents, range.start.0)?;
+		let (self_type, fn_scope, self_param) = determine_scope(root, contents, range.start.0)?;
 
 		// Phase 2: Build the scope up to offset
 		// What contributes to a method scope's variables?
@@ -213,14 +213,28 @@ impl Index {
 			self_param.into_owned(),
 			Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
 		);
-		let (_, Some(scope)) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
+		let (orig_scope, scope) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
 			self.build_scope(scope, node, range.end.0, contents)
-		}) else {
-			return None;
-		};
+		});
+		let scope = scope.unwrap_or(orig_scope);
 
 		// Phase 3: With the proper context available, determine the type of the node.
 		let node_at_cursor = fn_scope.descendant_for_byte_range(range.start.0, range.end.0)?;
+
+		// special case: is this a property?
+		// TODO: fields
+		if node_at_cursor.kind() == "identifier" && fn_scope.child_by_field_name("name") == Some(node_at_cursor) {
+			return Some((
+				Type::Method(
+					_I(String::from_utf8_lossy(self_type)).into(),
+					String::from_utf8_lossy(&contents[node_at_cursor.byte_range()])
+						.as_ref()
+						.into(),
+				),
+				scope,
+			));
+		}
+
 		let type_at_cursor = self.type_of(node_at_cursor, &scope, contents)?;
 		Some((type_at_cursor, scope))
 	}
@@ -383,13 +397,13 @@ impl Index {
 		// 3. foo.mapped(lambda rec: 't): 't
 		#[cfg(debug_assertions)]
 		if node.byte_range().len() <= 64 {
-			trace!(
+			tracing::trace!(
 				"type_of {} '{}'",
 				node.kind(),
 				String::from_utf8_lossy(&contents[node.byte_range()])
 			);
 		} else {
-			trace!("type_of {} range={:?}", node.kind(), node.byte_range());
+			tracing::trace!("type_of {} range={:?}", node.kind(), node.byte_range());
 		}
 		match normalize(&mut node).kind() {
 			"subscript" => {
@@ -549,7 +563,7 @@ impl Index {
 			_ => None,
 		}
 	}
-	/// Iterates depth-first over `node` using [PreTravel]. Automatically calls [`Scope::exit`] at suitable points.
+	/// Iterates depth-first over `node` using [`PreTravel`]. Automatically calls [`Scope::exit`] at suitable points.
 	///
 	/// [`ControlFlow::Continue`] accepts a boolean to indicate whether [`Scope::enter`] was called.
 	///
@@ -582,10 +596,8 @@ impl Index {
 		}
 		(scope, None)
 	}
+	#[instrument(level = "trace", ret, skip(self, model), fields(model = _R(model)))]
 	pub fn resolve_method_returntype(&self, method: Symbol<Method>, model: Spur) -> Option<Symbol<ModelEntry>> {
-		#[cfg(debug_assertions)]
-		trace!(method = _R(method), model = _R(model), "resolve_method_returntype");
-
 		_ = self.models.populate_properties(model.into(), &[]);
 		let mut model_entry = self.models.get_mut(&model.into())?;
 		let method_obj = model_entry.methods.as_mut()?.get_mut(&method)?;

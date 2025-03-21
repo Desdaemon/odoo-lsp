@@ -649,6 +649,7 @@ impl Backend {
 			None => Ok(None),
 		}
 	}
+	#[instrument(level = "trace", skip(self), ret)]
 	pub fn hover_model(
 		&self,
 		model_str_key: &str,

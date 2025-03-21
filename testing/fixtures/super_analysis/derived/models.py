@@ -7,5 +7,7 @@ class Foo(Model):
         #^type Super
         bar = super().work()
         #^type Model("bar")
-        bar.
+        bar.barf
         #  ^complete barf
+        return bar
+        #      ^type Model("bar")

@@ -10,6 +10,7 @@ class Foo(Model):
     #                           ^complete bar derived.bar foo foob
 
     def completions(self):
+        #^type Method(Symbol<ModelEntry>("foo"), "completions")
         self.env["bar"]
         #         ^complete bar derived.bar foo foob
         self._where_calc([('bar', '=', '123')])

@@ -68,8 +68,9 @@ impl Debug for PathSymbol {
 
 impl<T> Debug for Symbol<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_tuple("Symbol")
-			.field(&type_name::<T>())
+		let tpath = type_name::<T>();
+		let name = tpath.rsplit_once("::").map(|(_, last)| last).unwrap_or(tpath);
+		f.debug_tuple(&format!("Symbol<{name}>"))
 			.field(&interner().resolve(&self.inner))
 			.finish()
 	}

@@ -20,7 +20,7 @@ members = [
 ]
 
 [profile.dev.package."*"]
-opt-level = 3
+opt-level = 1
 
 [profile.release]
 lto = "thin"

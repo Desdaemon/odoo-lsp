@@ -322,8 +322,10 @@ impl Backend {
 								};
 								let relative_offset = range.start;
 								let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-								let range =
-									some!(offset_range_to_lsp_range(range.shrink(1).map_unit(ByteOffset), rope.clone()));
+								let range = some!(offset_range_to_lsp_range(
+									range.shrink(1).map_unit(ByteOffset),
+									rope.clone()
+								));
 								early_return.lift(move || async move {
 									let mut items = MaxVec::new(completions_limit);
 									self.complete_model(&needle, range, &mut items).await?;
@@ -754,10 +756,9 @@ impl Backend {
 			cursor_node = root.descendant_for_byte_range(offset, offset)?;
 		}
 		trace!(
-			"(attribute_node_to_offset) {} cursor={}\n  root={}\n  sexp={}",
+			"(attribute_node_to_offset) {} cursor={}\n  sexp={}",
 			String::from_utf8_lossy(&contents[cursor_node.byte_range()]),
 			contents[offset] as char,
-			root.to_sexp(),
 			cursor_node.to_sexp(),
 		);
 		let lhs;
@@ -985,11 +986,20 @@ impl Backend {
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
 		let lsp_range = ts_range_to_lsp_range(needle.range());
-		let model = some!((self.index).model_of_range(root, needle.byte_range().map_unit(ByteOffset), contents));
-		let model = _R(model);
-		let identifier =
-			(needle.kind() == "identifier").then(|| String::from_utf8_lossy(&contents[needle.byte_range()]));
-		self.hover_model(model, Some(lsp_range), true, identifier.as_deref())
+		let (type_, scope) =
+			some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), contents));
+		if let Some(model) = self.index.try_resolve_model(&type_, &scope) {
+			let model = _R(model);
+			let identifier =
+				(needle.kind() == "identifier").then(|| String::from_utf8_lossy(&contents[needle.byte_range()]));
+			return self.hover_model(model, Some(lsp_range), true, identifier.as_deref());
+		}
+
+		// not a model! we only have so many things we can hover...
+		match type_ {
+			Type::Method(model, method) => self.hover_property_name(&method, _R(model), Some(lsp_range)),
+			_ => Ok(None),
+		}
 	}
 	pub fn diagnose_python(
 		&self,
