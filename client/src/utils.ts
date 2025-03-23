@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { exec } from "node:child_process";
 import type { ExtensionContext } from "vscode";
-import { $ } from 'execa';
+import { $ } from "execa";
 
 export const isWindows = process.platform === "win32";
 export const shell = isWindows ? "powershell.exe" : "sh";

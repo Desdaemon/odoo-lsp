@@ -179,7 +179,10 @@ impl Backend {
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let relative_offset = range.start;
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-							let range = some!(offset_range_to_lsp_range(range.shrink(1).map_unit(ByteOffset), rope.clone()));
+							let range = some!(offset_range_to_lsp_range(
+								range.shrink(1).map_unit(ByteOffset),
+								rope.clone()
+							));
 							early_return.lift(move || async move {
 								let mut items = MaxVec::new(completions_limit);
 								self.complete_model(&needle, range, &mut items).await?;
@@ -302,9 +305,9 @@ impl Backend {
 		}
 		let model_name = _R(model);
 		self.complete_property_name(needle, range, model_name.to_string(), rope, prop_type, &mut items)?;
-		return Ok(Some(CompletionResponse::List(CompletionList {
+		Ok(Some(CompletionResponse::List(CompletionList {
 			is_incomplete: !items.has_space(),
 			items: items.into_inner(),
-		})));
+		})))
 	}
 }

@@ -1,5 +1,5 @@
 class Foo(Model):
-    _name = 'foo'
+    _name = "foo"
 
     def foody(self, obj):
         return obj

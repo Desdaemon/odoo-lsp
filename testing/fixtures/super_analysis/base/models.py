@@ -1,11 +1,11 @@
 class Foo(Model):
-    _name = 'foo'
+    _name = "foo"
 
     def work(self):
-        return self.env['bar']
+        return self.env["bar"]
 
 
 class Bar(Model):
-    _name = 'bar'
+    _name = "bar"
 
     barf = Char()

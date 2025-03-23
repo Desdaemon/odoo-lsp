@@ -32,9 +32,7 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> anyhow::Result<Out
 	let path = PathSymbol::strip_root(root, &path);
 	let mut parser = Parser::new();
 	ok!(parser.set_language(&tree_sitter_javascript::LANGUAGE.into()));
-	let ast = parser
-		.parse(&contents, None)
-		.ok_or_else(|| errloc!("AST not parsed"))?;
+	let ast = parser.parse(&contents, None).ok_or_else(|| errloc!("AST not parsed"))?;
 	let query = RegistryQuery::query();
 	let mut cursor = QueryCursor::new();
 	let mut widgets = Vec::new();

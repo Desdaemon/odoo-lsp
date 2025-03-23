@@ -144,12 +144,15 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 					await downloadFile(link, latest);
 					await downloadFile(shaLink, shaOutput);
 					if (isWindows) {
-						const { stdout } = await $(powershell)`(Get-Filehash ${latest} -Algorithm SHA256).Hash -eq (Get-Content ${shaOutput})`;
+						const shell = $(powershell);
+						const { stdout } =
+							await shell`(Get-Filehash ${latest} -Algorithm SHA256).Hash -eq (Get-Content ${shaOutput})`;
 						if (stdout.trim() !== "True") throw new Error("Checksum verification failed");
 						await $(powershell)`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`;
 					} else {
-						await $(sh)`if [ "$(shasum -a 256 ${latest} | cut -d ' ' -f 1)" != "$(cat ${shaOutput})" ]; then exit 1; fi`
-						await $`tar -xzf ${latest} -C ${runtimeDir}`;
+						const shell = $(sh);
+						await shell`if [ "$(shasum -a 256 ${latest} | cut -d ' ' -f 1)" != "$(cat ${shaOutput})" ]; then exit 1; fi`;
+						await shell`tar -xzf ${latest} -C ${runtimeDir}`;
 					}
 				} catch (err) {
 					// We only build nightly when there are changes, so there will be days without nightly builds.
@@ -218,12 +221,12 @@ function updateExtension(context: vscode.ExtensionContext, release: string) {
 				extensionState.nightlyExtensionUpdates === "always"
 					? "Yes"
 					: await vscode.window.showInformationMessage(
-						"A new nightly update for the extension is available. Install?",
-						"Yes",
-						"No",
-						"Always",
-						"Never show again",
-					);
+							"A new nightly update for the extension is available. Install?",
+							"Yes",
+							"No",
+							"Always",
+							"Never show again",
+					  );
 			if (resp === "Always") extensionState.nightlyExtensionUpdates = "always";
 			else if (resp === "Never show again") extensionState.nightlyExtensionUpdates = "never";
 
@@ -325,31 +328,44 @@ export async function activate(context: vscode.ExtensionContext) {
 	const splitPattern = /\n/gm;
 
 	const oldAppend = binaryOutputChannel.append.bind(binaryOutputChannel);
-	binaryOutputChannel.append = function(this: vscode.LogOutputChannel, lines: string) {
+	binaryOutputChannel.append = function (this: vscode.LogOutputChannel, lines: string) {
 		if (!lines) return;
 
 		for (const line of lines.split(splitPattern)) {
 			try {
 				let { level, fields, target, spans } = JSON.parse(line) || {};
 
-				let message = '';
+				let message = "";
 				if (fields?.message) {
 					message = fields.message;
 					delete fields.message;
 				}
 				const formattedFields = Array.from(Object.entries(fields || {})).map(([key, val]) => `${key}=${val}`);
-				const components = [message, ...formattedFields].map(e => e.trim()).filter(Boolean).join(' ');
+				const components = [message, ...formattedFields]
+					.map((e) => e.trim())
+					.filter(Boolean)
+					.join(" ");
 				if (spans?.length) {
-					const formatted = spans.map((span: any) => span.name).join('/');
+					const formatted = spans.map((span: any) => span.name).join("/");
 					if (formatted) target = `${target}:${formatted}`;
 				}
-				
+
 				switch (level) {
-				case 'INFO': this.info(`   [${target}] ${components}`); continue;
-				case 'WARN': this.warn(`[${target}] ${components}`); continue;
-				case 'ERROR': this.error(`  [${target}] ${components}`); continue;
-				case 'DEBUG': this.debug(`  [${target}] ${components}`); continue;
-				case 'TRACE': this.trace(`  [${target}] ${components}`); continue;
+					case "INFO":
+						this.info(`   [${target}] ${components}`);
+						continue;
+					case "WARN":
+						this.warn(`[${target}] ${components}`);
+						continue;
+					case "ERROR":
+						this.error(`  [${target}] ${components}`);
+						continue;
+					case "DEBUG":
+						this.debug(`  [${target}] ${components}`);
+						continue;
+					case "TRACE":
+						this.trace(`  [${target}] ${components}`);
+						continue;
 				}
 			} catch {}
 			if (line.trim()) oldAppend(line);

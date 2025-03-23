@@ -14,7 +14,7 @@
 				"SERVER_PATH": "${workspaceRoot}/target/debug/odoo-lsp",
 				"RUST_LOG": "debug",
 				"RUST_BACKTRACE": "1"
-			},
+			}
 		},
 		{
 			"name": "Launch Client (Production Flow)",
@@ -41,7 +41,7 @@
 			"sourceLanguages": ["rust"],
 			"windows": {
 				"program": "${workspaceFolder}/target/debug/odoo-lsp.exe"
-			},
+			}
 		},
 		{
 			"name": "Language Server E2E Test",
@@ -54,7 +54,7 @@
 				"${workspaceRoot}/client/testFixture"
 			],
 			"outFiles": ["${workspaceRoot}/client/out/test/**/*.js"]
-		},
+		}
 	],
 	"compounds": [
 		{

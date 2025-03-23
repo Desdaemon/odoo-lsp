@@ -17,6 +17,7 @@ python scaffold.py fixtures/testcase [foo bar ...]
 ### Fixture commands
 
 When writing fixtures, you can use these magic strings in comments to mark a point of interest.
+
 - `^complete foo bar ...`: expect a space-delimited list of items at this cursor
 - `^diag Message`: expect a diagnostic from the server at this cursor
 - `^type Model("foo.bar")`: request and expect a Rust debug repr of the type of the item at this cursor

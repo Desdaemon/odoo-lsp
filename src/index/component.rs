@@ -119,9 +119,7 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> anyhow::Result<Out
 	let rope = ropey::Rope::from(String::from_utf8_lossy(&contents));
 	let mut parser = Parser::new();
 	ok!(parser.set_language(&tree_sitter_javascript::LANGUAGE.into()));
-	let ast = parser
-		.parse(&contents, None)
-		.ok_or_else(|| errloc!("AST not parsed"))?;
+	let ast = parser.parse(&contents, None).ok_or_else(|| errloc!("AST not parsed"))?;
 	let query = ComponentQuery::query();
 	let mut cursor = QueryCursor::new();
 	let mut components = HashMap::<_, Component>::default();

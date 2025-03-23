@@ -37,9 +37,7 @@ pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> an
 	let file = _I(file.to_string_lossy());
 
 	let mut parser = Parser::new();
-	parser
-		.set_language(&tree_sitter_javascript::LANGUAGE.into())
-		?;
+	parser.set_language(&tree_sitter_javascript::LANGUAGE.into())?;
 	let ast = parser.parse(&contents, None).expect("AST not parsed");
 	let query = OdooDefines::query();
 	let mut cursor = QueryCursor::new();
