@@ -85,6 +85,11 @@ impl LanguageServer for Backend {
 					completion_item: None,
 					work_done_progress_options: Default::default(),
 				}),
+				signature_help_provider: Some(SignatureHelpOptions {
+					trigger_characters: Some(['(', ','].iter().map(char::to_string).collect()),
+					retrigger_characters: None,
+					work_done_progress_options: Default::default(),
+				}),
 				workspace: Some(WorkspaceServerCapabilities {
 					workspace_folders: Some(WorkspaceFoldersServerCapabilities {
 						supported: Some(true),
@@ -435,6 +440,15 @@ impl LanguageServer for Backend {
 			}
 		}
 		Ok(completion)
+	}
+	async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+		match self.python_signature_help(params).await {
+			Ok(ret) => Ok(ret),
+			Err(err) => {
+				error!("{err}");
+				Ok(None)
+			}
+		}
 	}
 	#[instrument(skip_all)]
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {

@@ -783,14 +783,14 @@ impl Backend {
 			.is_some_and(|methods| methods.contains_key(&prop.into()))
 		{
 			drop(entry);
-			let rtype = self.index.resolve_method_returntype(prop.into(), model_key).map(_R);
+			let rtype = self.index.resolve_method_returntype(prop.into(), model_key);
 			let model = self.index.models.get(&model_key.into()).unwrap();
 			let method = model.methods.as_ref().unwrap().get(&prop.into()).unwrap();
 			Ok(Some(Hover {
 				range,
 				contents: HoverContents::Markup(MarkupContent {
 					kind: MarkupKind::Markdown,
-					value: self.method_docstring(name, method, rtype),
+					value: self.method_docstring(name, method, rtype.map(_R)),
 				}),
 			}))
 		} else {
@@ -996,11 +996,22 @@ impl Backend {
 		};
 		let rtype = match rtype {
 			Some(type_) => format!("Model[\"{type_}\"]"),
-			None => "…".to_string(),
+			None => "...".to_string(),
+		};
+		let params_fragment = match method.arguments.as_deref() {
+			None => "...".to_string(),
+			Some([]) => String::new(),
+			Some([single]) => format!("{single}"),
+			Some([one, two]) => format!("{one}, {two}"),
+			Some(params) => fomat! {
+				"\n    "
+				for param in params { (param) } sep { ",\n    " }
+				"\n"
+			},
 		};
 		fomat! {
 			"```python\n"
-			"(method) def " (name) "(…) → " (rtype)
+			"(method) def " (name) "(" (params_fragment) ") -> " (rtype)
 			"\n"
 			"```\n"
 			(origin_fragment)
@@ -1146,7 +1157,7 @@ impl Backend {
 		}));
 
 		Some(())
-	}
+	}	
 }
 
 impl Text {

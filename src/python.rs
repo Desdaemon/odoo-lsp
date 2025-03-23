@@ -799,6 +799,109 @@ impl Backend {
 		}
 	}
 
+	pub(crate) async fn python_signature_help(
+		&self,
+		params: SignatureHelpParams,
+	) -> anyhow::Result<Option<SignatureHelp>> {
+		use std::fmt::Write;
+
+		let document =
+			some!((self.document_map).get(params.text_document_position_params.text_document.uri.path().as_str()));
+		let ast = some!((self.ast_map).get(params.text_document_position_params.text_document.uri.path().as_str()));
+		let contents = Cow::from(&document.rope);
+		let contents = contents.as_bytes();
+
+		let point = tree_sitter::Point::new(
+			params.text_document_position_params.position.line as _,
+			params.text_document_position_params.position.character as _,
+		);
+		let node = some!(ast.root_node().descendant_for_point_range(point, point));
+		let mut args = node;
+		while let Some(parent) = args.parent() {
+			if args.kind() == "argument_list" {
+				break;
+			}
+			args = parent;
+		}
+
+		if args.kind() != "argument_list" {
+			return Ok(None);
+		}
+
+		let active_parameter = 'find_param: {
+			if let Some(offset) = position_to_offset(params.text_document_position_params.position, &document.rope) {
+				if let Some(idx) = contents[..=offset.0].iter().rposition(|c| matches!(c, b',' | b'(')) {
+					if contents[idx] == b'(' {
+						break 'find_param Some(0);
+					}
+					let prev_param = args.descendant_for_byte_range(idx, idx).unwrap().prev_named_sibling();
+					for (idx, arg) in args.named_children(&mut args.walk()).enumerate() {
+						if Some(arg) == prev_param {
+							// the index might be intentionally out of bounds w.r.t the actual number of arguments
+							// but this is better than leaving it as None because clients infer it as the first argument
+							break 'find_param Some((idx + 1) as u32);
+						}
+					}
+				}
+			}
+
+			None
+		};
+
+		let callee = some!(args.prev_named_sibling());
+		let Some((Type::Method(model_key, method), _)) =
+			(self.index).type_of_range(ast.root_node(), callee.byte_range().map_unit(ByteOffset), contents)
+		else {
+			return Ok(None);
+		};
+		let method_key = some!(_G(&method));
+		let rtype = (self.index).resolve_method_returntype(method_key.into(), model_key.into());
+		let model = some!((self.index).models.get(&model_key.into()));
+		let method_obj = some!(some!(model.methods.as_ref()).get(&method_key.into()));
+
+		let mut label = format!("{}(", method);
+		let mut parameters = vec![];
+
+		for (idx, param) in method_obj.arguments.as_deref().unwrap_or(&[]).iter().enumerate() {
+			let begin;
+			if idx == 0 {
+				begin = label.len();
+				_ = write!(&mut label, "{param}");
+			} else {
+				begin = label.len() + 2;
+				_ = write!(&mut label, ", {param}");
+			}
+			let end = label.len();
+			parameters.push(ParameterInformation {
+				label: ParameterLabel::LabelOffsets([begin as _, end as _]),
+				documentation: None,
+			});
+		}
+
+		match rtype {
+			Some(rtype) => drop(write!(&mut label, ") -> Model[\"{}\"]", _R(rtype))),
+			None => label.push_str(") -> ..."),
+		};
+
+		let sig = SignatureInformation {
+			label,
+			active_parameter,
+			parameters: Some(parameters),
+			documentation: method_obj.docstring.as_ref().map(|doc| {
+				Documentation::MarkupContent(MarkupContent {
+					kind: MarkupKind::Markdown,
+					value: doc.to_string(),
+				})
+			}),
+		};
+
+		Ok(Some(SignatureHelp {
+			signatures: vec![sig],
+			active_signature: Some(0),
+			active_parameter: None,
+		}))
+	}
+
 	#[allow(clippy::unused_async)] // reason: custom method
 	pub async fn debug_inspect_type(
 		&self,

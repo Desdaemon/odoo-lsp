@@ -1,7 +1,11 @@
 //! Methods related to type analysis. The two most important methods are
 //! [`Index::model_of_range`] and [`Index::type_of`].
 
-use std::{borrow::Borrow, collections::HashMap, fmt::Debug, iter::FusedIterator, ops::ControlFlow, sync::Arc};
+use std::{
+	fmt::{Debug, Write},
+	ops::ControlFlow,
+	sync::Arc,
+};
 
 use lasso::Spur;
 use ropey::Rope;
@@ -17,6 +21,9 @@ use crate::{
 	ImStr,
 };
 use ts_macros::query;
+
+mod scope;
+pub use scope::Scope;
 
 pub static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
 	b"create",
@@ -60,18 +67,28 @@ pub enum Type {
 	Value,
 }
 
-/// The current environment, populated from the AST statement by statement.
-#[derive(Default, Clone)]
-pub struct Scope {
-	pub variables: HashMap<String, Type>,
-	pub parent: Option<Box<Scope>>,
-	/// TODO: Allow super(_, \<self>)
-	pub super_: Option<ImStr>,
+#[derive(Clone, Debug)]
+pub enum FunctionParam {
+	Param(ImStr),
+	/// `(positional_separator)`
+	PosEnd,
+	/// `(keyword_separator)` or `(list_splat_pattern)`
+	EitherEnd(Option<ImStr>),
+	/// `(default_parameter)`
+	Named(ImStr),
+	Kwargs(ImStr),
 }
 
-impl Debug for Scope {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_tuple("Scope").field(&"..").finish()
+impl core::fmt::Display for FunctionParam {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			FunctionParam::Param(param) => f.write_str(&param),
+			FunctionParam::PosEnd => f.write_char('/'),
+			FunctionParam::EitherEnd(None) => f.write_char('*'),
+			FunctionParam::EitherEnd(Some(param)) => write!(f, "*{}", param),
+			FunctionParam::Named(param) => write!(f, "{}=...", param),
+			FunctionParam::Kwargs(param) => write!(f, "**{}", param),
+		}
 	}
 }
 
@@ -87,70 +104,6 @@ pub fn normalize<'r, 'n>(node: &'r mut Node<'n>) -> &'r mut Node<'n> {
 		*node = child;
 	}
 	node
-}
-
-impl Scope {
-	fn new(parent: Option<Scope>) -> Self {
-		Self {
-			parent: parent.map(Box::new),
-			..Default::default()
-		}
-	}
-	pub fn get(&self, key: impl Borrow<str>) -> Option<&Type> {
-		fn impl_<'me>(self_: &'me Scope, key: &str) -> Option<&'me Type> {
-			self_
-				.variables
-				.get(key)
-				.or_else(|| self_.parent.as_ref().and_then(|parent| parent.get(key)))
-		}
-		impl_(self, key.borrow())
-	}
-	#[instrument(level = "trace", ret, skip(self))]
-	pub fn insert(&mut self, key: String, value: Type) {
-		self.variables.insert(key, value);
-	}
-	pub fn enter(&mut self, inherit_super: bool) {
-		*self = Scope::new(Some(core::mem::take(self)));
-		if inherit_super {
-			self.super_ = self.parent.as_ref().unwrap().super_.clone();
-		}
-	}
-	pub fn exit(&mut self) {
-		if let Some(parent) = self.parent.take() {
-			*self = *parent;
-		}
-	}
-	/// Iterates over the current scope and its parents.
-	/// If the same variable is defined multiple times in the tree,
-	/// each definition is returned from innermost to outermost.
-	pub fn iter(&self) -> impl Iterator<Item = (&str, &Type)> {
-		Iter {
-			variables: self.variables.iter(),
-			parent: self.parent.as_deref(),
-		}
-	}
-}
-
-struct Iter<'a> {
-	variables: std::collections::hash_map::Iter<'a, String, Type>,
-	parent: Option<&'a Scope>,
-}
-
-impl FusedIterator for Iter<'_> {}
-
-impl<'a> Iterator for Iter<'a> {
-	type Item = (&'a str, &'a Type);
-	fn next(&mut self) -> Option<Self::Item> {
-		if let Some((key, value)) = self.variables.next() {
-			return Some((key.as_str(), value));
-		}
-
-		let parent = self.parent.take()?;
-		self.parent = parent.parent.as_deref();
-		self.variables = parent.variables.iter();
-		let (key, value) = self.variables.next()?;
-		Some((key.as_str(), value))
-	}
 }
 
 #[rustfmt::skip]
@@ -596,6 +549,7 @@ impl Index {
 		}
 		(scope, None)
 	}
+	/// Resolves the return type of a method as well as populating its arguments and docstring.
 	#[instrument(level = "trace", ret, skip(self, model), fields(model = _R(model)))]
 	pub fn resolve_method_returntype(&self, method: Symbol<Method>, model: Spur) -> Option<Symbol<ModelEntry>> {
 		_ = self.models.populate_properties(model.into(), &[]);
@@ -686,9 +640,38 @@ impl Index {
 			Self::method_docstring(fn_scope, contents).map(|doc| ImStr::from(String::from_utf8_lossy(doc).as_ref()));
 		method.docstring = docstring;
 
+		if let Some(params) = fn_scope.child_by_field_name("parameters") {
+			// python parameters can be delineated by three separators:
+			// - parameters before `/` are positional only (`positional_separator`)
+			// - parameters between `/` and `*` can be either positional or named
+			// - a catch-all positional `*args` (`keyword_separator` or `list_splat_pattern`)
+			// - parameters after `*` and before `**` are named (`default_parameter`)
+			// - a catch-all named `**kwargs` (`dictionary_splat_pattern` only)
+			let mut cursor = params.walk();
+			let args = params.named_children(&mut cursor).skip(1).filter_map(|param| {
+				Some(match param.kind() {
+					"identifier" => FunctionParam::Param(ImStr::from(
+						String::from_utf8_lossy(&contents[param.byte_range()]).as_ref(),
+					)),
+					"positional_separator" => FunctionParam::PosEnd,
+					"keyword_separator" => FunctionParam::EitherEnd(None),
+					"list_splat_pattern" => FunctionParam::EitherEnd(Some(ImStr::from(
+						String::from_utf8_lossy(&contents[param.named_child(0)?.byte_range()]).as_ref(),
+					))),
+					"dictionary_splat_pattern" => FunctionParam::Kwargs("kwargs".into()),
+					"default_parameter" => {
+						let name = param.named_child(0)?;
+						let name = String::from_utf8_lossy(&contents[name.byte_range()]);
+						FunctionParam::Named(ImStr::from(name.as_ref()))
+					}
+					_ => return None,
+				})
+			});
+			method.arguments = Some(args.collect());
+		}
+
 		type_
 	}
-
 	fn method_docstring<'out>(fn_scope: Node, contents: &'out [u8]) -> Option<&'out [u8]> {
 		let block = fn_scope.child_by_field_name("body")?;
 		let expr_stmt = block.named_child(0)?;

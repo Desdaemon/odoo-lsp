@@ -20,6 +20,7 @@ use tracing::{debug, error, info, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
+use crate::analyze::FunctionParam;
 use crate::index::{PathSymbol, Symbol, _G, _I, _R};
 use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt};
 use crate::{errloc, format_loc, test_utils, ImStr};
@@ -102,6 +103,7 @@ pub struct Method {
 	pub return_type: MethodReturnType,
 	pub locations: Vec<TrackedMinLoc>,
 	pub docstring: Option<ImStr>,
+	pub arguments: Option<Box<[FunctionParam]>>,
 }
 
 #[derive(Deref, DerefMut, Clone, Debug)]
@@ -525,7 +527,7 @@ impl ModelIndex {
 			for (_, field) in out_fields.iter_mut() {
 				if locations_filter
 					.iter()
-					.any(|filter| filter.starts_with(field.location.path.to_path()))
+					.any(|filter| field.location.path.to_path().starts_with(filter))
 				{
 					Arc::make_mut(field).location.active = false;
 				}
@@ -536,9 +538,11 @@ impl ModelIndex {
 				for loc in method.locations.iter_mut() {
 					if locations_filter
 						.iter()
-						.any(|filter| filter.starts_with(loc.path.to_path()))
+						.any(|filter| loc.path.to_path().starts_with(filter))
 					{
 						loc.active = false;
+						method.arguments = None;
+						method.return_type = MethodReturnType::Unprocessed;
 					}
 				}
 			}
@@ -606,6 +610,7 @@ impl ModelIndex {
 							return_type: Default::default(),
 							locations: vec![method_location.into()],
 							docstring: None,
+							arguments: None,
 						}
 						.into(),
 					);
