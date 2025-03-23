@@ -11,7 +11,7 @@
 				"panel": "dedicated",
 				"reveal": "never"
 			},
-			"problemMatcher": ["$tsc"]
+			"problemMatcher": ["$esbuild"]
 		},
 		{
 			"type": "npm",
@@ -19,13 +19,35 @@
 			"isBackground": true,
 			"group": {
 				"kind": "build",
-				"isDefault": true
 			},
 			"presentation": {
 				"panel": "dedicated",
-				"reveal": "never"
+				"reveal": "silent"
 			},
-			"problemMatcher": ["$tsc-watch"]
+			"problemMatcher": ["$esbuild-watch"]
+		},
+		{
+			"type": "cargo",
+			"command": "watch",
+			"args": ["-x", "build"],
+			"isBackground": true,
+			"group": {
+				"kind": "build"
+			},
+			"presentation": {
+				"reveal": "silent",
+				"panel": "dedicated"
+			},
+			"problemMatcher": ["$rustc-watch"]
+		},
+		{
+			"label": "watch-all",
+			"dependsOn": ["npm: watch", "cargo: watch"],
+			"dependsOrder": "parallel",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
 		}
 	]
 }

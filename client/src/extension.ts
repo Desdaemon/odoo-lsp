@@ -340,7 +340,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				const formattedFields = Array.from(Object.entries(fields || {})).map(([key, val]) => `${key}=${val}`);
 				const components = [message, ...formattedFields].map(e => e.trim()).filter(Boolean).join(' ');
 				if (spans?.length) {
-					const formatted = spans.map(span => span.name).join('/');
+					const formatted = spans.map((span: any) => span.name).join('/');
 					if (formatted) target = `${target}:${formatted}`;
 				}
 				

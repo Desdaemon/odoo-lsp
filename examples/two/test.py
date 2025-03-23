@@ -8,9 +8,10 @@ class Foo(Model):
 class Bar(Model):
     _name = "bar"
     _description = "asd"
-    barr = Boolean()
-    bark = Char()
-    food = Many2one("quux")
+
+    barr = fields.Boolean()
+    bark = fields.Char()
+    food = fields.Many2one("quux")
 
 
 class Baz(models.Model):
@@ -33,4 +34,4 @@ class Moo(models.Model):
 
     def foo(self):
         self.env["moo"].hahar
-        request.render("generic_tax_report")
+        request.render("two.generic_tax_report")

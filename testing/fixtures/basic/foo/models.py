@@ -41,8 +41,8 @@ class Foob(Model):
     _inherit = "bar"
     #           ^complete bar derived.bar foo foob
 
-    foo_id = fields.Many2one("foo")
-    #                         ^complete bar derived.bar foo foob
+    foo_id = fields.Many2one(comodel_name="foo")
+    #                                      ^complete bar derived.bar foo foob
     barb = fields.Char(related='foo_id.')
     #                                  ^complete bar foo_m2m foo_m2o foo_o2m
     hoeh = fields.Char(compute="_wunderbar")

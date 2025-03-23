@@ -9,10 +9,7 @@
 			"runtimeExecutable": "${execPath}",
 			"args": ["--extensionDevelopmentPath=${workspaceRoot}", "${workspaceRoot}/examples"],
 			"outFiles": ["${workspaceRoot}/dist/*.js"],
-			"preLaunchTask": {
-				"type": "npm",
-				"script": "watch"
-			},
+			"preLaunchTask": "watch-all",
 			"env": {
 				"SERVER_PATH": "${workspaceRoot}/target/debug/odoo-lsp",
 				"RUST_LOG": "debug",
@@ -36,22 +33,10 @@
 			}
 		},
 		{
-			"name": "E2E Tests",
-			"type": "debugpy",
-			"request": "launch",
-			"program": ".venv/bin/pytest",
-			"args": ["-v"],
-			"cwd": "${workspaceFolder}/testing",
-			"console": "integratedTerminal",
-			"windows": {
-				"program": ".venv/Scripts/pytest.exe"
-			}
-		},
-		{
 			"type": "lldb",
 			"request": "attach",
 			"name": "Attach",
-			"program": "$HOME/.local/bin/odoo-lsp",
+			"program": "${workspaceFolder}/target/debug/odoo-lsp",
 			// "pid": "${command:pickMyProcess}",
 			"sourceLanguages": ["rust"],
 			"windows": {

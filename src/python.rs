@@ -359,16 +359,13 @@ impl Backend {
 		let query = PyCompletions::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut this_model = ThisModel::default();
-		'match_: for match_ in cursor.matches(query, root, contents) {
+		for match_ in cursor.matches(query, root, contents) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
 						let range = range.shrink(1);
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
-							break 'match_;
-						};
+						let slice = some!(rope.get_byte_slice(range.clone()));
 						let slice = Cow::from(slice);
 						return self.jump_def_xml_id(&slice, &params.text_document_position_params.text_document.uri);
 					}
@@ -381,10 +378,7 @@ impl Backend {
 							.unwrap_or(true);
 						if is_meta && range.contains(&offset) {
 							let range = range.shrink(1);
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
-								break 'match_;
-							};
+							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.jump_def_model(&slice);
 						} else if range.end < offset {
@@ -417,9 +411,15 @@ impl Backend {
 						};
 
 						let descriptor = &contents[capture.node.byte_range()];
-						if desc_value.byte_range().contains_end(offset)
-							&& matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related")
-						{
+						if !desc_value.byte_range().contains_end(offset) {
+							continue;
+						}
+						if matches!(descriptor, b"comodel_name") {
+							let range = desc_value.byte_range().shrink(1);
+							let slice = some!(rope.get_byte_slice(range.clone()));
+							let slice = Cow::from(slice);
+							return self.jump_def_model(&slice);
+						} else if matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related") {
 							let single_field = descriptor != b"related";
 							// same as PyCompletions::Mapped
 							let Some(mapped) = self.gather_mapped(
@@ -442,6 +442,8 @@ impl Backend {
 							let model = _R(model);
 							return self.jump_def_property_name(needle, model);
 						}
+
+						return Ok(None);
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::Mapped)
@@ -576,16 +578,13 @@ impl Backend {
 		let current_module = self.index.module_of_path(&path);
 		let mut this_model = ThisModel::default();
 
-		'match_: for match_ in cursor.matches(query, root, contents) {
+		for match_ in cursor.matches(query, root, contents) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
 						let range = range.shrink(1);
-						let Some(slice) = rope.get_byte_slice(range.clone()) else {
-							dbg!(&range);
-							break 'match_;
-						};
+						let slice = some!(rope.get_byte_slice(range.clone()));
 						let slice = Cow::from(slice);
 						return self.record_references(&path, &slice, current_module);
 					}
@@ -598,10 +597,7 @@ impl Backend {
 							.unwrap_or(true);
 						if is_meta && range.contains(&offset) {
 							let range = range.shrink(1);
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
-								break 'match_;
-							};
+							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
 							let slice = some!(_G(slice));
 							return self.model_references(&path, &slice.into());
@@ -615,16 +611,24 @@ impl Backend {
 						};
 						let descriptor = &contents[range];
 						// TODO: related, when field inheritance is implemented
-						if !desc_value.byte_range().contains_end(offset)
-							|| !matches!(descriptor, b"compute" | b"search" | b"inverse")
-						{
+						if !desc_value.byte_range().contains_end(offset) {
 							continue;
 						};
 
-						let range = desc_value.byte_range().shrink(1);
-						let model = String::from_utf8_lossy(some!(this_model.inner.as_ref()));
-						let prop = String::from_utf8_lossy(&contents[range]);
-						return self.method_references(&prop, &model);
+						if matches!(descriptor, b"comodel_name") {
+							let range = desc_value.byte_range().shrink(1);
+							let slice = some!(rope.get_byte_slice(range.clone()));
+							let slice = Cow::from(slice);
+							let slice = some!(_G(slice));
+							return self.model_references(&path, &slice.into());
+						} else if matches!(descriptor, b"compute" | b"search" | b"inverse") {
+							let range = desc_value.byte_range().shrink(1);
+							let model = String::from_utf8_lossy(some!(this_model.inner.as_ref()));
+							let prop = String::from_utf8_lossy(&contents[range]);
+							return self.method_references(&prop, &model);
+						}
+
+						return Ok(None);
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)
@@ -660,18 +664,15 @@ impl Backend {
 		let query = PyCompletions::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut this_model = ThisModel::default();
-		'match_: for match_ in cursor.matches(query, root, contents) {
+		for match_ in cursor.matches(query, root, contents) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::Model) => {
-						if range.contains(&offset) {
+						if range.contains_end(offset) {
 							let range = range.shrink(1);
 							let lsp_range = ts_range_to_lsp_range(capture.node.range());
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
-								break 'match_;
-							};
+							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.hover_model(&slice, Some(lsp_range), false, None);
 						} else if range.end < offset {
@@ -718,9 +719,17 @@ impl Backend {
 							continue;
 						};
 						let descriptor = &contents[range];
-						if desc_value.byte_range().contains_end(offset)
-							&& matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related")
-						{
+						if !desc_value.byte_range().contains_end(offset) {
+							continue;
+						}
+
+						if matches!(descriptor, b"comodel_name") {
+							let range = desc_value.byte_range().shrink(1);
+							let lsp_range = ts_range_to_lsp_range(desc_value.range());
+							let slice = some!(rope.get_byte_slice(range.clone()));
+							let slice = Cow::from(slice);
+							return self.hover_model(&slice, Some(lsp_range), false, None);
+						} else if matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related") {
 							let single_field = descriptor != b"related";
 							let range = desc_value.byte_range();
 							let mapped = some!(self.gather_mapped(
@@ -750,6 +759,8 @@ impl Backend {
 								offset_range_to_lsp_range(range, rope.clone()),
 							);
 						}
+
+						return Ok(None);
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)

@@ -2,8 +2,7 @@ use std::time::Duration;
 
 use async_lsp::{lsp_types::*, LanguageServer};
 use iai_callgrind::{
-	client_requests::callgrind, library_benchmark, library_benchmark_group, main, EntryPoint, FlamegraphConfig,
-	LibraryBenchmarkConfig,
+	library_benchmark, library_benchmark_group, main, EntryPoint, FlamegraphConfig, LibraryBenchmarkConfig,
 };
 
 fn init_and_shutdown(max_concurrency: usize) {
@@ -13,7 +12,9 @@ fn init_and_shutdown(max_concurrency: usize) {
 	};
 	let rt = builder.worker_threads(max_concurrency).enable_all().build().unwrap();
 	rt.block_on(async move {
-		callgrind::start_instrumentation();
+		#[cfg(not(windows))]
+		iai_callgrind::client_requests::callgrind::start_instrumentation();
+
 		let mut server = odoo_lsp_tests::server::setup_lsp_server(Some(max_concurrency));
 
 		let root = std::env::current_dir().unwrap();
@@ -76,7 +77,9 @@ fn init_and_shutdown(max_concurrency: usize) {
 
 		server.shutdown(()).await.expect("[shutdown] failed");
 		server.exit(()).expect("[exit] failed");
-		callgrind::stop_instrumentation();
+
+		#[cfg(not(windows))]
+		iai_callgrind::client_requests::callgrind::stop_instrumentation();
 	});
 }
 
@@ -84,7 +87,8 @@ fn init_and_shutdown(max_concurrency: usize) {
 #[bench::parallel(4)]
 #[bench::serial(1)]
 fn bench_standard(concurrency: usize) {
-	callgrind::stop_instrumentation();
+	#[cfg(not(windows))]
+	iai_callgrind::client_requests::callgrind::stop_instrumentation();
 	init_and_shutdown(concurrency)
 }
 

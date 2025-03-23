@@ -94,10 +94,7 @@ impl Backend {
 								.map(|prop| &contents[prop.byte_range()] == b"_inherit")
 								.unwrap_or(true);
 							if is_inherit && range.contains_end(offset) {
-								let Some(slice) = rope.get_byte_slice(range.clone()) else {
-									dbg!(&range);
-									break 'match_;
-								};
+								let slice = some!(rope.get_byte_slice(range.clone()));
 								let relative_offset = range.start;
 								let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
 								let range = some!(offset_range_to_lsp_range(
@@ -179,13 +176,10 @@ impl Backend {
 					match descriptor {
 						b"comodel_name" => {
 							// same as model
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
-								break 'match_;
-							};
+							let slice = some!(rope.get_byte_slice(range.clone()));
 							let relative_offset = range.start;
 							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-							let range = some!(offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()));
+							let range = some!(offset_range_to_lsp_range(range.shrink(1).map_unit(ByteOffset), rope.clone()));
 							early_return.lift(move || async move {
 								let mut items = MaxVec::new(completions_limit);
 								self.complete_model(&needle, range, &mut items).await?;
