@@ -1,3 +1,5 @@
+//! Stores the state of Odoo [models][ModelEntry].
+
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;

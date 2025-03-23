@@ -1,0 +1,31 @@
+[package]
+name = "odoo-lsp-tests"
+version = "0.6.0"
+edition = "2021"
+authors = ["Viet Dinh <54ckb0y789@gmail.com>"]
+description = "Tests and benchmarks for odoo-lsp"
+repository = "https://github.com/Desdaemon/odoo-lsp"
+license = "MIT"
+
+[dependencies]
+iai-callgrind = { version = "0.14.0", features = ["client_requests"] }
+async-lsp = { version = "0.2.2", features = ["tokio", "forward"] }
+tokio-util = { version = "0.7.14", features = ["compat"] }
+tree-sitter-xml = "0.7.0"
+rstest = "0.25.0"
+
+ts-macros.workspace = true
+pretty_assertions.workspace = true
+tower.workspace = true
+tower-lsp-server.workspace = true
+tree-sitter.workspace = true
+tree-sitter-python.workspace = true
+tokio.workspace = true
+futures.workspace = true
+globwalk.workspace = true
+
+odoo-lsp.path = ".."
+
+[[bench]]
+name = "standard"
+harness = false

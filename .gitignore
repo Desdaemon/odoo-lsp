@@ -11,3 +11,4 @@ syntaxes/*.json
 __pycache__
 .*_cache
 testing/requirements.txt
+testing/benches/odoo/

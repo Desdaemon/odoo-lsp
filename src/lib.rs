@@ -9,9 +9,15 @@ pub mod utils;
 pub use str::ImStr;
 
 pub mod analyze;
+pub mod backend;
 pub mod component;
 pub mod model;
 pub mod record;
+pub mod server;
 pub mod template;
 
-pub(crate) mod test_utils;
+mod js;
+pub mod python;
+pub mod xml;
+
+pub mod test_utils;

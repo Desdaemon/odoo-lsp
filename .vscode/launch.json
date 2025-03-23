@@ -3,6 +3,39 @@
 	"version": "0.2.0",
 	"configurations": [
 		{
+			"name": "Launch Client",
+			"type": "extensionHost",
+			"request": "launch",
+			"runtimeExecutable": "${execPath}",
+			"args": ["--extensionDevelopmentPath=${workspaceRoot}", "${workspaceRoot}/examples"],
+			"outFiles": ["${workspaceRoot}/dist/*.js"],
+			"preLaunchTask": {
+				"type": "npm",
+				"script": "watch"
+			},
+			"env": {
+				"SERVER_PATH": "${workspaceRoot}/target/debug/odoo-lsp",
+				"RUST_LOG": "debug",
+				"RUST_BACKTRACE": "1"
+			},
+		},
+		{
+			"name": "Launch Client (Production Flow)",
+			"type": "extensionHost",
+			"request": "launch",
+			"runtimeExecutable": "${execPath}",
+			"args": ["--extensionDevelopmentPath=${workspaceRoot}", "${workspaceRoot}/examples"],
+			"outFiles": ["${workspaceRoot}/dist/*.js"],
+			"preLaunchTask": {
+				"type": "npm",
+				"script": "watch"
+			},
+			"env": {
+				"RUST_LOG": "info",
+				"RUST_BACKTRACE": "1"
+			}
+		},
+		{
 			"name": "E2E Tests",
 			"type": "debugpy",
 			"request": "launch",
@@ -18,42 +51,12 @@
 			"type": "lldb",
 			"request": "attach",
 			"name": "Attach",
-			// "program": "odoo-lsp",
-			"pid": "${command:pickMyProcess}",
-			"sourceLanguages": ["rust"]
-		},
-		{
-			"type": "extensionHost",
-			"request": "launch",
-			"name": "Launch Client",
-			"runtimeExecutable": "${execPath}",
-			"args": ["--extensionDevelopmentPath=${workspaceRoot}", "${workspaceRoot}/examples"],
-			"outFiles": ["${workspaceRoot}/dist/*.js"],
-			"preLaunchTask": {
-				"type": "npm",
-				"script": "watch"
+			"program": "$HOME/.local/bin/odoo-lsp",
+			// "pid": "${command:pickMyProcess}",
+			"sourceLanguages": ["rust"],
+			"windows": {
+				"program": "${workspaceFolder}/target/debug/odoo-lsp.exe"
 			},
-			"env": {
-				"SERVER_PATH": "${workspaceRoot}/target/debug/odoo-lsp",
-				"RUST_LOG": "debug",
-				"RUST_BACKTRACE": "1"
-			}
-		},
-		{
-			"type": "extensionHost",
-			"request": "launch",
-			"name": "Launch Client (Production Flow)",
-			"runtimeExecutable": "${execPath}",
-			"args": ["--extensionDevelopmentPath=${workspaceRoot}", "${workspaceRoot}/examples"],
-			"outFiles": ["${workspaceRoot}/dist/*.js"],
-			"preLaunchTask": {
-				"type": "npm",
-				"script": "watch"
-			},
-			"env": {
-				"RUST_LOG": "info",
-				"RUST_BACKTRACE": "1"
-			}
 		},
 		{
 			"name": "Language Server E2E Test",
@@ -67,17 +70,11 @@
 			],
 			"outFiles": ["${workspaceRoot}/client/out/test/**/*.js"]
 		},
-		{
-			"name": "Attach to LSP",
-			"type": "lldb",
-			"request": "attach",
-
-		}
 	],
 	"compounds": [
 		{
 			"name": "Client + Server",
-			"configurations": ["Launch Client", "Attach to LSP"]
+			"configurations": ["Launch Client", "Attach"]
 		}
 	]
 }

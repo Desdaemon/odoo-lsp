@@ -1,3 +1,5 @@
+//! Utilities for testing and benchmarking.
+
 pub mod fs {
 	#[cfg(not(test))]
 	pub use std::fs::read;

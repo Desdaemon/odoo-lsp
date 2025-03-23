@@ -55,7 +55,7 @@ jobs:
         id: cargo-test
         if: matrix.coverage == 'no'
         continue-on-error: true
-        run: cargo nextest run --profile ci
+        run: cargo nextest run -p odoo-lsp -p odoo-lsp-tests --profile ci
 
       - name: Run unit tests (with coverage)
         id: cargo-testcov
@@ -64,7 +64,7 @@ jobs:
         run: |
           set -euxo pipefail
           cargo llvm-cov clean --workspace -v
-          cargo llvm-cov --codecov --output-path lcov.info nextest --profile ci
+          cargo llvm-cov --codecov --output-path lcov.info nextest -p odoo-lsp -p odoo-lsp-tests --profile ci
 
       - name: Upload test results
         if: always()

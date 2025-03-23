@@ -1,71 +1,27 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
 
 use async_lsp::lsp_types::*;
-use async_lsp::{LanguageServer, MainLoop};
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
+use async_lsp::LanguageServer;
+use futures::{stream::FuturesUnordered, StreamExt};
 use pretty_assertions::{Comparison, StrComparison};
 use rstest::*;
-use tower::ServiceBuilder;
-use tower_lsp_server::{LspService, Server};
-use tree_sitter::{Parser, Query, QueryCursor};
+use tree_sitter::Parser;
+use tree_sitter::Query;
+use tree_sitter::QueryCursor;
 use ts_macros::query;
 
-use crate::{backend::Backend, catch_panic::CatchPanic};
-
-query! {
-	PyExpected();
-
-	((comment) @diag
-	(#match? @diag "\\^diag "))
-
-	((comment) @complete
-	(#match? @complete "\\^complete "))
-
-	((comment) @type
-	(#match? @type "\\^type "))
-}
-
-fn xml_query() -> &'static Query {
-	static QUERY: OnceLock<Query> = OnceLock::new();
-	const XML_QUERY: &str = r#"
-		((Comment) @diag
-		(#match? @diag "\\^diag "))
-
-		((Comment) @complete
-		(#match? @complete "\\^complete "))
-	"#;
-	QUERY.get_or_init(|| Query::new(&tree_sitter_xml::LANGUAGE_XML.into(), XML_QUERY).unwrap())
-}
-
-#[derive(Default)]
-struct Expected {
-	diag: Vec<(Position, String)>,
-	complete: Vec<(Position, Vec<String>)>,
-	r#type: Vec<(Position, String)>,
-}
-
-enum TestLanguages {
-	Python,
-	Xml,
-}
-
-enum InspectType {}
-impl request::Request for InspectType {
-	type Params = TextDocumentPositionParams;
-	type Result = Option<String>;
-	const METHOD: &str = "odoo-lsp/inspect-type";
-}
+use crate::server;
 
 #[rstest]
 #[timeout(Duration::from_secs(1))]
 #[tokio::test(flavor = "current_thread")]
-async fn fixture_test(#[files("testing/fixtures/*")] root: PathBuf) {
+async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	std::env::set_current_dir(&root).unwrap();
-	let mut server = setup_lsp_server();
+	let mut server = server::setup_lsp_server(None);
 
 	_ = server
 		.initialize(InitializeParams {
@@ -246,6 +202,50 @@ async fn fixture_test(#[files("testing/fixtures/*")] root: PathBuf) {
 	assert!(message.is_empty(), "{message}");
 }
 
+query! {
+	PyExpected();
+
+	((comment) @diag
+	(#match? @diag "\\^diag "))
+
+	((comment) @complete
+	(#match? @complete "\\^complete "))
+
+	((comment) @type
+	(#match? @type "\\^type "))
+}
+
+fn xml_query() -> &'static Query {
+	static QUERY: OnceLock<Query> = OnceLock::new();
+	const XML_QUERY: &str = r#"
+		((Comment) @diag
+		(#match? @diag "\\^diag "))
+
+		((Comment) @complete
+		(#match? @complete "\\^complete "))
+	"#;
+	QUERY.get_or_init(|| Query::new(&tree_sitter_xml::LANGUAGE_XML.into(), XML_QUERY).unwrap())
+}
+
+#[derive(Default)]
+struct Expected {
+	diag: Vec<(Position, String)>,
+	complete: Vec<(Position, Vec<String>)>,
+	r#type: Vec<(Position, String)>,
+}
+
+enum TestLanguages {
+	Python,
+	Xml,
+}
+
+enum InspectType {}
+impl request::Request for InspectType {
+	type Params = TextDocumentPositionParams;
+	type Result = Option<String>;
+	const METHOD: &str = "odoo-lsp/inspect-type";
+}
+
 fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expected> {
 	let (glob, query, language) = match lang {
 		TestLanguages::Python => ("**/*.py", PyExpected::query as fn() -> _, tree_sitter_python::LANGUAGE),
@@ -297,30 +297,4 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 	}
 
 	expected
-}
-
-fn setup_lsp_server() -> async_lsp::ServerSocket {
-	let (service, socket) = LspService::build(Backend::new)
-		.custom_method("odoo-lsp/inspect-type", Backend::debug_inspect_type)
-		.finish();
-
-	let service = ServiceBuilder::new()
-		.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))
-		.layer_fn(CatchPanic)
-		.service(service);
-
-	let (server_read, server_write) = tokio::io::simplex(64);
-	let (client_read, client_write) = tokio::io::simplex(64);
-
-	let (client_read, server_write) = (
-		tokio_util::compat::TokioAsyncReadCompatExt::compat(client_read),
-		tokio_util::compat::TokioAsyncWriteCompatExt::compat_write(server_write),
-	);
-
-	let (ml, client) = MainLoop::new_client(|socket| socket);
-
-	tokio::spawn(Server::new(server_read, client_write, socket).serve(service));
-	tokio::spawn(ml.run_buffered(client_read, server_write));
-
-	client
 }

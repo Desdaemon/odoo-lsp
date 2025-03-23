@@ -1,0 +1,4 @@
+[submodule "benches/odoo"]
+	path = benches/odoo
+	url = https://github.com/odoo/odoo
+	branch = 18.0

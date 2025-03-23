@@ -18,6 +18,9 @@ use xmlparser::{StrSpan, TextPos, Token};
 mod visitor;
 pub use visitor::PreTravel;
 
+mod catch_panic;
+pub use catch_panic::CatchPanic;
+
 use crate::index::PathSymbol;
 
 #[cfg(not(windows))]
@@ -407,7 +410,7 @@ impl CondVar {
 		Blocker(self)
 	}
 
-	const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
+	pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 	/// Waits for a maximum of [`WAIT_LIMIT`][Self::WAIT_LIMIT] for a notification.
 	pub async fn wait(&self) {

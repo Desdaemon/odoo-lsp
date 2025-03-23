@@ -1,5 +1,8 @@
+//! Configuration keys available to `.odoo_lsp`.
+
 use serde::{Deserialize, Serialize};
 
+/// Configuration is changed via [`on_change_config`][crate::backend::Backend::on_change_config].
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
 	pub module: Option<ModuleConfig>,

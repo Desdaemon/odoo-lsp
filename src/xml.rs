@@ -1,6 +1,3 @@
-use crate::{Backend, Text};
-use odoo_lsp::analyze::{normalize, Scope, Type};
-
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::sync::atomic::Ordering::Relaxed;
@@ -8,18 +5,20 @@ use std::sync::Arc;
 
 use fomat_macros::fomat;
 use lasso::Spur;
-use odoo_lsp::component::{ComponentTemplate, PropType};
-use odoo_lsp::index::{Index, PathSymbol, _G, _I, _R};
-use odoo_lsp::model::{Field, FieldKind, PropertyKind};
-use odoo_lsp::template::gather_templates;
 use ropey::{Rope, RopeSlice};
 use tower_lsp_server::lsp_types::*;
 use tracing::{debug, instrument, warn};
 use tree_sitter::Parser;
 use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
 
-use odoo_lsp::record::Record;
-use odoo_lsp::{errloc, some, utils::*, ImStr};
+use crate::analyze::{normalize, Scope, Type};
+use crate::component::{ComponentTemplate, PropType};
+use crate::index::{Index, PathSymbol, _G, _I, _R};
+use crate::model::{Field, FieldKind, PropertyKind};
+use crate::record::Record;
+use crate::template::gather_templates;
+use crate::{backend::Backend, backend::Text};
+use crate::{errloc, some, utils::*, ImStr};
 
 #[derive(Debug)]
 enum RefKind<'a> {

@@ -1,27 +1,29 @@
-use crate::{Backend, Text};
-use odoo_lsp::analyze::{determine_scope, Scope, Type, MODEL_METHODS};
-
 use std::borrow::Cow;
-use std::cmp::Ordering;
-use std::ops::ControlFlow;
 use std::path::Path;
-use std::sync::atomic::Ordering::Relaxed;
 
 use lasso::Spur;
-use odoo_lsp::index::{index_models, Index, PathSymbol, _G, _I, _R};
 use ropey::Rope;
 use tower_lsp_server::lsp_types::*;
 use tracing::{debug, instrument, trace, warn};
-use tree_sitter::{Node, Parser, QueryCursor, QueryMatch, Tree};
-
-use odoo_lsp::model::{ModelName, ModelType, PropertyKind, ResolveMappedError};
-use odoo_lsp::{errloc, utils::*};
-use odoo_lsp::{format_loc, some};
+use tree_sitter::{Node, Parser, QueryMatch};
 use ts_macros::query;
+
+use crate::analyze::Type;
+use crate::index::{index_models, PathSymbol, _G, _I, _R};
+use crate::model::{ModelName, ModelType};
+use crate::{backend::Backend, backend::Text};
+use crate::{errloc, utils::*};
+use crate::{format_loc, some};
+
+mod completions;
+mod diagnostics;
+
+#[cfg(test)]
+mod tests;
 
 #[rustfmt::skip]
 query! {
-	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor, Compute);
+	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor);
 
 (call [
   (attribute [
@@ -55,11 +57,9 @@ query! {
           (attribute
             (identifier) @_fields (identifier) (#eq? @_fields "fields"))
           (argument_list
-            (keyword_argument [
-              // alternatives for keyword arguments
-              // if none of the alternatives match, the optional marker outside ensures that this field is still recognized
-              ((identifier) @_related (#eq? @_related "related") (string) @MAPPED)
-              ((identifier) @_compute_fn (#match? @_compute_fn "^(compute|search|inverse)$") (string) @COMPUTE) ])?)) ])))))
+            . ((comment)* (string)? @MODEL)
+            // handles `related` `compute` `search` and `inverse`
+            ((keyword_argument (identifier) @FIELD_DESCRIPTOR (_)) ","?)*)) ])))))
 
 (call [
   (attribute
@@ -241,297 +241,11 @@ impl Backend {
 
 		Ok(())
 	}
-	pub async fn python_completions(
-		&self,
-		params: CompletionParams,
-		ast: Tree,
-		rope: Rope,
-	) -> anyhow::Result<Option<CompletionResponse>> {
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, &rope) else {
-			warn!("invalid position {:?}", params.text_document_position.position);
-			return Ok(None);
-		};
-		let path = some!(params.text_document_position.text_document.uri.to_file_path());
-		let Some(current_module) = self.index.module_of_path(&path) else {
-			debug!("no current module");
-			return Ok(None);
-		};
-		let mut cursor = tree_sitter::QueryCursor::new();
-		let contents = Cow::from(rope.clone());
-		let contents = contents.as_bytes();
-		let query = PyCompletions::query();
-		let completions_limit = self
-			.workspaces
-			.find_workspace_of(&path, |_, ws| ws.completions.limit)
-			.unwrap_or_else(|| self.project_config.completions_limit.load(Relaxed));
-		let mut this_model = ThisModel::default();
-		// FIXME: This hack is necessary to drop !Send locals before await points.
-		let mut early_return = EarlyReturn::<anyhow::Result<_>>::default();
-		{
-			let root = some!(top_level_stmt(ast.root_node(), offset));
-			'match_: for match_ in cursor.matches(query, root, contents) {
-				let mut model_filter = None;
-				let mut field_descriptors = vec![];
-				let mut field_descriptor_in_offset = None;
-
-				for capture in match_.captures {
-					let range = capture.node.byte_range();
-					match PyCompletions::from(capture.index) {
-						Some(PyCompletions::Request) => {
-							model_filter = Some("ir.ui.view");
-						}
-						Some(PyCompletions::ForXmlId) => {
-							let model = || {
-								let model = capture.node.prev_named_sibling()?;
-								let model = self.index.model_of_range(
-									root,
-									model.byte_range().map_unit(ByteOffset),
-									contents,
-								)?;
-								Some(_R(model))
-							};
-							model_filter = model()
-						}
-						Some(PyCompletions::XmlId) if range.contains(&offset) => {
-							let range = range.shrink(1);
-							let needle = String::from_utf8_lossy(&contents[range.start..offset]);
-							let range = range.map_unit(ByteOffset);
-							let rope = rope.clone();
-							early_return.lift(move || async move {
-								let mut items = MaxVec::new(completions_limit);
-								self.complete_xml_id(&needle, range, rope, model_filter, current_module, &mut items)
-									.await?;
-								Ok(Some(CompletionResponse::List(CompletionList {
-									is_incomplete: !items.has_space(),
-									items: items.into_inner(),
-								})))
-							});
-							break 'match_;
-						}
-						Some(PyCompletions::Model) => {
-							// to be checked later down that it only belongs to (assignment)
-							let is_inherit = match_
-								.nodes_for_capture_index(PyCompletions::Prop as _)
-								.next()
-								.map(|prop| &contents[prop.byte_range()] == b"_inherit")
-								.unwrap_or(true);
-							if is_inherit && range.contains_end(offset) {
-								let Some(slice) = rope.get_byte_slice(range.clone()) else {
-									dbg!(&range);
-									break 'match_;
-								};
-								let relative_offset = range.start;
-								let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-								let range = some!(offset_range_to_lsp_range(
-									range.shrink(1).map_unit(ByteOffset),
-									rope.clone()
-								));
-								early_return.lift(move || async move {
-									let mut items = MaxVec::new(completions_limit);
-									self.complete_model(&needle, range, &mut items).await?;
-									Ok(Some(CompletionResponse::List(CompletionList {
-										is_incomplete: !items.has_space(),
-										items: items.into_inner(),
-									})))
-								});
-								break 'match_;
-							} else if range.end < offset {
-								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
-							}
-						}
-						Some(mapstr @ (PyCompletions::Mapped | PyCompletions::Compute))
-							if range.contains_end(offset) =>
-						{
-							let Mapped {
-								needle,
-								model,
-								single_field,
-								range,
-							} = some!(self.gather_mapped(
-								root,
-								&match_,
-								Some(offset),
-								range.clone(),
-								this_model.inner,
-								contents,
-								true,
-							));
-
-							// range:  foo.bar.baz
-							// needle: foo.ba
-							let mut range = range;
-							let mut items = MaxVec::new(completions_limit);
-							let mut needle = needle.as_ref();
-							let mut model = some!(_G(model));
-							if !single_field {
-								some!((self.index.models)
-									.resolve_mapped(&mut model, &mut needle, Some(&mut range))
-									.ok());
-							}
-							let model_name = _R(model);
-							let prop_type = if matches!(mapstr, PyCompletions::Compute) {
-								Some(PropertyKind::Method)
-							} else {
-								Some(PropertyKind::Field)
-							};
-							self.complete_property_name(
-								needle,
-								range,
-								model_name.to_string(),
-								rope,
-								prop_type,
-								&mut items,
-							)?;
-							return Ok(Some(CompletionResponse::List(CompletionList {
-								is_incomplete: !items.has_space(),
-								items: items.into_inner(),
-							})));
-						}
-						Some(PyCompletions::FieldDescriptor) => {
-							let Some(desc_value) = capture.node.next_named_sibling() else {
-								continue;
-							};
-
-							let descriptor = &contents[capture.node.byte_range()];
-							if matches!(descriptor, b"comodel_name" | b"domain") {
-								field_descriptors.push((descriptor, desc_value));
-							}
-							if desc_value.byte_range().contains_end(offset) {
-								field_descriptor_in_offset = Some((descriptor, desc_value));
-							}
-						}
-						Some(PyCompletions::Depends)
-						| Some(PyCompletions::MappedTarget)
-						| Some(PyCompletions::Mapped)
-						| Some(PyCompletions::Compute)
-						| Some(PyCompletions::XmlId)
-						| Some(PyCompletions::Prop)
-						| Some(PyCompletions::Scope)
-						| Some(PyCompletions::ReadFn)
-						| None => {}
-					}
-				}
-				if let Some((descriptor, value)) = field_descriptor_in_offset {
-					let range = value.byte_range();
-					match descriptor {
-						b"comodel_name" => {
-							// same as model
-							let Some(slice) = rope.get_byte_slice(range.clone()) else {
-								dbg!(&range);
-								break 'match_;
-							};
-							let relative_offset = range.start;
-							let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-							let range = some!(offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()));
-							early_return.lift(move || async move {
-								let mut items = MaxVec::new(completions_limit);
-								self.complete_model(&needle, range, &mut items).await?;
-								Ok(Some(CompletionResponse::List(CompletionList {
-									is_incomplete: !items.has_space(),
-									items: items.into_inner(),
-								})))
-							});
-							break 'match_;
-						}
-						b"domain" => {
-							let mut domain_node = value;
-							if domain_node.kind() == "lambda" {
-								let Some(body) = domain_node.child_by_field_name("body") else {
-									continue;
-								};
-								domain_node = body;
-							}
-							if domain_node.kind() != "list" {
-								continue;
-							}
-							let comodel_name = field_descriptors
-								.iter()
-								.find_map(|&(desc, node)| {
-									(desc == b"comodel_name").then(|| &contents[node.byte_range().shrink(1)])
-								})
-								// FIXME: Only correct if this came from the unnamed field relation
-								.or(this_model.inner);
-
-							let Some(mapped) = domain_node.named_children(&mut domain_node.walk()).find_map(|domain| {
-								// find the mapped domain element that contains the offset
-								if domain.kind() != "tuple" {
-									return None;
-								}
-								let mapped = domain.named_child(0)?;
-								mapped.byte_range().contains(&offset).then_some(mapped)
-							}) else {
-								continue;
-							};
-
-							let Mapped {
-								needle,
-								model,
-								single_field,
-								range,
-							} = some!(self.gather_mapped(
-								root,
-								&match_,
-								Some(offset),
-								mapped.byte_range(),
-								comodel_name,
-								contents,
-								true,
-							));
-
-							// range:  foo.bar.baz
-							// needle: foo.ba
-							let mut range = range;
-							let mut items = MaxVec::new(completions_limit);
-							let mut needle = needle.as_ref();
-							let mut model = some!(_G(model));
-							if !single_field {
-								some!(self
-									.index
-									.models
-									.resolve_mapped(&mut model, &mut needle, Some(&mut range))
-									.ok());
-							}
-							let model_name = _R(model);
-							self.complete_property_name(
-								needle,
-								range,
-								model_name.to_string(),
-								rope,
-								Some(PropertyKind::Field),
-								&mut items,
-							)?;
-							return Ok(Some(CompletionResponse::List(CompletionList {
-								is_incomplete: !items.has_space(),
-								items: items.into_inner(),
-							})));
-						}
-						_ => {}
-					}
-				}
-			}
-			if early_return.is_none() {
-				let (model, needle, range) = some!(self.attribute_at_offset(offset, root, contents));
-				let rope = rope.clone();
-				let mut items = MaxVec::new(completions_limit);
-				self.complete_property_name(
-					&needle,
-					range.map_unit(ByteOffset),
-					model.to_string(),
-					rope,
-					None,
-					&mut items,
-				)?;
-				return Ok(Some(CompletionResponse::List(CompletionList {
-					is_incomplete: !items.has_space(),
-					items: items.into_inner(),
-				})));
-			}
-		}
-		let result = some!(early_return.call());
-		result.await
-	}
 	/// Gathers common information regarding a mapped access aka dot access.
 	/// Only makes sense in [`PyCompletions`] queries.
+	///
+	/// `single_field_override` should be set in special cases where this function may not have the necessary context to
+	/// determine whether the needle should be processed in mapped mode or single field mode.
 	///
 	/// Replacing:
 	///
@@ -546,7 +260,6 @@ impl Backend {
 	///           ^cursor
 	///      -------range
 	///      -------needle
-	///
 	fn gather_mapped<'text>(
 		&self,
 		root: Node,
@@ -556,6 +269,7 @@ impl Backend {
 		this_model: Option<&[u8]>,
 		contents: &'text [u8],
 		for_replacing: bool,
+		single_field_override: Option<bool>,
 	) -> Option<Mapped<'text>> {
 		let mut needle = if for_replacing {
 			range = range.shrink(1);
@@ -619,12 +333,8 @@ impl Backend {
 					}
 				}
 			}
-		} else if match_
-			.nodes_for_capture_index(PyCompletions::Compute as _)
-			.next()
-			.is_some()
-		{
-			single_field = true;
+		} else if let Some(override_) = single_field_override {
+			single_field = override_;
 		}
 
 		Some(Mapped {
@@ -681,7 +391,7 @@ impl Backend {
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
 					}
-					Some(PyCompletions::Mapped | PyCompletions::Compute) if range.contains_end(offset) => {
+					Some(PyCompletions::Mapped) if range.contains_end(offset) => {
 						if let Some(mapped) = self.gather_mapped(
 							root,
 							&match_,
@@ -690,6 +400,7 @@ impl Backend {
 							this_model.inner,
 							contents,
 							false,
+							None,
 						) {
 							let mut needle = mapped.needle.as_ref();
 							let mut model = _I(mapped.model);
@@ -701,11 +412,39 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
-						// TODO
+						let Some(desc_value) = capture.node.next_named_sibling() else {
+							continue;
+						};
+
+						let descriptor = &contents[capture.node.byte_range()];
+						if desc_value.byte_range().contains_end(offset)
+							&& matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related")
+						{
+							let single_field = descriptor != b"related";
+							// same as PyCompletions::Mapped
+							let Some(mapped) = self.gather_mapped(
+								root,
+								&match_,
+								Some(offset),
+								range.clone(),
+								this_model.inner,
+								contents,
+								false,
+								Some(single_field),
+							) else {
+								break;
+							};
+							let mut needle = mapped.needle.as_ref();
+							let mut model = _I(mapped.model);
+							if !mapped.single_field {
+								some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+							}
+							let model = _R(model);
+							return self.jump_def_property_name(needle, model);
+						}
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::Mapped)
-					| Some(PyCompletions::Compute)
 					| Some(PyCompletions::ForXmlId)
 					| Some(PyCompletions::XmlId)
 					| Some(PyCompletions::MappedTarget)
@@ -870,14 +609,21 @@ impl Backend {
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
 					}
-					Some(PyCompletions::Compute) => {
-						let range = capture.node.byte_range();
-						if !range.contains(&offset) {
+					Some(PyCompletions::FieldDescriptor) => {
+						let Some(desc_value) = capture.node.next_named_sibling() else {
 							continue;
-						}
+						};
+						let descriptor = &contents[range];
+						// TODO: related, when field inheritance is implemented
+						if !desc_value.byte_range().contains_end(offset)
+							|| !matches!(descriptor, b"compute" | b"search" | b"inverse")
+						{
+							continue;
+						};
 
+						let range = desc_value.byte_range().shrink(1);
 						let model = String::from_utf8_lossy(some!(this_model.inner.as_ref()));
-						let prop = String::from_utf8_lossy(&contents[range.shrink(1)]);
+						let prop = String::from_utf8_lossy(&contents[range]);
 						return self.method_references(&prop, &model);
 					}
 					Some(PyCompletions::Request)
@@ -889,7 +635,6 @@ impl Backend {
 					| Some(PyCompletions::Prop)
 					| Some(PyCompletions::ReadFn)
 					| Some(PyCompletions::Scope)
-					| Some(PyCompletions::FieldDescriptor)
 					| None => {}
 				}
 			}
@@ -933,7 +678,7 @@ impl Backend {
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
 					}
-					Some(PyCompletions::Mapped | PyCompletions::Compute) if range.contains(&offset) => {
+					Some(PyCompletions::Mapped) if range.contains(&offset) => {
 						let mapped = some!(self.gather_mapped(
 							root,
 							&match_,
@@ -942,6 +687,7 @@ impl Backend {
 							this_model.inner,
 							contents,
 							false,
+							None,
 						));
 						let mut needle = mapped.needle.as_ref();
 						let mut model = _I(mapped.model);
@@ -960,19 +706,60 @@ impl Backend {
 						let xml_id = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
 						return self.hover_record(&xml_id, offset_range_to_lsp_range(range.map_unit(ByteOffset), rope));
 					}
+					Some(PyCompletions::Prop) if range.contains(&offset) => {
+						let model = some!(this_model.inner);
+						let model = String::from_utf8_lossy(model);
+						let name = String::from_utf8_lossy(&contents[range]);
+						let range = ts_range_to_lsp_range(capture.node.range());
+						return self.hover_property_name(&name, &model, Some(range));
+					}
 					Some(PyCompletions::FieldDescriptor) => {
-						// TODO
+						let Some(desc_value) = capture.node.next_named_sibling() else {
+							continue;
+						};
+						let descriptor = &contents[range];
+						if desc_value.byte_range().contains_end(offset)
+							&& matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related")
+						{
+							let single_field = descriptor != b"related";
+							let range = desc_value.byte_range();
+							let mapped = some!(self.gather_mapped(
+								root,
+								&match_,
+								Some(offset),
+								range.clone(),
+								this_model.inner,
+								contents,
+								false,
+								Some(single_field)
+							));
+							let mut needle = mapped.needle.as_ref();
+							let mut model = _I(mapped.model);
+							let mut range = mapped.range;
+							if !mapped.single_field {
+								some!(self
+									.index
+									.models
+									.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+									.ok());
+							}
+							let model = _R(model);
+							return self.hover_property_name(
+								needle,
+								model,
+								offset_range_to_lsp_range(range, rope.clone()),
+							);
+						}
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)
 					| Some(PyCompletions::Mapped)
-					| Some(PyCompletions::Compute)
 					| Some(PyCompletions::ForXmlId)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
-					| Some(PyCompletions::Prop)
 					| Some(PyCompletions::ReadFn)
 					| Some(PyCompletions::Scope)
+					| Some(PyCompletions::Prop)
 					| None => {}
 				}
 			}
@@ -1001,382 +788,9 @@ impl Backend {
 			_ => Ok(None),
 		}
 	}
-	pub fn diagnose_python(
-		&self,
-		path: &str,
-		rope: &Rope,
-		damage_zone: Option<ByteRange>,
-		diagnostics: &mut Vec<Diagnostic>,
-	) {
-		let Some(ast) = self.ast_map.get(path) else {
-			warn!("Did not build AST for {path}");
-			return;
-		};
-		let contents = Cow::from(rope.clone());
-		let contents = contents.as_bytes();
-		let query = PyCompletions::query();
-		let mut root = ast.root_node();
-		// TODO: Limit range of diagnostics with new heuristics
-		if let Some(zone) = damage_zone.as_ref() {
-			root = top_level_stmt(root, zone.end.0).unwrap_or(root);
-			diagnostics.retain(|diag| {
-				// If we couldn't get a range here, rope has changed significantly so just toss the diag.
-				let Some(range) = lsp_range_to_offset_range(diag.range, rope) else {
-					return false;
-				};
-				!root.byte_range().contains(&range.start.0)
-			});
-		} else {
-			// There is no damage zone, assume everything has been reset.
-			diagnostics.clear();
-		}
-		let in_active_root =
-			|range: core::ops::Range<usize>| damage_zone.as_ref().map(|zone| zone.intersects(range)).unwrap_or(true);
-		let top_level_ranges = root
-			.named_children(&mut root.walk())
-			.map(|node| node.byte_range())
-			.collect::<Vec<_>>();
-		let mut cursor = QueryCursor::new();
-		let mut this_model = ThisModel::default();
-		for match_ in cursor.matches(query, root, contents) {
-			let mut field_descriptors = vec![];
-
-			for capture in match_.captures {
-				match PyCompletions::from(capture.index) {
-					Some(PyCompletions::XmlId) => {
-						if !in_active_root(capture.node.byte_range()) {
-							continue;
-						}
-						let xml_id = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
-						let xml_id_key = _G(&xml_id);
-						let mut id_found = false;
-						if let Some(id) = xml_id_key {
-							id_found = self.index.records.contains_key(&id.into());
-						}
-						if !id_found {
-							diagnostics.push(Diagnostic {
-								range: ts_range_to_lsp_range(capture.node.range()),
-								message: format!("No XML record with ID `{xml_id}` found"),
-								severity: Some(DiagnosticSeverity::WARNING),
-								..Default::default()
-							})
-						}
-					}
-					Some(PyCompletions::Model) => {
-						match capture.node.parent() {
-							Some(subscript) if subscript.kind() == "subscript" => {
-								// diagnose only, do not tag
-								let range = capture.node.byte_range().shrink(1);
-								let model = String::from_utf8_lossy(&contents[range.clone()]);
-								let model_key = _G(&model);
-								let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
-								if !has_model.unwrap_or(false) {
-									diagnostics.push(Diagnostic {
-										range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone())
-											.unwrap(),
-										message: format!("`{model}` is not a valid model name"),
-										severity: Some(DiagnosticSeverity::ERROR),
-										..Default::default()
-									})
-								}
-								continue;
-							}
-							_ => {}
-						}
-						let Ok(idx) = top_level_ranges.binary_search_by(|range| {
-							let needle = capture.node.end_byte();
-							if needle < range.start {
-								Ordering::Greater
-							} else if needle > range.end {
-								Ordering::Less
-							} else {
-								Ordering::Equal
-							}
-						}) else {
-							debug!("binary search for top-level range failed");
-							continue;
-						};
-						this_model.tag_model(capture.node, &match_, top_level_ranges[idx].clone(), contents);
-					}
-					Some(PyCompletions::FieldDescriptor) => {
-						// fields.Many2one(field_descriptor=...)
-
-						let Some(desc_value) = capture.node.next_named_sibling() else {
-							continue;
-						};
-
-						let descriptor = &contents[capture.node.byte_range()];
-						if matches!(descriptor, b"comodel_name" | b"domain") {
-							field_descriptors.push((descriptor, desc_value));
-						}
-					}
-					Some(mapstr @ (PyCompletions::Mapped | PyCompletions::Compute)) => {
-						self.diagnose_mapped(
-							rope,
-							diagnostics,
-							contents,
-							root,
-							this_model.inner,
-							&match_,
-							capture.node.byte_range(),
-							matches!(mapstr, PyCompletions::Mapped),
-						);
-					}
-					Some(PyCompletions::Scope) => {
-						if !in_active_root(capture.node.byte_range()) {
-							continue;
-						}
-						// Most of these steps are similar to what is done inside model_of_range.
-						let offset = capture.node.start_byte();
-						let Some((self_type, fn_scope, self_param)) = determine_scope(root, contents, offset) else {
-							continue;
-						};
-						let mut scope = Scope::default();
-						let self_type = match self_type {
-							Some(type_) => &contents[type_.byte_range().shrink(1)],
-							None => &[],
-						};
-						scope.super_ = Some(self_param.as_ref().into());
-						scope.insert(
-							self_param.into_owned(),
-							Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
-						);
-						let scope_end = fn_scope.end_byte();
-						Index::walk_scope(fn_scope, Some(scope), |scope, node| {
-							let entered = (self.index).build_scope(scope, node, scope_end, contents)?;
-
-							let attribute = node.child_by_field_name("attribute");
-							if node.kind() != "attribute" || attribute.as_ref().unwrap().kind() != "identifier" {
-								return ControlFlow::Continue(entered);
-							}
-
-							let attribute = attribute.unwrap();
-							static MODEL_BUILTINS: phf::Set<&str> = phf::phf_set!(
-								"env",
-								"id",
-								"ids",
-								"display_name",
-								"create_date",
-								"write_date",
-								"create_uid",
-								"write_uid",
-								"pool",
-								"record",
-								"flush_model",
-								"mapped",
-								"fields_get",
-								"user_has_groups",
-							);
-							let prop = String::from_utf8_lossy(&contents[attribute.byte_range()]);
-							if prop.starts_with('_')
-								|| MODEL_BUILTINS.contains(&prop)
-								|| MODEL_METHODS.contains(prop.as_bytes())
-							{
-								return ControlFlow::Continue(entered);
-							}
-
-							let Some(lhs_t) =
-								(self.index).type_of(node.child_by_field_name("object").unwrap(), scope, contents)
-							else {
-								return ControlFlow::Continue(entered);
-							};
-
-							let Some(model_name) = (self.index).try_resolve_model(&lhs_t, scope) else {
-								return ControlFlow::Continue(entered);
-							};
-
-							if (self.index).has_attribute(&lhs_t, &contents[attribute.byte_range()], scope) {
-								return ControlFlow::Continue(entered);
-							}
-
-							// HACK: fix this issue where the model name is just empty
-							if _R(model_name).is_empty() {
-								return ControlFlow::Continue(entered);
-							}
-
-							diagnostics.push(Diagnostic {
-								range: ts_range_to_lsp_range(attribute.range()),
-								severity: Some(DiagnosticSeverity::ERROR),
-								message: format!(
-									"Model `{}` has no property `{}`",
-									_R(model_name),
-									String::from_utf8_lossy(&contents[attribute.byte_range()]),
-								),
-								..Default::default()
-							});
-
-							ControlFlow::Continue(entered)
-						});
-					}
-					Some(PyCompletions::Request)
-					| Some(PyCompletions::ForXmlId)
-					| Some(PyCompletions::MappedTarget)
-					| Some(PyCompletions::Depends)
-					| Some(PyCompletions::Prop)
-					| Some(PyCompletions::ReadFn)
-					| None => {}
-				}
-			}
-
-			// post-process for field_descriptors
-			for &(descriptor, node) in &field_descriptors {
-				match descriptor {
-					b"comodel_name" => {
-						let range = node.byte_range().shrink(1);
-						let model = String::from_utf8_lossy(&contents[range.clone()]);
-						let model_key = _G(&model);
-						let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
-						if !has_model.unwrap_or(false) {
-							diagnostics.push(Diagnostic {
-								range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
-								message: format!("`{model}` is not a valid model name"),
-								severity: Some(DiagnosticSeverity::ERROR),
-								..Default::default()
-							})
-						}
-					}
-					b"domain" => {
-						let mut domain_node = node;
-						if domain_node.kind() == "lambda" {
-							let Some(body) = domain_node.child_by_field_name("body") else {
-								continue;
-							};
-							domain_node = body;
-						}
-						if domain_node.kind() != "list" {
-							continue;
-						}
-						let Some(comodel_name) = field_descriptors
-							.iter()
-							.find_map(|&(desc, node)| (desc == b"comodel_name").then_some(node))
-						else {
-							continue;
-						};
-						let comodel_name = Some(&contents[comodel_name.byte_range().shrink(1)]);
-
-						// TODO: walk subdomains (`any` and `not any`)
-						for domain in domain_node.named_children(&mut domain_node.walk()) {
-							if domain.kind() != "tuple" {
-								continue;
-							}
-
-							let Some(mapped) = domain.named_child(0) else { continue };
-							if mapped.kind() != "string" {
-								continue;
-							}
-
-							self.diagnose_mapped(
-								rope,
-								diagnostics,
-								contents,
-								root,
-								comodel_name,
-								&match_,
-								mapped.byte_range(),
-								true,
-							);
-						}
-					}
-					_ => {}
-				}
-			}
-		}
-	}
-
-	fn diagnose_mapped(
-		&self,
-		rope: &Rope,
-		diagnostics: &mut Vec<Diagnostic>,
-		contents: &[u8],
-		root: Node<'_>,
-		model: Option<&[u8]>,
-		match_: &QueryMatch<'_, '_>,
-		mapped_range: std::ops::Range<usize>,
-		expect_field: bool,
-	) {
-		let Some(Mapped {
-			needle,
-			model,
-			single_field,
-			mut range,
-		}) = self.gather_mapped(root, match_, None, mapped_range, model, contents, false)
-		else {
-			return;
-		};
-		let mut model = _I(&model);
-		let mut needle = needle.as_ref();
-		if single_field {
-			if let Some(dot) = needle.find('.') {
-				let message_range = range.start.0 + dot..range.end.0;
-				diagnostics.push(Diagnostic {
-					range: offset_range_to_lsp_range(message_range.map_unit(ByteOffset), rope.clone()).unwrap(),
-					severity: Some(DiagnosticSeverity::ERROR),
-					message: "Dotted access is not supported in this context".to_string(),
-					..Default::default()
-				});
-				needle = &needle[..dot];
-				range = (range.start.0..range.start.0 + dot).map_unit(ByteOffset);
-			}
-		} else {
-			match (self.index.models).resolve_mapped(&mut model, &mut needle, Some(&mut range)) {
-				Ok(()) => {}
-				Err(ResolveMappedError::NonRelational) => {
-					diagnostics.push(Diagnostic {
-						range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
-						severity: Some(DiagnosticSeverity::ERROR),
-						message: format!("`{needle}` is not a relational field"),
-						..Default::default()
-					});
-					return;
-				}
-			}
-		}
-		if needle.is_empty() {
-			// Nothing to compare yet, keep going.
-			return;
-		}
-		let mut has_property = false;
-		if self.index.models.contains_key(&model.into()) {
-			let Some(entry) = self.index.models.populate_properties(model.into(), &[]) else {
-				return;
-			};
-			static MAPPED_BUILTINS: phf::Set<&str> = phf::phf_set!(
-				"id",
-				"display_name",
-				"create_date",
-				"write_date",
-				"create_uid",
-				"write_uid"
-			);
-			if MAPPED_BUILTINS.contains(needle) {
-				return;
-			}
-			if let Some(key) = _G(needle) {
-				if expect_field {
-					let Some(fields) = entry.fields.as_ref() else { return };
-					has_property = fields.contains_key(&key.into())
-				} else {
-					let Some(methods) = entry.methods.as_ref() else { return };
-					has_property = methods.contains_key(&key.into());
-				}
-			}
-		}
-		if !has_property {
-			diagnostics.push(Diagnostic {
-				range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
-				severity: Some(DiagnosticSeverity::ERROR),
-				message: format!(
-					"Model `{}` has no {} `{needle}`",
-					_R(model),
-					if expect_field { "field" } else { "method" }
-				),
-				..Default::default()
-			});
-		}
-	}
 
 	#[allow(clippy::unused_async)] // reason: custom method
-	pub(crate) async fn debug_inspect_type(
+	pub async fn debug_inspect_type(
 		&self,
 		params: TextDocumentPositionParams,
 	) -> tower_lsp_server::jsonrpc::Result<Option<String>> {
@@ -1417,6 +831,23 @@ impl<'this> ThisModel<'this> {
 		top_level_range: core::ops::Range<usize>,
 		contents: &'this [u8],
 	) {
+		// sanity check: if tagged as part of a call expression, it must be a relational field declaration
+		match model.parent() {
+			Some(parent) if parent.kind() == "argument_list" => {
+				// (call (argument_list ..))
+				let call = parent.parent().unwrap();
+				// either fields.Many2one OR Many2one
+				let mut attr = call.named_child(0).unwrap();
+				if attr.kind() == "attribute" {
+					attr = attr.named_child(1).unwrap();
+				}
+				if !matches!(&contents[attr.byte_range()], b"Many2one" | b"One2many" | b"Many2many") {
+					return;
+				}
+			}
+			_ => {}
+		}
+
 		debug_assert_eq!(model.kind(), "string");
 		let (is_name, mut is_inherit) = match_
 			.nodes_for_capture_index(PyCompletions::Prop as _)
@@ -1443,197 +874,5 @@ impl<'this> ThisModel<'this> {
 				self.source = ThisModelKind::Inherited;
 			}
 		}
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use odoo_lsp::model::ModelProperties;
-	use pretty_assertions::assert_eq;
-
-	/// Tricky behavior here. The query syntax must match the trailing comma between
-	/// named arguments, and this test checks that. Furthermore, @help cannot be matched
-	/// as a `(string)` since that would reify its shape and refuse subsequent matches.
-	#[test]
-	fn test_model_fields() {
-		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-		let contents = br#"
-class Foo(models.Model):
-	foo = fields.Char('asd', help='asd')
-	bar = fields.Many2one(comodel_name='asd', help='asd')
-
-	@property
-	def foobs(self):
-		...
-
-	haha = fields.Many2many('asd')
-	what = fields.What(asd)
-
-	def passer(self):
-		...
-
-	html = fields.Html(related='asd', foo=123, help='asdf')
-"#;
-		let ast = parser.parse(&contents[..], None).unwrap();
-		let query = ModelProperties::query();
-		let mut cursor = QueryCursor::new();
-		let expected: &[&[&str]] = &[
-			&["foo", "fields", "Char", "'asd'", "help", "'asd'"],
-			&["bar", "fields", "Many2one", "comodel_name", "'asd'", "help", "'asd'"],
-			&["def foobs(self):\n\t\t...", "foobs"],
-			&["haha", "fields", "Many2many", "'asd'"],
-			&["what", "fields", "What"],
-			&["def passer(self):\n\t\t...", "passer"],
-			&[
-				"html", "fields", "Html", "related", "'asd'", "foo", "123", "help", "'asdf'",
-			],
-		];
-		let actual = cursor
-			.matches(query, ast.root_node(), &contents[..])
-			.map(|match_| {
-				match_
-					.captures
-					.iter()
-					.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
-					.collect::<Vec<_>>()
-			})
-			.collect::<Vec<_>>();
-		assert_eq!(expected, actual);
-	}
-
-	#[test]
-	fn test_py_completions() {
-		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-		let contents = br#"
-self.env.ref('ref')
-env['model']
-request.render('template')
-foo = fields.Char()
-bar = fields.Many2one('positional', string='blah', domain="[('foo', '=', 'bar')]")
-baz = fields.Many2many(comodel_name='named', domain=[('foo', '=', bar)])
-"#;
-		let ast = parser.parse(&contents[..], None).unwrap();
-		let query = PyCompletions::query();
-		let mut cursor = QueryCursor::new();
-		let expected = vec![
-			(0, vec!["env", "ref", "'ref'"]),
-			(1, vec!["env", "'model'"]),
-			(0, vec!["request", "render", "'template'"]),
-			(4, vec!["fields", "Many2one", "'positional'", "string", "domain"]),
-			(4, vec!["fields", "Many2many", "comodel_name", "domain"]),
-		];
-		let actual = cursor
-			.matches(query, ast.root_node(), &contents[..])
-			.map(|match_| {
-				(
-					match_.pattern_index,
-					match_
-						.captures
-						.iter()
-						.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
-						.collect::<Vec<_>>(),
-				)
-			})
-			.collect::<Vec<_>>();
-		let actual = actual
-			.iter()
-			.map(|(index, captures)| (*index, captures.iter().map(|x| x.as_ref()).collect::<Vec<_>>()))
-			.collect::<Vec<_>>();
-		assert_eq!(expected, actual);
-	}
-
-	#[test]
-	fn test_py_completions_class_scoped() {
-		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-		let contents = br#"
-class Foo(models.AbstractModel):
-	_name = 'foo'
-	_inherit = ['inherit_foo', 'inherit_bar']
-
-	foo = fields.Char(related='related')
-
-	@api.constrains('mapped', 'meh')
-	def foo(self):
-		what = self.sudo().mapped('ha.ha')
-
-	foo = fields.Foo()
-
-	@api.depends_context('uid')
-	@api.depends('mapped2', 'mapped3')
-	def another(self):
-		pass
-
-	def no_decorators(self):
-		pass
-"#;
-		let ast = parser.parse(contents, None).unwrap();
-		let query = PyCompletions::query();
-		let mut cursor = QueryCursor::new();
-		let expected: &[&[&str]] = &[
-			&["_name", "'foo'"],
-			&["_inherit", "'inherit_foo'", "'inherit_bar'"],
-			&["foo", "fields", "related", "'related'"],
-			// api.constrains('mapped', 'meh')
-			&["api", "constrains", "'mapped'"],
-			&["api", "constrains", "'meh'"],
-			// scope detection with no .depends
-			// note that it goes later
-			&["self.sudo()", "mapped", "'ha.ha'"],
-			&["api.constrains('mapped', 'meh')", "<scope>"],
-			&["foo", "fields"],
-			// scope detection with both .depends and non-.depends
-			// first, each of the original MAPPED rules are triggered
-			&["api", "depends", "'mapped2'"],
-			&["api", "depends", "'mapped3'"],
-			&["api", "depends", "'mapped2'", "'mapped3'", "<scope>"],
-			// no decorators
-			&["<scope>"],
-		];
-		let actual = cursor
-			.matches(query, ast.root_node(), &contents[..])
-			.map(|match_| {
-				match_
-					.captures
-					.iter()
-					.map(|capture| match PyCompletions::from(capture.index) {
-						Some(PyCompletions::Scope) => Cow::from("<scope>"),
-						_ => String::from_utf8_lossy(&contents[capture.node.byte_range()]),
-					})
-					.collect::<Vec<_>>()
-			})
-			.collect::<Vec<_>>();
-		assert_eq!(expected, actual);
-	}
-
-	#[test]
-	fn test_attribute_node_at_offset() {
-		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-		let contents = "foo.mapped(lambda f: f.bar)";
-		let offset = contents.find("bar").unwrap();
-		let contents = contents.as_bytes();
-		let ast = parser.parse(contents, None).unwrap();
-		let (object, field, range) = Backend::attribute_node_at_offset(offset, ast.root_node(), contents).unwrap();
-		assert_eq!(&contents[object.byte_range()], b"f");
-		assert_eq!(field.as_ref(), "bar");
-		assert_eq!(&contents[range], b"bar");
-	}
-
-	#[test]
-	fn test_attribute_at_offset_2() {
-		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-		let contents = "super().powerful()";
-		let offset = contents.find("powerful").unwrap();
-		let contents = contents.as_bytes();
-		let ast = parser.parse(contents, None).unwrap();
-		let (object, field, range) = Backend::attribute_node_at_offset(offset, ast.root_node(), contents).unwrap();
-		assert_eq!(&contents[object.byte_range()], b"super()");
-		assert_eq!(field.as_ref(), "powerful");
-		assert_eq!(&contents[range], b"powerful");
 	}
 }

@@ -1,3 +1,5 @@
+//! The main indexer for all language items, including [`Record`]s, QWeb [`Template`]s, and Owl [`Component`]s
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;

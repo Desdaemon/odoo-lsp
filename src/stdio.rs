@@ -1,5 +1,5 @@
-//! Copied from [`async_lsp::stdio`]  
-//! Link: https://github.com/oxalica/async-lsp/blob/main/src/stdio.rs  
+//! Copied from [`async_lsp::stdio`](https://docs.rs/async-lsp/latest/async_lsp/stdio/index.html)  
+//! Link: <https://github.com/oxalica/async-lsp/blob/main/src/stdio.rs>  
 //! Original source is licensed under MIT or Apache v2
 
 use std::io::{self, Error, ErrorKind, IoSlice, Read, Result, StdinLock, StdoutLock, Write};

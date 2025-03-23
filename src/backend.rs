@@ -1,5 +1,5 @@
 //! This module contains all leaf methods for [Backend] that are not suitable
-//! for inclusion in [main](super).
+//! for inclusion in [`server`][crate::server]
 //!
 //! This is the final destination in the flowchart.
 
@@ -13,7 +13,6 @@ use dashmap::DashMap;
 use derive_more::{Deref, DerefMut};
 use fomat_macros::fomat;
 use globwalk::FileType;
-use odoo_lsp::component::{Prop, PropDescriptor};
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
@@ -22,11 +21,12 @@ use tower_lsp_server::Client;
 use tracing::{debug, error, info, instrument, warn};
 use tree_sitter::{Parser, Tree};
 
-use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig};
-use odoo_lsp::index::{Component, Index, ModuleName, RecordId, Symbol, SymbolSet, _G, _I, _P, _R};
-use odoo_lsp::model::{Field, FieldKind, Method, ModelEntry, ModelLocation, ModelName, PropertyKind};
-use odoo_lsp::record::Record;
-use odoo_lsp::{errloc, format_loc, some, utils::*};
+use crate::component::{Prop, PropDescriptor};
+use crate::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig};
+use crate::index::{Component, Index, ModuleName, RecordId, Symbol, SymbolSet, _G, _I, _P, _R};
+use crate::model::{Field, FieldKind, Method, ModelEntry, ModelLocation, ModelName, PropertyKind};
+use crate::record::Record;
+use crate::{errloc, format_loc, some, utils::*};
 
 #[derive(Deref)]
 pub struct Backend {
@@ -209,6 +209,15 @@ impl Backend {
 				break;
 			}
 			self.workspaces.insert(dir, Workspace::default());
+		}
+
+		if let Some(Ok(config)) = params
+			.initialization_options
+			.as_ref()
+			.cloned()
+			.map(serde_json::from_value)
+		{
+			self.on_change_config(config, None);
 		}
 	}
 
@@ -992,6 +1001,8 @@ impl Backend {
 			(origin_fragment)
 		}
 	}
+	/// The main entrypoint for configuration changes.
+	///
 	/// If `roots` is not given, only `project_config` will be updated.
 	pub fn on_change_config(&self, config: Config, root: Option<&Path>) {
 		let Config {
@@ -1011,6 +1022,11 @@ impl Backend {
 			}
 			if let Some(limit) = symbols.and_then(|c| c.limit) {
 				self.project_config.symbols_limit.store(limit, Relaxed);
+			}
+			if let Some(ModuleConfig { roots: Some(roots) }) = module.as_ref() {
+				for root in roots {
+					self.workspaces.insert(PathBuf::from(root), Default::default());
+				}
 			}
 			return;
 		};

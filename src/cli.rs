@@ -1,3 +1,5 @@
+//! One-shot commands.
+
 use std::{env::current_dir, io::stdout, process::exit, sync::Arc};
 
 use anyhow::Context;

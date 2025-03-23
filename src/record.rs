@@ -1,3 +1,5 @@
+//! XML [records][Record], as well as [`template`][Record::template] and [`menuitem`][Record::menuitem] shorthands.
+
 use ropey::Rope;
 use tower_lsp_server::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};

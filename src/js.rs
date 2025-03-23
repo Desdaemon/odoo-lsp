@@ -1,14 +1,14 @@
 use std::borrow::Cow;
 
-use crate::backend::Backend;
-use crate::Text;
-
-use odoo_lsp::index::{ComponentQuery, _G};
-use odoo_lsp::{errloc, some};
-use odoo_lsp::utils::{position_to_offset, ts_range_to_lsp_range, ByteOffset, RangeExt};
 use ropey::Rope;
 use tower_lsp_server::lsp_types::*;
 use tree_sitter::{Parser, QueryCursor};
+
+use crate::backend::Backend;
+use crate::backend::Text;
+use crate::index::{ComponentQuery, _G};
+use crate::utils::{position_to_offset, ts_range_to_lsp_range, ByteOffset, RangeExt};
+use crate::{errloc, some};
 
 impl Backend {
 	pub fn on_change_js(&self, text: &Text, uri: &Uri, rope: Rope, old_rope: Option<Rope>) -> anyhow::Result<()> {
