@@ -13,8 +13,8 @@ use crate::backend::Backend;
 use crate::index::{_G, _R};
 use crate::model::PropertyKind;
 use crate::some;
+use crate::utils::MaxVec;
 use crate::utils::*;
-use crate::utils::{ByteRange, Erase, MaxVec};
 
 use super::{top_level_stmt, Mapped, PyCompletions, ThisModel};
 
@@ -119,7 +119,7 @@ impl Backend {
 								root,
 								&match_,
 								offset,
-								range.map_unit(ByteOffset),
+								capture.node,
 								this_model.inner,
 								contents,
 								completions_limit,
@@ -145,7 +145,7 @@ impl Backend {
 									root,
 									&match_,
 									offset,
-									desc_value.byte_range().map_unit(ByteOffset),
+									desc_value,
 									this_model.inner,
 									contents,
 									completions_limit,
@@ -229,7 +229,7 @@ impl Backend {
 								root,
 								&match_,
 								offset,
-								mapped.byte_range().map_unit(ByteOffset),
+								mapped,
 								comodel_name,
 								contents,
 								completions_limit,
@@ -251,6 +251,7 @@ impl Backend {
 					model.to_string(),
 					rope,
 					None,
+					false,
 					&mut items,
 				)?;
 				return Ok(Some(CompletionResponse::List(CompletionList {
@@ -268,7 +269,7 @@ impl Backend {
 		root: Node,
 		match_: &QueryMatch,
 		offset: usize,
-		range: ByteRange,
+		node: Node,
 		this_model: Option<&[u8]>,
 		contents: &[u8],
 		completions_limit: usize,
@@ -284,7 +285,7 @@ impl Backend {
 			root,
 			match_,
 			Some(offset),
-			range.erase(),
+			node.byte_range(),
 			this_model,
 			contents,
 			true,
@@ -304,7 +305,15 @@ impl Backend {
 				.ok());
 		}
 		let model_name = _R(model);
-		self.complete_property_name(needle, range, model_name.to_string(), rope, prop_type, &mut items)?;
+		self.complete_property_name(
+			needle,
+			range,
+			model_name.to_string(),
+			rope,
+			prop_type,
+			node.kind() == "string",
+			&mut items,
+		)?;
 		Ok(Some(CompletionResponse::List(CompletionList {
 			is_incomplete: !items.has_space(),
 			items: items.into_inner(),

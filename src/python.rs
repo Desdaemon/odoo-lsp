@@ -426,7 +426,7 @@ impl Backend {
 								root,
 								&match_,
 								Some(offset),
-								range.clone(),
+								desc_value.byte_range(),
 								this_model.inner,
 								contents,
 								false,
@@ -731,12 +731,11 @@ impl Backend {
 							return self.hover_model(&slice, Some(lsp_range), false, None);
 						} else if matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related") {
 							let single_field = descriptor != b"related";
-							let range = desc_value.byte_range();
 							let mapped = some!(self.gather_mapped(
 								root,
 								&match_,
 								Some(offset),
-								range.clone(),
+								desc_value.byte_range(),
 								this_model.inner,
 								contents,
 								false,

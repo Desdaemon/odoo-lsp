@@ -25,12 +25,16 @@ opt-level = 1
 
 [profile.release]
 lto = "thin"
-codegen-units = 1
 strip = true
 
 [profile.bench]
 debug = true
 strip = false
+
+[profile.release-lto]
+inherits = "release"
+lto = true
+codegen-units = 1
 
 [package.metadata.binstall]
 pkg-url = "{repo}/releases/download/v{version}/{name}-{target}{archive-suffix}"

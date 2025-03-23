@@ -4,14 +4,16 @@
  * ------------------------------------------------------------------------------------------ */
 
 import { mkdir, rm } from "node:fs/promises";
-import { type Stats, existsSync } from "node:fs";
+import { type Stats, existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { get } from "node:https";
+import { createHash } from "node:crypto";
 import {
 	LanguageClient,
-	LanguageClientOptions,
 	RevealOutputChannelOn,
-	ServerOptions,
+	type TextDocumentPositionParams,
+	type LanguageClientOptions,
+	type ServerOptions,
 } from "vscode-languageclient/node";
 import { registerXmlFileAssociations, registerXPathSemanticTokensProvider } from "./xml";
 import {
@@ -26,7 +28,7 @@ import {
 	which,
 } from "./utils";
 import * as vscode from "vscode";
-import { $ } from "execa";
+import $ from "nano-spawn";
 
 let client: LanguageClient;
 let extensionState: State;
@@ -134,8 +136,6 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		return compareDate(latestStat.ctime, releaseDate) < 0;
 	})();
 
-	const powershell = { shell: "powershell.exe" };
-	const sh = { shell: "sh" };
 	if (!existsSync(latest) || hasNewerNightly) {
 		await vscode.window.withProgress(
 			{ location: vscode.ProgressLocation.Notification, title: `Downloading odoo-lsp@${release}...` },
@@ -143,17 +143,14 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 				try {
 					await downloadFile(link, latest);
 					await downloadFile(shaLink, shaOutput);
-					if (isWindows) {
-						const shell = $(powershell);
-						const { stdout } =
-							await shell`(Get-Filehash ${latest} -Algorithm SHA256).Hash -eq (Get-Content ${shaOutput})`;
-						if (stdout.trim() !== "True") throw new Error("Checksum verification failed");
-						await $(powershell)`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`;
-					} else {
-						const shell = $(sh);
-						await shell`if [ "$(shasum -a 256 ${latest} | cut -d ' ' -f 1)" != "$(cat ${shaOutput})" ]; then exit 1; fi`;
-						await shell`tar -xzf ${latest} -C ${runtimeDir}`;
-					}
+
+					// Checksum verification
+					const fileBuffer = readFileSync(latest);
+					const hashSum = createHash("sha256");
+					hashSum.update(fileBuffer);
+					const hex = hashSum.digest("hex");
+					const sha = readFileSync(shaOutput, "utf8").trim();
+					if (hex !== sha) throw new Error("Checksum verification failed");
 				} catch (err) {
 					// We only build nightly when there are changes, so there will be days without nightly builds.
 					if (hasNewerNightly) vscode.window.showErrorMessage(`Failed to download odoo-lsp binary: ${err}`);
@@ -163,9 +160,9 @@ async function downloadLspBinary(context: vscode.ExtensionContext) {
 		);
 	} else if (!existsSync(odooLspBin)) {
 		if (isWindows) {
-			await $(powershell)`Expand-Archive -Path ${latest} -DestinationPath ${runtimeDir}`;
+			await $("Expand-Archive", ["-Path", latest, "-DestinationPath", runtimeDir], { shell: "powershell" });
 		} else {
-			await $`tar -xzf ${latest} -C ${runtimeDir}`;
+			await $("tar", ["xzf", latest, "-C", runtimeDir]);
 		}
 	}
 
@@ -435,6 +432,30 @@ export async function activate(context: vscode.ExtensionContext) {
 				content: JSON.stringify(formatted, undefined, 2),
 			});
 			await vscode.window.showTextDocument(doc);
+		}),
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerTextEditorCommand("odoo-lsp.debug.type", async (editor) => {
+			const pos = editor.selection.active;
+			const uri = editor.document.uri;
+			const value = await client.sendRequest("odoo-lsp/inspect-type", {
+				textDocument: { uri: uri.toString() },
+				position: editor.selection.active,
+			} satisfies TextDocumentPositionParams);
+			if (value && editor.document.uri === uri) {
+				const decorationType = vscode.window.createTextEditorDecorationType({
+					before: { contentText: "Type revealed by odoo-lsp" },
+					after: { contentText: "" },
+				});
+				editor.setDecorations(decorationType, [
+					{
+						range: new vscode.Range(pos, pos),
+						hoverMessage: { language: "rust", value: String(value) },
+					},
+				]);
+				vscode.commands.executeCommand("editor.action.showHover").then(() => decorationType.dispose());
+			}
 		}),
 	);
 

@@ -11,7 +11,7 @@ use ts_macros::query;
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
 use crate::index::{PathSymbol, _I};
 use crate::utils::{offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, MinLoc, RangeExt};
-use crate::{errloc, format_loc, ok};
+use crate::{errloc, format_loc, ok, ImStr};
 
 use super::{Component, ComponentName, Output, TemplateName, _R};
 
@@ -22,7 +22,7 @@ use super::{Component, ComponentName, Output, TemplateName, _R};
 #[rustfmt::skip]
 query! {
 	#[lang = "tree_sitter_javascript"]
-	ComponentQuery(Name, Prop, Parent, TemplateName, TemplateInline, Subcomponent);
+	JsQuery(Name, Prop, Parent, TemplateName, TemplateInline, Subcomponent, RegistryCategory, RegistryField);
 ((class_declaration
   (identifier) @NAME
   (class_body [
@@ -111,37 +111,52 @@ query! {
     (shorthand_property_identifier) @SUBCOMPONENT ]))
   (#eq? @_components "components")
   (#match? @SUBCOMPONENT "^[A-Z]"))
+
+// registry.category(CATEGORY).add(FIELD, ..)
+(call_expression
+  (member_expression
+    (call_expression
+      (member_expression (identifier) @_registry (property_identifier) @_category
+        (#eq? @_registry "registry")
+        (#eq? @_category "category"))
+      (arguments . (string) @REGISTRY_CATEGORY .))
+    (property_identifier) @_add (#eq? @_add "add"))
+  (arguments . (string) @REGISTRY_FIELD))
 }
 
-pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
-	let path_key = PathSymbol::strip_root(root, &path);
-	let contents = ok!(tokio::fs::read(&path).await, "Could not read {:?}", path);
+pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<Output> {
+	let path = PathSymbol::strip_root(root, &pathbuf);
+	let contents = ok!(tokio::fs::read(&pathbuf).await, "Could not read {:?}", pathbuf);
 	let rope = ropey::Rope::from(String::from_utf8_lossy(&contents));
 	let mut parser = Parser::new();
 	ok!(parser.set_language(&tree_sitter_javascript::LANGUAGE.into()));
 	let ast = parser.parse(&contents, None).ok_or_else(|| errloc!("AST not parsed"))?;
-	let query = ComponentQuery::query();
+	let query = JsQuery::query();
 	let mut cursor = QueryCursor::new();
 	let mut components = HashMap::<_, Component>::default();
+	let mut widgets = Vec::new();
+	let mut actions = Vec::new();
 
 	for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
 		let first = match_.captures.first().unwrap();
-		debug_assert_eq!(first.index, ComponentQuery::Name as u32);
+		debug_assert_eq!(first.index, JsQuery::Name as u32);
 
 		let name = String::from_utf8_lossy(&contents[first.node.byte_range()]);
 		let name = _I(&name);
 		let component = components.entry(name.into()).or_default();
 		if component.location.is_none() {
 			component.location = Some(MinLoc {
-				path: path_key,
+				path,
 				range: ts_range_to_lsp_range(first.node.range()),
 			});
 		}
 
+		let mut category = None;
+
 		for capture in match_.captures {
 			use intmap::Entry;
-			match ComponentQuery::from(capture.index) {
-				Some(ComponentQuery::Prop) => {
+			match JsQuery::from(capture.index) {
+				Some(JsQuery::Prop) => {
 					let mut range = capture.node.byte_range();
 					if capture.node.kind() == "string" {
 						range = range.shrink(1);
@@ -153,7 +168,7 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> anyhow::Result<Out
 						Entry::Vacant(entry) => entry.insert(PropDescriptor {
 							type_: Default::default(),
 							location: MinLoc {
-								path: path_key,
+								path,
 								range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
 							},
 						}),
@@ -162,33 +177,55 @@ pub(super) async fn add_root_js(root: Spur, path: PathBuf) -> anyhow::Result<Out
 						entry.type_ = parse_prop_type(descriptor, &contents, Some(entry.type_));
 					}
 				}
-				Some(ComponentQuery::Parent) => {
+				Some(JsQuery::Parent) => {
 					let parent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
 					let parent = _I(parent);
 					component.ancestors.push(parent.into());
 				}
-				Some(ComponentQuery::TemplateName) => {
+				Some(JsQuery::TemplateName) => {
 					let name = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
 					let name = _I(&name);
 					component.template = Some(ComponentTemplate::Name(name.into()));
 				}
-				Some(ComponentQuery::TemplateInline) => {
+				Some(JsQuery::TemplateInline) => {
 					let range = capture.node.byte_range().shrink(1).map_unit(ByteOffset);
 					component.template = Some(ComponentTemplate::Inline(
 						offset_range_to_lsp_range(range, rope.clone()).unwrap(),
 					));
 				}
-				Some(ComponentQuery::Subcomponent) => {
+				Some(JsQuery::Subcomponent) => {
 					let subcomponent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
 					let subcomponent = _I(&subcomponent);
 					component.subcomponents.push(subcomponent.into());
 				}
-				Some(ComponentQuery::Name) | None => {}
+				// === registry ===
+				Some(JsQuery::RegistryCategory) => {
+					let range = capture.node.byte_range().shrink(1);
+					category = Some(&contents[range]);
+				}
+				Some(JsQuery::RegistryField) => {
+					let range = capture.node.byte_range().shrink(1);
+					let field = String::from_utf8_lossy(&contents[range]);
+					let loc = MinLoc {
+						path,
+						range: ts_range_to_lsp_range(capture.node.range()),
+					};
+					match category {
+						Some(b"fields") => widgets.push((ImStr::from(field.as_ref()), loc)),
+						Some(b"actions") => actions.push((ImStr::from(field.as_ref()), loc)),
+						_ => {}
+					}
+				}
+				Some(JsQuery::Name) | None => {}
 			}
 		}
 	}
 
-	Ok(Output::Components(components))
+	Ok(Output::JsItems {
+		components,
+		widgets,
+		actions,
+	})
 }
 
 fn parse_prop_type(node: Node, contents: &[u8], seed: Option<PropType>) -> PropType {

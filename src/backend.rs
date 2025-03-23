@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
 use tower_lsp_server::lsp_types::*;
 use tower_lsp_server::Client;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 use tree_sitter::{Parser, Tree};
 
 use crate::component::{Prop, PropDescriptor};
@@ -455,9 +455,9 @@ impl Backend {
 		model: String,
 		rope: Rope,
 		for_only_prop: Option<PropertyKind>,
+		in_string: bool,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
-		debug!("needle=`{needle}` model=`{model}`");
 		if !items.has_space() {
 			return Ok(());
 		}
@@ -466,6 +466,7 @@ impl Backend {
 		let Some(model_entry) = self.index.models.populate_properties(model_key.into(), &[]) else {
 			return Ok(());
 		};
+		trace!(needle, ?range, model, ?for_only_prop);
 		let iter = if needle.is_empty() {
 			model_entry.properties_by_prefix.iter()
 		} else {
@@ -478,8 +479,11 @@ impl Backend {
 			// SAFETY: only utf-8 bytestrings from interner() are allowed
 			let label = unsafe { core::str::from_utf8_unchecked(property_name).to_string() };
 			let mut new_text = label.to_string();
-			if matches!(kind, PropertyKind::Method) {
-				new_text += "()";
+			let mut insert_text_format = None;
+			if !in_string && matches!(kind, PropertyKind::Method) {
+				// TODO: Change the snippet format when the method has no args
+				new_text += "(${1:})$0";
+				insert_text_format = Some(InsertTextFormat::SNIPPET);
 			}
 			let kind = Some(match kind {
 				PropertyKind::Field => CompletionItemKind::FIELD,
@@ -488,6 +492,7 @@ impl Backend {
 			Some(CompletionItem {
 				label,
 				kind,
+				insert_text_format,
 				text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
 				data: serde_json::to_value(CompletionData { model: model.clone() }).ok(),
 				..Default::default()

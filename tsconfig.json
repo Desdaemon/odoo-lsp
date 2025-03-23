@@ -1,11 +1,17 @@
 {
 	"compilerOptions": {
-		"module": "commonjs",
-		"target": "es2019",
-		"lib": ["ES2019"],
+		"module": "ESNext",
+		"target": "ESNext",
+		"lib": ["ES2023"],
 		"outDir": "out",
 		"rootDir": "src",
-		"sourceMap": true
+		"sourceMap": true,
+		"resolveJsonModule": true,
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"skipDefaultLibCheck": true,
+		"skipLibCheck": true,
+		"moduleResolution": "bundler"
 	},
 	"include": ["src"],
 	"exclude": ["node_modules", ".vscode-test"],

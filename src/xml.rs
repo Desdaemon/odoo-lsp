@@ -282,6 +282,7 @@ impl Backend {
 					model_filter,
 					rope.clone(),
 					Some(PropertyKind::Field),
+					true,
 					&mut items,
 				)?;
 			}
@@ -355,6 +356,7 @@ impl Backend {
 					_R(model).to_string(),
 					rope.clone(),
 					None, // Field would be better, but leave this here at least until @property is implemented
+					false,
 					&mut items,
 				)?;
 			}

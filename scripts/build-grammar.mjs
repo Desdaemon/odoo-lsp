@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-const { load } = require("js-yaml");
-const { readFile, writeFile } = require("fs");
+import { load } from "js-yaml";
+import { readFile, writeFile } from "fs";
 
 const fileMap = {
 	"syntaxes/gen/odoo-xml.yml": "syntaxes/odoo-xml.tmLanguage.json",

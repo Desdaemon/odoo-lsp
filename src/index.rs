@@ -22,24 +22,23 @@ use tree_sitter::QueryCursor;
 use ts_macros::query;
 use xmlparser::{Token, Tokenizer};
 
+pub use crate::component::{Component, ComponentName};
 use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
+use crate::template::{gather_templates, NewTemplate};
+pub use crate::template::{Template, TemplateName};
 use crate::utils::{path_contains, ts_range_to_lsp_range, uri_from_file_path, ByteOffset, ByteRange, MinLoc, RangeExt};
 use crate::{errloc, format_loc, loc, ok, ImStr};
 
+mod js;
 mod record;
-pub use record::{RecordId, SymbolMap, SymbolSet};
 mod symbol;
-pub use symbol::{PathSymbol, Symbol, _G, _I, _P, _R};
 mod template;
-pub use crate::template::{Template, TemplateName};
-pub use template::TemplateIndex;
-mod component;
-pub use crate::component::{Component, ComponentName};
-pub use component::ComponentQuery;
-mod registry;
 
-use crate::template::{gather_templates, NewTemplate};
+pub use js::JsQuery;
+pub use record::{RecordId, SymbolMap, SymbolSet};
+pub use symbol::{PathSymbol, Symbol, _G, _I, _P, _R};
+pub use template::TemplateIndex;
 
 pub type Interner = Wrapper<ThreadedRodeo>;
 
@@ -70,7 +69,7 @@ pub struct Index {
 	pub records: record::RecordIndex,
 	pub templates: template::TemplateIndex,
 	pub models: ModelIndex,
-	pub components: component::ComponentIndex,
+	pub components: js::ComponentIndex,
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub widgets: DashMap<ImStr, MinLoc>,
 	#[default(_code = "DashMap::with_shard_amount(4)")]
@@ -91,8 +90,8 @@ enum Output {
 		path: PathSymbol,
 		models: Vec<Model>,
 	},
-	Components(HashMap<ComponentName, Component>),
-	Registries {
+	JsItems {
+		components: HashMap<ComponentName, Component>,
 		widgets: Vec<(ImStr, MinLoc)>,
 		actions: Vec<(ImStr, MinLoc)>,
 	},
@@ -171,13 +170,7 @@ impl Index {
 		let mut outputs = tokio::task::JoinSet::new();
 		let root_key = _I(root.to_string_lossy());
 		for manifest in manifests {
-			let manifest = match manifest {
-				Ok(manifest) => manifest,
-				Err(err) => {
-					warn!(err = %err, "error traversing manifest");
-					continue;
-				}
-			};
+			let Ok(manifest) = manifest else { continue };
 			let Some(module_dir) = manifest.path().parent() else {
 				continue;
 			};
@@ -231,13 +224,7 @@ impl Index {
 				manifest.path()
 			);
 			for xml in xmls {
-				let xml = match xml {
-					Ok(entry) => entry,
-					Err(err) => {
-						debug!("{err}");
-						continue;
-					}
-				};
+				let Ok(xml) = xml else { continue };
 				outputs.spawn(add_root_xml(root_key, xml.path().to_path_buf(), module_key.into()));
 			}
 			let pys = ok!(
@@ -270,10 +257,12 @@ impl Index {
 			for js in scripts {
 				let Ok(js) = js else { continue };
 				let path = js.path().to_path_buf();
-				outputs.spawn(registry::add_root_js(root_key, path.clone()));
-				outputs.spawn(component::add_root_js(root_key, path));
+				outputs.spawn(js::add_root_js(root_key, path));
 			}
 			if let Some(progress) = progress.clone() {
+				// we cannot use tokio::spawn here, because later the progress will
+				// be unwrapped and we want to ensure it's the only instance by then
+				// this means that this cloned process cannot outlive outputs
 				outputs.spawn(async move {
 					progress.report(module_name.clone()).await;
 					Ok(Output::Nothing)
@@ -309,11 +298,13 @@ impl Index {
 					model_count += models.len();
 					self.models.append(path, false, &models).await;
 				}
-				Output::Components(components) => {
+				Output::JsItems {
+					components,
+					widgets,
+					actions,
+				} => {
 					component_count += components.len();
 					self.components.extend(components);
-				}
-				Output::Registries { widgets, actions } => {
 					for (widget, loc) in widgets {
 						if !self.widgets.contains_key(&widget) {
 							self.widgets.insert(widget, loc);
@@ -343,7 +334,7 @@ impl Index {
 			elapsed: t0.elapsed(),
 		}))
 	}
-	async fn notify_duplicate_base(client: Client, old_path: ImStr, new_path: PathBuf) -> anyhow::Result<Output> {
+	async fn notify_duplicate_base(client: Client, old_path: ImStr, new_path: PathBuf) {
 		let resp = client
 			.show_message_request(
 				MessageType::WARNING,
@@ -399,8 +390,6 @@ impl Index {
 			}
 			_ => {}
 		}
-
-		Ok(Output::Nothing)
 	}
 	pub fn remove_root(&self, root: &Path) {
 		self.roots.remove(root);

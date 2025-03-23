@@ -6,7 +6,7 @@ use tree_sitter::{Parser, QueryCursor};
 
 use crate::backend::Backend;
 use crate::backend::Text;
-use crate::index::{ComponentQuery, _G};
+use crate::index::{JsQuery, _G};
 use crate::utils::{position_to_offset, ts_range_to_lsp_range, ByteOffset, RangeExt};
 use crate::{errloc, some};
 
@@ -29,12 +29,12 @@ impl Backend {
 		};
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
-		let query = ComponentQuery::query();
+		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
 		for match_ in cursor.matches(query, ast.root_node(), contents) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
-				if capture.index == ComponentQuery::TemplateName as u32 && range.contains(&offset) {
+				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
 					let key = some!(_G(String::from_utf8_lossy(&contents[range.shrink(1)])));
 					return Ok(some!(self.index.templates.get(&key.into()))
 						.location
@@ -57,12 +57,12 @@ impl Backend {
 		};
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
-		let query = ComponentQuery::query();
+		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
 		for match_ in cursor.matches(query, ast.root_node(), contents) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
-				if capture.index == ComponentQuery::TemplateName as u32 && range.contains(&offset) {
+				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
 					let key = String::from_utf8_lossy(&contents[range.shrink(1)]);
 					let key = some!(_G(key));
 					let template = some!(self.index.templates.get(&key.into()));
@@ -90,18 +90,18 @@ impl Backend {
 		};
 		let contents = Cow::from(rope);
 		let contents = contents.as_bytes();
-		let query = ComponentQuery::query();
+		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
 		for match_ in cursor.matches(query, ast.root_node(), contents) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
-				if capture.index == ComponentQuery::TemplateName as u32 && range.contains(&offset) {
+				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
 					return Ok(self.hover_template(
 						&String::from_utf8_lossy(&contents[range.shrink(1)]),
 						Some(ts_range_to_lsp_range(capture.node.range())),
 					));
 				}
-				if capture.index == ComponentQuery::Name as u32 && range.contains(&offset) {
+				if capture.index == JsQuery::Name as u32 && range.contains(&offset) {
 					return Ok(self.hover_component(
 						&String::from_utf8_lossy(&contents[range]),
 						Some(ts_range_to_lsp_range(capture.node.range())),

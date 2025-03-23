@@ -3,4 +3,4 @@ set -euxo pipefail
 
 rm dist/** || true
 npm run esbuild-base -- --minify
-./scripts/build-grammar
+node ./scripts/build-grammar.mjs

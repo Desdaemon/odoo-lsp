@@ -1,16 +1,10 @@
 {
+	"extends": "../tsconfig.json",
 	"compilerOptions": {
-		"module": "commonjs",
-		"target": "es2019",
-		"lib": ["ES2019"],
+		"target": "ESNext",
+		"lib": ["ES2023"],
 		"outDir": "../dist",
-		"rootDir": "src",
-		"sourceMap": true,
-		"resolveJsonModule": true,
-		"strict": true,
-		"noUncheckedIndexedAccess": true,
-		"skipDefaultLibCheck": true,
-		"skipLibCheck": true
+		"rootDir": "src"
 	},
 	"include": ["src"],
 	"exclude": ["node_modules", ".vscode-test"]

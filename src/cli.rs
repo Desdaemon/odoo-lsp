@@ -16,6 +16,7 @@ mod tsconfig;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_VERSION: &str = git_version::git_version!(args = ["--tags", "--candidates=0"], fallback = "");
+const GIT_TAG: &str = git_version::git_version!();
 
 #[derive(Default)]
 pub struct Args<'a> {
@@ -101,7 +102,8 @@ pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 				exit(0);
 			}
 			["-v" | "--version", ..] => {
-				eprintln!("odoo-lsp v{VERSION} git:{GIT_VERSION}");
+				const GITVER: &str = if GIT_VERSION.is_empty() { GIT_TAG } else { GIT_VERSION };
+				eprintln!("odoo-lsp v{VERSION} git:{GITVER}");
 				exit(0);
 			}
 			["--addons-path", path, rest @ ..] => {

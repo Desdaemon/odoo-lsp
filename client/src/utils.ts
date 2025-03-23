@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { exec } from "node:child_process";
 import type { ExtensionContext } from "vscode";
-import { $ } from "execa";
+import $ from "nano-spawn";
 
 export const isWindows = process.platform === "win32";
 export const shell = isWindows ? "powershell.exe" : "sh";
@@ -42,9 +42,11 @@ export function makeStates<T extends Record<string | number, (..._: unknown[]) =
 
 export async function downloadFile(src: string, dest: string) {
 	if (isWindows) {
-		await $({ shell })`Invoke-WebRequest -Uri ${src} -OutFile ${dest}`;
+		await $("Invoke-WebRequest", ["-Uri", src, "-OutFile", dest], { shell });
+	} else if (await which("curl")) {
+		await $("curl", ["-Lo", dest, src]);
 	} else {
-		await $`curl -Lo ${dest} ${src}`;
+		await $("wget", ["-O", dest, src]);
 	}
 }
 
@@ -62,11 +64,14 @@ export function compareDate(lhs: Date, rhs: Date) {
 	return left - right;
 }
 
-export function which(bin: string) {
+export async function which(bin: string) {
 	const checker = isWindows ? "Get-Command" : "which";
-	return new Promise<boolean>((resolve) => {
-		exec(`${checker} ${bin}`, { shell }, (err) => resolve(err === null));
-	});
+	try {
+		await $(checker, [bin], { shell });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export async function openLink(url: string) {
