@@ -113,7 +113,7 @@ jobs:
           sudo apt-get install -y gcc-multilib
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --profile release-lto
+        run: cargo build --profile release-lto --target ${{ matrix.target }}
 
       - name: Zip files
         shell: bash
