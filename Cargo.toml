@@ -56,6 +56,7 @@ tower = { version = "0.5", features = ["timeout"] }
 futures = "0.3.31"
 tree-sitter-python = "0.23.6"
 globwalk = "0.9.1"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 
 [dependencies]
 ropey = "1.5.0"
@@ -79,7 +80,6 @@ git-version = "0.3.9"
 smart-default = "0.7.1"
 const_format = { version = "0.2.34", features = ["assertcp"] }
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 tree-sitter-javascript = "0.23.1"
 self_update = { version = "0.42.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }
 anyhow = { version = "1.0.97", features = ["backtrace"] }
@@ -92,6 +92,7 @@ tower.workspace = true
 futures.workspace = true
 globwalk.workspace = true
 ts-macros.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true

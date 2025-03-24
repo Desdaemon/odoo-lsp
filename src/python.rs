@@ -504,14 +504,14 @@ impl Backend {
 		);
 		let lhs;
 		let rhs;
-		let mut on_dot = false;
 		if !cursor_node.is_named() {
-			on_dot = true;
 			// We landed on one of the punctuations inside the attribute.
 			// Need to determine which one it is.
-			let dot = cursor_node.descendant_for_byte_range(offset, offset)?;
-			lhs = dot.prev_named_sibling()?;
-			rhs = dot.next_named_sibling().and_then(|attr| match attr.kind() {
+			// We cannot depend on prev_named_sibling because the AST may be all messed up
+			let idx = contents[..=offset].iter().rposition(|c| *c == b'.')?;
+			let ident = contents[..=idx].iter().rposition(u8::is_ascii_alphanumeric)?;
+			lhs = root.descendant_for_byte_range(ident, ident)?;
+			rhs = lhs.next_named_sibling().and_then(|attr| match attr.kind() {
 				"identifier" => Some(attr),
 				"attribute" => attr.child_by_field_name("attribute"),
 				_ => None,
@@ -546,7 +546,7 @@ impl Backend {
 		let Some(rhs) = rhs else {
 			// In single-expression mode, rhs could be empty in which case
 			// we return an empty needle/range.
-			let offset = real_offset.unwrap_or(offset) + if on_dot { 1 } else { 0 };
+			let offset = real_offset.unwrap_or(offset);
 			return Some((lhs, Cow::from(""), offset..offset));
 		};
 		let (field, range) = if rhs.range().start_point.row != lhs.range().end_point.row {

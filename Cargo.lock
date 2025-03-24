@@ -1465,6 +1465,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tower-lsp-server",
+ "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-python",
  "tree-sitter-xml",

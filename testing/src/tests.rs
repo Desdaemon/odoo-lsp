@@ -9,6 +9,7 @@ use async_lsp::LanguageServer;
 use futures::{stream::FuturesUnordered, StreamExt};
 use pretty_assertions::{Comparison, StrComparison};
 use rstest::*;
+use tracing_subscriber::filter::LevelFilter;
 use tree_sitter::Parser;
 use tree_sitter::Query;
 use tree_sitter::QueryCursor;
@@ -22,6 +23,13 @@ use crate::server;
 async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	std::env::set_current_dir(&root).unwrap();
 	let mut server = server::setup_lsp_server(None);
+	tracing_subscriber::fmt()
+		.with_env_filter(
+			tracing_subscriber::EnvFilter::builder()
+				.with_default_directive(LevelFilter::TRACE.into())
+				.from_env_lossy(),
+		)
+		.init();
 
 	_ = server
 		.initialize(InitializeParams {
@@ -267,11 +275,7 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 		for (match_, _) in cursor.captures(query(), ast.root_node(), &contents[..]) {
 			for capture in match_.captures {
 				let text = &contents[capture.node.byte_range()][1..];
-				let Some(idx) = text
-					.iter()
-					.enumerate()
-					.find_map(|(idx, ch)| (*ch == b'^').then_some(idx))
-				else {
+				let Some(idx) = text.iter().position(|ch| *ch == b'^') else {
 					continue;
 				};
 				let mut text = text.trim_ascii();

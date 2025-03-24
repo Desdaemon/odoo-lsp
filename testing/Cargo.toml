@@ -21,6 +21,7 @@ tree-sitter-python.workspace = true
 tokio.workspace = true
 futures.workspace = true
 globwalk.workspace = true
+tracing-subscriber.workspace = true
 odoo-lsp.path = ".."
 
 [target.'cfg(target_os = "linux")'.dependencies]
