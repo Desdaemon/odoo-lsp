@@ -91,7 +91,7 @@ mod cli;
 #[cfg(doc)]
 pub use odoo_lsp::*;
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_family = "wasm")))]
 mod stdio;
 
 fn main() {
@@ -106,6 +106,13 @@ fn main() {
 		_ => {}
 	}
 
+	#[cfg(target_family = "wasm")]
+	let rt = tokio::runtime::Builder::new_current_thread()
+		.enable_time()
+		.build()
+		.expect("failed to build runtime");
+
+	#[cfg(not(target_family = "wasm"))]
 	let rt = if threads <= 1 {
 		tokio::runtime::Builder::new_current_thread().enable_all().build()
 	} else {
@@ -115,19 +122,23 @@ fn main() {
 			.build()
 	}
 	.expect("failed to build runtime");
+
 	rt.block_on(async move {
 		if cli::run(args).await {
 			return;
 		}
 
-		#[cfg(unix)]
+		#[cfg(all(unix, not(target_family = "wasm")))]
 		let (stdin, stdout) = (
 			stdio::PipeStdin::lock_tokio().unwrap(),
 			stdio::PipeStdout::lock_tokio().unwrap(),
 		);
 
-		#[cfg(not(unix))]
+		#[cfg(all(not(unix), not(target_family = "wasm")))]
 		let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
+
+		#[cfg(target_family = "wasm")]
+		let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
 
 		let (service, socket) = LspService::build(Backend::new)
 			.custom_method("odoo-lsp/debug/usage", |_: &Backend| async move {

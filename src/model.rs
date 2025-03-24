@@ -7,6 +7,7 @@ use std::fmt::Display;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use async_lock::RwLock;
 use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
 use derive_more::{Deref, DerefMut};
@@ -14,7 +15,6 @@ use lasso::Spur;
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use smart_default::SmartDefault;
-use tokio::sync::RwLock;
 use tower_lsp_server::lsp_types::Range;
 use tracing::{debug, error, info, trace, warn};
 use tree_sitter::{Node, Parser, QueryCursor};

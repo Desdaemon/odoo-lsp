@@ -8,7 +8,6 @@ use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig
 use odoo_lsp::index::{Index, _R};
 use odoo_lsp::utils::strict_canonicalize;
 use odoo_lsp::{errloc, format_loc, loc};
-use self_update::{backends::github, Status};
 use serde_json::Value;
 use tracing::{debug, warn};
 
@@ -16,7 +15,7 @@ mod tsconfig;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_VERSION: &str = git_version::git_version!(args = ["--tags", "--candidates=0"], fallback = "");
-const GIT_TAG: &str = git_version::git_version!();
+const GET_REF: &str = git_version::git_version!();
 
 #[derive(Default)]
 pub struct Args<'a> {
@@ -35,6 +34,7 @@ pub enum Command {
 		tsconfig: bool,
 	},
 	TsConfig,
+	#[cfg(feature = "self_update")]
 	SelfUpdate {
 		nightly: bool,
 	},
@@ -93,6 +93,7 @@ pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 				args = rest;
 				out.command = Command::Init { tsconfig: false };
 			}
+			#[cfg(feature = "self_update")]
 			["self-update", rest @ ..] => {
 				args = rest;
 				out.command = Command::SelfUpdate { nightly: false };
@@ -102,7 +103,7 @@ pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 				exit(0);
 			}
 			["-v" | "--version", ..] => {
-				const GITVER: &str = if GIT_VERSION.is_empty() { GIT_TAG } else { GIT_VERSION };
+				const GITVER: &str = if GIT_VERSION.is_empty() { GET_REF } else { GIT_VERSION };
 				eprintln!("odoo-lsp v{VERSION} git:{GITVER}");
 				exit(0);
 			}
@@ -120,6 +121,7 @@ pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 					*tsconfig = true;
 				}
 			}
+			#[cfg(feature = "self_update")]
 			["--nightly", rest @ ..] => {
 				args = rest;
 				if let Command::SelfUpdate { nightly } = &mut out.command {
@@ -171,6 +173,7 @@ pub async fn run(args: Args<'_>) -> bool {
 					.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
 			}
 		}
+		#[cfg(feature = "self_update")]
 		Command::SelfUpdate { nightly } => {
 			_ = tokio::task::spawn_blocking(move || self_update(nightly))
 				.await
@@ -316,7 +319,9 @@ fn init(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<()> {
 	Ok(())
 }
 
+#[cfg(feature = "self_update")]
 fn self_update(nightly: bool) -> anyhow::Result<()> {
+	use self_update::{backends::github, Status};
 	const _: () = {
 		if option_env!("CI").is_some() {
 			assert!(!GIT_VERSION.is_empty(), "Git tag must be present when running in CI");

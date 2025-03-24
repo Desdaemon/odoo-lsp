@@ -148,7 +148,7 @@ impl Index {
 			}
 		}
 
-		let t0 = tokio::time::Instant::now();
+		let t0 = std::time::Instant::now();
 		let manifests = ok!(
 			globwalk::glob_builder(root.join("**/__manifest__.py").to_string_lossy())
 				.file_type(FileType::FILE | FileType::SYMLINK)
@@ -433,7 +433,13 @@ impl Index {
 
 async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> anyhow::Result<Output> {
 	let path_uri = PathSymbol::strip_root(root, &path);
-	let file = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
+
+	#[cfg(target_family = "wasm")]
+	let file = std::fs::read(&path)?;
+
+	#[cfg(not(target_family = "wasm"))]
+	let file = tokio::fs::read(&path).await?;
+
 	let file = String::from_utf8_lossy(&file);
 	let mut reader = Tokenizer::from(file.as_ref());
 	let mut records = vec![];
@@ -510,7 +516,11 @@ query! {
 }
 
 async fn add_root_py(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
-	let contents = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
+	#[cfg(target_family = "wasm")]
+	let contents = std::fs::read(&path)?;
+
+	#[cfg(not(target_family = "wasm"))]
+	let contents = tokio::fs::read(&path).await?;
 
 	let path = PathSymbol::strip_root(root, &path);
 	let models = index_models(&contents)?;

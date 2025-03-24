@@ -205,7 +205,8 @@ impl LanguageServer for Backend {
 			let path = params.text_document.uri.to_file_path();
 			let mut path = path.as_deref();
 			while let Some(path_) = path {
-				if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
+				let manifest_path = path_.with_file_name("__manifest__.py");
+				if tokio::task::spawn_blocking(move || manifest_path.exists())
 					.await
 					.unwrap_or(false)
 				{
@@ -442,7 +443,7 @@ impl LanguageServer for Backend {
 		Ok(completion)
 	}
 	async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
-		match self.python_signature_help(params).await {
+		match self.python_signature_help(params) {
 			Ok(ret) => Ok(ret),
 			Err(err) => {
 				error!("{err}");

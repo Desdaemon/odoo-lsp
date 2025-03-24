@@ -1,12 +1,12 @@
 use crate::ImStr;
 use std::{collections::HashSet, fmt::Debug, hash::Hash, marker::PhantomData};
 
+use async_lock::RwLock;
 use dashmap::{mapref::one::Ref, DashMap};
 use derive_more::{Deref, DerefMut};
 use intmap::IntMap;
 use lasso::{Key, Spur};
 use smart_default::SmartDefault;
-use tokio::sync::RwLock;
 
 use crate::{model::ModelName, record::Record};
 

@@ -1,10 +1,10 @@
 use std::ops::DerefMut;
 use std::{collections::HashMap, path::PathBuf};
 
+use async_lock::RwLock;
 use dashmap::DashMap;
 use lasso::{Key, Spur};
 use smart_default::SmartDefault;
-use tokio::sync::RwLock;
 use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
@@ -126,7 +126,13 @@ query! {
 
 pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<Output> {
 	let path = PathSymbol::strip_root(root, &pathbuf);
-	let contents = ok!(tokio::fs::read(&pathbuf).await, "Could not read {:?}", pathbuf);
+
+	#[cfg(target_family = "wasm")]
+	let contents = std::fs::read(&pathbuf)?;
+
+	#[cfg(not(target_family = "wasm"))]
+	let contents = tokio::fs::read(&pathbuf).await?;
+
 	let rope = ropey::Rope::from(String::from_utf8_lossy(&contents));
 	let mut parser = Parser::new();
 	ok!(parser.set_language(&tree_sitter_javascript::LANGUAGE.into()));

@@ -1,8 +1,8 @@
 use derive_more::Deref;
 
+use async_lock::RwLock;
 use dashmap::DashMap;
 use smart_default::SmartDefault;
-use tokio::sync::RwLock;
 
 use crate::template::NewTemplate;
 

@@ -799,10 +799,7 @@ impl Backend {
 		}
 	}
 
-	pub(crate) async fn python_signature_help(
-		&self,
-		params: SignatureHelpParams,
-	) -> anyhow::Result<Option<SignatureHelp>> {
+	pub(crate) fn python_signature_help(&self, params: SignatureHelpParams) -> anyhow::Result<Option<SignatureHelp>> {
 		use std::fmt::Write;
 
 		let document =
@@ -856,7 +853,7 @@ impl Backend {
 		};
 		let method_key = some!(_G(&method));
 		let rtype = (self.index).resolve_method_returntype(method_key.into(), model_key.into());
-		let model = some!((self.index).models.get(&model_key.into()));
+		let model = some!((self.index).models.get(&model_key));
 		let method_obj = some!(some!(model.methods.as_ref()).get(&method_key.into()));
 
 		let mut label = format!("{}(", method);

@@ -32,7 +32,8 @@ query! {
 }
 
 pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> anyhow::Result<()> {
-	let contents = tokio::fs::read(&file).await?;
+	let file_ = file.clone();
+	let contents = tokio::task::spawn_blocking(move || std::fs::read(file_)).await??;
 
 	let file = _I(file.to_string_lossy());
 
