@@ -23,7 +23,7 @@ mod tests;
 
 #[rustfmt::skip]
 query! {
-	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor);
+	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor, FieldType);
 
 (call [
   (attribute [
@@ -55,9 +55,11 @@ query! {
         (list ((string) @MODEL ","?)*)
         (call
           (attribute
-            (identifier) @_fields (identifier) (#eq? @_fields "fields"))
+            (identifier) @_fields (identifier) @FIELD_TYPE (#eq? @_fields "fields"))
           (argument_list
-            . ((comment)* (string)? @MODEL)
+            . [
+              ((comment)+ (string) @MODEL)
+              (string) @MODEL ]?
             // handles `related` `compute` `search` and `inverse`
             ((keyword_argument (identifier) @FIELD_DESCRIPTOR (_)) ","?)*)) ])))))
 
@@ -70,15 +72,6 @@ query! {
   (#match? @_mapper "^(mapp|filter|sort|group)ed$")
   (#eq? @_api "api")
   (#match? @DEPENDS "^(depends|constrains|onchange)$"))
-
-(call [
-  (identifier) @_Field
-  (attribute (identifier) @_fields (identifier) @_Field) ]
-  (argument_list
-    . ((comment)* . (string) @MODEL)?
-	((keyword_argument (identifier) @FIELD_DESCRIPTOR (_)) ","?)*)
-  (#eq? @_fields "fields")
-  (#match? @_Field "^(Many2one|One2many|Many2many)$"))
 
 ((call
   (attribute
@@ -305,9 +298,6 @@ impl Backend {
 		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next() {
 			let model_ = (self.index).model_of_range(root, local_model.byte_range().map_unit(ByteOffset), contents)?;
 			model = _R(model_).to_string();
-		} else if let Some(field_model) = match_.nodes_for_capture_index(PyCompletions::Model as _).next() {
-			// A sibling @MODEL node; this is defined on the `fields.*(comodel_name='@MODEL', domain=[..])` pattern
-			model = String::from_utf8_lossy(&contents[field_model.byte_range().shrink(1)]).into_owned();
 		} else if let Some(this_model) = &this_model {
 			model = String::from_utf8_lossy(this_model).to_string();
 		} else {
@@ -359,6 +349,7 @@ impl Backend {
 		let query = PyCompletions::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut this_model = ThisModel::default();
+
 		for match_ in cursor.matches(query, root, contents) {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
@@ -376,12 +367,17 @@ impl Backend {
 							.next()
 							.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
 							.unwrap_or(true);
-						if is_meta && range.contains(&offset) {
+						if range.contains(&offset) {
 							let range = range.shrink(1);
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.jump_def_model(&slice);
-						} else if range.end < offset {
+						} else if range.end < offset && is_meta
+						// match_
+						// 	.nodes_for_capture_index(PyCompletions::FieldType as _)
+						// 	.next()
+						// 	.is_none()
+						{
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
 					}
@@ -454,6 +450,7 @@ impl Backend {
 					| Some(PyCompletions::Prop)
 					| Some(PyCompletions::ReadFn)
 					| Some(PyCompletions::Scope)
+					| Some(PyCompletions::FieldType)
 					| None => {}
 				}
 			}
@@ -601,7 +598,12 @@ impl Backend {
 							let slice = Cow::from(slice);
 							let slice = some!(_G(slice));
 							return self.model_references(&path, &slice.into());
-						} else if range.end < offset {
+						} else if range.end < offset
+							&& match_
+								.nodes_for_capture_index(PyCompletions::FieldType as _)
+								.next()
+								.is_none()
+						{
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
 					}
@@ -639,6 +641,7 @@ impl Backend {
 					| Some(PyCompletions::Prop)
 					| Some(PyCompletions::ReadFn)
 					| Some(PyCompletions::Scope)
+					| Some(PyCompletions::FieldType)
 					| None => {}
 				}
 			}
@@ -770,6 +773,7 @@ impl Backend {
 					| Some(PyCompletions::ReadFn)
 					| Some(PyCompletions::Scope)
 					| Some(PyCompletions::Prop)
+					| Some(PyCompletions::FieldType)
 					| None => {}
 				}
 			}
@@ -799,10 +803,7 @@ impl Backend {
 		}
 	}
 
-	pub(crate) async fn python_signature_help(
-		&self,
-		params: SignatureHelpParams,
-	) -> anyhow::Result<Option<SignatureHelp>> {
+	pub(crate) fn python_signature_help(&self, params: SignatureHelpParams) -> anyhow::Result<Option<SignatureHelp>> {
 		use std::fmt::Write;
 
 		let document =
@@ -856,7 +857,7 @@ impl Backend {
 		};
 		let method_key = some!(_G(&method));
 		let rtype = (self.index).resolve_method_returntype(method_key.into(), model_key.into());
-		let model = some!((self.index).models.get(&model_key.into()));
+		let model = some!((self.index).models.get(&model_key));
 		let method_obj = some!(some!(model.methods.as_ref()).get(&method_key.into()));
 
 		let mut label = format!("{}(", method);
@@ -944,21 +945,13 @@ impl<'this> ThisModel<'this> {
 		top_level_range: core::ops::Range<usize>,
 		contents: &'this [u8],
 	) {
-		// sanity check: if tagged as part of a call expression, it must be a relational field declaration
-		match model.parent() {
-			Some(parent) if parent.kind() == "argument_list" => {
-				// (call (argument_list ..))
-				let call = parent.parent().unwrap();
-				// either fields.Many2one OR Many2one
-				let mut attr = call.named_child(0).unwrap();
-				if attr.kind() == "attribute" {
-					attr = attr.named_child(1).unwrap();
-				}
-				if !matches!(&contents[attr.byte_range()], b"Many2one" | b"One2many" | b"Many2many") {
-					return;
-				}
-			}
-			_ => {}
+		if match_
+			.nodes_for_capture_index(PyCompletions::FieldType as _)
+			.next()
+			.is_some()
+		{
+			// debug_assert!(false, "tag_model called on a class model; handle this manually");
+			return;
 		}
 
 		debug_assert_eq!(model.kind(), "string");

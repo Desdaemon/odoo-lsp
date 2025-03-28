@@ -63,8 +63,6 @@ self.env.ref('ref')
 env['model']
 request.render('template')
 foo = fields.Char()
-bar = fields.Many2one('positional', string='blah', domain="[('foo', '=', 'bar')]")
-baz = fields.Many2many(comodel_name='named', domain=[('foo', '=', bar)])
 "#;
 	let ast = parser.parse(&contents[..], None).unwrap();
 	let query = PyCompletions::query();
@@ -73,8 +71,6 @@ baz = fields.Many2many(comodel_name='named', domain=[('foo', '=', bar)])
 		(0, vec!["env", "ref", "'ref'"]),
 		(1, vec!["env", "'model'"]),
 		(0, vec!["request", "render", "'template'"]),
-		(4, vec!["fields", "Many2one", "'positional'", "string", "domain"]),
-		(4, vec!["fields", "Many2many", "comodel_name", "domain"]),
 	];
 	let actual = cursor
 		.matches(query, ast.root_node(), &contents[..])
@@ -105,7 +101,9 @@ class Foo(models.AbstractModel):
 	_name = 'foo'
 	_inherit = ['inherit_foo', 'inherit_bar']
 
-	foo = fields.Char(related='related')
+	foo = fields.Many2one('some.model', 'Field Name', related='related')
+	bar = fields.Many2one('positional', string='blah', domain="[('foo', '=', 'bar')]")
+	baz = fields.Many2many(comodel_name='named', domain=[('foo', '=', bar)])
 
 	@api.constrains('mapped', 'meh')
 	def foo(self):
@@ -127,7 +125,9 @@ class Foo(models.AbstractModel):
 	let expected: &[&[&str]] = &[
 		&["_name", "'foo'"],
 		&["_inherit", "'inherit_foo'", "'inherit_bar'"],
-		&["foo", "fields", "related"],
+		&["foo", "fields", "ft:Many2one", "'some.model'", "related"],
+		&["bar", "fields", "ft:Many2one", "'positional'", "string", "domain"],
+		&["baz", "fields", "ft:Many2many", "comodel_name", "domain"],
 		// api.constrains('mapped', 'meh')
 		&["api", "constrains", "'mapped'"],
 		&["api", "constrains", "'meh'"],
@@ -135,7 +135,7 @@ class Foo(models.AbstractModel):
 		// note that it goes later
 		&["self.sudo()", "mapped", "'ha.ha'"],
 		&["api.constrains('mapped', 'meh')", "<scope>"],
-		&["foo", "fields"],
+		&["foo", "fields", "ft:Foo"],
 		// scope detection with both .depends and non-.depends
 		// first, each of the original MAPPED rules are triggered
 		&["api", "depends", "'mapped2'"],
@@ -152,6 +152,10 @@ class Foo(models.AbstractModel):
 				.iter()
 				.map(|capture| match PyCompletions::from(capture.index) {
 					Some(PyCompletions::Scope) => Cow::from("<scope>"),
+					Some(PyCompletions::FieldType) => Cow::from(format!(
+						"ft:{}",
+						String::from_utf8_lossy(&contents[capture.node.byte_range()])
+					)),
 					_ => String::from_utf8_lossy(&contents[capture.node.byte_range()]),
 				})
 				.collect::<Vec<_>>()

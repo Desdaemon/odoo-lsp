@@ -82,7 +82,7 @@ pub enum FunctionParam {
 impl core::fmt::Display for FunctionParam {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
-			FunctionParam::Param(param) => f.write_str(&param),
+			FunctionParam::Param(param) => f.write_str(param),
 			FunctionParam::PosEnd => f.write_char('/'),
 			FunctionParam::EitherEnd(None) => f.write_char('*'),
 			FunctionParam::EitherEnd(Some(param)) => write!(f, "*{}", param),

@@ -442,7 +442,7 @@ impl LanguageServer for Backend {
 		Ok(completion)
 	}
 	async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
-		match self.python_signature_help(params).await {
+		match self.python_signature_help(params) {
 			Ok(ret) => Ok(ret),
 			Err(err) => {
 				error!("{err}");

@@ -6,7 +6,7 @@ class Foo(Model):
     #                          ^complete bar derived.bar foo foob
     foo_o2m = fields.One2many("foo")
     #                          ^complete bar derived.bar foo foob
-    foo_m2m = fields.Many2many("foo")
+    foo_m2m = fields.Many2many("foo", 'bah', related='foo_m2o.foo_m2o')
     #                           ^complete bar derived.bar foo foob
 
     def completions(self):
@@ -32,6 +32,8 @@ class Foo(Model):
         #            ^diag Model `foo` has no field `foo`
         self.env["fo"]
         #         ^diag `fo` is not a valid model name
+        self.env.ref('bogus.bogus')
+        #             ^diag No XML record with ID `bogus.bogus` found
         self._context, self.pool, self.env
 
 
@@ -43,10 +45,10 @@ class Foob(Model):
 
     foo_id = fields.Many2one(comodel_name="foo")
     #                                      ^complete bar derived.bar foo foob
-    barb = fields.Char(related='foo_id.')
-    #                                  ^complete bar foo_m2m foo_m2o foo_o2m
-    hoeh = fields.Char(compute="_wunderbar")
-    #                           ^diag Model `foob` has no method `_wunderbar`
+    barb = fields.Char('Barb', related='foo_id.')
+    #                                          ^complete bar foo_m2m foo_m2o foo_o2m
+    hoeh = fields.Char('Hoeh', compute="_wunderbar")
+    #                                   ^diag Model `foob` has no method `_wunderbar`
 
     @api.depends("foo_id")
     #             ^complete barb foo_id hoeh

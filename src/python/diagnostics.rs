@@ -57,6 +57,7 @@ impl Backend {
 		let mut this_model = ThisModel::default();
 		for match_ in cursor.matches(query, root, contents) {
 			let mut field_descriptors = vec![];
+			let mut field_model = None;
 
 			for capture in match_.captures {
 				match PyCompletions::from(capture.index) {
@@ -64,15 +65,21 @@ impl Backend {
 						if !in_active_root(capture.node.byte_range()) {
 							continue;
 						}
-						let xml_id = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
+						let range = capture.node.byte_range().shrink(1);
+						let xml_id = String::from_utf8_lossy(&contents[range.clone()]);
 						let xml_id_key = _G(&xml_id);
 						let mut id_found = false;
 						if let Some(id) = xml_id_key {
 							id_found = self.index.records.contains_key(&id.into());
 						}
 						if !id_found {
+							let content_range = capture
+								.node
+								.first_child_for_byte(range.start)
+								.map(|content| content.range())
+								.unwrap_or_else(|| capture.node.range());
 							diagnostics.push(Diagnostic {
-								range: ts_range_to_lsp_range(capture.node.range()),
+								range: ts_range_to_lsp_range(content_range),
 								message: format!("No XML record with ID `{xml_id}` found"),
 								severity: Some(DiagnosticSeverity::WARNING),
 								..Default::default()
@@ -99,6 +106,29 @@ impl Backend {
 								continue;
 							}
 							_ => {}
+						}
+						if let Some(field_type) = match_.nodes_for_capture_index(PyCompletions::FieldType as _).next() {
+							if !matches!(
+								&contents[field_type.byte_range()],
+								b"One2many" | b"Many2one" | b"Many2many"
+							) {
+								continue;
+							}
+							let range = capture.node.byte_range().shrink(1);
+							let model = String::from_utf8_lossy(&contents[range.clone()]);
+							let model_key = _G(&model);
+							let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
+							if !has_model.unwrap_or(false) {
+								diagnostics.push(Diagnostic {
+									range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
+									message: format!("`{model}` is not a valid model name"),
+									severity: Some(DiagnosticSeverity::ERROR),
+									..Default::default()
+								})
+							} else if field_model.is_none() {
+								field_model = Some(&contents[range]);
+							}
+							continue;
 						}
 						let Ok(idx) = top_level_ranges.binary_search_by(|range| {
 							let needle = capture.node.end_byte();
@@ -130,18 +160,16 @@ impl Backend {
 							field_descriptors.push((descriptor, desc_value));
 						}
 					}
-					Some(PyCompletions::Mapped) => {
-						self.diagnose_mapped(
-							rope,
-							diagnostics,
-							contents,
-							root,
-							this_model.inner,
-							&match_,
-							capture.node.byte_range(),
-							true,
-						);
-					}
+					Some(PyCompletions::Mapped) => self.diagnose_mapped(
+						rope,
+						diagnostics,
+						contents,
+						root,
+						this_model.inner,
+						&match_,
+						capture.node.byte_range(),
+						true,
+					),
 					Some(PyCompletions::Scope) => {
 						if !in_active_root(capture.node.byte_range()) {
 							continue;
@@ -154,6 +182,7 @@ impl Backend {
 					| Some(PyCompletions::Depends)
 					| Some(PyCompletions::Prop)
 					| Some(PyCompletions::ReadFn)
+					| Some(PyCompletions::FieldType)
 					| None => {}
 				}
 			}
@@ -196,13 +225,14 @@ impl Backend {
 						if domain_node.kind() != "list" {
 							continue;
 						}
-						let Some(comodel_name) = field_descriptors
-							.iter()
-							.find_map(|&(desc, node)| (desc == b"comodel_name").then_some(node))
-						else {
+
+						let Some(comodel_name) = field_model.or_else(|| {
+							field_descriptors.iter().find_map(|&(desc, node)| {
+								(desc == b"comodel_name").then(|| &contents[node.byte_range().shrink(1)])
+							})
+						}) else {
 							continue;
 						};
-						let comodel_name = Some(&contents[comodel_name.byte_range().shrink(1)]);
 
 						// TODO: walk subdomains (`any` and `not any`)
 						for domain in domain_node.named_children(&mut domain_node.walk()) {
@@ -220,7 +250,7 @@ impl Backend {
 								diagnostics,
 								contents,
 								root,
-								comodel_name,
+								Some(comodel_name),
 								&match_,
 								mapped.byte_range(),
 								true,

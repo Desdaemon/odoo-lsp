@@ -9,7 +9,6 @@ use async_lsp::LanguageServer;
 use futures::{stream::FuturesUnordered, StreamExt};
 use pretty_assertions::{Comparison, StrComparison};
 use rstest::*;
-use tracing_subscriber::filter::LevelFilter;
 use tree_sitter::Parser;
 use tree_sitter::Query;
 use tree_sitter::QueryCursor;
@@ -24,11 +23,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	std::env::set_current_dir(&root).unwrap();
 	let mut server = server::setup_lsp_server(None);
 	tracing_subscriber::fmt()
-		.with_env_filter(
-			tracing_subscriber::EnvFilter::builder()
-				.with_default_directive(LevelFilter::TRACE.into())
-				.from_env_lossy(),
-		)
+		.with_env_filter(tracing_subscriber::EnvFilter::builder().parse_lossy("warn,odoo_lsp=trace"))
 		.init();
 
 	_ = server

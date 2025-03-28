@@ -1,5 +1,5 @@
-test: (ensure_cargo "cargo-nextest")
-    cargo nextest run -p odoo-lsp -p odoo-lsp-tests
+test *args: (ensure_cargo "cargo-nextest")
+    cargo nextest run -p odoo-lsp -p odoo-lsp-tests {{args}}
 
 bench: (ensure_cargo "iai-callgrind-runner")
     cargo bench -p odoo-lsp-tests
