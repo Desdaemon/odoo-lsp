@@ -185,5 +185,12 @@
 		"typescript": "^5.4.2",
 		"vscode-languageclient": "^9.0.1",
 		"vscode-uri": "^3.0.8"
+	},
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"@biomejs/biome",
+			"esbuild",
+			"keytar"
+		]
 	}
 }
