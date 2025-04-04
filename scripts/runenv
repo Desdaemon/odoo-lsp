@@ -1,0 +1,9 @@
+#!/bin/bash
+
+managers=("bun" "pnpm" "yarn")
+for manager in "${!managers[@]}"; do
+	command -v $manager &>/dev/null && $manager "$@" && exit;
+done
+
+command -v npm || echo 'At least npm must be present' && exit 1
+npm run "$@"
