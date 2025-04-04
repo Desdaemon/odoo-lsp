@@ -151,17 +151,16 @@
 		}
 	},
 	"scripts": {
-		"postinstall": "pnpm i -C client",
 		"vscode:prepublish": "./scripts/prepublish",
 		"esbuild-base": "esbuild ./client/src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
-		"esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
+		"esbuild-watch": "./scripts/runenv esbuild-base -- --sourcemap --watch",
 		"compile": "cross-env NODE_ENV=production tsc -b",
-		"watch": "rm -rf dist && npm run esbuild-watch",
+		"watch": "rm -rf dist && ./scripts/runenv esbuild-watch",
 		"lint": "prettier --write . && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged && ruff format",
-		"build": "npm run esbuild-base -- --sourcemap",
+		"build": "./scripts/runenv esbuild-base -- --sourcemap",
 		"package": "vsce package --no-dependencies",
 		"publish": "vsce publish --no-dependencies",
-		"install-for-vscode": "(rm *.vsix || true) && npm run package && code --install-extension *.vsix",
+		"install-for-vscode": "./scripts/runenv package && code --install-extension *.vsix",
 		"miri": "cargo +nightly miri test",
 		"changelog": "conventional-changelog -p conventionalcommits -i CHANGELOG.md -s"
 	},
