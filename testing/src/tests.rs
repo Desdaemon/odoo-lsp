@@ -16,15 +16,25 @@ use ts_macros::query;
 
 use crate::server;
 
+use std::sync::Once;
+
+static TRACING_INIT: Once = Once::new();
+
+fn init_tracing() {
+	TRACING_INIT.call_once(|| {
+		tracing_subscriber::fmt()
+			.with_env_filter(tracing_subscriber::EnvFilter::builder().parse_lossy("warn,odoo_lsp=trace"))
+			.init();
+	});
+}
+
 #[rstest]
 #[timeout(Duration::from_secs(1))]
 #[tokio::test(flavor = "current_thread")]
 async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	std::env::set_current_dir(&root).unwrap();
 	let mut server = server::setup_lsp_server(None);
-	tracing_subscriber::fmt()
-		.with_env_filter(tracing_subscriber::EnvFilter::builder().parse_lossy("warn,odoo_lsp=trace"))
-		.init();
+	init_tracing();
 
 	_ = server
 		.initialize(InitializeParams {
@@ -54,7 +64,10 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 		.into_iter()
 		.map(|(path, expected)| {
 			let mut server = server.clone();
-			let text = std::fs::read_to_string(&path).unwrap();
+			let text = match std::fs::read_to_string(&path) {
+				Ok(t) => t,
+				Err(e) => panic!("Failed to read {}: {e}", path.display()),
+			};
 			async move {
 				let mut diffs = vec![];
 
