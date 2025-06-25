@@ -1,8 +1,16 @@
 <odoo>
+	<record id="action_buton_xml" model="ir.actions.act_window">
+		<field name="name">action button</field>
+		<field name="res_model">foo</field>
+		<field name="view_mode">list,form</field>
+	</record>
+
 	<record id="foo.1" model="foo">
 		<field name="bar" />
 		<!--         ^complete bar -->
 		<button name="action_button" type="object" />
 		<!--          ^complete action_button action_button2 -->
+		<button name="%(foo.action_buton_xml)d" type="action" />
+		<!--                ^ TODO action_buton_xml make this work-->
 	</record>
 </odoo>
