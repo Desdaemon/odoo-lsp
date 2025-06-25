@@ -724,8 +724,6 @@ impl Backend {
 		let mut expect_model_string = false;
 		let mut expect_template_string = false;
 		let mut expect_action_tag = false;
-		let mut button_type_object = false;
-		let mut pending_button_name = None::<(&'read str, core::ops::Range<usize>)>;
 
 		let mut scope = Scope::default();
 		let mut parser = Parser::new();
@@ -747,11 +745,7 @@ impl Backend {
 					depth += 1;
 					match local.as_str() {
 						"field" => tag = Some(Tag::Field),
-						"button" => {
-							tag = Some(Tag::Button);
-							button_type_object = false;
-							pending_button_name = None;
-						}
+						"button" => tag = Some(Tag::Button),
 						"template" => {
 							tag = Some(Tag::Template);
 							model_filter = Some("ir.ui.view".to_string());
@@ -836,24 +830,12 @@ impl Backend {
 						_ => {}
 					}
 				}
-				// <button name=.. type="object"/>
+				// <button name=.. />
 				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Button)) => {
-					if local.as_str() == "type" {
-						button_type_object = value.as_str() == "object";
-						if button_type_object {
-							if let Some((name, range)) = pending_button_name.take() {
-								ref_at_cursor = Some((name, range));
-								ref_kind = Some(RefKind::MethodName(vec![]));
-							}
-						}
-					} else if local.as_str() == "name" {
+					if local.as_str() == "name" {
 						if value.range().contains_end(offset_at_cursor) {
-							if button_type_object {
-								ref_at_cursor = Some((value.as_str(), value.range()));
-								ref_kind = Some(RefKind::MethodName(vec![]));
-							} else {
-								pending_button_name = Some((value.as_str(), value.range()));
-							}
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::MethodName(vec![]));
 						}
 					}
 				}
@@ -1020,7 +1002,6 @@ impl Backend {
 							_ => {}
 						}
 						depth -= 1;
-						pending_button_name = None;
 					}
 					if template_mode
 						&& matches!(end, ElementEnd::Open | ElementEnd::Empty)
