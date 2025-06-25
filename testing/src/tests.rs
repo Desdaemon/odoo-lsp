@@ -30,7 +30,7 @@ fn init_tracing() {
 
 #[rstest]
 #[timeout(Duration::from_secs(1))]
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	std::env::set_current_dir(&root).unwrap();
 	let mut server = server::setup_lsp_server(None);
@@ -282,7 +282,8 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 
 		for (match_, _) in cursor.captures(query(), ast.root_node(), &contents[..]) {
 			for capture in match_.captures {
-				let text = &contents[capture.node.byte_range()][1..];
+				let skip = if matches!(lang, TestLanguages::Xml) { 4 } else { 1 };
+				let text = &contents[capture.node.byte_range()][skip..];
 				let Some(idx) = text.iter().position(|ch| *ch == b'^') else {
 					continue;
 				};
@@ -293,7 +294,7 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 				let range = capture.node.range();
 				let position = Position {
 					line: range.start_point.row as u32 - 1,
-					character: (range.start_point.column + idx + 1) as u32,
+					character: (range.start_point.column + idx + skip) as u32,
 				};
 				if let Some(complete) = text.strip_prefix(b"^complete ") {
 					let completions = String::from_utf8_lossy(complete);
