@@ -1,0 +1,8 @@
+<odoo>
+	<record id="foo.1" model="foo">
+		<field name="bar" />
+		<!--         ^complete bar -->
+		<button name="action_button" type="object" />
+		<!--          ^complete action_button action_button2 -->
+	</record>
+</odoo>
