@@ -28,6 +28,7 @@ enum RefKind<'a> {
 	Id,
 	/// A list of `(start_byte, field)` which came before this property, or empty if a top-level field.
 	PropertyName(Vec<(usize, &'a str)>),
+	MethodName(Vec<(usize, &'a str)>),
 	TName,
 	TInherit,
 	TCall,
@@ -46,6 +47,7 @@ enum RefKind<'a> {
 
 enum Tag<'a> {
 	Field,
+	Button,
 	Template,
 	Record,
 	Menuitem,
@@ -286,6 +288,28 @@ impl Backend {
 					&mut items,
 				)?;
 			}
+			RefKind::MethodName(access) => {
+				let mut model_filter = some!(model_filter);
+				let mapped = format!(
+					"{}.{needle}",
+					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
+				);
+				if !access.is_empty() {
+					needle = mapped.as_str();
+					let mut model = _I(model_filter);
+					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+					model_filter = _R(model).to_string();
+				}
+				self.complete_property_name(
+					needle,
+					replace_range,
+					model_filter,
+					rope.clone(),
+					Some(PropertyKind::Method),
+					true,
+					&mut items,
+				)?;
+			}
 			RefKind::TInherit | RefKind::TCall => {
 				let range = some!(offset_range_to_lsp_range(replace_range, rope.clone()));
 				self.complete_template_name(needle, range, &mut items).await?;
@@ -407,6 +431,20 @@ impl Backend {
 				}
 				self.jump_def_property_name(needle, &model_filter)
 			}
+			Some(RefKind::MethodName(access)) => {
+				let mut model_filter = some!(model_filter);
+				let mapped = format!(
+					"{}.{needle}",
+					access.iter().map(|(_, prop)| *prop).collect::<Vec<_>>().join(".")
+				);
+				if !access.is_empty() {
+					needle = mapped.as_str();
+					let mut model = _I(model_filter);
+					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+					model_filter = _R(model).to_string();
+				}
+				self.jump_def_property_name(needle, &model_filter)
+			}
 			Some(RefKind::TInherit) | Some(RefKind::TName) | Some(RefKind::TCall) => {
 				self.jump_def_template_name(needle)
 			}
@@ -465,6 +503,7 @@ impl Backend {
 			Some(RefKind::TName) => self.template_references(cursor_value, false),
 			Some(RefKind::PyExpr(_))
 			| Some(RefKind::PropertyName(_))
+			| Some(RefKind::MethodName(_))
 			| Some(RefKind::PropOf(..))
 			| Some(RefKind::Component)
 			| Some(RefKind::Widget)
@@ -506,6 +545,20 @@ impl Backend {
 			}
 			Some(RefKind::PropertyName(access)) => {
 				// let model = some!(model_filter);
+				let mut model_filter = some!(model_filter);
+				let mapped = format!(
+					"{}.{needle}",
+					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
+				);
+				if !access.is_empty() {
+					needle = mapped.as_str();
+					let mut model = _I(model_filter);
+					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+					model_filter = _R(model).to_string();
+				}
+				self.hover_property_name(needle, &model_filter, lsp_range)
+			}
+			Some(RefKind::MethodName(access)) => {
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
 					"{}.{needle}",
@@ -671,6 +724,8 @@ impl Backend {
 		let mut expect_model_string = false;
 		let mut expect_template_string = false;
 		let mut expect_action_tag = false;
+		let mut button_type_object = false;
+		let mut pending_button_name = None::<(&'read str, core::ops::Range<usize>)>;
 
 		let mut scope = Scope::default();
 		let mut parser = Parser::new();
@@ -692,6 +747,11 @@ impl Backend {
 					depth += 1;
 					match local.as_str() {
 						"field" => tag = Some(Tag::Field),
+						"button" => {
+							tag = Some(Tag::Button);
+							button_type_object = false;
+							pending_button_name = None;
+						}
 						"template" => {
 							tag = Some(Tag::Template);
 							model_filter = Some("ir.ui.view".to_string());
@@ -774,6 +834,27 @@ impl Backend {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 						}
 						_ => {}
+					}
+				}
+				// <button name=.. type="object"/>
+				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Button)) => {
+					if local.as_str() == "type" {
+						button_type_object = value.as_str() == "object";
+						if button_type_object {
+							if let Some((name, range)) = pending_button_name.take() {
+								ref_at_cursor = Some((name, range));
+								ref_kind = Some(RefKind::MethodName(vec![]));
+							}
+						}
+					} else if local.as_str() == "name" {
+						if value.range().contains_end(offset_at_cursor) {
+							if button_type_object {
+								ref_at_cursor = Some((value.as_str(), value.range()));
+								ref_kind = Some(RefKind::MethodName(vec![]));
+							} else {
+								pending_button_name = Some((value.as_str(), value.range()));
+							}
+						}
 					}
 				}
 				// <template inherit_id=.. />
@@ -939,6 +1020,7 @@ impl Backend {
 							_ => {}
 						}
 						depth -= 1;
+						pending_button_name = None;
 					}
 					if template_mode
 						&& matches!(end, ElementEnd::Open | ElementEnd::Empty)
