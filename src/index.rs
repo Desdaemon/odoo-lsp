@@ -16,7 +16,7 @@ use lasso::{Spur, ThreadedRodeo};
 use request::WorkDoneProgressCreate;
 use ropey::Rope;
 use smart_default::SmartDefault;
-use tower_lsp_server::{lsp_types::*, Client};
+use tower_lsp_server::{lsp_types::*, Client, UriExt};
 use tracing::{debug, warn};
 use tree_sitter::QueryCursor;
 use ts_macros::query;
@@ -27,7 +27,7 @@ use crate::model::{Model, ModelIndex, ModelType};
 use crate::record::Record;
 use crate::template::{gather_templates, NewTemplate};
 pub use crate::template::{Template, TemplateName};
-use crate::utils::{path_contains, ts_range_to_lsp_range, uri_from_file_path, ByteOffset, ByteRange, MinLoc, RangeExt};
+use crate::utils::{path_contains, ts_range_to_lsp_range, ByteOffset, ByteRange, MinLoc, RangeExt};
 use crate::{errloc, format_loc, loc, ok, ImStr};
 
 mod js;
@@ -373,7 +373,7 @@ impl Index {
 			Ok(Some(resp)) if resp.title == "Show conflicting modules" => {
 				_ = client
 					.show_document(ShowDocumentParams {
-						uri: uri_from_file_path(Path::new(old_path.as_str())).unwrap(),
+						uri: Uri::from_file_path(old_path.as_str()).unwrap(),
 						external: Some(false),
 						take_focus: Some(true),
 						selection: None,
@@ -381,7 +381,7 @@ impl Index {
 					.await;
 				_ = client
 					.show_document(ShowDocumentParams {
-						uri: uri_from_file_path(&new_path).unwrap(),
+						uri: Uri::from_file_path(&new_path).unwrap(),
 						external: Some(false),
 						take_focus: Some(false),
 						selection: None,

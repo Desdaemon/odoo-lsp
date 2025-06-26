@@ -16,8 +16,8 @@ use globwalk::FileType;
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
-use tower_lsp_server::lsp_types::*;
 use tower_lsp_server::Client;
+use tower_lsp_server::{lsp_types::*, UriExt};
 use tracing::{debug, error, info, instrument, trace, warn};
 use tree_sitter::{Parser, Tree};
 
@@ -1157,7 +1157,7 @@ impl Backend {
 		}));
 
 		Some(())
-	}	
+	}
 }
 
 impl Text {

@@ -6,11 +6,11 @@ use ropey::Rope;
 use serde_json::Value;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::lsp_types::notification::{DidChangeConfiguration, Notification};
-use tower_lsp_server::lsp_types::*;
 use tower_lsp_server::LanguageServer;
+use tower_lsp_server::{lsp_types::*, UriExt};
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{NAME, VERSION, GITVER};
+use crate::{GITVER, NAME, VERSION};
 
 use crate::backend::{Backend, Document, Language, Text};
 use crate::index::{_G, _R};
@@ -487,7 +487,7 @@ impl LanguageServer for Backend {
 			.workspaces
 			.iter()
 			.map(|entry| {
-				let scope_uri = uri_from_file_path(entry.key());
+				let scope_uri = Uri::from_file_path(entry.key());
 				ConfigurationItem {
 					section: Some("odoo-lsp".into()),
 					scope_uri,
@@ -593,8 +593,11 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
-	#[instrument(skip_all)]
-	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
+	#[instrument(skip_all, fields(query = params.query))]
+	async fn symbol(
+		&self,
+		params: WorkspaceSymbolParams,
+	) -> Result<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
@@ -639,13 +642,13 @@ impl LanguageServer for Backend {
 							.and_then(|record| (record.module == module).then(|| to_symbol_information(&record)))
 					})
 				});
-			Ok(Some(models.chain(records).take(limit).collect()))
+			Ok(Some(OneOf::Left(models.chain(records).take(limit).collect())))
 		} else {
 			let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter()
 					.flat_map(|key| self.index.records.get(key).map(|record| to_symbol_information(&record)))
 			});
-			Ok(Some(models.chain(records).take(limit).collect()))
+			Ok(Some(OneOf::Left(models.chain(records).take(limit).collect())))
 		}
 	}
 	#[instrument(skip_all, ret)]
@@ -713,7 +716,7 @@ impl LanguageServer for Backend {
 			_ = self
 				.client
 				.show_document(ShowDocumentParams {
-					uri: uri_from_file_path(&location.path.to_path()).unwrap(),
+					uri: Uri::from_file_path(location.path.to_path()).unwrap(),
 					external: Some(false),
 					take_focus: Some(true),
 					selection: Some(location.range),
