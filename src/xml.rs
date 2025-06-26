@@ -28,6 +28,7 @@ enum RefKind<'a> {
 	Id,
 	/// A list of `(start_byte, field)` which came before this property, or empty if a top-level field.
 	PropertyName(Vec<(usize, &'a str)>),
+	MethodName(Vec<(usize, &'a str)>),
 	TName,
 	TInherit,
 	TCall,
@@ -46,6 +47,7 @@ enum RefKind<'a> {
 
 enum Tag<'a> {
 	Field,
+	Button,
 	Template,
 	Record,
 	Menuitem,
@@ -264,7 +266,7 @@ impl Backend {
 				let range = some!(offset_range_to_lsp_range(replace_range, rope.clone()));
 				self.complete_model(needle, range, &mut items).await?
 			}
-			RefKind::PropertyName(access) => {
+			ref ref_kind @ RefKind::PropertyName(ref access) | ref ref_kind @ RefKind::MethodName(ref access) => {
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
 					"{}.{needle}",
@@ -281,7 +283,11 @@ impl Backend {
 					replace_range,
 					model_filter,
 					rope.clone(),
-					Some(PropertyKind::Field),
+					Some(if matches!(ref_kind, RefKind::MethodName(_)) {
+						PropertyKind::Method
+					} else {
+						PropertyKind::Field
+					}),
 					true,
 					&mut items,
 				)?;
@@ -393,7 +399,8 @@ impl Backend {
 		match ref_kind {
 			Some(RefKind::Ref(_)) => self.jump_def_xml_id(needle, uri),
 			Some(RefKind::Model) => self.jump_def_model(needle),
-			Some(RefKind::PropertyName(access)) => {
+			ref _ref_kind @ Some(RefKind::PropertyName(ref access))
+			| ref _ref_kind @ Some(RefKind::MethodName(ref access)) => {
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
 					"{}.{needle}",
@@ -465,6 +472,7 @@ impl Backend {
 			Some(RefKind::TName) => self.template_references(cursor_value, false),
 			Some(RefKind::PyExpr(_))
 			| Some(RefKind::PropertyName(_))
+			| Some(RefKind::MethodName(_))
 			| Some(RefKind::PropOf(..))
 			| Some(RefKind::Component)
 			| Some(RefKind::Widget)
@@ -504,7 +512,8 @@ impl Backend {
 					self.hover_record(&xml_id, lsp_range)
 				}
 			}
-			Some(RefKind::PropertyName(access)) => {
+			ref _ref_kind @ Some(RefKind::PropertyName(ref access))
+			| ref _ref_kind @ Some(RefKind::MethodName(ref access)) => {
 				// let model = some!(model_filter);
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
@@ -692,6 +701,7 @@ impl Backend {
 					depth += 1;
 					match local.as_str() {
 						"field" => tag = Some(Tag::Field),
+						"button" => tag = Some(Tag::Button),
 						"template" => {
 							tag = Some(Tag::Template);
 							model_filter = Some("ir.ui.view".to_string());
@@ -774,6 +784,15 @@ impl Backend {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 						}
 						_ => {}
+					}
+				}
+				// <button name=.. />
+				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Button)) => {
+					if local.as_str() == "name" {
+						if value.range().contains_end(offset_at_cursor) {
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::MethodName(vec![]));
+						}
 					}
 				}
 				// <template inherit_id=.. />
