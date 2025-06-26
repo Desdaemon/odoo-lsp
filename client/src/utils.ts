@@ -2,6 +2,8 @@ import { statSync } from "node:fs";
 import { exec } from "node:child_process";
 import type { ExtensionContext } from "vscode";
 import $ from "nano-spawn";
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 
 export const isWindows = process.platform === "win32";
 export const shell = isWindows ? "powershell.exe" : "sh";
@@ -41,6 +43,7 @@ export function makeStates<T extends Record<string | number, (..._: unknown[]) =
 }
 
 export async function downloadFile(src: string, dest: string) {
+	await mkdir(dirname(dest), { recursive: true });
 	if (isWindows) {
 		await $("Invoke-WebRequest", ["-Uri", src, "-OutFile", dest], { shell });
 	} else if (await which("curl")) {
