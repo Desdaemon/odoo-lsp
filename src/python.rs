@@ -271,14 +271,18 @@ impl Backend {
 		} else {
 			let slice = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
 			let relative_start = range.start + 1;
-			let offset = offset.unwrap_or((range.end - 1).max(relative_start + 1));
+			let offset = offset
+				.unwrap_or((range.end - 1).max(relative_start + 1))
+				.max(relative_start)
+				.min(relative_start + slice.len());
 			// assert!(
 			// 	offset >= relative_start,
 			// 	"offset={} cannot be less than relative_start={}",
 			// 	offset,
 			// 	relative_start
 			// );
-			let slice_till_end = &slice[offset - relative_start..];
+			let start = offset - relative_start;
+			let slice_till_end = slice.get(start..).unwrap_or("");
 			// How many characters until the next period or end-of-string?
 			let limit = slice_till_end.find('.').unwrap_or(slice_till_end.len());
 			range = relative_start..offset + limit;

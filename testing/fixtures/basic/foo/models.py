@@ -19,6 +19,8 @@ class Foo(Model):
         #                   ^complete bar foo_m2m foo_m2o foo_o2m
         self.flush_model(['bar'])
         #                  ^complete bar foo_m2m foo_m2o foo_o2m
+        self.mapped("bar")
+        #            ^complete bar foo_m2m foo_m2o foo_o2m
         for foo in self:
             foo.
         #      ^complete bar completions diagnostics foo_m2m foo_m2o foo_o2m
