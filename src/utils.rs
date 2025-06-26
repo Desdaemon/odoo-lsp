@@ -527,8 +527,9 @@ pub fn to_display_path(path: impl AsRef<Path>) -> String {
 /// Source: https://stackoverflow.com/a/70970317
 #[inline]
 #[cfg(windows)]
-pub fn strict_canonicalize<P: AsRef<Path>>(path: P) -> anyhow::Result<PathBuf> {
+pub fn strict_canonicalize<P: AsRef<Path>>(path: P) -> anyhow::Result<std::path::PathBuf> {
 	use anyhow::Context;
+	use std::path::PathBuf;
 
 	fn impl_(path: PathBuf) -> anyhow::Result<PathBuf> {
 		let head = path.components().next().context("empty path")?;
@@ -570,6 +571,9 @@ mod tests {
 	#[test]
 	#[cfg(windows)]
 	fn test_idempotent_canonicalization() {
+		use super::strict_canonicalize;
+		use std::path::Path;
+
 		let lhs = strict_canonicalize(Path::new(".")).unwrap();
 		let rhs = strict_canonicalize(&lhs).unwrap();
 		assert_eq!(lhs, rhs);
