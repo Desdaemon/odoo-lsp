@@ -6,6 +6,7 @@ authors = ["Viet Dinh <54ckb0y789@gmail.com>"]
 description = "Tests and benchmarks for odoo-lsp"
 repository = "https://github.com/Desdaemon/odoo-lsp"
 license = "MIT"
+build = "build.rs"
 
 [dependencies]
 async-lsp = { version = "0.2.2", features = ["tokio", "forward"] }
