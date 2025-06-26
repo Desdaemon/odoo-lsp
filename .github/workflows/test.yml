@@ -22,17 +22,25 @@ jobs:
         include:
           - runs-on: ubuntu-latest
             coverage: yes
+            rust: stable
+          - runs-on: ubuntu-latest
+            coverage: no
+            rust: nightly
           - runs-on: macos-latest
             coverage: no
+            rust: stable
           - runs-on: windows-latest
             coverage: no
+            rust: stable
     runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
 
       - name: Create dummy tag
         run: git tag -f CI
@@ -70,7 +78,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Test Results (${{ matrix.runs-on }})
+          name: Test Results (${{ matrix.runs-on }}-${{ matrix.rust }})
           path: target/nextest/ci/junit.xml
 
       - name: Delete coverage artifacts
@@ -88,9 +96,14 @@ jobs:
           files: ./lcov.info
           fail_ci_if_error: true
 
-      - name: Fail if unit tests failed
+      - name: Fail or warn if unit tests failed
         if: steps.cargo-test.outcome == 'failure' || steps.cargo-testcov.outcome == 'failure'
-        run: exit 1
+        run: |
+          if [ "${{ matrix.rust }}" = "stable" ]; then
+            exit 1
+          else
+            echo "::warning file=,title=Nightly unit tests failed::This is only informational and not a blocker."
+          fi
 
   e2e-report-results:
     name: Report test results
