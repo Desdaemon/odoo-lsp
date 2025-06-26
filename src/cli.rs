@@ -7,16 +7,12 @@ use globwalk::FileType;
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{Index, _R};
 use odoo_lsp::utils::strict_canonicalize;
-use odoo_lsp::{errloc, format_loc, loc};
+use odoo_lsp::{errloc, format_loc, loc, GITVER, GIT_VERSION, NAME, VERSION};
 use self_update::{backends::github, Status};
 use serde_json::Value;
 use tracing::{debug, warn};
 
 mod tsconfig;
-
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-const GIT_VERSION: &str = git_version::git_version!(args = ["--tags", "--candidates=0"], fallback = "");
-const GIT_TAG: &str = git_version::git_version!();
 
 #[derive(Default)]
 pub struct Args<'a> {
@@ -102,8 +98,7 @@ pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 				exit(0);
 			}
 			["-v" | "--version", ..] => {
-				const GITVER: &str = if GIT_VERSION.is_empty() { GIT_TAG } else { GIT_VERSION };
-				eprintln!("odoo-lsp v{VERSION} git:{GITVER}");
+				eprintln!("{NAME} v{VERSION} git:{GITVER}");
 				exit(0);
 			}
 			["--addons-path", path, rest @ ..] => {

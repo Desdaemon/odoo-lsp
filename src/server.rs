@@ -10,6 +10,8 @@ use tower_lsp_server::lsp_types::*;
 use tower_lsp_server::LanguageServer;
 use tracing::{debug, error, info, instrument, warn};
 
+use crate::{NAME, VERSION, GITVER};
+
 use crate::backend::{Backend, Document, Language, Text};
 use crate::index::{_G, _R};
 use crate::{backend, some, utils::*};
@@ -58,7 +60,10 @@ impl LanguageServer for Backend {
 		}
 
 		Ok(InitializeResult {
-			server_info: None,
+			server_info: Some(ServerInfo {
+				name: NAME.to_string(),
+				version: Some(format!("v{VERSION} git:{GITVER}")),
+			}),
 			offset_encoding: None,
 			capabilities: ServerCapabilities {
 				definition_provider: Some(OneOf::Left(true)),
