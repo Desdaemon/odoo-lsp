@@ -266,7 +266,7 @@ impl Backend {
 				let range = some!(offset_range_to_lsp_range(replace_range, rope.clone()));
 				self.complete_model(needle, range, &mut items).await?
 			}
-			RefKind::PropertyName(access) => {
+			ref ref_kind @ RefKind::PropertyName(ref access) | ref ref_kind @ RefKind::MethodName(ref access) => {
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
 					"{}.{needle}",
@@ -283,29 +283,11 @@ impl Backend {
 					replace_range,
 					model_filter,
 					rope.clone(),
-					Some(PropertyKind::Field),
-					true,
-					&mut items,
-				)?;
-			}
-			RefKind::MethodName(access) => {
-				let mut model_filter = some!(model_filter);
-				let mapped = format!(
-					"{}.{needle}",
-					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
-				);
-				if !access.is_empty() {
-					needle = mapped.as_str();
-					let mut model = _I(model_filter);
-					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
-					model_filter = _R(model).to_string();
-				}
-				self.complete_property_name(
-					needle,
-					replace_range,
-					model_filter,
-					rope.clone(),
-					Some(PropertyKind::Method),
+					Some(if matches!(ref_kind, RefKind::MethodName(_)) {
+						PropertyKind::Method
+					} else {
+						PropertyKind::Field
+					}),
 					true,
 					&mut items,
 				)?;
@@ -417,21 +399,8 @@ impl Backend {
 		match ref_kind {
 			Some(RefKind::Ref(_)) => self.jump_def_xml_id(needle, uri),
 			Some(RefKind::Model) => self.jump_def_model(needle),
-			Some(RefKind::PropertyName(access)) => {
-				let mut model_filter = some!(model_filter);
-				let mapped = format!(
-					"{}.{needle}",
-					access.iter().map(|(_, prop)| *prop).collect::<Vec<_>>().join(".")
-				);
-				if !access.is_empty() {
-					needle = mapped.as_str();
-					let mut model = _I(model_filter);
-					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
-					model_filter = _R(model).to_string();
-				}
-				self.jump_def_property_name(needle, &model_filter)
-			}
-			Some(RefKind::MethodName(access)) => {
+			ref _ref_kind @ Some(RefKind::PropertyName(ref access))
+			| ref _ref_kind @ Some(RefKind::MethodName(ref access)) => {
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
 					"{}.{needle}",
@@ -543,22 +512,9 @@ impl Backend {
 					self.hover_record(&xml_id, lsp_range)
 				}
 			}
-			Some(RefKind::PropertyName(access)) => {
+			ref _ref_kind @ Some(RefKind::PropertyName(ref access))
+			| ref _ref_kind @ Some(RefKind::MethodName(ref access)) => {
 				// let model = some!(model_filter);
-				let mut model_filter = some!(model_filter);
-				let mapped = format!(
-					"{}.{needle}",
-					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
-				);
-				if !access.is_empty() {
-					needle = mapped.as_str();
-					let mut model = _I(model_filter);
-					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
-					model_filter = _R(model).to_string();
-				}
-				self.hover_property_name(needle, &model_filter, lsp_range)
-			}
-			Some(RefKind::MethodName(access)) => {
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
 					"{}.{needle}",
