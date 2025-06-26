@@ -3,7 +3,7 @@ use std::path::Path;
 
 use lasso::Spur;
 use ropey::Rope;
-use tower_lsp_server::lsp_types::*;
+use tower_lsp_server::{lsp_types::*, UriExt};
 use tracing::{debug, instrument, trace, warn};
 use tree_sitter::{Node, Parser, QueryMatch};
 use ts_macros::query;

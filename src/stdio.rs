@@ -2,7 +2,7 @@
 //! Link: <https://github.com/oxalica/async-lsp/blob/main/src/stdio.rs>  
 //! Original source is licensed under MIT or Apache v2
 
-use std::io::{self, Error, ErrorKind, IoSlice, Read, Result, StdinLock, StdoutLock, Write};
+use std::io::{self, Error, IoSlice, Read, Result, StdinLock, StdoutLock, Write};
 use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd};
 
 use rustix::fs::{fcntl_getfl, fcntl_setfl, fstat, FileType, OFlags};
@@ -17,10 +17,7 @@ impl<T: AsFd> NonBlocking<T> {
 	fn new(inner: T) -> Result<Self> {
 		let ft = FileType::from_raw_mode(fstat(&inner)?.st_mode);
 		if !matches!(ft, FileType::Fifo | FileType::Socket | FileType::CharacterDevice) {
-			return Err(Error::new(
-				ErrorKind::Other,
-				format!("File type {ft:?} is not pipe-like"),
-			));
+			return Err(Error::other(format!("File type {ft:?} is not pipe-like")));
 		}
 
 		let prev_flags = fcntl_getfl(&inner)?;

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use fomat_macros::fomat;
 use lasso::Spur;
 use ropey::{Rope, RopeSlice};
-use tower_lsp_server::lsp_types::*;
+use tower_lsp_server::{lsp_types::*, UriExt};
 use tracing::{debug, instrument, warn};
 use tree_sitter::Parser;
 use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
@@ -399,8 +399,7 @@ impl Backend {
 		match ref_kind {
 			Some(RefKind::Ref(_)) => self.jump_def_xml_id(needle, uri),
 			Some(RefKind::Model) => self.jump_def_model(needle),
-			ref _ref_kind @ Some(RefKind::PropertyName(ref access))
-			| ref _ref_kind @ Some(RefKind::MethodName(ref access)) => {
+			Some(RefKind::PropertyName(access)) | Some(RefKind::MethodName(access)) => {
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
 					"{}.{needle}",
@@ -512,8 +511,7 @@ impl Backend {
 					self.hover_record(&xml_id, lsp_range)
 				}
 			}
-			ref _ref_kind @ Some(RefKind::PropertyName(ref access))
-			| ref _ref_kind @ Some(RefKind::MethodName(ref access)) => {
+			Some(RefKind::PropertyName(access)) | Some(RefKind::MethodName(access)) => {
 				// let model = some!(model_filter);
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
@@ -788,11 +786,9 @@ impl Backend {
 				}
 				// <button name=.. />
 				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Button)) => {
-					if local.as_str() == "name" {
-						if value.range().contains_end(offset_at_cursor) {
-							ref_at_cursor = Some((value.as_str(), value.range()));
-							ref_kind = Some(RefKind::MethodName(vec![]));
-						}
+					if local.as_str() == "name" && value.range().contains_end(offset_at_cursor) {
+						ref_at_cursor = Some((value.as_str(), value.range()));
+						ref_kind = Some(RefKind::MethodName(vec![]));
 					}
 				}
 				// <template inherit_id=.. />
