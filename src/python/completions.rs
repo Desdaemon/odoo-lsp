@@ -30,7 +30,7 @@ impl Backend {
 			return Ok(None);
 		};
 		let path = some!(params.text_document_position.text_document.uri.to_file_path());
-		let Some(current_module) = self.index.module_of_path(&path) else {
+		let Some(current_module) = self.index.find_module_of(&path) else {
 			debug!("no current module");
 			return Ok(None);
 		};
@@ -78,8 +78,7 @@ impl Backend {
 							let rope = rope.clone();
 							early_return.lift(move || async move {
 								let mut items = MaxVec::new(completions_limit);
-								self.complete_xml_id(&needle, range, rope, model_filter, current_module, &mut items)
-									.await?;
+								self.complete_xml_id(&needle, range, rope, model_filter, current_module, &mut items)?;
 								Ok(Some(CompletionResponse::List(CompletionList {
 									is_incomplete: !items.has_space(),
 									items: items.into_inner(),
@@ -98,7 +97,7 @@ impl Backend {
 								));
 								early_return.lift(move || async move {
 									let mut items = MaxVec::new(completions_limit);
-									self.complete_model(&needle, range, &mut items).await?;
+									self.complete_model(&needle, range, &mut items)?;
 									Ok(Some(CompletionResponse::List(CompletionList {
 										is_incomplete: !items.has_space(),
 										items: items.into_inner(),
@@ -209,7 +208,7 @@ impl Backend {
 										));
 										early_return.lift(move || async move {
 											let mut items = MaxVec::new(completions_limit);
-											self.complete_model(&needle, range, &mut items).await?;
+											self.complete_model(&needle, range, &mut items)?;
 											Ok(Some(CompletionResponse::List(CompletionList {
 												is_incomplete: !items.has_space(),
 												items: items.into_inner(),

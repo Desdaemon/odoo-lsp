@@ -285,19 +285,6 @@ impl Index {
 				//       (as_pattern
 				//         (call (identifier) ..)
 				//         (as_pattern_target (identifier))))))
-				// if let Some(with_clause) = node.named_child(0)
-				// 	&& with_clause.kind() == "with_clause"
-				// 	&& let Some(with_item) = with_clause.named_child(0)
-				// 	&& with_item.kind() == "with_item"
-				// 	&& let Some(as_pattern) = with_item.named_child(0)
-				// 	&& as_pattern.kind() == "as_pattern"
-				// 	&& let Some(value) = as_pattern.named_child(0)
-				// 	&& value.kind() == "call"
-				// 	&& let Some(target) = value.next_named_sibling()
-				// 	&& target.kind() == "as_pattern_target"
-				// 	&& let Some(alias) = target.named_child(0)
-				// 	&& alias.kind() == "identifier"
-				// 	&& let Some(callee) = value.named_child(0)
 				if let Some(value) = dig!(node, with_clause.with_item.as_pattern.call)
 					&& let Some(target) = value.next_named_sibling()
 					&& target.kind() == "as_pattern_target"

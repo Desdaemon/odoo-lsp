@@ -113,6 +113,17 @@ impl LanguageServer for Backend {
 	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn did_close(&self, params: DidCloseTextDocumentParams) {
 		let path = params.text_document.uri.path().as_str();
+		let mut blocker = None;
+		{
+			if let Some(document) = self.document_map.get(path)
+				&& document.setup.should_wait()
+			{
+				blocker = Some(document.setup.clone());
+			}
+		}
+		if let Some(blocker) = blocker {
+			blocker.wait().await;
+		}
 		self.document_map.remove(path);
 		self.record_ranges.remove(path);
 		self.ast_map.remove(path);
@@ -156,33 +167,23 @@ impl LanguageServer for Backend {
 		info!(workspaces = ?self.workspaces);
 
 		for ws in self.workspaces.iter() {
-			match (self.index)
-				.add_root(Path::new(ws.key()), Some(self.client.clone()), false)
+			if let Err(err) = (self.index)
+				.add_root(Path::new(ws.key()), Some(self.client.clone()))
 				.await
 			{
-				Ok(Some(results)) => {
-					info!(
-						target: "initialized",
-						"{} | {} modules | {} records | {} templates | {} models | {} components | {:.2}s",
-						ws.key().display(),
-						results.module_count,
-						results.record_count,
-						results.template_count,
-						results.model_count,
-						results.component_count,
-						results.elapsed.as_secs_f64()
-					);
-				}
-				Err(err) => {
-					error!("could not add root {}:\n{err}", ws.key().display());
-				}
-				_ => {}
+				error!("could not add root {}:\n{err}", ws.key().display());
 			}
 		}
 		drop(_blocker);
 	}
 	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path().as_str()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
+		self.root_setup.wait().await;
+		// NB: fixes a race condition where completions are requested even before
+		// did_open had a chance to put in a blocker for the document, leading to
+		// flaky tests and the first completion request yielding nothing (super minor issue)
+		let _blocker = self.root_setup.block();
+
 		info!("{}", params.text_document.uri.path().as_str());
 		let language_id = params.text_document.language_id.as_str();
 		let split_uri = params.text_document.uri.path().as_str().rsplit_once('.');
@@ -204,9 +205,8 @@ impl LanguageServer for Backend {
 			Document::new(rope.clone()),
 		);
 
-		self.root_setup.wait().await;
 		let path = params.text_document.uri.to_file_path().unwrap();
-		if self.index.module_of_path(&path).is_none() {
+		if self.index.find_module_of(&path).is_none() {
 			// outside of root?
 			debug!("oob: {}", params.text_document.uri.path().as_str());
 			let path = params.text_document.uri.to_file_path();
@@ -219,7 +219,7 @@ impl LanguageServer for Backend {
 					if let Some(file_path) = path_.parent().and_then(|p| p.parent()) {
 						_ = self
 							.index
-							.add_root(file_path, Some(self.client.clone()), false)
+							.add_root(file_path, Some(self.client.clone()))
 							.await
 							.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
 						break;
@@ -263,7 +263,19 @@ impl LanguageServer for Backend {
 		}
 
 		let old_rope;
+		let path = params.text_document.uri.path().as_str();
 		{
+			let mut blocker = None;
+			{
+				if let Some(document) = self.document_map.get(path)
+					&& document.setup.should_wait()
+				{
+					blocker = Some(document.setup.clone());
+				}
+			}
+			if let Some(blocker) = blocker {
+				blocker.wait().await;
+			}
 			let mut document = self
 				.document_map
 				.get_mut(params.text_document.uri.path().as_str())
@@ -302,9 +314,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
-		if self.root_setup.should_wait() {
-			return;
-		}
+		self.root_setup.wait().await;
 		_ = self.did_save_impl(params).await.inspect_err(|err| warn!("{err}"));
 	}
 	#[instrument(skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
@@ -320,6 +330,9 @@ impl LanguageServer for Backend {
 		let Some(document) = self.document_map.get(uri.path().as_str()) else {
 			panic!("Bug: did not build a document for {}", uri.path().as_str());
 		};
+		if document.setup.should_wait() {
+			return Ok(None);
+		}
 		let location = match ext {
 			"xml" => self.xml_jump_def(params, document.rope.clone()),
 			"py" => self.python_jump_def(params, document.rope.clone()),
@@ -349,6 +362,9 @@ impl LanguageServer for Backend {
 			debug!("Bug: did not build a document for {}", uri.path().as_str());
 			return Ok(None);
 		};
+		if document.setup.should_wait() {
+			return Ok(None);
+		}
 		let refs = match ext {
 			"py" => self.python_references(params, document.rope.clone()),
 			"xml" => self.xml_references(params, document.rope.clone()),
@@ -358,18 +374,28 @@ impl LanguageServer for Backend {
 
 		Ok(refs.inspect_err(|err| warn!("{err}")).ok().flatten())
 	}
-	#[instrument(skip_all, fields(uri = params.text_document_position.text_document.uri.as_str()))]
+	#[instrument(skip_all, fields(uri))]
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-		if self.root_setup.should_wait() {
-			return Ok(None);
-		}
+		self.root_setup.wait().await;
+
 		let uri = &params.text_document_position.text_document.uri;
-		debug!("(completion) {}", uri.path().as_str());
 
 		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
 
+		let path = uri.path().as_str();
+		let mut blocker = None;
+		{
+			if let Some(document) = self.document_map.get(path)
+				&& document.setup.should_wait()
+			{
+				blocker = Some(document.setup.clone());
+			}
+		}
+		if let Some(blocker) = blocker {
+			blocker.wait().await;
+		}
 		let rope = {
 			let Some(document) = self.document_map.get(uri.path().as_str()) else {
 				debug!("Bug: did not build a document for {}", uri.path().as_str());
@@ -378,7 +404,7 @@ impl LanguageServer for Backend {
 			document.rope.clone()
 		};
 		if ext == "xml" {
-			let completions = self.xml_completions(params, rope).await;
+			let completions = self.xml_completions(params, rope);
 			match completions {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
@@ -454,12 +480,24 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
-	#[instrument(skip_all, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
+	#[instrument(skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position_params.text_document.uri;
+		let path = uri.path().as_str();
+		let mut blocker = None;
+		{
+			if let Some(document) = self.document_map.get(path)
+				&& document.setup.should_wait()
+			{
+				blocker = Some(document.setup.clone());
+			}
+		}
+		if let Some(blocker) = blocker {
+			blocker.wait().await;
+		}
 		let document = some!(self.document_map.get(uri.path().as_str()));
 		let (_, ext) = some!(uri.path().as_str().rsplit_once('.'));
 		let hover = match ext {
@@ -522,7 +560,7 @@ impl LanguageServer for Backend {
 		self.index.delete_marked_entries();
 
 		for added in workspaces.difference(&roots) {
-			if let Err(err) = self.index.add_root(added, None, false).await {
+			if let Err(err) = self.index.add_root(added, None).await {
 				error!("failed to add root {}:\n{err}", added.display());
 			}
 		}
@@ -537,7 +575,7 @@ impl LanguageServer for Backend {
 			};
 			_ = self
 				.index
-				.add_root(&file_path, None, false)
+				.add_root(&file_path, None)
 				.await
 				.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
 		}
@@ -605,8 +643,8 @@ impl LanguageServer for Backend {
 		let query = &params.query;
 		let limit = self.project_config.symbols_limit.load(Relaxed);
 
-		let models_by_prefix = self.index.models.by_prefix.read().await;
-		let records_by_prefix = self.index.records.by_prefix.read().await;
+		let models_by_prefix = some!(self.index.models.by_prefix.read().ok());
+		let records_by_prefix = some!(self.index.records.by_prefix.read().ok());
 		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
 			self.index.models.get(key).into_iter().flat_map(|entry| {
 				#[allow(deprecated)]
@@ -652,13 +690,23 @@ impl LanguageServer for Backend {
 			Ok(Some(OneOf::Left(models.chain(records).take(limit).collect())))
 		}
 	}
-	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
+	#[instrument(skip_all, fields(path))]
 	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
 		self.root_setup.wait().await;
 		let path = params.text_document.uri.path().as_str();
-		debug!("{path}");
 		let mut diagnostics = vec![];
+		let mut blocker = None;
+		{
+			if let Some(document) = self.document_map.get(path)
+				&& document.setup.should_wait()
+			{
+				blocker = Some(document.setup.clone());
+			}
+		}
 		if let Some((_, "py")) = path.rsplit_once('.') {
+			if let Some(blocker) = blocker {
+				blocker.wait().await;
+			}
 			if let Some(mut document) = self.document_map.get_mut(path) {
 				let damage_zone = document.damage_zone.take();
 				let rope = &document.rope.clone();
@@ -691,6 +739,9 @@ impl LanguageServer for Backend {
 		};
 
 		let document = some!(self.document_map.get(params.text_document.uri.path().as_str()));
+		if document.setup.should_wait() {
+			return Ok(None);
+		}
 
 		Ok(self
 			.xml_code_actions(params, document.rope.clone())
