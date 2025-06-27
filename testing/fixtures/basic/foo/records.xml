@@ -1,15 +1,15 @@
 <odoo>
 	<record id="foo.1" model="foo">
 		<field name="bar"/>
-		<!--         ^complete bar foo_m2m foo_m2o foo_o2m -->
+		<!--            ^complete bar -->
 	</record>
 	<template id="foo.2">
 		<!-- @type foo_obj foo -->
 		<t t-set="bar" t-value="foo_obj.mapped('bar')"/>
 		<!--                                    ^ TODO: make this work-->
 		<t t-set="baz" t-value="foo_obj.filtered(lambda f: f.bar)"/>
-		<!--                                                ^complete bar completions diagnostics foo_m2m foo_m2o foo_o2m -->
+		<!--                                                    ^complete bar -->
 		<t t-set="quux" t-value="foo_obj.bar"/>
-		<!--                            ^complete bar completions diagnostics foo_m2m foo_m2o foo_o2m -->
+		<!--                                ^complete bar -->
 	</template>
 </odoo>

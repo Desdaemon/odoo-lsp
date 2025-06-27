@@ -1,16 +1,16 @@
-use crate::ImStr;
+use crate::{format_loc, ImStr};
 use std::{collections::HashSet, fmt::Debug, hash::Hash, marker::PhantomData};
 
-use dashmap::{mapref::one::Ref, DashMap};
+use dashmap::{DashMap, mapref::one::Ref};
 use derive_more::{Deref, DerefMut};
 use intmap::IntMap;
 use lasso::{Key, Spur};
 use smart_default::SmartDefault;
-use tokio::sync::RwLock;
+use std::sync::RwLock;
 
 use crate::{model::ModelName, record::Record};
 
-use super::{Symbol, _I};
+use super::{_I, Symbol};
 
 #[derive(SmartDefault, Deref)]
 pub struct RecordIndex {
@@ -29,7 +29,7 @@ pub type RecordId = Symbol<Record>;
 pub type RecordPrefixTrie = qp_trie::Trie<ImStr, HashSet<RecordId>>;
 
 impl RecordIndex {
-	pub async fn insert(&self, qualified_id: RecordId, record: Record, prefix: Option<&mut RecordPrefixTrie>) {
+	pub fn insert(&self, qualified_id: RecordId, record: Record, prefix: Option<&mut RecordPrefixTrie>) {
 		if self.inner.contains_key(&qualified_id) {
 			return;
 		}
@@ -44,27 +44,25 @@ impl RecordIndex {
 				.entry(record.id.clone())
 				.or_insert_with(Default::default)
 				.insert(qualified_id);
-		} else {
-			self.by_prefix
-				.write()
-				.await
+		} else if let Ok(mut by_prefix) = self.by_prefix.write() {
+			by_prefix
 				.entry(record.id.clone())
 				.or_insert_with(Default::default)
 				.insert(qualified_id);
 		}
 		self.inner.insert(qualified_id, record);
 	}
-	pub async fn append(&self, prefix: Option<&mut RecordPrefixTrie>, records: impl IntoIterator<Item = Record>) {
+	pub fn append(&self, prefix: Option<&mut RecordPrefixTrie>, records: impl IntoIterator<Item = Record>) {
 		if let Some(prefix) = prefix {
 			for record in records {
 				let id = _I(record.qualified_id());
-				self.insert(id.into(), record, Some(prefix)).await;
+				self.insert(id.into(), record, Some(prefix));
 			}
 		} else {
-			let mut prefix = self.by_prefix.write().await;
+			let mut prefix = self.by_prefix.write().expect(format_loc!("can't hold write lock now"));
 			for record in records {
 				let id = _I(record.qualified_id());
-				self.insert(id.into(), record, Some(&mut prefix)).await;
+				self.insert(id.into(), record, Some(&mut prefix));
 			}
 		}
 	}
@@ -145,20 +143,20 @@ impl<K, T> SymbolMap<K, T> {
 impl<K> SymbolSet<K> {
 	#[inline]
 	pub fn insert(&mut self, key: Symbol<K>) -> bool {
-		self.0 .0.insert_checked(key.into_usize(), ())
+		self.0.0.insert_checked(key.into_usize(), ())
 	}
 	#[inline]
 	pub fn contains_key(&self, key: Symbol<K>) -> bool {
-		self.0 .0.contains_key(key.into_usize() as _)
+		self.0.0.contains_key(key.into_usize() as _)
 	}
 	pub fn iter(&self) -> IterSet<impl Iterator<Item = (usize, &())>, K> {
-		IterSet(self.0 .0.iter(), PhantomData)
+		IterSet(self.0.0.iter(), PhantomData)
 	}
 	pub fn extend<I>(&mut self, items: I)
 	where
 		I: IntoIterator<Item = Symbol<K>>,
 	{
-		(self.0 .0).extend(items.into_iter().map(|key| (key.into_usize(), ())));
+		(self.0.0).extend(items.into_iter().map(|key| (key.into_usize(), ())));
 	}
 }
 

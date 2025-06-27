@@ -69,6 +69,7 @@ jobs:
         id: cargo-testcov
         if: matrix.coverage == 'yes'
         continue-on-error: true
+        shell: bash
         run: |
           set -euxo pipefail
           cargo llvm-cov clean --workspace -v
@@ -83,6 +84,7 @@ jobs:
 
       - name: Delete coverage artifacts
         if: steps.cargo-testcov.outcome != 'skipped'
+        shell: bash
         run: |
           set -euxo pipefail
           source <(cargo llvm-cov show-env --export-prefix)
@@ -98,6 +100,7 @@ jobs:
 
       - name: Fail or warn if unit tests failed
         if: steps.cargo-test.outcome == 'failure' || steps.cargo-testcov.outcome == 'failure'
+        shell: bash
         run: |
           if [ "${{ matrix.rust }}" = "stable" ]; then
             exit 1

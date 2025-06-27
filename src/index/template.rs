@@ -2,9 +2,9 @@ use derive_more::Deref;
 
 use dashmap::DashMap;
 use smart_default::SmartDefault;
-use tokio::sync::RwLock;
+use std::sync::RwLock;
 
-use crate::template::NewTemplate;
+use crate::{format_loc, template::NewTemplate};
 
 use super::{Template, TemplateName, _R};
 
@@ -19,8 +19,8 @@ pub struct TemplateIndex {
 pub type TemplatePrefixTrie = qp_trie::Trie<&'static [u8], TemplateName>;
 
 impl TemplateIndex {
-	pub async fn append(&self, entries: Vec<NewTemplate>) {
-		let mut prefix = self.by_prefix.write().await;
+	pub fn append(&self, entries: Vec<NewTemplate>) {
+		let mut prefix = self.by_prefix.write().expect(format_loc!("cannot acquire write lock now"));
 		for entry in entries {
 			if entry.base {
 				let Template {

@@ -60,11 +60,6 @@ class Quux(Model):
 		return super().test()
 "#;
 		pub fn prepare_foo_index() -> ModelIndex {
-			let rt = tokio::runtime::Builder::new_current_thread()
-				.enable_all()
-				.build()
-				.unwrap();
-
 			const ROOT: &str = "/addons";
 			const FOO_PY_PATH: &str = "/addons/foo.py";
 			if let Ok(mut fs) = test_utils::fs::TEST_FS.write() {
@@ -78,7 +73,7 @@ class Quux(Model):
 
 			let root = _I(ROOT);
 			let path = PathSymbol::strip_root(root, Path::new(FOO_PY_PATH));
-			rt.block_on(index.append(path, false, &foo_models[..]));
+			index.append(path, false, &foo_models[..]);
 			index
 		}
 	}

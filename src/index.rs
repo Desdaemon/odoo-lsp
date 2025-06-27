@@ -1,24 +1,25 @@
 //! The main indexer for all language items, including [`Record`]s, QWeb [`Template`]s, and Owl [`Component`]s
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use dashmap::DashMap;
 use derive_more::Deref;
 use globwalk::FileType;
 use ignore::Match;
 use ignore::gitignore::Gitignore;
 use lasso::{Spur, ThreadedRodeo};
-use request::WorkDoneProgressCreate;
 use ropey::Rope;
 use smart_default::SmartDefault;
 use tower_lsp_server::{Client, UriExt, lsp_types::*};
-use tracing::{debug, warn};
-use tree_sitter::QueryCursor;
+use tracing::{debug, info, instrument, warn};
+use tree_sitter::{Parser, QueryCursor};
 use ts_macros::query;
 use xmlparser::{Token, Tokenizer};
 
@@ -27,15 +28,17 @@ use crate::model::{Model, ModelIndex, ModelLocation, ModelType};
 use crate::record::Record;
 use crate::template::{NewTemplate, gather_templates};
 pub use crate::template::{Template, TemplateName};
-use crate::utils::{ByteOffset, ByteRange, MinLoc, RangeExt, path_contains, ts_range_to_lsp_range};
-use crate::{ImStr, errloc, format_loc, loc, ok};
+use crate::utils::{ByteOffset, ByteRange, MinLoc, RangeExt, Semaphore, path_contains, ts_range_to_lsp_range};
+use crate::{ImStr, errloc, format_loc, loc, ok, test_utils};
 
 mod js;
+mod module;
 mod record;
 mod symbol;
 mod template;
 
 pub use js::JsQuery;
+pub use module::ModuleEntry;
 pub use record::{RecordId, SymbolMap, SymbolSet};
 pub use symbol::{_G, _I, _P, _R, PathSymbol, Symbol};
 pub use template::TemplateIndex;
@@ -65,7 +68,7 @@ impl Interner {
 pub struct Index {
 	/// root -> module key -> module's relpath to root
 	#[default(_code = "DashMap::with_shard_amount(4)")]
-	pub roots: DashMap<PathBuf, HashMap<Symbol<Module>, ImStr>>,
+	pub roots: DashMap<PathBuf, HashMap<Symbol<ModuleEntry>, ModuleEntry>>,
 	pub records: record::RecordIndex,
 	pub templates: template::TemplateIndex,
 	pub models: ModelIndex,
@@ -76,12 +79,10 @@ pub struct Index {
 	pub actions: DashMap<ImStr, MinLoc>,
 }
 
-pub type ModuleName = Symbol<Module>;
-#[derive(Debug)]
-pub enum Module {}
+pub type ModuleName = Symbol<ModuleEntry>;
 
 enum Output {
-	Nothing,
+	// Nothing,
 	Xml {
 		records: Vec<Record>,
 		templates: Vec<NewTemplate>,
@@ -95,16 +96,6 @@ enum Output {
 		widgets: Vec<(ImStr, MinLoc)>,
 		actions: Vec<(ImStr, MinLoc)>,
 	},
-}
-
-#[derive(Debug)]
-pub struct AddRootResults {
-	pub module_count: usize,
-	pub record_count: usize,
-	pub model_count: usize,
-	pub template_count: usize,
-	pub component_count: usize,
-	pub elapsed: Duration,
 }
 
 impl Index {
@@ -122,33 +113,11 @@ impl Index {
 		}
 	}
 	#[tracing::instrument(skip_all, fields(root=format!("{}", root.display())), ret)]
-	pub async fn add_root(
-		&self,
-		root: &Path,
-		client: Option<Client>,
-		tsconfig: bool,
-	) -> anyhow::Result<Option<AddRootResults>> {
+	pub async fn add_root(&self, root: &Path, client: Option<Client>) -> anyhow::Result<()> {
 		if self.roots.contains_key(root) {
-			return Ok(None);
+			return Ok(());
 		}
 
-		let token = ProgressToken::String(format!(
-			"odoo-lsp/indexing/{}",
-			root.file_name().and_then(|ostr| ostr.to_str()).unwrap_or("<<invalid>>")
-		));
-
-		let mut progress = None;
-		if let Some(client) = client.as_ref() {
-			if client
-				.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
-				.await
-				.is_ok()
-			{
-				progress = Some(Arc::new(client.progress(token, "Indexing").begin().await));
-			}
-		}
-
-		let t0 = tokio::time::Instant::now();
 		let manifests = ok!(
 			globwalk::glob_builder(root.join("**/__manifest__.py").to_string_lossy())
 				.file_type(FileType::FILE | FileType::SYMLINK)
@@ -166,9 +135,6 @@ impl Index {
 			.inspect_err(|err| warn!("gitignore error for {root:?}: {err:?}"))
 			.ok();
 
-		let mut module_count = 0;
-		let mut outputs = tokio::task::JoinSet::new();
-		let root_key = _I(root.to_string_lossy());
 		for manifest in manifests {
 			let Ok(manifest) = manifest else { continue };
 			let Some(module_dir) = manifest.path().parent() else {
@@ -189,7 +155,6 @@ impl Index {
 			{
 				continue;
 			}
-			module_count += 1;
 			let module_name = module_dir.file_name().unwrap().to_string_lossy().to_string();
 			let module_key = _I(&module_name);
 			let module_path = ok!(
@@ -198,84 +163,143 @@ impl Index {
 				module_dir,
 				root
 			);
-			let duplicate = self
-				.roots
-				.entry(root.into())
-				.or_default()
-				.insert(module_key.into(), module_path.to_str().expect("non-utf8 path").into());
-			if let Some(duplicate) = duplicate {
-				if let (Some(client), "base") = (client.clone(), module_name.as_str()) {
-					tokio::spawn(Self::notify_duplicate_base(
-						client,
-						duplicate,
-						module_path.to_path_buf(),
-					));
+			match self.roots.entry(root.into()).or_default().entry(module_key.into()) {
+				std::collections::hash_map::Entry::Vacant(entry) => {
+					let dependencies = parse_dependencies(manifest.path())
+						.inspect_err(|err| {
+							warn!(
+								"could not parse dependencies for {}: {}",
+								module_path.file_name().unwrap().display(),
+								err
+							)
+						})
+						.unwrap_or_default();
+					let module = ModuleEntry {
+						path: module_path.to_str().expect("non-utf8 path").into(),
+						dependencies,
+						loaded: AtomicBool::new(false),
+					};
+					entry.insert(module);
 				}
-			}
-			if tsconfig {
-				continue;
-			}
-			let xmls = ok!(
-				globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
-					.file_type(FileType::FILE | FileType::SYMLINK)
-					.follow_links(true)
-					.build(),
-				"Could not glob into {:?}",
-				manifest.path()
-			);
-			for xml in xmls {
-				let Ok(xml) = xml else { continue };
-				outputs.spawn(add_root_xml(root_key, xml.path().to_path_buf(), module_key.into()));
-			}
-			let pys = ok!(
-				globwalk::glob_builder(format!("{}/**/*.py", module_dir.display()))
-					.file_type(FileType::FILE | FileType::SYMLINK)
-					.follow_links(true)
-					.build(),
-				"Could not glob into {:?}",
-				manifest.path()
-			);
-			for py in pys {
-				let py = match py {
-					Ok(entry) => entry,
-					Err(err) => {
-						debug!("{err}");
-						continue;
+				std::collections::hash_map::Entry::Occupied(preexisting) => {
+					if let (Some(client), "base") = (client.clone(), module_name.as_str()) {
+						let duplicate_path = module_path.to_str().expect("non-utf8 path");
+						tokio::spawn(Self::notify_duplicate_base(
+							client,
+							preexisting.get().path.clone(),
+							duplicate_path.into(),
+						));
 					}
-				};
-				let path = py.path().to_path_buf();
-				outputs.spawn(add_root_py(root_key, path));
-			}
-			let scripts = ok!(
-				globwalk::glob_builder(format!("{}/**/*.js", module_dir.display()))
-					.file_type(FileType::FILE | FileType::SYMLINK)
-					.follow_links(true)
-					.build(),
-				"Could not glob into {:?}",
-				manifest.path()
-			);
-			for js in scripts {
-				let Ok(js) = js else { continue };
-				let path = js.path().to_path_buf();
-				outputs.spawn(js::add_root_js(root_key, path));
-			}
-			if let Some(progress) = progress.clone() {
-				// we cannot use tokio::spawn here, because later the progress will
-				// be unwrapped and we want to ensure it's the only instance by then
-				// this means that this cloned process cannot outlive outputs
-				outputs.spawn(async move {
-					progress.report(module_name.clone()).await;
-					Ok(Output::Nothing)
-				});
+				}
 			}
 		}
 
-		let mut record_count = 0;
-		let mut model_count = 0;
-		let mut template_count = 0;
-		let mut component_count = 0;
-		while let Some(outputs) = outputs.join_next().await {
-			let outputs = match outputs {
+		Ok(())
+	}
+	#[instrument(skip_all, ret, fields(path = path.display().to_string()))]
+	pub(crate) async fn load_modules_for_document(&self, document_blocker: Arc<Semaphore>, path: &Path) -> Option<()> {
+		let _blocker = document_blocker.block();
+		let mut outputs = tokio::task::JoinSet::new();
+		let path_module_key = self.find_module_of(path)?;
+
+		{
+			let root = self.find_root_of(path)?;
+			let root = self.roots.get(&root)?;
+			let path_module = root.get(&path_module_key)?;
+
+			if path_module.loaded.load(Relaxed) {
+				return None;
+			}
+		}
+
+		let mut modules = Vec::new();
+		let mut roots = Vec::new();
+		let mut key_to_idx = HashMap::new();
+		let mut visited = std::collections::HashSet::new();
+
+		let mut stack = vec![(path_module_key, false)];
+		while let Some((module_key, deps_done)) = stack.pop() {
+			if !deps_done {
+				if !visited.insert(module_key) {
+					continue;
+				}
+				// Find the module and push dependencies first
+				for root in self.roots.iter() {
+					if let Some(module) = root.get(&module_key) {
+						stack.push((module_key, true)); // revisit after deps
+						for dep in module.dependencies.iter().rev() {
+							if !visited.contains(dep) {
+								stack.push((*dep, false));
+							}
+						}
+						break;
+					}
+				}
+			} else {
+				// All dependencies processed, add to result
+				for root in self.roots.iter() {
+					if root.contains_key(&module_key) {
+						key_to_idx.insert(module_key, modules.len());
+						modules.push(module_key);
+						roots.push(root);
+						break;
+					}
+				}
+			}
+		}
+
+		for (module_key, root) in modules.into_iter().zip(roots.into_iter()) {
+			info!("{} depends on {}", _R(path_module_key), _R(module_key));
+			let root_display = root.key().to_string_lossy();
+			let root_key = _I(&root_display);
+			let module = root
+				.get(&module_key)
+				.expect(format_loc!("module must already be present by now"));
+			let module_dir = Path::new(&*root_display).join(&module.path);
+			module.loaded.store(true, Relaxed);
+
+			if let Ok(xmls) = globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
+				.file_type(FileType::FILE | FileType::SYMLINK)
+				.follow_links(true)
+				.build()
+			{
+				for xml in xmls {
+					let Ok(xml) = xml else { continue };
+					outputs.spawn(add_root_xml(root_key, xml.path().to_path_buf(), module_key));
+				}
+			}
+			if let Ok(pys) = globwalk::glob_builder(format!("{}/**/*.py", module_dir.display()))
+				.file_type(FileType::FILE | FileType::SYMLINK)
+				.follow_links(true)
+				.build()
+			{
+				for py in pys {
+					let py = match py {
+						Ok(entry) => entry,
+						Err(err) => {
+							debug!("{err}");
+							continue;
+						}
+					};
+					let path = py.path().to_path_buf();
+					outputs.spawn(add_root_py(root_key, path));
+				}
+			}
+			if let Ok(scripts) = globwalk::glob_builder(format!("{}/**/*.js", module_dir.display()))
+				.file_type(FileType::FILE | FileType::SYMLINK)
+				.follow_links(true)
+				.build()
+			{
+				for js in scripts {
+					let Ok(js) = js else { continue };
+					let path = js.path().to_path_buf();
+					outputs.spawn(js::add_root_js(root_key, path));
+				}
+			}
+		}
+
+		while let Some(res) = outputs.join_next().await {
+			let outputs = match res {
 				Ok(Ok(out)) => out,
 				Ok(Err(err)) => {
 					warn!("task failed: {err}");
@@ -287,23 +311,18 @@ impl Index {
 				}
 			};
 			match outputs {
-				Output::Nothing => {}
 				Output::Xml { records, templates } => {
-					record_count += records.len();
-					self.records.append(None, records).await;
-					template_count += templates.len();
-					self.templates.append(templates).await;
+					self.records.append(None, records);
+					self.templates.append(templates);
 				}
 				Output::Models { path, models } => {
-					model_count += models.len();
-					self.models.append(path, false, &models).await;
+					self.models.append(path, false, &models);
 				}
 				Output::JsItems {
 					components,
 					widgets,
 					actions,
 				} => {
-					component_count += components.len();
 					self.components.extend(components);
 					for (widget, loc) in widgets {
 						if !self.widgets.contains_key(&widget) {
@@ -318,21 +337,8 @@ impl Index {
 				}
 			}
 		}
-		if let Some(progress) = progress.take() {
-			Arc::into_inner(progress)
-				.unwrap()
-				.finish_with_message(format!("completed for {}", root.to_string_lossy()))
-				.await;
-		}
 
-		Ok(Some(AddRootResults {
-			module_count,
-			record_count,
-			model_count,
-			template_count,
-			component_count,
-			elapsed: t0.elapsed(),
-		}))
+		Some(())
 	}
 	async fn notify_duplicate_base(client: Client, old_path: ImStr, new_path: PathBuf) {
 		let resp = client
@@ -409,7 +415,7 @@ impl Index {
 		}
 	}
 	/// Has complexity of `O(len(self.roots))`
-	pub fn module_of_path(&self, path: &Path) -> Option<ModuleName> {
+	pub fn find_module_of(&self, path: &Path) -> Option<ModuleName> {
 		use std::path::Component;
 		for entry in self.roots.iter() {
 			if let Ok(path) = path.strip_prefix(entry.key()) {
@@ -427,6 +433,66 @@ impl Index {
 
 		None
 	}
+
+	#[tracing::instrument(skip_all, ret)]
+	pub fn find_root_of(&self, path: &Path) -> Option<PathBuf> {
+		for root_ in self.roots.iter() {
+			if path.starts_with(root_.key()) {
+				return Some(root_.key().to_owned());
+			}
+		}
+		None
+	}
+
+	pub fn find_root_from_module(&self, key: &ModuleName) -> Option<PathBuf> {
+		for root in self.roots.iter() {
+			if root.contains_key(key) {
+				return Some(root.key().to_owned());
+			}
+		}
+
+		None
+	}
+}
+
+fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry>]>> {
+	query! {
+		ManifestQuery(Depends);
+
+	((dictionary
+		(pair
+			(string (string_content) @_depends)
+			(list ((string) @DEPENDS ","?)*)
+		)
+	) (#eq? @_depends "depends"))
+	}
+
+	let contents = test_utils::fs::read(manifest)?;
+	let mut parser = Parser::new();
+	parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
+	let ast = parser
+		.parse(&contents, None)
+		.with_context(|| errloc!("failed to parse manifest"))?;
+
+	let mut cursor = QueryCursor::new();
+	let root = ast.root_node();
+	let mut deps = vec![];
+	if let Some(parent) = manifest.parent()
+		&& parent.as_os_str() != OsStr::new("base")
+	{
+		deps.push(ModuleName::from(_I("base")));
+	}
+
+	for match_ in cursor.matches(ManifestQuery::query(), root, &contents[..]) {
+		for capture in match_.captures {
+			if let Some(ManifestQuery::Depends) = ManifestQuery::from(capture.index) {
+				let dep = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
+				deps.push(_I(dep).into());
+			}
+		}
+	}
+
+	Ok(deps.into_boxed_slice())
 }
 
 async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> anyhow::Result<Output> {

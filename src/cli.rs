@@ -186,7 +186,7 @@ async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<
 
 	for addons in &addons_path {
 		// let path = addons.to_string_lossy();
-		index.add_root(addons, None, true).await?;
+		index.add_root(addons, None).await?;
 	}
 
 	let mut ts_paths = serde_json::Map::new();
@@ -207,7 +207,7 @@ async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<
 		type_roots.push(Value::String(
 			root.join("web/tooling/types").to_string_lossy().into_owned(),
 		));
-		for (module, path) in entry.value().iter() {
+		for (module, entry) in entry.value().iter() {
 			let module = _R(*module);
 			ts_paths
 				.entry(format!("@{module}/*"))
@@ -215,7 +215,7 @@ async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<
 				.as_array_mut()
 				.unwrap()
 				.push(
-					root.join(format!("{path}/static/src/*"))
+					root.join(format!("{}/static/src/*", entry.path))
 						.to_string_lossy()
 						.into_owned()
 						.into(),

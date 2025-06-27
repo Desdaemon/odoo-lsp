@@ -1,1 +1,1 @@
-{"name": "derived"}
+{"name": "derived", "depends": ["base"]}

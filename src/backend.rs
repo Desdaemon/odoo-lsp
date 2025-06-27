@@ -6,6 +6,7 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
@@ -46,7 +47,7 @@ pub struct BackendInner {
 	pub ast_map: DashMap<String, Tree>,
 	pub index: Index,
 	pub workspaces: Workspaces,
-	pub root_setup: CondVar,
+	pub root_setup: Semaphore,
 	pub capabilities: Capabilities,
 	pub project_config: BackendConfig,
 }
@@ -125,6 +126,7 @@ pub struct Document {
 	pub diagnostics_cache: Vec<Diagnostic>,
 	/// The current range of unsynced changes.
 	pub damage_zone: Option<ByteRange>,
+	pub setup: Arc<Semaphore>,
 }
 
 impl Document {
@@ -133,6 +135,7 @@ impl Document {
 			rope,
 			diagnostics_cache: vec![],
 			damage_zone: None,
+			setup: Default::default(),
 		}
 	}
 }
@@ -218,15 +221,6 @@ impl Backend {
 		}
 	}
 
-	#[tracing::instrument(skip_all, ret)]
-	pub fn find_root_of(&self, path: &Path) -> Option<PathBuf> {
-		for root_ in self.index.roots.iter() {
-			if path.starts_with(root_.key()) {
-				return Some(root_.key().to_owned());
-			}
-		}
-		None
-	}
 	#[instrument(skip_all)]
 	pub async fn on_change(&self, params: TextDocumentItem) -> anyhow::Result<()> {
 		let split_uri = params.uri.path().as_str().rsplit_once('.');
@@ -235,26 +229,37 @@ impl Backend {
 		let root;
 		let eager_diagnostics;
 		{
-			let mut document = self
-				.document_map
-				.get_mut(params.uri.path().as_str())
-				.expect(format_loc!("(on_change) did not build document"));
-			match &params.text {
-				Text::Full(full) => {
-					document.rope = ropey::Rope::from_str(full);
-					document.damage_zone = None;
+			let blocker;
+			{
+				let mut document = self
+					.document_map
+					.get_mut(params.uri.path().as_str())
+					.expect(format_loc!("(on_change) did not build document"));
+				blocker = document.setup.clone();
+				match &params.text {
+					Text::Full(full) => {
+						document.rope = ropey::Rope::from_str(full);
+						document.damage_zone = None;
+					}
+					Text::Delta(_) => {
+						// Rope updates are handled by did_change
+					}
 				}
-				Text::Delta(_) => {
-					// Rope updates are handled by did_change
-				}
+				rope = document.rope.clone();
+				path = params.uri.to_file_path().unwrap();
+				let root_path = self
+					.index
+					.find_root_of(&path)
+					.ok_or_else(|| errloc!("file not under any root"))?;
+				root = _P(root_path);
+				eager_diagnostics = self.eager_diagnostics(params.open, &rope);
 			}
-			rope = document.rope.clone();
-			path = params.uri.to_file_path().unwrap();
-			let root_path = self
-				.find_root_of(&path)
-				.ok_or_else(|| errloc!("file not under any root"))?;
-			root = _P(root_path);
-			eager_diagnostics = self.eager_diagnostics(params.open, &rope);
+
+			if params.open {
+				self.index.load_modules_for_document(blocker.clone(), &path).await;
+			} else {
+				drop(blocker.block());
+			}
 		};
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
@@ -272,7 +277,7 @@ impl Backend {
 				}
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
-				self.update_xml(root, &params.text, &params.uri, rope, false).await?;
+				self.update_xml(root, &params.text, &params.uri, rope, false)?;
 			}
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
 				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
@@ -304,12 +309,12 @@ impl Backend {
 			.rsplit_once('.')
 			.ok_or_else(|| errloc!("no extension"))?;
 		let path = uri.to_file_path().unwrap();
-		let root = self.find_root_of(&path).ok_or_else(|| errloc!("out of root"))?;
+		let root = self.index.find_root_of(&path).ok_or_else(|| errloc!("out of root"))?;
 		let root = _P(&root);
 
 		match extension {
 			"py" => self.did_save_python(uri, root).await?,
-			"xml" => self.did_save_xml(uri, root).await?,
+			"xml" => self.did_save_xml(uri, root)?,
 			_ => {}
 		}
 		Ok(())
@@ -378,7 +383,7 @@ impl Backend {
 		self.ast_map.insert(uri.path().as_str().to_string(), ast);
 		Ok(())
 	}
-	pub async fn complete_xml_id(
+	pub fn complete_xml_id(
 		&self,
 		needle: &str,
 		range: ByteRange,
@@ -391,7 +396,9 @@ impl Backend {
 			return Ok(());
 		}
 		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_xml_id) range"))?;
-		let by_prefix = self.index.records.by_prefix.read().await;
+		let Ok(by_prefix) = self.index.records.by_prefix.try_read() else {
+			return Ok(());
+		};
 		let model_filter = model_filter.and_then(|model| _G(model).map(ModelName::from));
 		fn completion_item(record: &Record, current_module: ModuleName, range: Range, scoped: bool) -> CompletionItem {
 			let label = if record.module == current_module && !scoped {
@@ -500,23 +507,20 @@ impl Backend {
 		items.extend(completions);
 		Ok(())
 	}
-	pub async fn complete_model(
-		&self,
-		needle: &str,
-		range: Range,
-		items: &mut MaxVec<CompletionItem>,
-	) -> anyhow::Result<()> {
+	pub fn complete_model(&self, needle: &str, range: Range, items: &mut MaxVec<CompletionItem>) -> anyhow::Result<()> {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let by_prefix = self.index.models.by_prefix.read().await;
+		let Ok(by_prefix) = self.index.models.by_prefix.read() else {
+			return Ok(());
+		};
 		let matches = by_prefix
 			.iter_prefix(needle.as_bytes())
 			.flat_map(|(_, key)| self.index.models.get(key))
 			.map(|model| {
 				let label = _R(*model.key()).to_string();
 				let module = model.base.as_ref().and_then(|base| {
-					let module = self.index.module_of_path(&base.0.path.to_path())?;
+					let module = self.index.find_module_of(&base.0.path.to_path())?;
 					Some(_R(module).to_string())
 				});
 				CompletionItem {
@@ -533,7 +537,7 @@ impl Backend {
 		items.extend(matches);
 		Ok(())
 	}
-	pub async fn complete_template_name(
+	pub fn complete_template_name(
 		&self,
 		needle: &str,
 		range: Range,
@@ -542,7 +546,9 @@ impl Backend {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let by_prefix = self.index.templates.by_prefix.read().await;
+		let Ok(by_prefix) = self.index.templates.by_prefix.read() else {
+			return Ok(());
+		};
 		let matches = by_prefix.iter_prefix(needle.as_bytes()).map(|(_, key)| {
 			let label = _R(*key).to_string();
 			CompletionItem {
@@ -640,7 +646,7 @@ impl Backend {
 		let path = some!(uri.to_file_path());
 		if !value.contains('.') {
 			'unscoped: {
-				if let Some(module) = self.index.module_of_path(&path) {
+				if let Some(module) = self.index.find_module_of(&path) {
 					value = format!("{}.{value}", _R(module)).into();
 					break 'unscoped;
 				}
@@ -689,7 +695,7 @@ impl Backend {
 		let module = component
 			.location
 			.as_ref()
-			.and_then(|loc| self.index.module_of_path(&loc.path.to_path()));
+			.and_then(|loc| self.index.find_module_of(&loc.path.to_path()));
 		let value = fomat!(
 			"```js\n"
 			"(component) class " (name) "\n"
@@ -709,7 +715,7 @@ impl Backend {
 		let module = template
 			.location
 			.as_ref()
-			.and_then(|loc| self.index.module_of_path(&loc.path.to_path()));
+			.and_then(|loc| self.index.find_module_of(&loc.path.to_path()));
 		let value = fomat!(
 			"```xml\n"
 			"<t t-name=\"" (name) "\"/>\n"
@@ -903,13 +909,13 @@ impl Backend {
 		let module = model
 			.base
 			.as_ref()
-			.and_then(|base| self.index.module_of_path(&base.0.path.to_path()));
+			.and_then(|base| self.index.find_module_of(&base.0.path.to_path()));
 		let mut descendants = model
 			.descendants
 			.iter()
 			.map(|loc| &loc.0)
 			.scan(SymbolSet::default(), |mods, loc| {
-				let Some(module) = self.index.module_of_path(&loc.path.to_path()) else {
+				let Some(module) = self.index.find_module_of(&loc.path.to_path()) else {
 					return Some(None);
 				};
 				if mods.insert(module) {
@@ -962,7 +968,7 @@ impl Backend {
 			}
 			if let Some(module) = self
 				.index
-				.module_of_path(&field.location.path.to_path())
+				.find_module_of(&field.location.path.to_path())
 			{
 				"*Defined in:* `" (_R(module)) "`  \n"
 			}
@@ -975,13 +981,13 @@ impl Backend {
 			[first, rest @ ..] => {
 				let rest = rest.iter().filter_map(|override_| {
 					self.index
-						.module_of_path(&override_.path.to_path())
+						.find_module_of(&override_.path.to_path())
 						.map(|module| (_R(module), override_, override_.range))
 				});
 				fomat! {
 					if let Some(module) = self
 						.index
-						.module_of_path(&first.path.to_path())
+						.find_module_of(&first.path.to_path())
 					{
 						"*Defined in:* `" (_R(module)) "`  \n"
 					}

@@ -18,3 +18,10 @@ class Bar(Model):
         #            ^complete age bar
         self.mapped("aged")
         #            ^diag Model `foo` has no field `aged`
+
+class InheritsBefore(Model):
+    _inherits = ['foo']
+    _name = 'boss'
+
+    def must_be_boss(self):
+        #            ^type Model("boss")
