@@ -351,3 +351,63 @@ fn self_update(nightly: bool) -> anyhow::Result<()> {
 	}
 	Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	use serde_json::Value;
+
+	#[test]
+	fn parse_args_defaults() {
+		let args = parse_args(&[]);
+		assert!(matches!(args.command, Command::Run));
+		assert!(args.addons_path.is_empty());
+		assert!(args.output.is_none());
+		assert!(args.threads.is_none());
+		assert!(matches!(args.log_format, LogFormat::Compact));
+	}
+
+	#[test]
+	fn parse_args_tsconfig() {
+		let args = parse_args(&["tsconfig", "--addons-path", "a,b", "-o", "out"]);
+		assert!(matches!(args.command, Command::TsConfig));
+		assert_eq!(args.addons_path, vec!["a", "b"]);
+		assert_eq!(args.output, Some("out"));
+	}
+
+	#[test]
+	fn parse_args_init_tsconfig_threads_json() {
+		let args = parse_args(&[
+			"init",
+			"--addons-path",
+			"foo",
+			"--tsconfig",
+			"-j",
+			"8",
+			"--log-format",
+			"json",
+		]);
+		assert!(matches!(args.command, Command::Init { tsconfig: true }));
+		assert_eq!(args.addons_path, vec!["foo"]);
+		assert_eq!(args.threads, Some(8));
+		assert!(matches!(args.log_format, LogFormat::Json));
+	}
+
+	#[test]
+	fn parse_args_self_update_nightly() {
+		let args = parse_args(&["self-update", "--nightly"]);
+		assert!(matches!(args.command, Command::SelfUpdate { nightly: true }));
+	}
+
+	#[test]
+	fn init_writes_config() {
+		let tmp = std::env::temp_dir().join("odoo_lsp_test_init.json");
+		init(&["foo"], Some(tmp.to_str().unwrap())).unwrap();
+		let contents = std::fs::read_to_string(&tmp).unwrap();
+		std::fs::remove_file(&tmp).unwrap();
+
+		let json: Value = serde_json::from_str(&contents).unwrap();
+		assert_eq!(json["module"]["roots"].as_array().unwrap()[0].as_str().unwrap(), "foo");
+	}
+}
