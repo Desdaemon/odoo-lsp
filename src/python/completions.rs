@@ -5,7 +5,7 @@ use tree_sitter::{Node, QueryMatch};
 use std::borrow::Cow;
 use std::sync::atomic::Ordering::Relaxed;
 
-use tower_lsp_server::{lsp_types::*, UriExt};
+use tower_lsp_server::{UriExt, lsp_types::*};
 use tracing::{debug, warn};
 use tree_sitter::Tree;
 
@@ -16,7 +16,7 @@ use crate::some;
 use crate::utils::MaxVec;
 use crate::utils::*;
 
-use super::{top_level_stmt, Mapped, PyCompletions, ThisModel};
+use super::{Mapped, PyCompletions, ThisModel, top_level_stmt};
 
 impl Backend {
 	pub(crate) async fn python_completions(
@@ -116,34 +116,60 @@ impl Backend {
 								continue;
 							}
 
-							if range.end < offset {
-								if let Some(field) =
+							if range.end < offset
+								&& let Some(field) =
 									match_.nodes_for_capture_index(PyCompletions::FieldType as _).next()
+							{
+								if field_model.is_none()
+									&& matches!(&contents[field.byte_range()], b"Many2one" | b"One2many" | b"Many2many")
 								{
-									if field_model.is_none()
-										&& matches!(
-											&contents[field.byte_range()],
-											b"Many2one" | b"One2many" | b"Many2many"
-										) {
-										field_model = Some(&contents[capture.node.byte_range().shrink(1)]);
-									}
-								} else {
-									this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
+									field_model = Some(&contents[capture.node.byte_range().shrink(1)]);
 								}
+							} else {
+								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 							}
 						}
-						Some(PyCompletions::Mapped) if range.contains_end(offset) => {
-							return self.python_completions_for_prop(
-								root,
-								&match_,
-								offset,
-								capture.node,
-								this_model.inner,
-								contents,
-								completions_limit,
-								Some(PropertyKind::Field),
-								rope.clone(),
-							)
+						Some(PyCompletions::Mapped) => {
+							if range.contains_end(offset) {
+								return self.python_completions_for_prop(
+									root,
+									&match_,
+									offset,
+									capture.node,
+									this_model.inner,
+									contents,
+									completions_limit,
+									Some(PropertyKind::Field),
+									rope.clone(),
+								);
+							} else if let Some(cmdlist) = capture.node.next_named_sibling()
+								&& Backend::is_commandlist(cmdlist, offset)
+							{
+								let (needle, range, model) = some!(self.gather_commandlist(
+									cmdlist,
+									root,
+									&match_,
+									offset,
+									range,
+									this_model.inner,
+									contents,
+									true,
+								));
+								let mut items = MaxVec::new(completions_limit);
+								self.complete_property_name(
+									&needle,
+									range,
+									_R(model).to_string(),
+									rope.clone(),
+									Some(PropertyKind::Field),
+									true,
+									&mut items,
+								)?;
+								return Ok(Some(CompletionResponse::List(CompletionList {
+									is_incomplete: !items.has_space(),
+									items: items.into_inner(),
+								})));
+							}
 						}
 						Some(PyCompletions::FieldDescriptor) => {
 							let Some(desc_value) = capture.node.next_named_sibling() else {
@@ -204,7 +230,6 @@ impl Backend {
 						}
 						Some(PyCompletions::Depends)
 						| Some(PyCompletions::MappedTarget)
-						| Some(PyCompletions::Mapped)
 						| Some(PyCompletions::XmlId)
 						| Some(PyCompletions::Prop)
 						| Some(PyCompletions::Scope)
@@ -318,9 +343,11 @@ impl Backend {
 		let mut model = some!(_G(model));
 
 		if !single_field {
-			some!((self.index.models)
-				.resolve_mapped(&mut model, &mut needle, Some(&mut range))
-				.ok());
+			some!(
+				(self.index.models)
+					.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+					.ok()
+			);
 		}
 		let model_name = _R(model);
 		self.complete_property_name(

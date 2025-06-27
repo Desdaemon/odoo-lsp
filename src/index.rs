@@ -10,25 +10,25 @@ use anyhow::anyhow;
 use dashmap::DashMap;
 use derive_more::Deref;
 use globwalk::FileType;
-use ignore::gitignore::Gitignore;
 use ignore::Match;
+use ignore::gitignore::Gitignore;
 use lasso::{Spur, ThreadedRodeo};
 use request::WorkDoneProgressCreate;
 use ropey::Rope;
 use smart_default::SmartDefault;
-use tower_lsp_server::{lsp_types::*, Client, UriExt};
+use tower_lsp_server::{Client, UriExt, lsp_types::*};
 use tracing::{debug, warn};
 use tree_sitter::QueryCursor;
 use ts_macros::query;
 use xmlparser::{Token, Tokenizer};
 
 pub use crate::component::{Component, ComponentName};
-use crate::model::{Model, ModelIndex, ModelType};
+use crate::model::{Model, ModelIndex, ModelLocation, ModelType};
 use crate::record::Record;
-use crate::template::{gather_templates, NewTemplate};
+use crate::template::{NewTemplate, gather_templates};
 pub use crate::template::{Template, TemplateName};
-use crate::utils::{path_contains, ts_range_to_lsp_range, ByteOffset, ByteRange, MinLoc, RangeExt};
-use crate::{errloc, format_loc, loc, ok, ImStr};
+use crate::utils::{ByteOffset, ByteRange, MinLoc, RangeExt, path_contains, ts_range_to_lsp_range};
+use crate::{ImStr, errloc, format_loc, loc, ok};
 
 mod js;
 mod record;
@@ -37,7 +37,7 @@ mod template;
 
 pub use js::JsQuery;
 pub use record::{RecordId, SymbolMap, SymbolSet};
-pub use symbol::{PathSymbol, Symbol, _G, _I, _P, _R};
+pub use symbol::{_G, _I, _P, _R, PathSymbol, Symbol};
 pub use template::TemplateIndex;
 
 pub type Interner = Wrapper<ThreadedRodeo>;
@@ -401,10 +401,8 @@ impl Index {
 		}
 
 		for mut entry in self.models.iter_mut() {
-			if entry
-				.base
-				.as_ref()
-				.is_some_and(|base| path_contains(root, base.0.path.to_path()))
+			if let Some(ModelLocation(ref loc, _)) = entry.base
+				&& path_contains(root, loc.path.to_path())
 			{
 				entry.deleted = true;
 			}
@@ -613,11 +611,11 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 		let mut has_primary = false;
 		if !model.inherits.is_empty() {
 			// Rearranges the primary inherit to the first index
-			if let Some(base) = &model.name {
-				if let Some(position) = model.inherits.iter().position(|inherit| inherit == base) {
-					model.inherits.swap(position, 0);
-					has_primary = true;
-				}
+			if let Some(base) = &model.name
+				&& let Some(position) = model.inherits.iter().position(|inherit| inherit == base)
+			{
+				model.inherits.swap(position, 0);
+				has_primary = true;
 			}
 		}
 		let inherits = model

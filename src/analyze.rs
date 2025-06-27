@@ -13,12 +13,11 @@ use tracing::instrument;
 use tree_sitter::{Node, Parser, QueryCursor};
 
 use crate::{
-	format_loc,
-	index::{Index, Symbol, _G, _I, _R},
+	ImStr, dig, format_loc,
+	index::{_G, _I, _R, Index, Symbol},
 	model::{Method, MethodReturnType, ModelEntry, ModelName, PropertyKind},
 	test_utils,
-	utils::{lsp_range_to_offset_range, ByteRange, PreTravel, RangeExt, TryResultExt},
-	ImStr,
+	utils::{ByteRange, PreTravel, RangeExt, TryResultExt, lsp_range_to_offset_range},
 };
 use ts_macros::query;
 
@@ -45,6 +44,7 @@ pub static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
 	b"exists",
 	// TODO: Limit to Forms only
 	b"new",
+	b"edit",
 	b"save",
 );
 
@@ -85,9 +85,9 @@ impl core::fmt::Display for FunctionParam {
 			FunctionParam::Param(param) => f.write_str(param),
 			FunctionParam::PosEnd => f.write_char('/'),
 			FunctionParam::EitherEnd(None) => f.write_char('*'),
-			FunctionParam::EitherEnd(Some(param)) => write!(f, "*{}", param),
-			FunctionParam::Named(param) => write!(f, "{}=...", param),
-			FunctionParam::Kwargs(param) => write!(f, "**{}", param),
+			FunctionParam::EitherEnd(Some(param)) => write!(f, "*{param}"),
+			FunctionParam::Named(param) => write!(f, "{param}=..."),
+			FunctionParam::Kwargs(param) => write!(f, "**{param}"),
 		}
 	}
 }
@@ -206,24 +206,24 @@ impl Index {
 			"assignment" | "named_expression" => {
 				// (_ left right)
 				let lhs = node.named_child(0).unwrap();
-				if lhs.kind() == "identifier" {
-					let rhs = lhs.next_named_sibling().unwrap();
-					if let Some(type_) = self.type_of(rhs, scope, contents) {
-						let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
-						scope.insert(lhs.into_owned(), type_);
-					}
+				if lhs.kind() == "identifier"
+					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
+					&& let Some(type_) = self.type_of(rhs, scope, contents)
+				{
+					let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
+					scope.insert(lhs.into_owned(), type_);
 				}
 			}
 			"for_statement" => {
 				// (for_statement left right body)
 				scope.enter(true);
 				let lhs = node.named_child(0).unwrap();
-				if lhs.kind() == "identifier" {
-					let rhs = lhs.next_named_sibling().unwrap();
-					if let Some(type_) = self.type_of(rhs, scope, contents) {
-						let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
-						scope.insert(lhs.into_owned(), type_);
-					}
+				if lhs.kind() == "identifier"
+					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
+					&& let Some(type_) = self.type_of(rhs, scope, contents)
+				{
+					let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
+					scope.insert(lhs.into_owned(), type_);
 				}
 				return ControlFlow::Continue(true);
 			}
@@ -250,31 +250,30 @@ impl Index {
 				// (_ body (for_in_clause left right))
 				let for_in = node.named_child(1).unwrap();
 				let lhs = for_in.named_child(0).unwrap();
-				if lhs.kind() == "identifier" {
-					let rhs = lhs.next_named_sibling().unwrap();
-					if let Some(type_) = self.type_of(rhs, scope, contents) {
-						let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
-						scope.insert(lhs.into_owned(), type_);
-					}
+				if lhs.kind() == "identifier"
+					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
+					&& let Some(type_) = self.type_of(rhs, scope, contents)
+				{
+					let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
+					scope.insert(lhs.into_owned(), type_);
 				}
 			}
 			"call" if node.byte_range().contains_end(offset) => {
 				// model.{mapped,filtered,sorted,*}(lambda rec: ..)
 				let query = MappedCall::query();
 				let mut cursor = QueryCursor::new();
-				if let Some(mapped_call) = cursor.matches(query, node, contents).next() {
-					let callee = mapped_call
+				if let Some(mapped_call) = cursor.matches(query, node, contents).next()
+					&& let callee = mapped_call
 						.nodes_for_capture_index(MappedCall::Callee as _)
 						.next()
+						.unwrap() && let Some(type_) = self.type_of(callee, scope, contents)
+				{
+					let iter = mapped_call
+						.nodes_for_capture_index(MappedCall::Iter as _)
+						.next()
 						.unwrap();
-					if let Some(type_) = self.type_of(callee, scope, contents) {
-						let iter = mapped_call
-							.nodes_for_capture_index(MappedCall::Iter as _)
-							.next()
-							.unwrap();
-						let iter = String::from_utf8_lossy(&contents[iter.byte_range()]);
-						scope.insert(iter.into_owned(), type_);
-					}
+					let iter = String::from_utf8_lossy(&contents[iter.byte_range()]);
+					scope.insert(iter.into_owned(), type_);
 				}
 			}
 			"with_statement" => {
@@ -286,35 +285,36 @@ impl Index {
 				//       (as_pattern
 				//         (call (identifier) ..)
 				//         (as_pattern_target (identifier))))))
-				let as_pattern = node
-					.named_child(0)
-					.expect("with_clause")
-					.named_child(0)
-					.expect("with_item")
-					.named_child(0)
-					.expect("as_pattern");
-				if as_pattern.kind() == "as_pattern" {
-					let value = as_pattern.named_child(0).unwrap();
-					if let Some(target) = value.next_named_sibling() {
-						if target.kind() == "as_pattern_target" {
-							let alias = target.named_child(0).unwrap();
-							if alias.kind() == "identifier" && value.kind() == "call" {
-								let callee = value.named_child(0).expect("identifier");
-								// TODO: Remove this hardcoded case
-								if callee.kind() == "identifier" && b"Form" == &contents[callee.byte_range()] {
-									if let Some(first_arg) = value.named_child(1).unwrap().named_child(0) {
-										if let Some(type_) = self.type_of(first_arg, scope, contents) {
-											let alias =
-												String::from_utf8_lossy(&contents[alias.byte_range()]).into_owned();
-											scope.insert(alias, type_);
-										}
-									}
-								} else if let Some(type_) = self.type_of(value, scope, contents) {
-									let alias = String::from_utf8_lossy(&contents[alias.byte_range()]).into_owned();
-									scope.insert(alias, type_);
-								}
-							}
-						}
+				// if let Some(with_clause) = node.named_child(0)
+				// 	&& with_clause.kind() == "with_clause"
+				// 	&& let Some(with_item) = with_clause.named_child(0)
+				// 	&& with_item.kind() == "with_item"
+				// 	&& let Some(as_pattern) = with_item.named_child(0)
+				// 	&& as_pattern.kind() == "as_pattern"
+				// 	&& let Some(value) = as_pattern.named_child(0)
+				// 	&& value.kind() == "call"
+				// 	&& let Some(target) = value.next_named_sibling()
+				// 	&& target.kind() == "as_pattern_target"
+				// 	&& let Some(alias) = target.named_child(0)
+				// 	&& alias.kind() == "identifier"
+				// 	&& let Some(callee) = value.named_child(0)
+				if let Some(value) = dig!(node, with_clause.with_item.as_pattern.call)
+					&& let Some(target) = value.next_named_sibling()
+					&& target.kind() == "as_pattern_target"
+					&& let Some(alias) = dig!(target, identifier)
+					&& let Some(callee) = value.named_child(0)
+				{
+					// TODO: Remove this hardcoded case
+					if callee.kind() == "identifier"
+						&& b"Form" == &contents[callee.byte_range()]
+						&& let Some(first_arg) = value.named_child(1).expect("call args").named_child(0)
+						&& let Some(type_) = self.type_of(first_arg, scope, contents)
+					{
+						let alias = String::from_utf8_lossy(&contents[alias.byte_range()]).into_owned();
+						scope.insert(alias, type_);
+					} else if let Some(type_) = self.type_of(value, scope, contents) {
+						let alias = String::from_utf8_lossy(&contents[alias.byte_range()]).into_owned();
+						scope.insert(alias, type_);
 					}
 				}
 			}
@@ -406,13 +406,15 @@ impl Index {
 			Type::RefFn => {
 				// (call (_) @func (argument_list . (string) @xml_id))
 				let xml_id = call.named_child(1)?.named_child(0)?;
-				matches!(xml_id.kind(), "string").then(|| {
-					Type::Record(
+				if xml_id.kind() == "string" {
+					Some(Type::Record(
 						String::from_utf8_lossy(&contents[xml_id.byte_range().shrink(1)])
 							.as_ref()
 							.into(),
-					)
-				})
+					))
+				} else {
+					None
+				}
 			}
 			Type::ModelFn(model) => Some(Type::Model(model)),
 			Type::Super => scope.get(scope.super_.as_deref()?).cloned(),
@@ -577,7 +579,7 @@ impl Index {
 		// TODO: Improve this heuristic
 		fn is_toplevel_return(mut node: Node) -> bool {
 			while node.kind() != "function_definition" {
-				tracing::info!("{}", node.kind());
+				tracing::trace!("{}", node.kind());
 				match node.parent() {
 					Some(parent) => node = parent,
 					None => return false,
@@ -588,11 +590,10 @@ impl Index {
 				node.kind() == "block" && node.parent().is_some_and(|parent| parent.kind() == "class_definition")
 			}
 
-			match node.parent() {
-				Some(decoration) if decoration.kind() == "decorated_definition" => {
-					return decoration.parent().is_some_and(is_block_of_class);
-				}
-				_ => {}
+			if let Some(decoration) = node.parent()
+				&& decoration.kind() == "decorated_definition"
+			{
+				return decoration.parent().is_some_and(is_block_of_class);
 			}
 
 			node.parent().is_some_and(is_block_of_class)
@@ -637,7 +638,7 @@ impl Index {
 		}
 
 		let docstring =
-			Self::method_docstring(fn_scope, contents).map(|doc| ImStr::from(String::from_utf8_lossy(doc).as_ref()));
+			Self::method_docstring(fn_scope, contents).map(|doc| ImStr::from(Method::postprocess_docstring(String::from_utf8_lossy(doc).as_ref())));
 		method.docstring = docstring;
 
 		if let Some(params) = fn_scope.child_by_field_name("parameters") {
@@ -674,22 +675,7 @@ impl Index {
 	}
 	fn method_docstring<'out>(fn_scope: Node, contents: &'out [u8]) -> Option<&'out [u8]> {
 		let block = fn_scope.child_by_field_name("body")?;
-		let expr_stmt = block.named_child(0)?;
-		if expr_stmt.kind() != "expression_statement" {
-			return None;
-		}
-
-		let string = expr_stmt.named_child(0)?;
-		if string.kind() != "string" {
-			return None;
-		}
-
-		let string_content = string.named_child(1)?;
-		if string_content.kind() != "string_content" {
-			return None;
-		}
-
-		Some(&contents[string_content.byte_range()])
+		dig!(block, expression_statement.string.string_content(1)).map(|node| &contents[node.byte_range()])
 	}
 }
 
