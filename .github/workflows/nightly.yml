@@ -115,7 +115,8 @@ jobs:
         run: |
           shopt -s nullglob
           if [ "${{ matrix.runs-on }}" = "windows-latest" ]; then
-            mv ./target/${{ matrix.target }}/release-lto/odoo-lsp.* *.pdb
+            mv ./target/${{ matrix.target }}/release-lto/odoo-lsp.exe .
+            mv ./target/${{ matrix.target }}/release-lto/*.pdb .
             7z a -tzip odoo-lsp-${{ matrix.target }}.zip ./odoo-lsp.exe *.pdb
           else
             mv ./target/${{ matrix.target }}/release-lto/odoo-lsp* .
