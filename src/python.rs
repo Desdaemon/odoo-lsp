@@ -232,17 +232,21 @@ impl Backend {
 	///
 	/// Replacing:
 	///
+	/// ```text
 	///     "foo.bar.baz"
 	///           ^cursor
 	///      -----------range
 	///      ------needle
+	/// ```
 	///
 	/// Not replacing:
 	///
+	/// ```text
 	///     "foo.bar.baz"
 	///           ^cursor
 	///      -------range
 	///      -------needle
+	/// ```
 	#[instrument(skip_all, ret, fields(range_content = String::from_utf8_lossy(&contents[range.clone()]).as_ref()))]
 	fn gather_mapped<'text>(
 		&self,

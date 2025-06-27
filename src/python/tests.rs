@@ -191,3 +191,45 @@ fn test_attribute_at_offset_2() {
 	assert_eq!(field.as_ref(), "powerful");
 	assert_eq!(&contents[range], b"powerful");
 }
+
+#[test]
+fn test_top_level_stmt() {
+	let mut parser = Parser::new();
+	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+	let contents = "class A:\n    pass\n\nclass B:\n    pass\n";
+	let offset = contents.find("class B").unwrap() + 6;
+	let contents = contents.as_bytes();
+	let ast = parser.parse(contents, None).unwrap();
+	let node = super::top_level_stmt(ast.root_node(), offset).unwrap();
+	assert_eq!(node.kind(), "class_definition");
+	assert!(contents[node.byte_range()].starts_with(b"class B"));
+}
+
+#[test]
+fn test_tag_model() {
+	let mut parser = Parser::new();
+	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+	let contents = b"class A(models.Model):\n    _name = 'foo'\n    _inherit = 'bar'\n\nclass B(models.Model):\n    _inherit = 'baz'\n";
+	let ast = parser.parse(&contents[..], None).unwrap();
+	let query = super::PyCompletions::query();
+	let mut cursor = QueryCursor::new();
+	let mut this_model = super::ThisModel::default();
+	for class_node in ast
+		.root_node()
+		.named_children(&mut ast.root_node().walk())
+		.filter(|n| n.kind() == "class_definition")
+	{
+		for m in cursor.matches(query, class_node, &contents[..]) {
+			for capture in m.captures {
+				if matches!(
+					super::PyCompletions::from(capture.index),
+					Some(super::PyCompletions::Model)
+				) {
+					this_model.tag_model(capture.node, &m, class_node.byte_range(), &contents[..]);
+				}
+			}
+		}
+	}
+	assert_eq!(this_model.inner, Some(&b"baz"[..]));
+	assert!(matches!(this_model.source, super::ThisModelKind::Inherited));
+}

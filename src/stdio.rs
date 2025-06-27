@@ -1,5 +1,5 @@
-//! Copied from [`async_lsp::stdio`](https://docs.rs/async-lsp/latest/async_lsp/stdio/index.html)  
-//! Link: <https://github.com/oxalica/async-lsp/blob/main/src/stdio.rs>  
+//! Copied from [`async_lsp::stdio`](https://docs.rs/async-lsp/latest/async_lsp/stdio/index.html)
+//! Link: <https://github.com/oxalica/async-lsp/blob/main/src/stdio.rs>
 //! Original source is licensed under MIT or Apache v2
 
 use std::io::{self, Error, IoSlice, Read, Result, StdinLock, StdoutLock, Write};
@@ -297,5 +297,55 @@ mod tokio_impl {
 			let inner = AsyncFd::with_interest(self, Interest::WRITABLE)?;
 			Ok(TokioPipeStdout { inner })
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+	use rustix::fs::{fcntl_getfl, OFlags};
+	use rustix::io::dup;
+	use std::fs::File;
+	use std::io::Result as IoResult;
+	use std::os::unix::net::UnixStream;
+
+	#[test]
+	fn nonblocking_sets_and_restores_flags() -> IoResult<()> {
+		let (sock1, _sock2) = UnixStream::pair()?;
+		let dup_fd = dup(&sock1)?;
+		let initial = fcntl_getfl(&dup_fd)?;
+		assert!(!initial.contains(OFlags::NONBLOCK));
+
+		{
+			let _nb = NonBlocking::new(sock1)?;
+			let flags = fcntl_getfl(&dup_fd)?;
+			assert!(flags.contains(OFlags::NONBLOCK));
+		}
+
+		let restored = fcntl_getfl(&dup_fd)?;
+		assert_eq!(restored, initial);
+		Ok(())
+	}
+
+	#[test]
+	fn nonblocking_rejects_regular_file() {
+		let path = std::env::temp_dir().join("nonblocking_test_file");
+		let file = File::create(&path).unwrap();
+		let res = NonBlocking::new(file);
+		assert!(res.is_err());
+		let _ = std::fs::remove_file(path);
+	}
+
+	#[test]
+	fn nonblocking_roundtrip() {
+		let (sock1, sock2) = UnixStream::pair().unwrap();
+		let reader = NonBlocking::new(sock1.as_fd()).unwrap();
+		let writer = NonBlocking::new(sock2.as_fd()).unwrap();
+
+		rustix::io::write(writer.inner, b"hello").unwrap();
+		let mut buf = [0u8; 5];
+		let n = rustix::io::read(reader.inner, &mut buf).unwrap();
+		assert_eq!(n, 5);
+		assert_eq!(&buf, b"hello");
 	}
 }

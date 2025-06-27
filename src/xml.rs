@@ -20,6 +20,9 @@ use crate::template::gather_templates;
 use crate::{ImStr, errloc, format_loc, some, utils::*};
 use crate::{backend::Backend, backend::Text};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug)]
 enum RefKind<'a> {
 	/// `<field name=bar ref=".."/>`
