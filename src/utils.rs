@@ -11,7 +11,7 @@ use futures::future::BoxFuture;
 use ropey::{Rope, RopeSlice};
 use smart_default::SmartDefault;
 use tower_lsp_server::lsp_types::*;
-use tracing::{trace, warn};
+use tracing::warn;
 use xmlparser::{StrSpan, TextPos, Token};
 
 mod visitor;
@@ -439,14 +439,10 @@ impl Semaphore {
 	/// Waits for a maximum of [`WAIT_LIMIT`][Self::WAIT_LIMIT] for a notification.
 	pub async fn wait(&self) {
 		if self.should_wait.load(Ordering::SeqCst) {
-			let taskid = tokio::task::id();
-			trace!("suspending task {:?} thread={:?}", taskid, std::thread::current().id());
 			tokio::select! {
-				_ = self.notifier.notified() => {
-					trace!("resuming task {:?} thread={:?}", taskid, std::thread::current().id());
-				}
+				_ = self.notifier.notified() => {}
 				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
-					warn!("WAIT_LIMIT elapsed (task={:?})", taskid);
+					warn!("WAIT_LIMIT elapsed (thread={:?})", std::thread::current().id());
 				}
 			}
 		}
