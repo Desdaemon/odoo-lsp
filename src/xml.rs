@@ -17,7 +17,7 @@ use crate::index::{_G, _I, _R, Index, PathSymbol};
 use crate::model::{Field, FieldKind, PropertyKind};
 use crate::record::Record;
 use crate::template::gather_templates;
-use crate::{ImStr, errloc, some, utils::*};
+use crate::{ImStr, errloc, format_loc, some, utils::*};
 use crate::{backend::Backend, backend::Text};
 
 #[derive(Debug)]
@@ -55,14 +55,7 @@ enum Tag<'a> {
 }
 
 impl Backend {
-	pub async fn update_xml(
-		&self,
-		root: Spur,
-		text: &Text,
-		uri: &Uri,
-		rope: Rope,
-		did_save: bool,
-	) -> anyhow::Result<()> {
+	pub fn update_xml(&self, root: Spur, text: &Text, uri: &Uri, rope: Rope, did_save: bool) -> anyhow::Result<()> {
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
 			// Assume rope is up to date
@@ -73,10 +66,16 @@ impl Backend {
 		let path = uri.to_file_path().ok_or_else(|| errloc!("uri.to_file_path failed"))?;
 		let current_module = self
 			.index
-			.module_of_path(&path)
+			.find_module_of(&path)
 			.ok_or_else(|| errloc!("module_of_path for {} failed", uri.path().as_str()))?;
 		let mut record_prefix = if did_save {
-			Some(self.index.records.by_prefix.write().await)
+			Some(
+				self.index
+					.records
+					.by_prefix
+					.write()
+					.expect(format_loc!("cannot acquire write lock now")),
+			)
 		} else {
 			None
 		};
@@ -131,8 +130,7 @@ impl Backend {
 						if let Some(prefix) = record_prefix.as_mut() {
 							self.index
 								.records
-								.insert(_I(record.qualified_id()).into(), record, Some(prefix))
-								.await;
+								.insert(_I(record.qualified_id()).into(), record, Some(prefix));
 						}
 					} else if local.as_str() == "templates" {
 						let mut entries = vec![];
@@ -194,7 +192,7 @@ impl Backend {
 
 		Ok((slice, offset_at_cursor, relative_offset))
 	}
-	pub async fn did_save_xml(&self, uri: Uri, root: Spur) -> anyhow::Result<()> {
+	pub fn did_save_xml(&self, uri: Uri, root: Spur) -> anyhow::Result<()> {
 		let rope = {
 			let document = self
 				.document_map
@@ -202,10 +200,10 @@ impl Backend {
 				.ok_or_else(|| errloc!("(did_save) did not build document"))?;
 			document.rope.clone()
 		};
-		self.update_xml(root, &Text::Delta(vec![]), &uri, rope, true).await?;
+		self.update_xml(root, &Text::Delta(vec![]), &uri, rope, true)?;
 		Ok(())
 	}
-	pub async fn xml_completions(
+	pub fn xml_completions(
 		&self,
 		params: CompletionParams,
 		rope: Rope,
@@ -217,7 +215,7 @@ impl Backend {
 		let mut reader = Tokenizer::from(slice_str.as_ref());
 		let path = some!(uri.to_file_path());
 
-		let current_module = self.index.module_of_path(&path).expect("must be in a module");
+		let current_module = self.index.find_module_of(&path).expect("must be in a module");
 
 		let completions_limit = self
 			.workspaces
@@ -259,12 +257,11 @@ impl Backend {
 					Some(_R(relation)),
 					current_module,
 					&mut items,
-				)
-				.await?
+				)?
 			}
 			RefKind::Model => {
 				let range = some!(offset_range_to_lsp_range(replace_range, rope.clone()));
-				self.complete_model(needle, range, &mut items).await?
+				self.complete_model(needle, range, &mut items)?
 			}
 			ref ref_kind @ RefKind::PropertyName(ref access) | ref ref_kind @ RefKind::MethodName(ref access) => {
 				let mut model_filter = some!(model_filter);
@@ -294,7 +291,7 @@ impl Backend {
 			}
 			RefKind::TInherit | RefKind::TCall => {
 				let range = some!(offset_range_to_lsp_range(replace_range, rope.clone()));
-				self.complete_template_name(needle, range, &mut items).await?;
+				self.complete_template_name(needle, range, &mut items)?;
 			}
 			RefKind::PropOf(component) => {
 				self.complete_component_prop(/*needle,*/ replace_range, rope.clone(), component, &mut items)?;
@@ -307,8 +304,7 @@ impl Backend {
 					model_filter.as_deref(),
 					current_module,
 					&mut items,
-				)
-				.await?;
+				)?;
 			}
 			RefKind::PyExpr(py_offset) => 'expr: {
 				let mut parser = Parser::new();
@@ -460,7 +456,7 @@ impl Backend {
 		} = self.gather_refs(cursor_by_char, &mut reader, &slice)?;
 
 		let (cursor_value, _) = some!(cursor_value);
-		let current_module = self.index.module_of_path(&path);
+		let current_module = self.index.find_module_of(&path);
 		match ref_kind {
 			Some(RefKind::Model) => {
 				let model = some!(_G(cursor_value));
@@ -499,7 +495,7 @@ impl Backend {
 			ref_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset)),
 			rope.clone(),
 		);
-		let current_module = self.index.module_of_path(&path);
+		let current_module = self.index.find_module_of(&path);
 		match ref_kind {
 			Some(RefKind::Model) => self.hover_model(needle, lsp_range, false, None),
 			Some(RefKind::Ref(_)) => {
@@ -958,16 +954,13 @@ impl Backend {
 					if template_mode
 						&& matches!(end, ElementEnd::Open | ElementEnd::Empty)
 						&& span.start() > offset_at_cursor
-						&& slice
-							.get_byte(offset_at_cursor)
-							.map(|c| c.is_ascii_whitespace())
-							.unwrap()
+						&& let Some(c) = slice.get_byte(offset_at_cursor)
+						&& c.is_ascii_whitespace()
+						&& let Some(Tag::TComponent(component)) = tag
 					{
-						if let Some(Tag::TComponent(component)) = tag {
-							// edge case: completion trigger in the middle of tag start
-							ref_at_cursor = Some(("", offset_at_cursor..offset_at_cursor));
-							ref_kind = Some(RefKind::PropOf(component));
-						}
+						// edge case: completion trigger in the middle of tag start
+						ref_at_cursor = Some(("", offset_at_cursor..offset_at_cursor));
+						ref_kind = Some(RefKind::PropOf(component));
 					}
 					if ref_at_cursor.is_some() {
 						break;

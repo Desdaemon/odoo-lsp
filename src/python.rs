@@ -158,7 +158,7 @@ impl Backend {
 			.expect("bug: failed to init python parser");
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)
 	}
-	pub async fn update_models(&self, text: Text, path: &Path, root: Spur, rope: Rope) -> anyhow::Result<()> {
+	pub fn update_models(&self, text: Text, path: &Path, root: Spur, rope: Rope) -> anyhow::Result<()> {
 		let text = match text {
 			Text::Full(text) => Cow::from(text),
 			// TODO: Limit range of possible updates based on delta
@@ -166,7 +166,7 @@ impl Backend {
 		};
 		let models = index_models(text.as_bytes())?;
 		let path = PathSymbol::strip_root(root, path);
-		self.index.models.append(path, true, &models).await;
+		self.index.models.append(path, true, &models);
 		for model in models {
 			match model.type_ {
 				ModelType::Base { name, ancestors } => {
@@ -205,7 +205,6 @@ impl Backend {
 			let text = Cow::from(&document.rope).into_owned();
 			self.update_models(Text::Full(text), &path, root, rope)
 		}
-		.await
 		.inspect_err(|err| warn!("{err:?}"));
 		if zone.is_some() {
 			debug!("diagnostics");
@@ -582,7 +581,7 @@ impl Backend {
 		let contents = contents.as_bytes();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let path = some!(params.text_document_position.text_document.uri.to_file_path());
-		let current_module = self.index.module_of_path(&path);
+		let current_module = self.index.find_module_of(&path);
 		let mut this_model = ThisModel::default();
 
 		for match_ in cursor.matches(query, root, contents) {
