@@ -1,7 +1,8 @@
 [package]
 name = "odoo-lsp"
 version = "0.6.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.88"
 authors = ["Viet Dinh <54ckb0y789@gmail.com>"]
 description = "Language server for Odoo Python/JS/XML"
 repository = "https://github.com/Desdaemon/odoo-lsp"

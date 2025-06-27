@@ -2,8 +2,8 @@ cognitive-complexity-threshold = 20
 
 [[await-holding-invalid-types]]
 path = "dashmap::mapref::one::RefMut"
-reason = "Would deadlock if another task wants to acquire a reference"
+reason = "Would deadlock if same thread wants to acquire a reference"
 
 [[await-holding-invalid-types]]
 path = "dashmap::mapref::one::Ref"
-reason = "Would deadlock if another task wants to acquire a reference"
+reason = "Would deadlock if same thread wants to acquire a reference"

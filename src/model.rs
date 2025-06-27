@@ -1,14 +1,14 @@
 //! Stores the state of Odoo [models][ModelEntry].
 
 use std::borrow::Cow;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use dashmap::mapref::one::RefMut;
 use dashmap::DashMap;
+use dashmap::mapref::one::RefMut;
 use derive_more::{Deref, DerefMut};
 use lasso::Spur;
 use qp_trie::Trie;
@@ -21,9 +21,9 @@ use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
 use crate::analyze::FunctionParam;
-use crate::index::{PathSymbol, Symbol, _G, _I, _R};
-use crate::utils::{ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt};
-use crate::{errloc, format_loc, test_utils, ImStr};
+use crate::index::{_G, _I, _R, PathSymbol, Symbol};
+use crate::utils::{ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt, ts_range_to_lsp_range};
+use crate::{ImStr, errloc, format_loc, test_utils};
 
 #[derive(Clone, Debug)]
 pub struct Model {
@@ -224,6 +224,69 @@ impl Method {
 				ranges.into_iter().map(|range| MinLoc { path, range }.into()),
 			);
 		}
+	}
+	/// Dedents the string according to python's textwrap logic, and parses the method parameters.
+	pub fn postprocess_docstring(raw: &str) -> String {
+		use std::fmt::Write;
+
+		// Dedent lines
+		let lines: Vec<&str> = raw.lines().collect();
+		let nonempty: Vec<&str> = lines.iter().filter(|l| !l.trim().is_empty()).copied().collect();
+		let min_indent = nonempty
+			.into_iter()
+			.skip(1)
+			.filter_map(|l| {
+				let trimmed = l.trim_start();
+				if trimmed.is_empty() {
+					None
+				} else {
+					Some(l.len() - trimmed.len())
+				}
+			})
+			.min()
+			.unwrap_or(0);
+		let dedented: Vec<String> = lines
+			.into_iter()
+			.enumerate()
+			.map(|(i, l)| {
+				if i == 0 {
+					l.trim().to_string()
+				} else if l.len() >= min_indent {
+					l[min_indent..].to_string()
+				} else {
+					l.trim_start().to_string()
+				}
+			})
+			.collect();
+		let dedented_str = dedented.join("\n");
+
+		// Manual parser for :param <name>: <desc>
+		let mut params = Vec::new();
+		let mut body = Vec::new();
+		for line in dedented_str.lines() {
+			let trimmed = line.trim_start();
+			if let Some(rest) = trimmed.strip_prefix(":param")
+				&& let rest = rest.trim_start()
+				&& let Some(colon_idx) = rest.find(':')
+			{
+				let (name, desc) = rest.split_at(colon_idx);
+				let name = name.trim();
+				let desc = desc[1..].trim(); // skip the colon
+				if !name.is_empty() {
+					params.push((name.to_string(), desc.to_string()));
+					continue;
+				}
+			}
+			body.push(line);
+		}
+		let mut result = body.join("\n").trim().to_string();
+		if !params.is_empty() {
+			result.push_str("\n\n");
+			for (name, desc) in params {
+				_ = writeln!(&mut result, "- **{name}**: {desc}");
+			}
+		}
+		result
 	}
 }
 
@@ -455,7 +518,9 @@ impl ModelIndex {
 							None => {}
 						}
 					}
-					if let (Some(field), Some(type_)) = (field, type_) {
+					if let Some(field) = field
+						&& let Some(type_) = type_
+					{
 						let range = ts_range_to_lsp_range(field.range());
 						let field_str = String::from_utf8_lossy(&contents[field.byte_range()]);
 						let field = _I(&field_str);
@@ -489,7 +554,9 @@ impl ModelIndex {
 							},
 						))
 					}
-					if let (Some(method), Some(body)) = (method_name, method_body) {
+					if let Some(method) = method_name
+						&& let Some(body) = method_body
+					{
 						let method_str = String::from_utf8_lossy(&contents[method.byte_range()]);
 						let calls_super = String::from_utf8_lossy(&contents[body.byte_range()]).contains("super(");
 						let method = _I(&method_str);
@@ -841,16 +908,12 @@ mod tests {
 	use tree_sitter::{Parser, QueryCursor};
 
 	use crate::{
-		index::{ModelQuery, _I, _R},
-		test_utils::cases::foo::{prepare_foo_index, FOO_PY},
+		index::{_I, _R, ModelQuery},
+		test_utils::cases::foo::{FOO_PY, prepare_foo_index},
 	};
 
 	fn clamp_str(str: &str) -> &str {
-		if str.len() > 10 {
-			&str[..10]
-		} else {
-			str
-		}
+		if str.len() > 10 { &str[..10] } else { str }
 	}
 
 	#[test]

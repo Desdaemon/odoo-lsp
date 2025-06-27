@@ -1,24 +1,24 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 
 use fomat_macros::fomat;
 use lasso::Spur;
 use ropey::{Rope, RopeSlice};
-use tower_lsp_server::{lsp_types::*, UriExt};
+use tower_lsp_server::{UriExt, lsp_types::*};
 use tracing::{debug, instrument, warn};
 use tree_sitter::Parser;
 use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
 
-use crate::analyze::{normalize, Scope, Type};
+use crate::analyze::{Scope, Type, normalize};
 use crate::component::{ComponentTemplate, PropType};
-use crate::index::{Index, PathSymbol, _G, _I, _R};
+use crate::index::{_G, _I, _R, Index, PathSymbol};
 use crate::model::{Field, FieldKind, PropertyKind};
 use crate::record::Record;
 use crate::template::gather_templates;
+use crate::{ImStr, errloc, some, utils::*};
 use crate::{backend::Backend, backend::Text};
-use crate::{errloc, some, utils::*, ImStr};
 
 #[derive(Debug)]
 enum RefKind<'a> {
@@ -1138,7 +1138,9 @@ impl AttrPair<'_> {
 		} else if local == self.rhs {
 			self.rhs_val = Some((value.as_str().into(), value.start()));
 		}
-		if let (Some((lhs, lhs_start)), Some((rhs, rhs_start))) = (&self.lhs_val, &self.rhs_val) {
+		if let Some((lhs, lhs_start)) = &self.lhs_val
+			&& let Some((rhs, rhs_start)) = &self.rhs_val
+		{
 			let res = Some(((lhs.clone(), *lhs_start), (rhs.clone(), *rhs_start)));
 			self.reset();
 			return res;

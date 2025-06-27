@@ -38,6 +38,31 @@ macro_rules! some {
 	};
 }
 
+#[macro_export]
+macro_rules! dig {
+	() => { None };
+	($start:expr, $($rest:tt)+) => {
+		dig!(@inner Some($start), $($rest)+)
+	};
+	(@inner $node:expr, $kind:ident($idx:literal).$($rest:tt)+) => {
+		dig!(
+			@inner
+			if let Some(node) = $node && let Some(child) = node.named_child($idx) && child.kind() == stringify!($kind) { Some(child) } else { None },
+			$($rest)+
+		)
+	};
+
+	(@inner $node:expr, $kind:ident.$($rest:tt)+) => {
+		dig!(@inner $node, $kind(0).$($rest)+)
+	};
+	(@inner $node:expr, $kind:ident($idx:literal)) => {
+		if let Some(node) = $node && let Some(child) = node.named_child($idx) && child.kind() == stringify!($kind) { Some(child) } else { None }
+	};
+	(@inner $node:expr, $kind:ident) => {
+		dig!(@inner $node, $kind(0))
+	};
+}
+
 /// Early return, with optional message passed to [`format_loc`](crate::format_loc!).
 #[macro_export]
 macro_rules! ok {
@@ -378,7 +403,7 @@ impl<T: Sized> TryResultExt for TryResult<T> {
 
 #[cfg(test)]
 pub fn init_for_test() {
-	use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+	use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 	tracing_subscriber::registry()
 		.with(tracing_subscriber::fmt::layer())
@@ -555,7 +580,7 @@ pub fn strict_canonicalize<P: AsRef<Path>>(path: P) -> anyhow::Result<std::path:
 
 #[cfg(test)]
 mod tests {
-	use super::{to_display_path, WSL};
+	use super::{WSL, to_display_path};
 	use pretty_assertions::assert_eq;
 
 	#[test]

@@ -4,10 +4,10 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use ropey::Rope;
 use serde_json::Value;
+use tower_lsp_server::LanguageServer;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::lsp_types::notification::{DidChangeConfiguration, Notification};
-use tower_lsp_server::LanguageServer;
-use tower_lsp_server::{lsp_types::*, UriExt};
+use tower_lsp_server::{UriExt, lsp_types::*};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{GITVER, NAME, VERSION};
@@ -110,7 +110,7 @@ impl LanguageServer for Backend {
 	async fn shutdown(&self) -> Result<()> {
 		Ok(())
 	}
-	#[instrument(skip(self))]
+	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn did_close(&self, params: DidCloseTextDocumentParams) {
 		let path = params.text_document.uri.path().as_str();
 		self.document_map.remove(path);
@@ -121,7 +121,7 @@ impl LanguageServer for Backend {
 			.publish_diagnostics(params.text_document.uri, vec![], None)
 			.await;
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip_all, ret)]
 	async fn initialized(&self, _: InitializedParams) {
 		let mut registrations = vec![];
 		if self.capabilities.can_notify_changed_config.load(Relaxed) {
@@ -191,7 +191,9 @@ impl LanguageServer for Backend {
 			("javascript", _) | (_, Some((_, "js"))) => Language::Javascript,
 			("xml", _) | (_, Some((_, "xml"))) => Language::Xml,
 			_ => {
-				debug!("Could not determine language, or language not supported:\nlanguage_id={language_id} split_uri={split_uri:?}");
+				debug!(
+					"Could not determine language, or language not supported:\nlanguage_id={language_id} split_uri={split_uri:?}"
+				);
 				return;
 			}
 		};
@@ -239,19 +241,17 @@ impl LanguageServer for Backend {
 			.await
 			.inspect_err(|err| warn!("{err}"));
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
 		self.root_setup.wait().await;
-		if let [TextDocumentContentChangeEvent {
-			range: None,
-			range_length: None,
-			text,
-		}] = params.content_changes.as_mut_slice()
+		if let [single] = params.content_changes.as_mut_slice()
+			&& single.range.is_none()
+			&& single.range_length.is_none()
 		{
 			_ = self
 				.on_change(backend::TextDocumentItem {
 					uri: params.text_document.uri,
-					text: Text::Full(core::mem::take(text)),
+					text: Text::Full(core::mem::take(&mut single.text)),
 					version: params.text_document.version,
 					language: None,
 					old_rope: None,
@@ -261,6 +261,7 @@ impl LanguageServer for Backend {
 				.inspect_err(|err| warn!("{err}"));
 			return;
 		}
+
 		let old_rope;
 		{
 			let mut document = self
@@ -299,20 +300,19 @@ impl LanguageServer for Backend {
 			.await
 			.inspect_err(|err| warn!("{err}"));
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		if self.root_setup.should_wait() {
 			return;
 		}
 		_ = self.did_save_impl(params).await.inspect_err(|err| warn!("{err}"));
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position_params.text_document.uri;
-		debug!("goto_definition {}", uri.path().as_str());
 		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
 			debug!("(goto_definition) unsupported: {}", uri.path().as_str());
 			return Ok(None);
@@ -336,14 +336,12 @@ impl LanguageServer for Backend {
 			.flatten();
 		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip_all, ret, fields(uri = params.text_document_position.text_document.uri.as_str()))]
 	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
 		let uri = &params.text_document_position.text_document.uri;
-		debug!("references {}", uri.path().as_str());
-
 		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
@@ -360,7 +358,7 @@ impl LanguageServer for Backend {
 
 		Ok(refs.inspect_err(|err| warn!("{err}")).ok().flatten())
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip_all, fields(uri = params.text_document_position.text_document.uri.as_str()))]
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
@@ -446,6 +444,7 @@ impl LanguageServer for Backend {
 		}
 		Ok(completion)
 	}
+	#[instrument(skip_all, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
 	async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
 		match self.python_signature_help(params) {
 			Ok(ret) => Ok(ret),
@@ -455,7 +454,7 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip_all, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
@@ -528,7 +527,7 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip(self))]
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
 		self.root_setup.wait().await;
 		for added in params.event.added {
@@ -552,6 +551,7 @@ impl LanguageServer for Backend {
 		self.index.delete_marked_entries();
 	}
 	/// For VSCode and capable LSP clients, these events represent changes mostly to configuration files.
+	#[instrument(skip(self))]
 	async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
 		for FileEvent { uri, .. } in params.changes {
 			let Some(file_path) = uri.to_file_path() else { continue };
@@ -559,12 +559,13 @@ impl LanguageServer for Backend {
 				continue;
 			};
 			if let Some(wspath) = self.workspaces.find_workspace_of(&file_path, |wspath, _| {
-				file_path
-					.strip_prefix(wspath)
-					.is_ok_and(|suffix| {
-						suffix.file_stem().unwrap_or(suffix.as_os_str()).to_string_lossy() == ".odoo_lsp"
-					})
-					.then(|| wspath.to_owned())
+				if let Ok(suffix) = file_path.strip_prefix(wspath)
+					&& suffix.file_stem().unwrap_or(suffix.as_os_str()).to_string_lossy() == ".odoo_lsp"
+				{
+					Some(wspath.to_owned())
+				} else {
+					None
+				}
 			}) {
 				let Ok(file) = std::fs::read(&file_path) else {
 					break;
@@ -651,7 +652,7 @@ impl LanguageServer for Backend {
 			Ok(Some(OneOf::Left(models.chain(records).take(limit).collect())))
 		}
 	}
-	#[instrument(skip_all, ret)]
+	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
 		self.root_setup.wait().await;
 		let path = params.text_document.uri.path().as_str();
@@ -680,7 +681,7 @@ impl LanguageServer for Backend {
 			},
 		)))
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
@@ -698,7 +699,7 @@ impl LanguageServer for Backend {
 			})
 			.unwrap_or(None))
 	}
-	#[instrument(skip_all)]
+	#[instrument(skip_all, ret)]
 	async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);

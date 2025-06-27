@@ -17,13 +17,13 @@ use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
 use tower_lsp_server::Client;
-use tower_lsp_server::{lsp_types::*, UriExt};
+use tower_lsp_server::{UriExt, lsp_types::*};
 use tracing::{debug, error, info, instrument, trace, warn};
 use tree_sitter::{Parser, Tree};
 
 use crate::component::{Prop, PropDescriptor};
 use crate::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig};
-use crate::index::{Component, Index, ModuleName, RecordId, Symbol, SymbolSet, _G, _I, _P, _R};
+use crate::index::{_G, _I, _P, _R, Component, Index, ModuleName, RecordId, Symbol, SymbolSet};
 use crate::model::{Field, FieldKind, Method, ModelEntry, ModelLocation, ModelName, PropertyKind};
 use crate::record::Record;
 use crate::{errloc, format_loc, some, utils::*};
@@ -211,11 +211,8 @@ impl Backend {
 			self.workspaces.insert(dir, Workspace::default());
 		}
 
-		if let Some(Ok(config)) = params
-			.initialization_options
-			.as_ref()
-			.cloned()
-			.map(serde_json::from_value)
+		if let Some(ref config) = params.initialization_options
+			&& let Ok(config) = serde_json::from_value(config.clone())
 		{
 			self.on_change_config(config, None);
 		}
@@ -396,12 +393,7 @@ impl Backend {
 		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_xml_id) range"))?;
 		let by_prefix = self.index.records.by_prefix.read().await;
 		let model_filter = model_filter.and_then(|model| _G(model).map(ModelName::from));
-		fn to_completion_items(
-			record: &Record,
-			current_module: ModuleName,
-			range: Range,
-			scoped: bool,
-		) -> CompletionItem {
+		fn completion_item(record: &Record, current_module: ModuleName, range: Range, scoped: bool) -> CompletionItem {
 			let label = if record.module == current_module && !scoped {
 				record.id.to_string()
 			} else {
@@ -426,20 +418,27 @@ impl Backend {
 			};
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter().flat_map(|key| {
-					self.index.records.get(key).and_then(|record| {
-						(record.module == module && (model_filter.is_none() || record.model == model_filter))
-							.then(|| to_completion_items(&record, current_module, range, true))
-					})
+					if let Some(record) = self.index.records.get(key)
+						&& record.module == module
+						&& (model_filter.is_none() || record.model == model_filter)
+					{
+						Some(completion_item(&record, current_module, range, true))
+					} else {
+						None
+					}
 				})
 			});
 			items.extend(completions);
 		} else {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter().flat_map(|key| {
-					self.index.records.get(key).and_then(|record| {
-						(model_filter.is_none() || record.model == model_filter)
-							.then(|| to_completion_items(&record, current_module, range, false))
-					})
+					if let Some(record) = self.index.records.get(key)
+						&& (model_filter.is_none() || record.model == model_filter)
+					{
+						Some(completion_item(&record, current_module, range, false))
+					} else {
+						None
+					}
 				})
 			});
 			items.extend(completions);
@@ -658,10 +657,13 @@ impl Backend {
 	}
 	pub fn jump_def_model(&self, model: &str) -> anyhow::Result<Option<Location>> {
 		let model = some!(_G(model));
-		match (self.index.models.get(&model.into())).and_then(|model| model.base.as_ref().cloned()) {
-			Some(ModelLocation(base, _)) => Ok(Some(base.into())),
-			None => Ok(None),
+		if let Some(model) = self.index.models.get(&model.into())
+			&& let Some(ModelLocation(ref base, _)) = model.base
+		{
+			return Ok(Some(base.clone().into()));
 		}
+
+		Ok(None)
 	}
 	#[instrument(level = "trace", skip(self), ret)]
 	pub fn hover_model(
@@ -725,9 +727,13 @@ impl Backend {
 		let model_key = _I(model);
 		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
 		let prop = some!(_G(property));
-		if let Some(field) = entry.fields.as_ref().and_then(|fields| fields.get(&prop.into())) {
+		if let Some(ref fields) = entry.fields
+			&& let Some(field) = fields.get(&prop.into())
+		{
 			Ok(Some(field.location.deref().clone().into()))
-		} else if let Some(method) = entry.methods.as_ref().and_then(|methods| methods.get(&prop.into())) {
+		} else if let Some(ref methods) = entry.methods
+			&& let Some(method) = methods.get(&prop.into())
+		{
 			Ok(Some(some!(method.locations.first()).deref().clone().into()))
 		} else {
 			Ok(None)
@@ -769,7 +775,9 @@ impl Backend {
 		let model_key = _I(model);
 		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
 		let prop = some!(_G(name));
-		if let Some(field) = entry.fields.as_ref().and_then(|fields| fields.get(&prop.into())) {
+		if let Some(ref fields) = entry.fields
+			&& let Some(field) = fields.get(&prop.into())
+		{
 			Ok(Some(Hover {
 				range,
 				contents: HoverContents::Markup(MarkupContent {
@@ -777,10 +785,8 @@ impl Backend {
 					value: self.field_docstring(field, true),
 				}),
 			}))
-		} else if entry
-			.methods
-			.as_ref()
-			.is_some_and(|methods| methods.contains_key(&prop.into()))
+		} else if let Some(ref methods) = entry.methods
+			&& methods.contains_key(&prop.into())
 		{
 			drop(entry);
 			let rtype = self.index.resolve_method_returntype(prop.into(), model_key);
@@ -882,13 +888,13 @@ impl Backend {
 			.chain(descendant_locations)
 			.collect::<Vec<_>>();
 
-		if let Some(component) = self.index.components.by_template.get(&name.into()) {
-			let component = some!(self.index.components.get(&component));
-			if let Some(location) = component.location.as_ref() {
-				locations.push(location.clone().into());
-				let last = locations.swap_remove(0);
-				locations.push(last);
-			}
+		if let Some(component) = self.index.components.by_template.get(&name.into())
+			&& let Some(component) = self.index.components.get(&component)
+			&& let Some(ref location) = component.location
+		{
+			locations.push(location.clone().into());
+			let last = locations.swap_remove(0);
+			locations.push(last);
 		}
 		Ok(Some(locations))
 	}

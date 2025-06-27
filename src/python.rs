@@ -3,16 +3,16 @@ use std::path::Path;
 
 use lasso::Spur;
 use ropey::Rope;
-use tower_lsp_server::{lsp_types::*, UriExt};
+use tower_lsp_server::{UriExt, lsp_types::*};
 use tracing::{debug, instrument, trace, warn};
 use tree_sitter::{Node, Parser, QueryMatch};
 use ts_macros::query;
 
 use crate::analyze::Type;
-use crate::index::{index_models, PathSymbol, _G, _I, _R};
+use crate::index::{_G, _I, _R, PathSymbol, index_models};
 use crate::model::{ModelName, ModelType};
 use crate::{backend::Backend, backend::Text};
-use crate::{errloc, utils::*};
+use crate::{dig, errloc, utils::*};
 use crate::{format_loc, some};
 
 mod completions;
@@ -106,23 +106,13 @@ query! {
     (set (string) @MAPPED)
     (dictionary [
       (pair key: (string) @MAPPED)
-      (ERROR (string) @MAPPED) ]) ]))
-  (#match? @DEPENDS "^(write|copy)$"))
-
-((call
-  (attribute
-    (_) @MAPPED_TARGET (identifier) @DEPENDS)
-  (argument_list . [
-    (set (string) @MAPPED)
-    (dictionary [
-      (pair key: (string) @MAPPED)
       (ERROR (string) @MAPPED) ])
     (_ [
       (set (string) @MAPPED)
       (dictionary [
         (pair key: (string) @MAPPED)
         (ERROR (string) @MAPPED) ]) ]) ]))
-  (#eq? @DEPENDS "create"))
+  (#match? @DEPENDS "^(create|write|copy)$"))
 
 ((class_definition
   (block [
@@ -151,6 +141,7 @@ fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 		.find(|child| child.byte_range().contains_end(offset))
 }
 
+#[derive(Debug)]
 struct Mapped<'text> {
 	needle: Cow<'text, str>,
 	model: String,
@@ -253,6 +244,7 @@ impl Backend {
 	///           ^cursor
 	///      -------range
 	///      -------needle
+	#[instrument(skip_all, ret, fields(range_content = String::from_utf8_lossy(&contents[range.clone()]).as_ref()))]
 	fn gather_mapped<'text>(
 		&self,
 		root: Node,
@@ -385,17 +377,18 @@ impl Backend {
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
 					}
-					Some(PyCompletions::Mapped) if range.contains_end(offset) => {
-						if let Some(mapped) = self.gather_mapped(
-							root,
-							&match_,
-							Some(offset),
-							range.clone(),
-							this_model.inner,
-							contents,
-							false,
-							None,
-						) {
+					Some(PyCompletions::Mapped) => {
+						if range.contains_end(offset)
+							&& let Some(mapped) = self.gather_mapped(
+								root,
+								&match_,
+								Some(offset),
+								range.clone(),
+								this_model.inner,
+								contents,
+								false,
+								None,
+							) {
 							let mut needle = mapped.needle.as_ref();
 							let mut model = _I(mapped.model);
 							if !mapped.single_field {
@@ -403,6 +396,20 @@ impl Backend {
 							}
 							let model = _R(model);
 							return self.jump_def_property_name(needle, model);
+						} else if let Some(cmdlist) = capture.node.next_named_sibling()
+							&& Backend::is_commandlist(cmdlist, offset)
+						{
+							let (needle, _, model) = some!(self.gather_commandlist(
+								cmdlist,
+								root,
+								&match_,
+								offset,
+								range,
+								this_model.inner,
+								contents,
+								false,
+							));
+							return self.jump_def_property_name(&needle, _R(model));
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
@@ -446,7 +453,6 @@ impl Backend {
 						return Ok(None);
 					}
 					Some(PyCompletions::Request)
-					| Some(PyCompletions::Mapped)
 					| Some(PyCompletions::ForXmlId)
 					| Some(PyCompletions::XmlId)
 					| Some(PyCompletions::MappedTarget)
@@ -686,29 +692,51 @@ impl Backend {
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
 					}
-					Some(PyCompletions::Mapped) if range.contains(&offset) => {
-						let mapped = some!(self.gather_mapped(
-							root,
-							&match_,
-							Some(offset),
-							range.clone(),
-							this_model.inner,
-							contents,
-							false,
-							None,
-						));
-						let mut needle = mapped.needle.as_ref();
-						let mut model = _I(mapped.model);
-						let mut range = mapped.range;
-						if !mapped.single_field {
-							some!(self
-								.index
-								.models
-								.resolve_mapped(&mut model, &mut needle, Some(&mut range))
-								.ok());
+					Some(PyCompletions::Mapped) => {
+						if range.contains(&offset) {
+							let mapped = some!(self.gather_mapped(
+								root,
+								&match_,
+								Some(offset),
+								range.clone(),
+								this_model.inner,
+								contents,
+								false,
+								None,
+							));
+							let mut needle = mapped.needle.as_ref();
+							let mut model = _I(mapped.model);
+							let mut range = mapped.range;
+							if !mapped.single_field {
+								some!(
+									self.index
+										.models
+										.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+										.ok()
+								);
+							}
+							let model = _R(model);
+							return self.hover_property_name(
+								needle,
+								model,
+								offset_range_to_lsp_range(range, rope.clone()),
+							);
+						} else if let Some(cmdlist) = capture.node.next_named_sibling()
+							&& Backend::is_commandlist(cmdlist, offset)
+						{
+							let (needle, range, model) = some!(self.gather_commandlist(
+								cmdlist,
+								root,
+								&match_,
+								offset,
+								range,
+								this_model.inner,
+								contents,
+								false,
+							));
+							let range = offset_range_to_lsp_range(range, rope);
+							return self.hover_property_name(&needle, _R(model), range);
 						}
-						let model = _R(model);
-						return self.hover_property_name(needle, model, offset_range_to_lsp_range(range, rope.clone()));
 					}
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
 						let xml_id = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
@@ -752,11 +780,12 @@ impl Backend {
 							let mut model = _I(mapped.model);
 							let mut range = mapped.range;
 							if !mapped.single_field {
-								some!(self
-									.index
-									.models
-									.resolve_mapped(&mut model, &mut needle, Some(&mut range))
-									.ok());
+								some!(
+									self.index
+										.models
+										.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+										.ok()
+								);
 							}
 							let model = _R(model);
 							return self.hover_property_name(
@@ -770,7 +799,6 @@ impl Backend {
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)
-					| Some(PyCompletions::Mapped)
 					| Some(PyCompletions::ForXmlId)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
@@ -835,7 +863,9 @@ impl Backend {
 
 		let active_parameter = 'find_param: {
 			if let Some(offset) = position_to_offset(params.text_document_position_params.position, &document.rope) {
-				if let Some(idx) = contents[..=offset.0].iter().rposition(|c| matches!(c, b',' | b'(')) {
+				if let Some(contents) = contents.get(..=offset.0)
+					&& let Some(idx) = contents.iter().rposition(|&c| c == b',' || c == b'(')
+				{
 					if contents[idx] == b'(' {
 						break 'find_param Some(0);
 					}
@@ -864,7 +894,7 @@ impl Backend {
 		let model = some!((self.index).models.get(&model_key));
 		let method_obj = some!(some!(model.methods.as_ref()).get(&method_key.into()));
 
-		let mut label = format!("{}(", method);
+		let mut label = format!("{method}(");
 		let mut parameters = vec![];
 
 		for (idx, param) in method_obj.arguments.as_deref().unwrap_or(&[]).iter().enumerate() {
@@ -923,6 +953,101 @@ impl Backend {
 		let (type_, _) =
 			some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), contents.as_bytes()));
 		Ok(Some(format!("{type_:?}").replacen("Text::", "", 1)))
+	}
+	fn is_commandlist(cmdlist: Node, offset: usize) -> bool {
+		cmdlist.kind() == "list"
+			&& cmdlist.byte_range().contains_end(offset)
+			&& cmdlist.parent().is_some_and(|parent| parent.kind() == "pair")
+	}
+	/// `cmdlist` must have been checked by [is_commandlist][Backend::is_commandlist] first
+	///
+	/// Returns `(needle, range, model)` for a field
+	fn gather_commandlist<'text>(
+		&self,
+		cmdlist: Node,
+		root: Node,
+		match_: &tree_sitter::QueryMatch,
+		offset: usize,
+		range: std::ops::Range<usize>,
+		this_model: Option<&[u8]>,
+		contents: &'text [u8],
+		for_replacing: bool,
+	) -> Option<(Cow<'text, str>, ByteRange, Spur)> {
+		let mut access = vec![];
+		access.extend_from_slice(&contents[range.shrink(1)]);
+		let mut dest = cmdlist.descendant_for_byte_range(offset, offset)?;
+		if dest.kind() != "string" {
+			dest = dest.parent()?;
+		}
+		if dest.kind() != "string" {
+			return None;
+		}
+
+		let Mapped {
+			needle, model, range, ..
+		} = self.gather_mapped(
+			root,
+			match_,
+			Some(offset),
+			dest.byte_range(),
+			this_model,
+			contents,
+			for_replacing,
+			None,
+		)?;
+
+		// recursive descent to collect the chain of fields
+		let mut cursor = cmdlist;
+		let mut count = 0;
+		while count < 30 {
+			count += 1;
+			let candidate = cursor.child_containing_descendant(dest)?;
+			let obj;
+			if candidate.kind() == "tuple" {
+				// (0, 0, {})
+				obj = candidate.child_containing_descendant(dest)?;
+			} else if candidate.kind() == "call" {
+				// Command.create({}), but we don't really care if the actual function is called.
+				let args = dig!(candidate, argument_list(1))?;
+				obj = args.child_containing_descendant(dest)?;
+			} else {
+				return None;
+			}
+			if obj.kind() == "dictionary" {
+				let pair = obj.child_containing_descendant(dest)?;
+				if pair.kind() != "pair" {
+					return None;
+				}
+
+				let key = dig!(pair, string)?;
+				if key.byte_range().contains_end(offset) {
+					break;
+				}
+
+				cursor = pair.child_containing_descendant(dest)?;
+				access.push(b'.');
+				access.extend_from_slice(&contents[key.byte_range().shrink(1)]);
+			} else if obj.kind() == "set" {
+				break;
+			} else {
+				// TODO: (ERROR) case
+				return None;
+			}
+		}
+
+		if count == 30 {
+			warn!("recursion limit hit");
+		}
+
+		access.push(b'.'); // to force resolution of the last field
+		let access = String::from_utf8_lossy(&access).into_owned();
+		let access = &mut access.as_str();
+		let mut model = _I(&model);
+		if self.index.models.resolve_mapped(&mut model, access, None).is_err() {
+			return None;
+		}
+
+		Some((needle, range, model))
 	}
 }
 
