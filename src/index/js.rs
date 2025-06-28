@@ -9,11 +9,11 @@ use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
-use crate::index::{PathSymbol, _I};
-use crate::utils::{offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, MinLoc, RangeExt};
-use crate::{errloc, format_loc, ok, ImStr};
+use crate::index::{_I, PathSymbol};
+use crate::utils::{ByteOffset, MinLoc, RangeExt, offset_range_to_lsp_range, ts_range_to_lsp_range};
+use crate::{ImStr, errloc, format_loc, ok};
 
-use super::{Component, ComponentName, Output, TemplateName, _R};
+use super::{_R, Component, ComponentName, Output, TemplateName};
 
 // Three cases:
 // static props OR Foo.props: Component props

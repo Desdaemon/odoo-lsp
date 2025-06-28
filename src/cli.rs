@@ -5,10 +5,10 @@ use std::{env::current_dir, io::stdout, process::exit, sync::Arc};
 use anyhow::Context;
 use globwalk::FileType;
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
-use odoo_lsp::index::{Index, _R};
+use odoo_lsp::index::{_R, Index};
 use odoo_lsp::utils::strict_canonicalize;
-use odoo_lsp::{errloc, format_loc, loc, GITVER, GIT_VERSION, NAME, VERSION};
-use self_update::{backends::github, Status};
+use odoo_lsp::{GIT_VERSION, GITVER, NAME, VERSION, errloc, format_loc, loc};
+use self_update::{Status, backends::github};
 use serde_json::Value;
 use tracing::{debug, warn};
 

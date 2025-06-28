@@ -3,9 +3,9 @@ use std::{path::PathBuf, sync::Arc};
 use dashmap::DashMap;
 use lasso::Spur;
 use odoo_lsp::{
+	ImStr,
 	index::{_I, _R},
 	utils::RangeExt,
-	ImStr,
 };
 use tracing::debug;
 use tree_sitter::{Parser, QueryCursor};

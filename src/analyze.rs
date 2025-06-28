@@ -624,8 +624,8 @@ impl Index {
 			None => method.return_type = MethodReturnType::Value,
 		}
 
-		let docstring =
-			Self::method_docstring(fn_scope, contents).map(|doc| ImStr::from(Method::postprocess_docstring(String::from_utf8_lossy(doc).as_ref())));
+		let docstring = Self::method_docstring(fn_scope, contents)
+			.map(|doc| ImStr::from(Method::postprocess_docstring(String::from_utf8_lossy(doc).as_ref())));
 		method.docstring = docstring;
 
 		if let Some(params) = fn_scope.child_by_field_name("parameters") {

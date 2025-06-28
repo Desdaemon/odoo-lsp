@@ -353,7 +353,10 @@ impl core::error::Error for ResolveMappedError {}
 
 impl ModelIndex {
 	pub fn append(&self, path: PathSymbol, replace: bool, items: &[Model]) {
-		let mut by_prefix = self.by_prefix.write().expect(format_loc!("unable to acquire write lock now"));
+		let mut by_prefix = self
+			.by_prefix
+			.write()
+			.expect(format_loc!("unable to acquire write lock now"));
 		for item in items {
 			match &item.type_ {
 				ModelType::Base { name: base, ancestors } => {

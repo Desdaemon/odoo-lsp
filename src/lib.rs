@@ -21,6 +21,6 @@ pub mod python;
 pub mod xml;
 
 pub mod version;
-pub use version::{GITVER, GIT_VERSION, NAME, VERSION};
+pub use version::{GIT_VERSION, GITVER, NAME, VERSION};
 
 pub mod test_utils;
