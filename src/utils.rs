@@ -73,6 +73,23 @@ macro_rules! ok {
     }
 }
 
+#[macro_export]
+macro_rules! await_did_open_document {
+	($self:expr, $path:expr) => {	
+		let mut blocker = None;
+		{
+			if let Some(document) = $self.document_map.get($path)
+				&& document.setup.should_wait()
+			{
+				blocker = Some(document.setup.clone());
+			}
+		}
+		if let Some(blocker) = blocker {
+			blocker.wait().await;
+		}
+	};
+}
+
 #[repr(transparent)]
 #[derive(SmartDefault)]
 pub struct EarlyReturn<'a, T>(

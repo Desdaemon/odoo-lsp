@@ -1,16 +1,17 @@
 //! The main indexer for all language items, including [`Record`]s, QWeb [`Template`]s, and Owl [`Component`]s
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 
 use anyhow::{Context, anyhow};
 use dashmap::DashMap;
 use derive_more::Deref;
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use globwalk::FileType;
 use ignore::Match;
 use ignore::gitignore::Gitignore;
@@ -177,7 +178,8 @@ impl Index {
 					let module = ModuleEntry {
 						path: module_path.to_str().expect("non-utf8 path").into(),
 						dependencies,
-						loaded: AtomicBool::new(false),
+						loaded: Default::default(),
+						loaded_dependents: Default::default(),
 					};
 					entry.insert(module);
 				}
@@ -199,13 +201,17 @@ impl Index {
 	#[instrument(skip_all, ret, fields(path = path.display().to_string()))]
 	pub(crate) async fn load_modules_for_document(&self, document_blocker: Arc<Semaphore>, path: &Path) -> Option<()> {
 		let _blocker = document_blocker.block();
-		let mut outputs = tokio::task::JoinSet::new();
-		let path_module_key = self.find_module_of(path)?;
+		let module_name = self.find_module_of(path)?;
 
+		self.load_module(module_name).await
+	}
+	// #[instrument(skip_all, ret, fields(module = _R(module_name)))]
+	async fn load_module(&self, module_name: ModuleName) -> Option<()> {
+		let mut outputs = tokio::task::JoinSet::new();
 		{
-			let root = self.find_root_of(path)?;
+			let root = self.find_root_from_module(module_name)?;
 			let root = self.roots.get(&root)?;
-			let path_module = root.get(&path_module_key)?;
+			let path_module = root.get(&module_name)?;
 
 			if path_module.loaded.load(Relaxed) {
 				return None;
@@ -217,7 +223,7 @@ impl Index {
 		let mut key_to_idx = HashMap::new();
 		let mut visited = std::collections::HashSet::new();
 
-		let mut stack = vec![(path_module_key, false)];
+		let mut stack = vec![(module_name, false)];
 		while let Some((module_key, deps_done)) = stack.pop() {
 			if !deps_done {
 				if !visited.insert(module_key) {
@@ -249,14 +255,16 @@ impl Index {
 		}
 
 		for (module_key, root) in modules.into_iter().zip(roots.into_iter()) {
-			info!("{} depends on {}", _R(path_module_key), _R(module_key));
+			info!("{} depends on {}", _R(module_name), _R(module_key));
 			let root_display = root.key().to_string_lossy();
 			let root_key = _I(&root_display);
 			let module = root
 				.get(&module_key)
 				.expect(format_loc!("module must already be present by now"));
 			let module_dir = Path::new(&*root_display).join(&module.path);
-			module.loaded.store(true, Relaxed);
+			if module.loaded.compare_exchange(false, true, Relaxed, Relaxed) != Ok(false) {
+				continue;
+			}
 
 			if let Ok(xmls) = globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
 				.file_type(FileType::FILE | FileType::SYMLINK)
@@ -338,6 +346,92 @@ impl Index {
 			}
 		}
 
+		Some(())
+	}
+	#[instrument(skip_all, fields(module))]
+	pub(crate) fn discover_dependents_of(&self, module: ModuleName) -> Vec<ModuleName> {
+		let mut dependents = HashMap::<ModuleName, HashSet<ModuleName>>::new();
+		let mut all_modules = vec![];
+		// First, collect all modules and their direct dependencies
+		for root in self.roots.iter() {
+			for (&module_key, module_entry) in root.iter() {
+				all_modules.push(module_key);
+				for dep in &module_entry.dependencies {
+					dependents.entry(*dep).or_default().insert(module_key);
+				}
+			}
+		}
+		// Compute transitive dependents for each module
+		let module_to_idx: HashMap<ModuleName, usize> = all_modules.iter().enumerate().map(|(i, m)| (*m, i)).collect();
+		let mut graph = vec![vec![]; all_modules.len()];
+
+		// Build the graph: for each module, add edges to its direct dependents
+		for (i, module) in all_modules.iter().enumerate() {
+			if let Some(deps) = dependents.get(module) {
+				for dep in deps {
+					if let Some(&dep_idx) = module_to_idx.get(dep) {
+						graph[i].push(dep_idx);
+					}
+				}
+			}
+		}
+
+		drop(module_to_idx);
+
+		// DP/memoization for transitive dependents
+		let mut memo: Vec<Option<HashSet<usize>>> = vec![None; all_modules.len()];
+
+		fn dfs(idx: usize, graph: &Vec<Vec<usize>>, memo: &mut Vec<Option<HashSet<usize>>>) -> HashSet<usize> {
+			debug_assert!(idx < memo.len());
+			debug_assert!(idx < graph.len());
+			if let Some(cached) = unsafe { memo.get_unchecked(idx) } {
+				return cached.clone();
+			}
+			let mut result = HashSet::new();
+			for &dep_idx in unsafe { graph.get_unchecked(idx) } {
+				if dep_idx == idx {
+					continue;
+				}
+				result.insert(dep_idx);
+				result.extend(dfs(dep_idx, graph, memo));
+			}
+			memo[idx] = Some(result.clone());
+			result
+		}
+
+		let idx = all_modules.iter().position(|&m| m == module).unwrap();
+		dfs(idx, &graph, &mut memo)
+			.into_iter()
+			.map(|idx| all_modules[idx])
+			.collect()
+	}
+	/// Inverse of [Index::load_module], useful for requests that work in the context of the larger codebase.
+	///
+	/// Dependents' information must be gathered by [Index::discover_all_module_dependents] first.
+	pub(crate) async fn load_modules_dependent_on(&self, module_name: ModuleName) -> Option<()> {
+		let root = self.find_root_from_module(module_name)?;
+		{
+			let root = self.roots.try_get_mut(&root).try_unwrap()?;
+			let module = root.get(&module_name)?;
+			if module.loaded_dependents.load(Relaxed) {
+				return None;
+			}
+		}
+
+		let mut tasks = self
+			.discover_dependents_of(module_name)
+			.into_iter()
+			.map(|dep| self.load_module(dep))
+			.collect::<FuturesUnordered<_>>();
+		if !tasks.is_empty() {
+			while tasks.next().await.is_some() {}
+		}
+
+		self.roots
+			.get(&root)?
+			.get(&module_name)?
+			.loaded_dependents
+			.store(true, Relaxed);
 		Some(())
 	}
 	async fn notify_duplicate_base(client: Client, old_path: ImStr, new_path: PathBuf) {
@@ -444,9 +538,9 @@ impl Index {
 		None
 	}
 
-	pub fn find_root_from_module(&self, key: &ModuleName) -> Option<PathBuf> {
+	pub fn find_root_from_module(&self, key: ModuleName) -> Option<PathBuf> {
 		for root in self.roots.iter() {
-			if root.contains_key(key) {
+			if root.contains_key(&key) {
 				return Some(root.key().to_owned());
 			}
 		}
