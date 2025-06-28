@@ -87,12 +87,14 @@ impl LanguageServer for Backend {
 					resolve_provider: Some(true),
 					trigger_characters: Some(['"', '\'', '.', '_', ',', ' '].iter().map(char::to_string).collect()),
 					all_commit_characters: None,
-					completion_item: None,
 					work_done_progress_options: Default::default(),
+					completion_item: Some(CompletionOptionsCompletionItem {
+						label_details_support: Some(true),
+					}),
 				}),
 				signature_help_provider: Some(SignatureHelpOptions {
-					trigger_characters: Some(['(', ','].iter().map(char::to_string).collect()),
-					retrigger_characters: None,
+					trigger_characters: Some(['('].iter().map(char::to_string).collect()),
+					retrigger_characters: Some([','].iter().map(char::to_string).collect()),
 					work_done_progress_options: Default::default(),
 				}),
 				workspace: Some(WorkspaceServerCapabilities {
@@ -349,15 +351,26 @@ impl LanguageServer for Backend {
 			.flatten();
 		Ok(location.map(GotoDefinitionResponse::Scalar))
 	}
-	#[instrument(skip_all, ret, fields(uri = params.text_document_position.text_document.uri.as_str()))]
+	#[instrument(skip_all, ret, fields(path))]
 	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-		if self.root_setup.should_wait() {
-			return Ok(None);
-		}
+		self.root_setup.wait().await;
+
 		let uri = &params.text_document_position.text_document.uri;
+		let path = uri.path().as_str();
 		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
+		let mut blocker = None;
+		{
+			if let Some(document) = self.document_map.get(path)
+				&& document.setup.should_wait()
+			{
+				blocker = Some(document.setup.clone());
+			}
+		}
+		if let Some(blocker) = blocker {
+			blocker.wait().await;
+		}
 		let Some(document) = self.document_map.get(uri.path().as_str()) else {
 			debug!("Bug: did not build a document for {}", uri.path().as_str());
 			return Ok(None);
