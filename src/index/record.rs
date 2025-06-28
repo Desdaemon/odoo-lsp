@@ -1,4 +1,4 @@
-use crate::{format_loc, ImStr};
+use crate::{ImStr, format_loc};
 use std::{collections::HashSet, fmt::Debug, hash::Hash, marker::PhantomData};
 
 use dashmap::{DashMap, mapref::one::Ref};

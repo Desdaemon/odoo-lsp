@@ -3,8 +3,8 @@ use tower_lsp_server::lsp_types::{Position, Range};
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
 use crate::errloc;
-use crate::index::{PathSymbol, Symbol, _I};
-use crate::utils::{offset_to_position, ByteOffset, MinLoc};
+use crate::index::{_I, PathSymbol, Symbol};
+use crate::utils::{ByteOffset, MinLoc, offset_to_position};
 
 #[derive(Default, Debug)]
 pub struct Template {

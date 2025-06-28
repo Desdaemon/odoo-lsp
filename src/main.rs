@@ -80,7 +80,7 @@ use tower_lsp_server::{LspService, Server};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt as tracing_fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt as tracing_fmt};
 
 use odoo_lsp::backend::Backend;
 use odoo_lsp::index::Interner;

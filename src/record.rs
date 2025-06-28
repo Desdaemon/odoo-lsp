@@ -4,11 +4,11 @@ use ropey::Rope;
 use tower_lsp_server::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::index::{ModuleName, PathSymbol, RecordId, _I, _R};
+use crate::index::{_I, _R, ModuleName, PathSymbol, RecordId};
 use crate::model::ModelName;
-use crate::utils::{offset_to_position, position_to_offset};
 use crate::utils::{ByteOffset, MinLoc};
-use crate::{errloc, some, ImStr};
+use crate::utils::{offset_to_position, position_to_offset};
+use crate::{ImStr, errloc, some};
 
 #[derive(Debug)]
 pub struct Record {

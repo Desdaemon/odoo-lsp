@@ -6,7 +6,7 @@ use std::sync::RwLock;
 
 use crate::{format_loc, template::NewTemplate};
 
-use super::{Template, TemplateName, _R};
+use super::{_R, Template, TemplateName};
 
 #[derive(SmartDefault, Deref)]
 pub struct TemplateIndex {
@@ -20,7 +20,10 @@ pub type TemplatePrefixTrie = qp_trie::Trie<&'static [u8], TemplateName>;
 
 impl TemplateIndex {
 	pub fn append(&self, entries: Vec<NewTemplate>) {
-		let mut prefix = self.by_prefix.write().expect(format_loc!("cannot acquire write lock now"));
+		let mut prefix = self
+			.by_prefix
+			.write()
+			.expect(format_loc!("cannot acquire write lock now"));
 		for entry in entries {
 			if entry.base {
 				let Template {

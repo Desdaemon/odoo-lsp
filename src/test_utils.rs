@@ -28,7 +28,7 @@ pub mod fs {
 
 #[cfg(test)]
 pub mod cases {
-	use crate::index::{index_models, PathSymbol};
+	use crate::index::{PathSymbol, index_models};
 	use crate::model::ModelIndex;
 	use crate::test_utils;
 	use std::path::Path;

@@ -206,11 +206,7 @@ impl Backend {
 		self.update_xml(root, &Text::Delta(vec![]), &uri, rope, true)?;
 		Ok(())
 	}
-	pub fn xml_completions(
-		&self,
-		params: CompletionParams,
-		rope: Rope,
-	) -> anyhow::Result<Option<CompletionResponse>> {
+	pub fn xml_completions(&self, params: CompletionParams, rope: Rope) -> anyhow::Result<Option<CompletionResponse>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
 		let (slice, offset_at_cursor, relative_offset) = self.record_slice(&rope, uri, position)?;

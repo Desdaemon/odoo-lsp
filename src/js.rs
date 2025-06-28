@@ -6,8 +6,8 @@ use tree_sitter::{Parser, QueryCursor};
 
 use crate::backend::Backend;
 use crate::backend::Text;
-use crate::index::{JsQuery, _G};
-use crate::utils::{position_to_offset, ts_range_to_lsp_range, ByteOffset, RangeExt};
+use crate::index::{_G, JsQuery};
+use crate::utils::{ByteOffset, RangeExt, position_to_offset, ts_range_to_lsp_range};
 use crate::{errloc, some};
 
 impl Backend {

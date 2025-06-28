@@ -5,7 +5,7 @@
 use std::io::{self, Error, IoSlice, Read, Result, StdinLock, StdoutLock, Write};
 use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd};
 
-use rustix::fs::{fcntl_getfl, fcntl_setfl, fstat, FileType, OFlags};
+use rustix::fs::{FileType, OFlags, fcntl_getfl, fcntl_setfl, fstat};
 
 #[derive(Debug)]
 struct NonBlocking<T: AsFd> {
@@ -302,8 +302,8 @@ mod tokio_impl {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-	use rustix::fs::{fcntl_getfl, OFlags};
+	use super::*;
+	use rustix::fs::{OFlags, fcntl_getfl};
 	use rustix::io::dup;
 	use std::fs::File;
 	use std::io::Result as IoResult;

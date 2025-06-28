@@ -3,10 +3,10 @@
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 
 use futures::FutureExt;
-use futures::{future::CatchUnwind, Future};
+use futures::{Future, future::CatchUnwind};
 use tower::Service;
 use tower_lsp_server::jsonrpc::{Error, ErrorCode, Id, Response};
 use tracing::{error, warn};

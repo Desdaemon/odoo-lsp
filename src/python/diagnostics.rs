@@ -6,16 +6,16 @@ use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 
 use crate::utils::{
-	lsp_range_to_offset_range, offset_range_to_lsp_range, ts_range_to_lsp_range, ByteOffset, ByteRange, Erase, RangeExt,
+	ByteOffset, ByteRange, Erase, RangeExt, lsp_range_to_offset_range, offset_range_to_lsp_range, ts_range_to_lsp_range,
 };
 use crate::{
-	analyze::{determine_scope, Scope, Type, MODEL_METHODS},
+	analyze::{MODEL_METHODS, Scope, Type, determine_scope},
 	backend::Backend,
-	index::{Index, _G, _I, _R},
+	index::{_G, _I, _R, Index},
 	model::ResolveMappedError,
 };
 
-use super::{top_level_stmt, Mapped, PyCompletions, ThisModel};
+use super::{Mapped, PyCompletions, ThisModel, top_level_stmt};
 
 impl Backend {
 	pub fn diagnose_python(
