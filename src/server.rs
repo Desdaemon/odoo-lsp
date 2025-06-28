@@ -10,7 +10,7 @@ use tower_lsp_server::lsp_types::notification::{DidChangeConfiguration, Notifica
 use tower_lsp_server::{UriExt, lsp_types::*};
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{GITVER, NAME, VERSION};
+use crate::{GITVER, NAME, VERSION, await_did_open_document};
 
 use crate::backend::{Backend, Document, Language, Text};
 use crate::index::{_G, _R};
@@ -115,17 +115,8 @@ impl LanguageServer for Backend {
 	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn did_close(&self, params: DidCloseTextDocumentParams) {
 		let path = params.text_document.uri.path().as_str();
-		let mut blocker = None;
-		{
-			if let Some(document) = self.document_map.get(path)
-				&& document.setup.should_wait()
-			{
-				blocker = Some(document.setup.clone());
-			}
-		}
-		if let Some(blocker) = blocker {
-			blocker.wait().await;
-		}
+		await_did_open_document!(self, path);
+
 		self.document_map.remove(path);
 		self.record_ranges.remove(path);
 		self.ast_map.remove(path);
@@ -176,7 +167,6 @@ impl LanguageServer for Backend {
 				error!("could not add root {}:\n{err}", ws.key().display());
 			}
 		}
-		drop(_blocker);
 	}
 	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path().as_str()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -267,17 +257,7 @@ impl LanguageServer for Backend {
 		let old_rope;
 		let path = params.text_document.uri.path().as_str();
 		{
-			let mut blocker = None;
-			{
-				if let Some(document) = self.document_map.get(path)
-					&& document.setup.should_wait()
-				{
-					blocker = Some(document.setup.clone());
-				}
-			}
-			if let Some(blocker) = blocker {
-				blocker.wait().await;
-			}
+			await_did_open_document!(self, path);
 			let mut document = self
 				.document_map
 				.get_mut(params.text_document.uri.path().as_str())
@@ -321,15 +301,20 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
-		if self.root_setup.should_wait() {
-			return Ok(None);
-		}
+		self.root_setup.wait().await;
+
 		let uri = &params.text_document_position_params.text_document.uri;
+		let path = uri.path().as_str();
 		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
 			debug!("(goto_definition) unsupported: {}", uri.path().as_str());
 			return Ok(None);
 		};
-		let Some(document) = self.document_map.get(uri.path().as_str()) else {
+		let module_key = some!(self.index.find_module_of(&some!(uri.to_file_path())));
+		self.index.load_modules_dependent_on(module_key).await;
+
+		await_did_open_document!(self, path);
+
+		let Some(document) = self.document_map.get(path) else {
 			panic!("Bug: did not build a document for {}", uri.path().as_str());
 		};
 		if document.setup.should_wait() {
@@ -360,24 +345,16 @@ impl LanguageServer for Backend {
 		let Some((_, ext)) = uri.path().as_str().rsplit_once('.') else {
 			return Ok(None); // hit a directory, super unlikely
 		};
-		let mut blocker = None;
-		{
-			if let Some(document) = self.document_map.get(path)
-				&& document.setup.should_wait()
-			{
-				blocker = Some(document.setup.clone());
-			}
-		}
-		if let Some(blocker) = blocker {
-			blocker.wait().await;
-		}
-		let Some(document) = self.document_map.get(uri.path().as_str()) else {
+		let module_key = some!(self.index.find_module_of(&some!(uri.to_file_path())));
+		self.index.load_modules_dependent_on(module_key).await;
+
+		await_did_open_document!(self, path);
+
+		let Some(document) = self.document_map.get(path) else {
 			debug!("Bug: did not build a document for {}", uri.path().as_str());
 			return Ok(None);
 		};
-		if document.setup.should_wait() {
-			return Ok(None);
-		}
+
 		let refs = match ext {
 			"py" => self.python_references(params, document.rope.clone()),
 			"xml" => self.xml_references(params, document.rope.clone()),
@@ -398,17 +375,7 @@ impl LanguageServer for Backend {
 		};
 
 		let path = uri.path().as_str();
-		let mut blocker = None;
-		{
-			if let Some(document) = self.document_map.get(path)
-				&& document.setup.should_wait()
-			{
-				blocker = Some(document.setup.clone());
-			}
-		}
-		if let Some(blocker) = blocker {
-			blocker.wait().await;
-		}
+		await_did_open_document!(self, path);
 		let rope = {
 			let Some(document) = self.document_map.get(uri.path().as_str()) else {
 				debug!("Bug: did not build a document for {}", uri.path().as_str());
@@ -495,22 +462,12 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-		if self.root_setup.should_wait() {
-			return Ok(None);
-		}
+		self.root_setup.wait().await;
+
 		let uri = &params.text_document_position_params.text_document.uri;
 		let path = uri.path().as_str();
-		let mut blocker = None;
-		{
-			if let Some(document) = self.document_map.get(path)
-				&& document.setup.should_wait()
-			{
-				blocker = Some(document.setup.clone());
-			}
-		}
-		if let Some(blocker) = blocker {
-			blocker.wait().await;
-		}
+		await_did_open_document!(self, path);
+
 		let document = some!(self.document_map.get(uri.path().as_str()));
 		let (_, ext) = some!(uri.path().as_str().rsplit_once('.'));
 		let hover = match ext {
@@ -650,9 +607,8 @@ impl LanguageServer for Backend {
 		&self,
 		params: WorkspaceSymbolParams,
 	) -> Result<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
-		if self.root_setup.should_wait() {
-			return Ok(None);
-		}
+		self.root_setup.wait().await;
+
 		let query = &params.query;
 		let limit = self.project_config.symbols_limit.load(Relaxed);
 
@@ -672,11 +628,11 @@ impl LanguageServer for Backend {
 			})
 		});
 		fn to_symbol_information(record: &crate::record::Record) -> SymbolInformation {
-			#[allow(deprecated)]
 			SymbolInformation {
 				name: record.qualified_id(),
 				kind: SymbolKind::VARIABLE,
 				tags: None,
+				#[allow(deprecated)]
 				deprecated: None,
 				location: record.location.clone().into(),
 				container_name: None,
@@ -706,20 +662,12 @@ impl LanguageServer for Backend {
 	#[instrument(skip_all, fields(path))]
 	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
 		self.root_setup.wait().await;
+
 		let path = params.text_document.uri.path().as_str();
+		await_did_open_document!(self, path);
+
 		let mut diagnostics = vec![];
-		let mut blocker = None;
-		{
-			if let Some(document) = self.document_map.get(path)
-				&& document.setup.should_wait()
-			{
-				blocker = Some(document.setup.clone());
-			}
-		}
 		if let Some((_, "py")) = path.rsplit_once('.') {
-			if let Some(blocker) = blocker {
-				blocker.wait().await;
-			}
 			if let Some(mut document) = self.document_map.get_mut(path) {
 				let damage_zone = document.damage_zone.take();
 				let rope = &document.rope.clone();
