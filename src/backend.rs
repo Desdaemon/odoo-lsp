@@ -491,13 +491,34 @@ impl Backend {
 				new_text += "(${1:})$0";
 				insert_text_format = Some(InsertTextFormat::SNIPPET);
 			}
-			let kind = Some(match kind {
-				PropertyKind::Field => CompletionItemKind::FIELD,
-				PropertyKind::Method => CompletionItemKind::METHOD,
-			});
+			let lsp_kind;
+			let mut label_details = None;
+			match kind {
+				PropertyKind::Field => {
+					lsp_kind = CompletionItemKind::FIELD;
+					if let Some(field_key) = _G(&label)
+						&& let Some(ref fields) = model_entry.fields
+						&& let Some(field) = fields.get(&field_key.into())
+					{
+						let mut description = None;
+						if let FieldKind::Relational(rel) = field.kind {
+							description = Some(_R(rel).to_string());
+						}
+						let field_type = _R(field.type_);
+						label_details = Some(CompletionItemLabelDetails {
+							detail: Some(format!(" {field_type}")),
+							description,
+						});
+					}
+				}
+				PropertyKind::Method => {
+					lsp_kind = CompletionItemKind::METHOD;
+				}
+			}
 			Some(CompletionItem {
 				label,
-				kind,
+				label_details,
+				kind: Some(lsp_kind),
 				insert_text_format,
 				text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
 				data: serde_json::to_value(CompletionData { model: model.clone() }).ok(),
@@ -1136,12 +1157,18 @@ impl Backend {
 		drop(entry);
 
 		let type_ = _R(field_entry.type_);
-		completion.detail = match self.index.models.resolve_related_field(field.into(), model) {
+		let mut relation = completion
+			.label_details
+			.as_ref()
+			.and_then(|label_details| label_details.description.as_deref());
+		if relation.is_none()
+			&& let Some(rel) = self.index.models.resolve_related_field(field.into(), model)
+		{
+			relation = Some(_R(rel))
+		}
+		completion.detail = match relation {
 			None => Some(format!("{type_}(…)")),
-			Some(relation) => {
-				let relation = _R(relation);
-				Some(format!("{type_}(\"{relation}\", …)"))
-			}
+			Some(relation) => Some(format!("{type_}(\"{relation}\", …)")),
 		};
 		completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 			kind: MarkupKind::Markdown,
