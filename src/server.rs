@@ -309,9 +309,6 @@ impl LanguageServer for Backend {
 			debug!("(goto_definition) unsupported: {}", uri.path().as_str());
 			return Ok(None);
 		};
-		let module_key = some!(self.index.find_module_of(&some!(uri.to_file_path())));
-		self.index.load_modules_dependent_on(module_key).await;
-
 		await_did_open_document!(self, path);
 
 		let Some(document) = self.document_map.get(path) else {
