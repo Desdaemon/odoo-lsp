@@ -166,6 +166,35 @@ fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 		.find(|child| child.byte_range().contains_end(offset))
 }
 
+/// Recursively searches for a class definition with the given name in the AST.
+fn find_class_definition<'a>(
+	cursor: &mut tree_sitter::TreeCursor<'a>,
+	contents: &[u8],
+	class_name: &str,
+) -> Option<tree_sitter::Node<'a>> {
+	if cursor.node().kind() == "class_definition" {
+		if let Some(name_node) = cursor.node().child_by_field_name("name") {
+			let name = String::from_utf8_lossy(&contents[name_node.byte_range()]);
+			if name == class_name {
+				return Some(name_node);
+			}
+		}
+	}
+
+	if cursor.goto_first_child() {
+		loop {
+			if let Some(found) = find_class_definition(cursor, contents, class_name) {
+				return Some(found);
+			}
+			if !cursor.goto_next_sibling() {
+				break;
+			}
+		}
+		cursor.goto_parent();
+	}
+	None
+}
+
 #[derive(Debug)]
 struct Mapped<'text> {
 	needle: Cow<'text, str>,
@@ -185,6 +214,66 @@ struct ImportInfo {
 type ImportMap = HashMap<String, ImportInfo>;
 
 impl Backend {
+	/// Helper function to resolve import-based jump-to-definition requests.
+	/// Returns the location if successful, None if not found, or an error if resolution fails.
+	fn resolve_import_location(
+		&self,
+		imports: &ImportMap,
+		identifier: &str,
+		_contents: &[u8],
+	) -> anyhow::Result<Option<Location>> {
+		let Some(import_info) = imports.get(identifier) else {
+			return Ok(None);
+		};
+
+		debug!("Found import info for '{}': {:?}", identifier, import_info);
+
+		let Some(file_path) = self.index.resolve_py_module(&import_info.module_path) else {
+			debug!("Failed to resolve module path: {}", import_info.module_path);
+			return Ok(None);
+		};
+
+		debug!("Resolved file path: {}", file_path.display());
+
+		let target_contents = std::fs::read(&file_path)
+			.map_err(|e| anyhow::anyhow!("Failed to read target file {}: {}", file_path.display(), e))?;
+
+		let class_name = &import_info.imported_name;
+		debug!("Looking for class '{}' in target file", class_name);
+
+		let mut target_parser = Parser::new();
+		target_parser
+			.set_language(&tree_sitter_python::LANGUAGE.into())
+			.map_err(|e| anyhow::anyhow!("Failed to set parser language: {}", e))?;
+
+		let Some(target_ast) = target_parser.parse(&target_contents, None) else {
+			debug!("Failed to parse target file with tree-sitter");
+			return Ok(Some(Location {
+				uri: Uri::from_file_path(file_path).unwrap(),
+				range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+			}));
+		};
+
+		let mut target_cursor = target_ast.walk();
+		if let Some(class_node) = find_class_definition(&mut target_cursor, &target_contents, class_name) {
+			let range = class_node.range();
+			debug!(
+				"Found class '{}' at line {}, col {}",
+				class_name, range.start_point.row, range.start_point.column
+			);
+			return Ok(Some(Location {
+				uri: Uri::from_file_path(file_path).unwrap(),
+				range: ts_range_to_lsp_range(range),
+			}));
+		}
+
+		debug!("Class '{}' not found in target file using tree-sitter", class_name);
+		Ok(Some(Location {
+			uri: Uri::from_file_path(file_path).unwrap(),
+			range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+		}))
+	}
+
 	#[tracing::instrument(skip_all, fields(uri))]
 	pub fn on_change_python(&self, text: &Text, uri: &Uri, rope: Rope, old_rope: Option<Rope>) -> anyhow::Result<()> {
 		let mut parser = Parser::new();
@@ -449,101 +538,15 @@ impl Backend {
 		debug!("Parsed imports: {:?}", imports);
 
 		// Check if cursor is on an imported identifier
-		if let Some(cursor_node) = ast.root_node().descendant_for_byte_range(offset, offset) {
-			if cursor_node.kind() == "identifier" {
-				let identifier = String::from_utf8_lossy(&contents[cursor_node.byte_range()]);
-				debug!("Checking identifier '{}' at offset {}", identifier, offset);
+		if let Some(cursor_node) = ast.root_node().descendant_for_byte_range(offset, offset)
+			&& cursor_node.kind() == "identifier"
+		{
+			let identifier = String::from_utf8_lossy(&contents[cursor_node.byte_range()]);
+			debug!("Checking identifier '{}' at offset {}", identifier, offset);
 
-				// Check if this identifier is an imported name or alias
-				if let Some(import_info) = imports.get(identifier.as_ref()) {
-					debug!("Found import info for '{}': {:?}", identifier, import_info);
-					// Try to resolve the module path to a file
-					if let Some(file_path) = self.index.resolve_py_module(&import_info.module_path) {
-						debug!("Resolved file path: {}", file_path.display());
-						// Try to find the specific class/function definition in the target file
-						if let Ok(target_contents) = std::fs::read(&file_path) {
-							// Look for the class definition
-							let class_name = &import_info.imported_name;
-
-							debug!("Looking for class '{}' in target file", class_name);
-
-							// Use tree-sitter to parse the target file and find the class definition
-							let mut target_parser = Parser::new();
-							target_parser
-								.set_language(&tree_sitter_python::LANGUAGE.into())
-								.unwrap();
-
-							if let Some(target_ast) = target_parser.parse(&target_contents, None) {
-								// Look for class definitions
-								let mut target_cursor = target_ast.walk();
-
-								fn find_class_definition<'a>(
-									cursor: &mut tree_sitter::TreeCursor<'a>,
-									contents: &[u8],
-									class_name: &str,
-								) -> Option<tree_sitter::Node<'a>> {
-									if cursor.node().kind() == "class_definition" {
-										// Check if this is the class we're looking for
-										if let Some(name_node) = cursor.node().child_by_field_name("name") {
-											let name = String::from_utf8_lossy(&contents[name_node.byte_range()]);
-											if name == class_name {
-												return Some(name_node);
-											}
-										}
-									}
-
-									if cursor.goto_first_child() {
-										loop {
-											if let Some(found) = find_class_definition(cursor, contents, class_name) {
-												return Some(found);
-											}
-											if !cursor.goto_next_sibling() {
-												break;
-											}
-										}
-										cursor.goto_parent();
-									}
-									None
-								}
-
-								if let Some(class_node) =
-									find_class_definition(&mut target_cursor, &target_contents, class_name)
-								{
-									let range = class_node.range();
-									debug!(
-										"Found class '{}' at line {}, col {}",
-										class_name, range.start_point.row, range.start_point.column
-									);
-									return Ok(Some(Location {
-										uri: Uri::from_file_path(file_path).unwrap(),
-										range: Range::new(
-											Position::new(
-												range.start_point.row as u32,
-												range.start_point.column as u32,
-											),
-											Position::new(range.end_point.row as u32, range.end_point.column as u32),
-										),
-									}));
-								} else {
-									debug!("Class '{}' not found in target file using tree-sitter", class_name);
-								}
-							} else {
-								debug!("Failed to parse target file with tree-sitter");
-							}
-						} else {
-							debug!("Failed to read target file: {}", file_path.display());
-						}
-
-						// Fallback to just pointing to the file
-						debug!("Using fallback - pointing to start of file");
-						return Ok(Some(Location {
-							uri: Uri::from_file_path(file_path).unwrap(),
-							range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-						}));
-					} else {
-						debug!("Failed to resolve module path: {}", import_info.module_path);
-					}
-				}
+			// Try to resolve import location
+			if let Some(location) = self.resolve_import_location(&imports, &identifier, contents)? {
+				return Ok(Some(location));
 			}
 		}
 

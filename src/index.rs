@@ -553,7 +553,7 @@ impl Index {
 		use tracing::debug;
 
 		debug!("Resolving module path: {}", module_path);
-		let parts: Vec<&str> = module_path.split('.').collect();
+		let parts: Vec<&str> = module_path.split('.').map(|s| s.trim()).collect();
 		debug!("Module parts: {:?}", parts);
 
 		// Handle odoo.addons.module_name.* pattern
