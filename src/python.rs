@@ -168,31 +168,24 @@ fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 
 /// Recursively searches for a class definition with the given name in the AST.
 fn find_class_definition<'a>(
-	cursor: &mut tree_sitter::TreeCursor<'a>,
+	node: tree_sitter::Node<'a>,
 	contents: &[u8],
 	class_name: &str,
 ) -> Option<tree_sitter::Node<'a>> {
-	if cursor.node().kind() == "class_definition" {
-		if let Some(name_node) = cursor.node().child_by_field_name("name") {
-			let name = String::from_utf8_lossy(&contents[name_node.byte_range()]);
-			if name == class_name {
-				return Some(name_node);
-			}
-		}
-	}
+	use crate::utils::PreTravel;
 
-	if cursor.goto_first_child() {
-		loop {
-			if let Some(found) = find_class_definition(cursor, contents, class_name) {
-				return Some(found);
-			}
-			if !cursor.goto_next_sibling() {
-				break;
-			}
-		}
-		cursor.goto_parent();
-	}
-	None
+	PreTravel::new(node)
+		.find(|node| {
+			node.kind() == "class_definition"
+				&& node
+					.child_by_field_name("name")
+					.map(|name_node| {
+						let name = String::from_utf8_lossy(&contents[name_node.byte_range()]);
+						name == class_name
+					})
+					.unwrap_or(false)
+		})
+		.and_then(|node| node.child_by_field_name("name"))
 }
 
 #[derive(Debug)]
@@ -254,8 +247,7 @@ impl Backend {
 			}));
 		};
 
-		let mut target_cursor = target_ast.walk();
-		if let Some(class_node) = find_class_definition(&mut target_cursor, &target_contents, class_name) {
+		if let Some(class_node) = find_class_definition(target_ast.root_node(), &target_contents, class_name) {
 			let range = class_node.range();
 			debug!(
 				"Found class '{}' at line {}, col {}",
@@ -541,11 +533,12 @@ impl Backend {
 		if let Some(cursor_node) = ast.root_node().descendant_for_byte_range(offset, offset)
 			&& cursor_node.kind() == "identifier"
 		{
-			let identifier = String::from_utf8_lossy(&contents[cursor_node.byte_range()]);
+			let identifier_bytes = &contents[cursor_node.byte_range()];
+			let identifier = std::str::from_utf8(identifier_bytes).unwrap_or("");
 			debug!("Checking identifier '{}' at offset {}", identifier, offset);
 
 			// Try to resolve import location
-			if let Some(location) = self.resolve_import_location(&imports, &identifier, contents)? {
+			if let Some(location) = self.resolve_import_location(&imports, identifier, contents)? {
 				return Ok(Some(location));
 			}
 		}
