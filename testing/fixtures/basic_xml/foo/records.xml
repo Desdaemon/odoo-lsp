@@ -1,5 +1,6 @@
 <odoo>
-	<record id="action_buton_xml" model="ir.actions.act_window">
+
+	<record id="action_button_xml" model="ir.actions.act_window">
 		<field name="name">action button</field>
 		<field name="res_model">foo</field>
 		<field name="view_mode">list,form</field>
@@ -10,7 +11,53 @@
 		<!--         ^complete bar -->
 		<button name="action_button" type="object" />
 		<!--          ^complete action_button action_button2 -->
-		<button name="%(foo.action_buton_xml)d" type="action" />
-		<!--                ^ TODO action_buton_xml make this work-->
+		<button name="action_button" />
+		<!--          ^complete action_button action_button2 -->
+		<button name="%(bar.action_open_record)d" type="action" />
+		<!--                             ^complete bar.action_open_record -->
+		<button name="%(bar.action_open_record" />
+		<!--                                  ^complete bar.action_open_record -->
+		<button name="%(" />
+		<!--            ^complete action_button_xml bar.action_open_record bar.action_other -->
+		<button name="%(bar." />
+		<!--                ^complete bar.action_open_record bar.action_other -->
+		<button type="action" name="%(bar.action_open_record)d" />
+		<!--                                          ^complete bar.action_open_record -->
+		<button name="%(bar.action_other)d" />
+		<!--                          ^complete bar.action_other -->
+		<button name="%()" />
+		<!--            ^complete action_button_xml bar.action_open_record bar.action_other -->
+		<button name="%()d" />
+		<!--            ^complete action_button_xml bar.action_open_record bar.action_other -->
 	</record>
+
+	<record id="view_foo_form" model="ir.ui.view">
+		<field name="name">view.foo.form</field>
+		<field name="model">foo</field>
+		<field name="arch" type="xml">
+			<field name="bar" />
+			<!--         ^complete bar -->
+			<button name="action_button" type="object" />
+			<!--          ^complete action_button action_button2 -->
+			<button name="action_button" />
+			<!--          ^complete action_button action_button2 -->
+			<button name="%(bar.action_open_record)d" type="action" />
+			<!--                             ^complete bar.action_open_record -->
+			<button name="%(bar.action_open_record" />
+			<!--                                  ^complete bar.action_open_record -->
+			<button name="%(" />
+			<!--            ^complete action_button_xml bar.action_open_record bar.action_other -->
+			<button name="%(bar." />
+			<!--                ^complete bar.action_open_record bar.action_other -->
+			<button type="action" name="%(bar.action_open_record)d" />
+			<!--                                          ^complete bar.action_open_record -->
+			<button name="%(bar.action_other)d" />
+			<!--                          ^complete bar.action_other -->
+			<button name="%()" />
+			<!--            ^complete action_button_xml bar.action_open_record bar.action_other -->
+			<button name="%()d" />
+			<!--            ^complete action_button_xml bar.action_open_record bar.action_other -->
+		</field>
+	</record>
+
 </odoo>

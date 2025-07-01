@@ -85,7 +85,12 @@ impl LanguageServer for Backend {
 				})),
 				completion_provider: Some(CompletionOptions {
 					resolve_provider: Some(true),
-					trigger_characters: Some(['"', '\'', '.', '_', ',', ' '].iter().map(char::to_string).collect()),
+					trigger_characters: Some(
+						['"', '\'', '.', '_', ',', ' ', '(', ')']
+							.iter()
+							.map(char::to_string)
+							.collect(),
+					),
 					all_commit_characters: None,
 					work_done_progress_options: Default::default(),
 					completion_item: Some(CompletionOptionsCompletionItem {
@@ -373,6 +378,8 @@ impl LanguageServer for Backend {
 
 		let path = uri.path().as_str();
 		await_did_open_document!(self, path);
+		let module_key = some!(self.index.find_module_of(&some!(uri.to_file_path())));
+		self.index.load_modules_dependent_on(module_key).await;
 		let rope = {
 			let Some(document) = self.document_map.get(uri.path().as_str()) else {
 				debug!("Bug: did not build a document for {}", uri.path().as_str());
