@@ -15,6 +15,8 @@ use crate::{backend::Backend, backend::Text};
 use crate::{dig, errloc, utils::*};
 use crate::{format_loc, some};
 
+use std::collections::HashMap;
+
 mod completions;
 mod diagnostics;
 
@@ -134,6 +136,29 @@ query! {
   (#not-match? @_ "^api.depends"))
 }
 
+#[rustfmt::skip]
+query! {
+	PyImports(ImportModule, ImportName, ImportAlias);
+
+(import_from_statement
+  module_name: (dotted_name) @IMPORT_MODULE
+  name: (dotted_name) @IMPORT_NAME)
+
+(import_from_statement
+  module_name: (dotted_name) @IMPORT_MODULE
+  name: (aliased_import
+    name: (dotted_name) @IMPORT_NAME
+    alias: (identifier) @IMPORT_ALIAS))
+
+(import_statement
+  name: (dotted_name) @IMPORT_NAME)
+
+(import_statement
+  name: (aliased_import
+    name: (dotted_name) @IMPORT_NAME
+    alias: (identifier) @IMPORT_ALIAS))
+}
+
 /// (module (_)*)
 fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 	module
@@ -149,6 +174,16 @@ struct Mapped<'text> {
 	range: ByteRange,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct ImportInfo {
+	module_path: String,
+	imported_name: String,
+	alias: Option<String>,
+}
+
+type ImportMap = HashMap<String, ImportInfo>;
+
 impl Backend {
 	#[tracing::instrument(skip_all, fields(uri))]
 	pub fn on_change_python(&self, text: &Text, uri: &Uri, rope: Rope, old_rope: Option<Rope>) -> anyhow::Result<()> {
@@ -158,7 +193,64 @@ impl Backend {
 			.expect("bug: failed to init python parser");
 		self.update_ast(text, uri, rope.clone(), old_rope, parser)
 	}
-	pub fn update_models(&self, text: Text, path: &Path, root: Spur, rope: Rope) -> anyhow::Result<()> {
+
+	/// Parse import statements from Python content and return a map of imported names to their module paths
+	fn parse_imports(&self, contents: &[u8]) -> anyhow::Result<ImportMap> {
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
+
+		let ast = parser.parse(contents, None).ok_or_else(|| errloc!("Failed to parse Python AST"))?;
+		let query = PyImports::query();
+		let mut cursor = tree_sitter::QueryCursor::new();
+		let mut imports = ImportMap::new();
+
+		debug!("Parsing imports from {} bytes", contents.len());
+
+		for match_ in cursor.matches(query, ast.root_node(), contents) {
+			let mut module_path = None;
+			let mut import_name = None;
+			let mut alias = None;
+
+			debug!("Found import match with {} captures", match_.captures.len());
+
+			for capture in match_.captures {
+				let capture_text = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+				debug!("Capture {}: = '{}'", capture.index, capture_text);
+
+				match PyImports::from(capture.index) {
+					Some(PyImports::ImportModule) => {
+						module_path = Some(capture_text.to_string());
+					}
+					Some(PyImports::ImportName) => {
+						import_name = Some(capture_text.to_string());
+					}
+					Some(PyImports::ImportAlias) => {
+						alias = Some(capture_text.to_string());
+					}
+					_ => {}
+				}
+			}
+
+			if let Some(name) = import_name {
+				let full_module_path = if let Some(module) = module_path {
+					module // For "from module import name", the module path is just the module
+				} else {
+					name.clone() // For "import name", the module path is the name itself
+				};
+
+				let key = alias.as_ref().unwrap_or(&name).clone();
+				debug!("Adding import: {} -> {} (from module {})", key, name, full_module_path);
+				imports.insert(key, ImportInfo {
+					module_path: full_module_path,
+					imported_name: name,
+					alias,
+				});
+			}
+		}
+
+		debug!("Final imports map: {:?}", imports);
+		Ok(imports)
+	}	pub fn update_models(&self, text: Text, path: &Path, root: Spur, rope: Rope) -> anyhow::Result<()> {
 		let text = match text {
 			Text::Full(text) => Cow::from(text),
 			// TODO: Limit range of possible updates based on delta
@@ -345,6 +437,96 @@ impl Backend {
 		let contents = Cow::from(rope.clone());
 		let contents = contents.as_bytes();
 		let root = some!(top_level_stmt(ast.root_node(), offset));
+
+		// Parse imports from the current file
+		let imports = self.parse_imports(contents).unwrap_or_default();
+		debug!("Parsed imports: {:?}", imports);
+
+		// Check if cursor is on an imported identifier
+		if let Some(cursor_node) = ast.root_node().descendant_for_byte_range(offset, offset) {
+			if cursor_node.kind() == "identifier" {
+				let identifier = String::from_utf8_lossy(&contents[cursor_node.byte_range()]);
+				debug!("Checking identifier '{}' at offset {}", identifier, offset);
+
+				// Check if this identifier is an imported name or alias
+				if let Some(import_info) = imports.get(identifier.as_ref()) {
+					debug!("Found import info for '{}': {:?}", identifier, import_info);
+					// Try to resolve the module path to a file
+					if let Some(file_path) = self.index.resolve_py_module(&import_info.module_path) {
+						debug!("Resolved file path: {}", file_path.display());
+						// Try to find the specific class/function definition in the target file
+						if let Ok(target_contents) = std::fs::read(&file_path) {
+							// Look for the class definition
+							let class_name = &import_info.imported_name;
+
+							debug!("Looking for class '{}' in target file", class_name);
+
+							// Use tree-sitter to parse the target file and find the class definition
+							let mut target_parser = Parser::new();
+							target_parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+
+							if let Some(target_ast) = target_parser.parse(&target_contents, None) {
+								// Look for class definitions
+								let mut target_cursor = target_ast.walk();
+
+								fn find_class_definition<'a>(cursor: &mut tree_sitter::TreeCursor<'a>, contents: &[u8], class_name: &str) -> Option<tree_sitter::Node<'a>> {
+									if cursor.node().kind() == "class_definition" {
+										// Check if this is the class we're looking for
+										if let Some(name_node) = cursor.node().child_by_field_name("name") {
+											let name = String::from_utf8_lossy(&contents[name_node.byte_range()]);
+											if name == class_name {
+												return Some(name_node);
+											}
+										}
+									}
+
+									if cursor.goto_first_child() {
+										loop {
+											if let Some(found) = find_class_definition(cursor, contents, class_name) {
+												return Some(found);
+											}
+											if !cursor.goto_next_sibling() {
+												break;
+											}
+										}
+										cursor.goto_parent();
+									}
+									None
+								}
+
+								if let Some(class_node) = find_class_definition(&mut target_cursor, &target_contents, class_name) {
+									let range = class_node.range();
+									debug!("Found class '{}' at line {}, col {}", class_name, range.start_point.row, range.start_point.column);
+									return Ok(Some(Location {
+										uri: Uri::from_file_path(file_path).unwrap(),
+										range: Range::new(
+											Position::new(range.start_point.row as u32, range.start_point.column as u32),
+											Position::new(range.end_point.row as u32, range.end_point.column as u32)
+										),
+									}));
+								} else {
+									debug!("Class '{}' not found in target file using tree-sitter", class_name);
+								}
+							} else {
+								debug!("Failed to parse target file with tree-sitter");
+							}
+						} else {
+							debug!("Failed to read target file: {}", file_path.display());
+						}
+
+						// Fallback to just pointing to the file
+						debug!("Using fallback - pointing to start of file");
+						return Ok(Some(Location {
+							uri: Uri::from_file_path(file_path).unwrap(),
+							range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+						}));
+					} else {
+						debug!("Failed to resolve module path: {}", import_info.module_path);
+					}
+				}
+			}
+		}
+
 		let query = PyCompletions::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut this_model = ThisModel::default();

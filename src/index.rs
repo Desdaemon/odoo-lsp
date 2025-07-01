@@ -547,6 +547,60 @@ impl Index {
 
 		None
 	}
+
+	/// Resolves a Python module path like "odoo.addons.some_module.controllers.main" to its file path
+	pub fn resolve_py_module(&self, module_path: &str) -> Option<PathBuf> {
+		use tracing::debug;
+
+		debug!("Resolving module path: {}", module_path);
+		let parts: Vec<&str> = module_path.split('.').collect();
+		debug!("Module parts: {:?}", parts);
+
+		// Handle odoo.addons.module_name.* pattern
+		if parts.len() >= 3 && parts[0] == "odoo" && parts[1] == "addons" {
+			let module_name = parts[2];
+			let module_key = _G(module_name)?;
+			debug!("Looking for module: {}", module_name);
+
+			// Find the root and module entry
+			for root_entry in self.roots.iter() {
+				debug!("Checking root: {}", root_entry.key().display());
+				if let Some(module_entry) = root_entry.get(&module_key.into()) {
+					let root_path = root_entry.key();
+					let module_dir = root_path.join(&module_entry.path);
+					debug!("Found module at: {}", module_dir.display());
+
+					// Build the file path from remaining parts
+					if parts.len() > 3 {
+						let mut file_path = module_dir;
+						for part in &parts[3..] {
+							file_path = file_path.join(part);
+						}
+						file_path.set_extension("py");
+						debug!("Checking file path: {}", file_path.display());
+
+						if file_path.exists() {
+							debug!("Found file: {}", file_path.display());
+							return Some(file_path);
+						} else {
+							debug!("File does not exist: {}", file_path.display());
+						}
+					} else {
+						// Just the module itself - look for __init__.py
+						let init_path = module_dir.join("__init__.py");
+						debug!("Checking init path: {}", init_path.display());
+						if init_path.exists() {
+							debug!("Found init file: {}", init_path.display());
+							return Some(init_path);
+						}
+					}
+				}
+			}
+		}
+
+		debug!("Module resolution failed for: {}", module_path);
+		None
+	}
 }
 
 fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry>]>> {

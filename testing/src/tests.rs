@@ -56,7 +56,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	let mut expected = gather_expected(&root, TestLanguages::Python);
 	expected.extend(gather_expected(&root, TestLanguages::Xml));
 	expected.retain(|_, expected| {
-		!expected.complete.is_empty() || !expected.diag.is_empty() || !expected.r#type.is_empty()
+		!expected.complete.is_empty() || !expected.diag.is_empty() || !expected.r#type.is_empty() || !expected.def.is_empty()
 	});
 
 	// <!> compare and run
@@ -176,7 +176,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 								let actual = actual.as_deref().unwrap_or("None");
 								if expected != actual {
 									format!(
-										"[type] in {path}:{}:{}\n{}",
+										"[type] in {path}:{}:{}\\n{}",
 										position.line + 1,
 										position.character + 1,
 										StrComparison::new(expected, actual),
@@ -186,7 +186,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 								}
 							} else {
 								format!(
-									"[type] failed to get type: {type:?}\n\tat {path}:{}:{}",
+									"[type] failed to get type: {type:?}\\n\\tat {path}:{}:{}",
 									position.line + 1,
 									position.character + 1
 								)
@@ -195,7 +195,72 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 					})
 					.collect();
 
-				let mut items = completions.chain(types);
+				let definitions: FuturesUnordered<_> = expected
+					.def
+					.iter()
+					.map(|position| {
+						let mut server = server.clone();
+						let uri = uri.clone();
+						let path = path.display();
+						async move {
+							let definition = server
+								.definition(GotoDefinitionParams {
+									text_document_position_params: TextDocumentPositionParams {
+										text_document: TextDocumentIdentifier { uri },
+										position: *position,
+									},
+									work_done_progress_params: Default::default(),
+									partial_result_params: Default::default(),
+								})
+								.await;
+							match definition {
+								Ok(Some(GotoDefinitionResponse::Scalar(location))) => {
+									// Check if the definition points to a valid file
+									if location.uri.to_file_path().is_ok() {
+										String::new()
+									} else {
+										format!(
+											"[def] invalid file path in {path}:{}:{}",
+											position.line + 1,
+											position.character + 1
+										)
+									}
+								}
+								Ok(Some(GotoDefinitionResponse::Array(locations))) => {
+									if !locations.is_empty() && locations[0].uri.to_file_path().is_ok() {
+										String::new()
+									} else {
+										format!(
+											"[def] no valid definitions in {path}:{}:{}",
+											position.line + 1,
+											position.character + 1
+										)
+									}
+								}
+								Ok(Some(GotoDefinitionResponse::Link(_))) => {
+									// For now, just accept any link response as valid
+									String::new()
+								}
+								Ok(None) => {
+									format!(
+										"[def] no definition found in {path}:{}:{}",
+										position.line + 1,
+										position.character + 1
+									)
+								}
+								Err(e) => {
+									format!(
+										"[def] failed to get definition: {e:?}\\n\\tat {path}:{}:{}",
+										position.line + 1,
+										position.character + 1
+									)
+								}
+							}
+						}
+					})
+					.collect();
+
+				let mut items = completions.chain(types).chain(definitions);
 				while let Some(diff) = items.next().await {
 					diffs.push(diff);
 				}
@@ -229,6 +294,9 @@ query! {
 
 	((comment) @type
 	(#match? @type "\\^type "))
+
+	((comment) @def
+	(#match? @def "\\^def"))
 }
 
 fn xml_query() -> &'static Query {
@@ -248,6 +316,7 @@ struct Expected {
 	diag: Vec<(Position, String)>,
 	complete: Vec<(Position, Vec<String>)>,
 	r#type: Vec<(Position, String)>,
+	def: Vec<Position>,
 }
 
 enum TestLanguages {
@@ -304,6 +373,8 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 					(expected.diag).push((position, String::from_utf8_lossy(diag).to_string()));
 				} else if let Some(r#type) = text.strip_prefix(b"^type ") {
 					(expected.r#type).push((position, String::from_utf8_lossy(r#type).to_string()));
+				} else if text.starts_with(b"^def") {
+					(expected.def).push(position);
 				}
 			}
 		}
