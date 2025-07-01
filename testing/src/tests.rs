@@ -56,7 +56,10 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	let mut expected = gather_expected(&root, TestLanguages::Python);
 	expected.extend(gather_expected(&root, TestLanguages::Xml));
 	expected.retain(|_, expected| {
-		!expected.complete.is_empty() || !expected.diag.is_empty() || !expected.r#type.is_empty() || !expected.def.is_empty()
+		!expected.complete.is_empty()
+			|| !expected.diag.is_empty()
+			|| !expected.r#type.is_empty()
+			|| !expected.def.is_empty()
 	});
 
 	// <!> compare and run

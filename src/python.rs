@@ -199,7 +199,9 @@ impl Backend {
 		let mut parser = Parser::new();
 		parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
 
-		let ast = parser.parse(contents, None).ok_or_else(|| errloc!("Failed to parse Python AST"))?;
+		let ast = parser
+			.parse(contents, None)
+			.ok_or_else(|| errloc!("Failed to parse Python AST"))?;
 		let query = PyImports::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut imports = ImportMap::new();
@@ -240,17 +242,21 @@ impl Backend {
 
 				let key = alias.as_ref().unwrap_or(&name).clone();
 				debug!("Adding import: {} -> {} (from module {})", key, name, full_module_path);
-				imports.insert(key, ImportInfo {
-					module_path: full_module_path,
-					imported_name: name,
-					alias,
-				});
+				imports.insert(
+					key,
+					ImportInfo {
+						module_path: full_module_path,
+						imported_name: name,
+						alias,
+					},
+				);
 			}
 		}
 
 		debug!("Final imports map: {:?}", imports);
 		Ok(imports)
-	}	pub fn update_models(&self, text: Text, path: &Path, root: Spur, rope: Rope) -> anyhow::Result<()> {
+	}
+	pub fn update_models(&self, text: Text, path: &Path, root: Spur, rope: Rope) -> anyhow::Result<()> {
 		let text = match text {
 			Text::Full(text) => Cow::from(text),
 			// TODO: Limit range of possible updates based on delta
@@ -463,13 +469,19 @@ impl Backend {
 
 							// Use tree-sitter to parse the target file and find the class definition
 							let mut target_parser = Parser::new();
-							target_parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+							target_parser
+								.set_language(&tree_sitter_python::LANGUAGE.into())
+								.unwrap();
 
 							if let Some(target_ast) = target_parser.parse(&target_contents, None) {
 								// Look for class definitions
 								let mut target_cursor = target_ast.walk();
 
-								fn find_class_definition<'a>(cursor: &mut tree_sitter::TreeCursor<'a>, contents: &[u8], class_name: &str) -> Option<tree_sitter::Node<'a>> {
+								fn find_class_definition<'a>(
+									cursor: &mut tree_sitter::TreeCursor<'a>,
+									contents: &[u8],
+									class_name: &str,
+								) -> Option<tree_sitter::Node<'a>> {
 									if cursor.node().kind() == "class_definition" {
 										// Check if this is the class we're looking for
 										if let Some(name_node) = cursor.node().child_by_field_name("name") {
@@ -494,14 +506,22 @@ impl Backend {
 									None
 								}
 
-								if let Some(class_node) = find_class_definition(&mut target_cursor, &target_contents, class_name) {
+								if let Some(class_node) =
+									find_class_definition(&mut target_cursor, &target_contents, class_name)
+								{
 									let range = class_node.range();
-									debug!("Found class '{}' at line {}, col {}", class_name, range.start_point.row, range.start_point.column);
+									debug!(
+										"Found class '{}' at line {}, col {}",
+										class_name, range.start_point.row, range.start_point.column
+									);
 									return Ok(Some(Location {
 										uri: Uri::from_file_path(file_path).unwrap(),
 										range: Range::new(
-											Position::new(range.start_point.row as u32, range.start_point.column as u32),
-											Position::new(range.end_point.row as u32, range.end_point.column as u32)
+											Position::new(
+												range.start_point.row as u32,
+												range.start_point.column as u32,
+											),
+											Position::new(range.end_point.row as u32, range.end_point.column as u32),
 										),
 									}));
 								} else {
