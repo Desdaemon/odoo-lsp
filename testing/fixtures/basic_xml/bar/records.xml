@@ -1,0 +1,13 @@
+<odoo>
+	<record id="action_open_record" model="ir.actions.act_window">
+		<field name="name">action open record</field>
+		<field name="res_model">bar</field>
+		<field name="view_mode">list,form</field>
+	</record>
+
+	<record id="action_other" model="ir.actions.act_window">
+		<field name="name">action other</field>
+		<field name="res_model">bar</field>
+		<field name="view_mode">list,form</field>
+	</record>
+</odoo>

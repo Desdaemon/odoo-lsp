@@ -1,1 +1,1 @@
-{"name": "foo"}
+{"name": "foo", "depends": ["bar"]}

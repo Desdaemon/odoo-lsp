@@ -230,7 +230,16 @@ impl Backend {
 		let (Some((value, value_range)), Some(record_field)) = (ref_at_cursor, ref_kind) else {
 			return Ok(None);
 		};
-		let mut needle = &value[..offset_at_cursor.0 - value_range.start];
+		let mut needle = if offset_at_cursor.0 >= value_range.end {
+			// Cursor is at or after the end of the value, use the full value as needle
+			value
+		} else if offset_at_cursor.0 >= value_range.start {
+			// Cursor is within the value, use substring up to cursor
+			&value[..offset_at_cursor.0 - value_range.start]
+		} else {
+			// Cursor is before the value, use empty needle
+			""
+		};
 		let replace_range = value_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset));
 		match record_field {
 			RefKind::Ref(relation) => {
@@ -673,7 +682,7 @@ impl Backend {
 		let mut expect_model_string = false;
 		let mut expect_template_string = false;
 		let mut expect_action_tag = false;
-
+		let mut button_type: Option<&str> = None;
 		let mut scope = Scope::default();
 		let mut parser = Parser::new();
 		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
@@ -694,7 +703,10 @@ impl Backend {
 					depth += 1;
 					match local.as_str() {
 						"field" => tag = Some(Tag::Field),
-						"button" => tag = Some(Tag::Button),
+						"button" => {
+							tag = Some(Tag::Button);
+							button_type = None;
+						}
 						"template" => {
 							tag = Some(Tag::Template);
 							model_filter = Some("ir.ui.view".to_string());
@@ -780,12 +792,36 @@ impl Backend {
 					}
 				}
 				// <button name=.. />
-				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Button)) => {
-					if local.as_str() == "name" && value.range().contains_end(offset_at_cursor) {
-						ref_at_cursor = Some((value.as_str(), value.range()));
-						ref_kind = Some(RefKind::MethodName(vec![]));
+				Ok(Token::Attribute { local, value, .. }) if matches!(tag, Some(Tag::Button)) => match local.as_str() {
+					"type" => {
+						button_type = Some(value.as_str());
 					}
-				}
+					"name" if value.range().contains_end(offset_at_cursor) => {
+						if value.as_str().starts_with("%(") {
+							if value.as_str().ends_with(")d") {
+								let inner = &value.as_str()[2..value.as_str().len() - 2];
+								let start_offset = value.range().start + 2;
+								let end_offset = value.range().end - 2;
+								ref_at_cursor = Some((inner, start_offset..end_offset));
+							} else {
+								let inner = &value.as_str()[2..];
+								let start_offset = value.range().start + 2;
+								let end_offset = value.range().end;
+								ref_at_cursor = Some((inner, start_offset..end_offset));
+							}
+							ref_kind = Some(RefKind::Id);
+							model_filter = Some("ir.actions.act_window".to_string());
+						} else if button_type == Some("action") {
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::Id);
+							model_filter = Some("ir.actions.act_window".to_string());
+						} else {
+							ref_at_cursor = Some((value.as_str(), value.range()));
+							ref_kind = Some(RefKind::MethodName(vec![]));
+						}
+					}
+					_ => {}
+				},
 				// <template inherit_id=.. />
 				Ok(Token::Attribute { local, value, .. })
 					if matches!(tag, Some(Tag::Template))
@@ -948,6 +984,10 @@ impl Backend {
 							}
 							_ => {}
 						}
+						if matches!(tag, Some(Tag::Button)) {
+							button_type = None;
+							tag = None;
+						}
 						depth -= 1;
 					}
 					if template_mode
@@ -1031,12 +1071,17 @@ impl Backend {
 				}
 			}
 		}
-		let model_filter = if arch_mode {
-			arch_model.map(|span| span.to_string()).or(model_filter)
-		} else {
+	let model_filter = if arch_mode {
+		// For action references (%(...)d patterns), keep the specific model_filter
+		// Don't override with arch_model for action references
+		if matches!(ref_kind, Some(RefKind::Id)) && model_filter.as_deref() == Some("ir.actions.act_window") {
 			model_filter
-		};
-		Ok(XmlRefs {
+		} else {
+			arch_model.map(|span| span.to_string()).or(model_filter)
+		}
+	} else {
+		model_filter
+	};		Ok(XmlRefs {
 			ref_at_cursor,
 			ref_kind,
 			model_filter,
