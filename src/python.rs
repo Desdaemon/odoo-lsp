@@ -196,7 +196,6 @@ struct Mapped<'text> {
 	range: ByteRange,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ImportInfo {
 	module_path: String,
@@ -219,7 +218,18 @@ impl Backend {
 			return Ok(None);
 		};
 
-		debug!("Found import info for '{}': {:?}", identifier, import_info);
+		// Enhanced debugging with alias information
+		if let Some(alias) = &import_info.alias {
+			debug!(
+				"Found aliased import '{}' -> '{}' from module '{}'",
+				alias, import_info.imported_name, import_info.module_path
+			);
+		} else {
+			debug!(
+				"Found direct import '{}' from module '{}'",
+				import_info.imported_name, import_info.module_path
+			);
+		}
 
 		let Some(file_path) = self.index.resolve_py_module(&import_info.module_path) else {
 			debug!("Failed to resolve module path: {}", import_info.module_path);
@@ -232,7 +242,14 @@ impl Backend {
 			.map_err(|e| anyhow::anyhow!("Failed to read target file {}: {}", file_path.display(), e))?;
 
 		let class_name = &import_info.imported_name;
-		debug!("Looking for class '{}' in target file", class_name);
+		if let Some(alias) = &import_info.alias {
+			debug!(
+				"Looking for original class '{}' (aliased as '{}') in target file",
+				class_name, alias
+			);
+		} else {
+			debug!("Looking for class '{}' in target file", class_name);
+		}
 
 		let mut target_parser = Parser::new();
 		target_parser
@@ -249,17 +266,31 @@ impl Backend {
 
 		if let Some(class_node) = find_class_definition(target_ast.root_node(), &target_contents, class_name) {
 			let range = class_node.range();
-			debug!(
-				"Found class '{}' at line {}, col {}",
-				class_name, range.start_point.row, range.start_point.column
-			);
+			if let Some(alias) = &import_info.alias {
+				debug!(
+					"Found class '{}' (aliased as '{}') at line {}, col {}",
+					class_name, alias, range.start_point.row, range.start_point.column
+				);
+			} else {
+				debug!(
+					"Found class '{}' at line {}, col {}",
+					class_name, range.start_point.row, range.start_point.column
+				);
+			}
 			return Ok(Some(Location {
 				uri: Uri::from_file_path(file_path).unwrap(),
 				range: ts_range_to_lsp_range(range),
 			}));
 		}
 
-		debug!("Class '{}' not found in target file using tree-sitter", class_name);
+		if let Some(alias) = &import_info.alias {
+			debug!(
+				"Class '{}' (aliased as '{}') not found in target file using tree-sitter",
+				class_name, alias
+			);
+		} else {
+			debug!("Class '{}' not found in target file using tree-sitter", class_name);
+		}
 		Ok(Some(Location {
 			uri: Uri::from_file_path(file_path).unwrap(),
 			range: Range::new(Position::new(0, 0), Position::new(0, 0)),
