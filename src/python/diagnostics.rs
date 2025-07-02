@@ -15,7 +15,7 @@ use crate::{
 	model::ResolveMappedError,
 };
 
-use super::{Mapped, PyCompletions, ThisModel, top_level_stmt};
+use super::{Mapped, PyCompletions, PyImports, ThisModel, top_level_stmt};
 
 impl Backend {
 	pub fn diagnose_python(
@@ -49,6 +49,9 @@ impl Backend {
 		}
 		let in_active_root =
 			|range: core::ops::Range<usize>| damage_zone.as_ref().map(|zone| zone.intersects(range)).unwrap_or(true);
+
+		// Diagnose missing imports
+		self.diagnose_python_imports(rope, diagnostics, contents, ast.root_node());
 		let top_level_ranges = root
 			.named_children(&mut root.walk())
 			.map(|node| node.byte_range())
@@ -339,6 +342,58 @@ impl Backend {
 
 			ControlFlow::Continue(entered)
 		});
+	}
+
+	fn diagnose_python_imports(&self, _rope: &Rope, diagnostics: &mut Vec<Diagnostic>, contents: &[u8], root: Node) {
+		let query = PyImports::query();
+		let mut cursor = tree_sitter::QueryCursor::new();
+
+		for match_ in cursor.matches(query, root, contents) {
+			let mut module_path = None;
+			let mut import_name = None;
+			let mut import_node = None;
+
+			for capture in match_.captures {
+				match PyImports::from(capture.index) {
+					Some(PyImports::ImportModule) => {
+						let capture_text = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+						module_path = Some(capture_text.to_string());
+					}
+					Some(PyImports::ImportName) => {
+						let capture_text = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+						import_name = Some(capture_text.to_string());
+						import_node = Some(capture.node);
+					}
+					Some(PyImports::ImportAlias) => {
+						// We still want to check the original import name, not the alias
+					}
+					_ => {}
+				}
+			}
+
+			if let (Some(name), Some(node)) = (import_name, import_node) {
+				let full_module_path = if let Some(module) = module_path {
+					module // For "from module import name", the module path is just the module
+				} else {
+					name.clone() // For "import name", the module path is the name itself
+				};
+
+				// Only check imports from odoo.addons.module_name pattern
+				if !full_module_path.starts_with("odoo.addons.") {
+					continue;
+				}
+
+				// Try to resolve the module path
+				if self.index.resolve_py_module(&full_module_path).is_none() {
+					diagnostics.push(Diagnostic {
+						range: ts_range_to_lsp_range(node.range()),
+						message: format!("Cannot resolve import '{}'", name),
+						severity: Some(DiagnosticSeverity::ERROR),
+						..Default::default()
+					});
+				}
+			}
+		}
 	}
 	pub(crate) fn diagnose_mapped(
 		&self,
