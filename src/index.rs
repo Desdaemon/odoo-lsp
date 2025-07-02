@@ -547,6 +547,60 @@ impl Index {
 
 		None
 	}
+
+	/// Resolves a Python module path like "odoo.addons.some_module.controllers.main" to its file path
+	pub fn resolve_py_module(&self, module_path: &str) -> Option<PathBuf> {
+		use tracing::debug;
+
+		debug!("Resolving module path: {}", module_path);
+		let parts: Vec<&str> = module_path.split('.').map(|s| s.trim()).collect();
+		debug!("Module parts: {:?}", parts);
+
+		// Handle odoo.addons.module_name.* pattern
+		if parts.len() >= 3 && parts[0] == "odoo" && parts[1] == "addons" {
+			let module_name = parts[2];
+			let module_key = _G(module_name)?;
+			debug!("Looking for module: {}", module_name);
+
+			// Find the root and module entry
+			for root_entry in self.roots.iter() {
+				debug!("Checking root: {}", root_entry.key().display());
+				if let Some(module_entry) = root_entry.get(&module_key.into()) {
+					let root_path = root_entry.key();
+					let module_dir = root_path.join(&module_entry.path);
+					debug!("Found module at: {}", module_dir.display());
+
+					// Build the file path from remaining parts
+					if parts.len() > 3 {
+						let mut file_path = module_dir;
+						for part in &parts[3..] {
+							file_path = file_path.join(part);
+						}
+						file_path.set_extension("py");
+						debug!("Checking file path: {}", file_path.display());
+
+						if file_path.exists() {
+							debug!("Found file: {}", file_path.display());
+							return Some(file_path);
+						} else {
+							debug!("File does not exist: {}", file_path.display());
+						}
+					} else {
+						// Just the module itself - look for __init__.py
+						let init_path = module_dir.join("__init__.py");
+						debug!("Checking init path: {}", init_path.display());
+						if init_path.exists() {
+							debug!("Found init file: {}", init_path.display());
+							return Some(init_path);
+						}
+					}
+				}
+			}
+		}
+
+		debug!("Module resolution failed for: {}", module_path);
+		None
+	}
 }
 
 fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry>]>> {
@@ -818,11 +872,286 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 
 #[cfg(test)]
 mod tests {
-	use crate::index::ModelQuery;
+	use crate::index::{_I, Index, Interner, ModelQuery, ModuleEntry};
+	use crate::model::ModelType;
 	use pretty_assertions::assert_eq;
+	use std::collections::HashMap;
+	use std::path::{Path, PathBuf};
 	use tree_sitter::{Parser, QueryCursor};
 
-	use super::index_models;
+	use super::{index_models, parse_dependencies};
+
+	#[test]
+	fn test_interner_functionality() {
+		let interner = Interner::default();
+
+		// Test get_or_intern with strings
+		let spur1 = interner.get_or_intern("test_string");
+		let spur2 = interner.get_or_intern("test_string");
+		assert_eq!(spur1, spur2, "Same string should return same Spur");
+
+		let spur3 = interner.get_or_intern("different_string");
+		assert_ne!(spur1, spur3, "Different strings should return different Spurs");
+
+		// Test get_or_intern_path
+		let path = Path::new("/test/path");
+		let path_spur1 = interner.get_or_intern_path(path);
+		let path_spur2 = interner.get_or_intern_path(path);
+		assert_eq!(path_spur1, path_spur2, "Same path should return same Spur");
+
+		// Test that path and string with same content return same Spur
+		let string_spur = interner.get_or_intern("/test/path");
+		assert_eq!(
+			path_spur1, string_spur,
+			"Path and equivalent string should return same Spur"
+		);
+	}
+
+	#[test]
+	fn test_find_module_of() {
+		let index = Index::default();
+
+		// Setup test data
+		let root = PathBuf::from("/test/root");
+		let mut modules = HashMap::new();
+
+		let module_entry = ModuleEntry {
+			path: "test_module".into(),
+			dependencies: Box::new([]),
+			loaded: Default::default(),
+			loaded_dependents: Default::default(),
+		};
+		modules.insert(_I("test_module").into(), module_entry);
+		index.roots.insert(root.clone(), modules);
+
+		// Test finding module
+		let test_path = Path::new("/test/root/test_module/models/test.py");
+		let found_module = index.find_module_of(test_path);
+		assert!(found_module.is_some(), "Should find module for path within module");
+
+		// Test path outside any module
+		let outside_path = Path::new("/other/path/file.py");
+		let not_found = index.find_module_of(outside_path);
+		assert!(not_found.is_none(), "Should not find module for path outside roots");
+	}
+
+	#[test]
+	fn test_find_root_of() {
+		let index = Index::default();
+
+		// Setup test data
+		let root1 = PathBuf::from("/test/root1");
+		let root2 = PathBuf::from("/test/root2");
+		index.roots.insert(root1.clone(), HashMap::new());
+		index.roots.insert(root2.clone(), HashMap::new());
+
+		// Test finding root
+		let test_path = Path::new("/test/root1/some/nested/path");
+		let found_root = index.find_root_of(test_path);
+		assert_eq!(found_root, Some(root1), "Should find correct root");
+
+		// Test path not under any root
+		let outside_path = Path::new("/other/path");
+		let not_found = index.find_root_of(outside_path);
+		assert!(not_found.is_none(), "Should not find root for path outside all roots");
+	}
+
+	#[test]
+	fn test_find_root_from_module() {
+		let index = Index::default();
+
+		// Setup test data
+		let root = PathBuf::from("/test/root");
+		let mut modules = HashMap::new();
+		let module_key = _I("test_module").into();
+
+		let module_entry = ModuleEntry {
+			path: "test_module".into(),
+			dependencies: Box::new([]),
+			loaded: Default::default(),
+			loaded_dependents: Default::default(),
+		};
+		modules.insert(module_key, module_entry);
+		index.roots.insert(root.clone(), modules);
+
+		// Test finding root from module
+		let found_root = index.find_root_from_module(module_key);
+		assert_eq!(found_root, Some(root), "Should find root containing the module");
+
+		// Test non-existent module
+		let non_existent = _I("non_existent").into();
+		let not_found = index.find_root_from_module(non_existent);
+		assert!(not_found.is_none(), "Should not find root for non-existent module");
+	}
+
+	#[test]
+	fn test_resolve_py_module() {
+		let index = Index::default();
+
+		// Setup test data
+		let root = PathBuf::from("/test/root");
+		let mut modules = HashMap::new();
+		let module_key = _I("test_module").into();
+
+		let module_entry = ModuleEntry {
+			path: "test_module".into(),
+			dependencies: Box::new([]),
+			loaded: Default::default(),
+			loaded_dependents: Default::default(),
+		};
+		modules.insert(module_key, module_entry);
+		index.roots.insert(root, modules);
+
+		// Test resolving odoo.addons.module_name pattern
+		let module_path = "odoo.addons.test_module";
+		let resolved = index.resolve_py_module(module_path);
+		// Note: This will return None in test because the file doesn't actually exist
+		// In a real scenario with actual files, this would resolve to the __init__.py path
+		assert!(resolved.is_none(), "Should return None when file doesn't exist");
+
+		// Test resolving with submodule
+		let submodule_path = "odoo.addons.test_module.models.test";
+		let resolved_sub = index.resolve_py_module(submodule_path);
+		assert!(resolved_sub.is_none(), "Should return None when file doesn't exist");
+
+		// Test invalid module path
+		let invalid_path = "invalid.module.path";
+		let not_resolved = index.resolve_py_module(invalid_path);
+		assert!(not_resolved.is_none(), "Should not resolve invalid module path");
+	}
+
+	#[test]
+	fn test_discover_dependents_of() {
+		let index = Index::default();
+
+		// Setup test data with dependencies: base -> module_a -> module_b
+		let root = PathBuf::from("/test/root");
+		let mut modules = HashMap::new();
+
+		let base_key = _I("base").into();
+		let module_a_key = _I("module_a").into();
+		let module_b_key = _I("module_b").into();
+
+		modules.insert(
+			base_key,
+			ModuleEntry {
+				path: "base".into(),
+				dependencies: Box::new([]),
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules.insert(
+			module_a_key,
+			ModuleEntry {
+				path: "module_a".into(),
+				dependencies: Box::new([base_key]),
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules.insert(
+			module_b_key,
+			ModuleEntry {
+				path: "module_b".into(),
+				dependencies: Box::new([module_a_key]),
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		index.roots.insert(root, modules);
+
+		// Test discovering dependents of base (should find module_a and module_b)
+		let base_dependents = index.discover_dependents_of(base_key);
+		assert!(
+			base_dependents.contains(&module_a_key),
+			"base should have module_a as dependent"
+		);
+		assert!(
+			base_dependents.contains(&module_b_key),
+			"base should have module_b as transitive dependent"
+		);
+
+		// Test discovering dependents of module_a (should find module_b)
+		let module_a_dependents = index.discover_dependents_of(module_a_key);
+		assert!(
+			module_a_dependents.contains(&module_b_key),
+			"module_a should have module_b as dependent"
+		);
+		assert!(
+			!module_a_dependents.contains(&base_key),
+			"module_a should not have base as dependent"
+		);
+
+		// Test discovering dependents of module_b (should find none)
+		let module_b_dependents = index.discover_dependents_of(module_b_key);
+		assert!(module_b_dependents.is_empty(), "module_b should have no dependents");
+	}
+
+	#[test]
+	fn test_delete_marked_entries() {
+		let index = Index::default();
+
+		// Add some test models
+		let root = _I("/test");
+		let path = crate::index::PathSymbol::strip_root(root, Path::new("/test/path"));
+		let models = vec![crate::model::Model {
+			type_: ModelType::Base {
+				name: "test_model".into(),
+				ancestors: vec![],
+			},
+			range: Default::default(),
+			byte_range: Default::default(),
+		}];
+		index.models.append(path, false, &models);
+
+		// Mark an entry for deletion
+		if let Some(mut entry) = index.models.iter_mut().next() {
+			entry.deleted = true;
+		}
+
+		let count_before = index.models.len();
+		index.delete_marked_entries();
+		let count_after = index.models.len();
+
+		assert!(count_after < count_before, "Should have fewer entries after deletion");
+	}
+
+	#[test]
+	fn test_parse_dependencies() {
+		use crate::test_utils;
+
+		// Setup test manifest content
+		let manifest_content = br#"
+{
+    'name': 'Test Module',
+    'depends': ['base', 'web', 'mail'],
+    'version': '1.0',
+}
+"#;
+
+		let manifest_path = PathBuf::from("/test/module/__manifest__.py");
+
+		// Mock the file system
+		if let Ok(mut fs) = test_utils::fs::TEST_FS.write() {
+			fs.insert(manifest_path.clone(), manifest_content);
+		}
+
+		let dependencies = parse_dependencies(&manifest_path).unwrap();
+
+		// Should include 'base' (auto-added) plus the dependencies from the manifest
+		assert!(
+			dependencies.len() >= 3,
+			"Should have at least base, web, and mail dependencies"
+		);
+
+		// Check that base is included (it's auto-added for non-base modules)
+		let base_key = _I("base").into();
+		assert!(dependencies.contains(&base_key), "Should include base dependency");
+	}
 
 	#[test]
 	fn test_model_query() {
