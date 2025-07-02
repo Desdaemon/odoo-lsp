@@ -872,7 +872,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 
 #[cfg(test)]
 mod tests {
-	use crate::index::{_G, _I, Index, Interner, ModelQuery, ModuleEntry};
+	use crate::index::{_I, Index, Interner, ModelQuery, ModuleEntry};
 	use crate::model::ModelType;
 	use pretty_assertions::assert_eq;
 	use std::collections::HashMap;
@@ -991,7 +991,7 @@ mod tests {
 		// Setup test data
 		let root = PathBuf::from("/test/root");
 		let mut modules = HashMap::new();
-		let module_key = _G("test_module").unwrap().into();
+		let module_key = _I("test_module").into();
 
 		let module_entry = ModuleEntry {
 			path: "test_module".into(),
