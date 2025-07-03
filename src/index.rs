@@ -514,12 +514,11 @@ impl Index {
 		for entry in self.roots.iter() {
 			if let Ok(path) = path.strip_prefix(entry.key()) {
 				for component in path.components() {
-					if let Component::Normal(norm) = component {
-						if let Some(module) = _G(norm.to_string_lossy()) {
-							if entry.value().contains_key(&module.into()) {
-								return Some(module.into());
-							}
-						}
+					if let Component::Normal(norm) = component
+						&& let Some(module) = _G(norm.to_string_lossy())
+						&& entry.value().contains_key(&module.into())
+					{
+						return Some(module.into());
 					}
 				}
 			}

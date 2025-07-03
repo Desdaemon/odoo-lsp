@@ -387,7 +387,7 @@ impl Backend {
 				if self.index.resolve_py_module(&full_module_path).is_none() {
 					diagnostics.push(Diagnostic {
 						range: ts_range_to_lsp_range(node.range()),
-						message: format!("Cannot resolve import '{}'", name),
+						message: format!("Cannot resolve import '{name}'"),
 						severity: Some(DiagnosticSeverity::ERROR),
 						..Default::default()
 					});
