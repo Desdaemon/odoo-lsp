@@ -43,39 +43,8 @@ pub enum LogFormat {
 	Json,
 }
 
-const HELP: &str = "Language server for Odoo Python/JS/XML
-
-USAGE:
-	odoo-lsp
-		Runs the language server
-	odoo-lsp init --addons-path ..
-		Generate a config file for the server
-		Files named `.odoo_lsp` and `.odoo_lsp.json` are recognized
-	odoo-lsp tsconfig --addons-path ..
-		Generate a tsconfig.json file for TypeScript support
-	odoo-lsp self-update [--nightly]
-		Update to the latest version available.
-
-OPTIONS:
-	-h, --help
-		Display this help message
-	-o, --out
-		Specify the path to store the output.
-	--addons-path PATH
-		Specifies the roots of the addons.
-		Can be specified multiple times, or as a comma-separated list of paths.
-	--tsconfig
-		[init] Also generates a tsconfig.json file
-	-v, --version
-		Prints the current version and exit.
-	--nightly
-		[self-update] Selects the latest nightly available.
-	-j, --threads NUMBER
-		Specifies the number of threads to use. Defaults to four threads, or half
-		of the core count if it is less than four, minimum of one.
-	--log-format json
-		Emits machine-readable JSON logs, useful for LSP clients and middleware
-";
+const HELP: &str = include_str!("../contrib/usage.txt");
+const MANPAGE: &str = include_str!("../contrib/debian/usr/share/man/man1/odoo-lsp.1");
 
 pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 	let mut out = Args::default();
@@ -94,7 +63,9 @@ pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 				out.command = Command::SelfUpdate { nightly: false };
 			}
 			["-h" | "--help", ..] => {
-				eprintln!("{HELP}");
+				if print_usage().is_err() {
+					eprintln!("{HELP}");
+				}
 				exit(0);
 			}
 			["-v" | "--version", ..] => {
@@ -140,13 +111,38 @@ pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 			}
 			[] => break,
 			_ => {
-				eprintln!("{HELP}");
+				if print_usage().is_err() {
+					eprintln!("{HELP}");
+				}
 				exit(1);
 			}
 		}
 	}
 
 	out
+}
+
+fn print_usage() -> anyhow::Result<()> {
+	use std::process::Command;
+
+	#[cfg(unix)]
+	if let Ok(stat) = Command::new("man")
+		.arg("-h")
+		.stdout(std::process::Stdio::null())
+		.stderr(std::process::Stdio::null())
+		.status()
+		&& stat.success()
+	{
+		use std::io::Write;
+
+		let manpage = tempfile::NamedTempFile::new()?;
+		let mut file = std::fs::File::options().write(true).open(manpage.path())?;
+		file.write_all(MANPAGE.as_bytes())?;
+		Command::new("man").arg(manpage.path()).status()?;
+		return Ok(());
+	}
+
+	Err(anyhow::anyhow!("no manpage support"))
 }
 
 /// Returns true if a CLI handler has been invoked.

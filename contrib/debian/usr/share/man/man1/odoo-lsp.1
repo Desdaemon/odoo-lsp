@@ -1,4 +1,4 @@
-.TH ODOO\-LSP 1 "March 2025" "odoo-lsp 0.5" "User Commands"
+.TH ODOO\-LSP 1 "June 2025" "odoo-lsp 0.5" "User Commands"
 .SH NAME
 odoo-lsp \- Language server for Odoo Python/XML/JS
 
@@ -29,6 +29,10 @@ Updates to the latest version available.
 
 .SH OPTIONS
 .TP
+.B \-h, \-\-help
+Displays this help message.
+
+.TP
 .B \-o, \-\-out
 [init, tsconfig] Specifies the path to store the output.
 
@@ -40,9 +44,27 @@ Can be specified multiple times, or as a comma-separated list of paths.
 .fi
 
 .TP
-.B \-h, \-\-help
-Displays this help message.
+.B \-\-tsconfig
+[init] Also generates a tsconfig.json file
 
 .TP
 .B \-v, \-\-version
 Prints the current version and exit.
+
+.TP
+.B \-\-nightly
+[self-update] Selects the latest nightly available.
+
+.TP
+.B \-j, \-\-threads NUMBER
+.nf
+Specifies the number of threads to use. Defaults to four threads, or half
+of the core count if it is less than four, minimum of one.
+.fi
+
+.TP
+.B \-\-log-format json
+.nf
+Emits machine-readable JSON logs, useful for LSP clients and middleware.
+To omit escape codes from the usual log, pass NO_COLOR=1 as an environment variable.
+.fi
