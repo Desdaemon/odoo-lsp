@@ -1,0 +1,33 @@
+Language server for Odoo Python/JS/XML
+
+USAGE:
+	odoo-lsp
+		Runs the language server
+	odoo-lsp init --addons-path ..
+		Generate a config file for the server
+		Files named `.odoo_lsp` and `.odoo_lsp.json` are recognized
+	odoo-lsp tsconfig --addons-path ..
+		Generate a tsconfig.json file for TypeScript support
+	odoo-lsp self-update [--nightly]
+		Update to the latest version available
+
+OPTIONS:
+	-h, --help
+		Display this help message
+	-o, --out
+		Specify the path to store the output.
+	--addons-path PATH
+		Specifies the roots of the addons.
+		Can be specified multiple times, or as a comma-separated list of paths.
+	--tsconfig
+		[init] Also generates a tsconfig.json file
+	-v, --version
+		Prints the current version and exit.
+	--nightly
+		[self-update] Selects the latest nightly available.
+	-j, --threads NUMBER
+		Specifies the number of threads to use. Defaults to four threads, or half
+		of the core count if it is less than four, minimum of one.
+	--log-format json
+		Emits machine-readable JSON logs, useful for LSP clients and middleware.
+		To omit escape codes from the usual log, pass NO_COLOR=1 as an environment variable.
