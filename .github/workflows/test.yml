@@ -38,22 +38,19 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ matrix.rust }}
+          components: clippy
+          cache-key: ${{ runner.os }}
+          rustflags: ''
 
       - name: Create dummy tag
         run: git tag -f CI
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: cargo clippy
+        if: matrix.rust == 'nightly'
+        run: cargo clippy
 
       - uses: taiki-e/install-action@cargo-nextest
       - uses: taiki-e/install-action@cargo-llvm-cov

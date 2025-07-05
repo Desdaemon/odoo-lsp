@@ -1071,17 +1071,18 @@ impl Backend {
 				}
 			}
 		}
-	let model_filter = if arch_mode {
-		// For action references (%(...)d patterns), keep the specific model_filter
-		// Don't override with arch_model for action references
-		if matches!(ref_kind, Some(RefKind::Id)) && model_filter.as_deref() == Some("ir.actions.act_window") {
-			model_filter
+		let model_filter = if arch_mode {
+			// For action references (%(...)d patterns), keep the specific model_filter
+			// Don't override with arch_model for action references
+			if matches!(ref_kind, Some(RefKind::Id)) && model_filter.as_deref() == Some("ir.actions.act_window") {
+				model_filter
+			} else {
+				arch_model.map(|span| span.to_string()).or(model_filter)
+			}
 		} else {
-			arch_model.map(|span| span.to_string()).or(model_filter)
-		}
-	} else {
-		model_filter
-	};		Ok(XmlRefs {
+			model_filter
+		};
+		Ok(XmlRefs {
 			ref_at_cursor,
 			ref_kind,
 			model_filter,

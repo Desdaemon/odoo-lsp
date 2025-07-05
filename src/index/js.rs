@@ -138,18 +138,29 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 	let mut actions = Vec::new();
 
 	for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
-		let first = match_.captures.first().unwrap();
-		debug_assert_eq!(first.index, JsQuery::Name as u32);
+		// let first = match_.captures.first().unwrap();
+		// debug_assert_eq!(
+		// 	first.index,
+		// 	JsQuery::Name as u32,
+		// 	"{}",
+		// 	String::from_utf8_lossy(&contents[first.node.byte_range()])
+		// );
 
-		let name = String::from_utf8_lossy(&contents[first.node.byte_range()]);
-		let name = _I(&name);
-		let component = components.entry(name.into()).or_default();
-		if component.location.is_none() {
-			component.location = Some(MinLoc {
-				path,
-				range: ts_range_to_lsp_range(first.node.range()),
-			});
-		}
+		let mut component = match match_.captures.first() {
+			Some(first) if first.index == JsQuery::Name as u32 => {
+				let name = String::from_utf8_lossy(&contents[first.node.byte_range()]);
+				let name = _I(&name);
+				let component = components.entry(name.into()).or_default();
+				if component.location.is_none() {
+					component.location = Some(MinLoc {
+						path,
+						range: ts_range_to_lsp_range(first.node.range()),
+					});
+				}
+				Some(component)
+			}
+			_ => None,
+		};
 
 		let mut category = None;
 
@@ -157,6 +168,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 			use intmap::Entry;
 			match JsQuery::from(capture.index) {
 				Some(JsQuery::Prop) => {
+					let Some(component) = &mut component else { continue };
 					let mut range = capture.node.byte_range();
 					if capture.node.kind() == "string" {
 						range = range.shrink(1);
@@ -178,22 +190,26 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 					}
 				}
 				Some(JsQuery::Parent) => {
+					let Some(component) = &mut component else { continue };
 					let parent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
 					let parent = _I(parent);
 					component.ancestors.push(parent.into());
 				}
 				Some(JsQuery::TemplateName) => {
+					let Some(component) = &mut component else { continue };
 					let name = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
 					let name = _I(&name);
 					component.template = Some(ComponentTemplate::Name(name.into()));
 				}
 				Some(JsQuery::TemplateInline) => {
+					let Some(component) = &mut component else { continue };
 					let range = capture.node.byte_range().shrink(1).map_unit(ByteOffset);
 					component.template = Some(ComponentTemplate::Inline(
 						offset_range_to_lsp_range(range, rope.clone()).unwrap(),
 					));
 				}
 				Some(JsQuery::Subcomponent) => {
+					let Some(component) = &mut component else { continue };
 					let subcomponent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
 					let subcomponent = _I(&subcomponent);
 					component.subcomponents.push(subcomponent.into());

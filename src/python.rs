@@ -1094,20 +1094,19 @@ impl Backend {
 		}
 
 		let active_parameter = 'find_param: {
-			if let Some(offset) = position_to_offset(params.text_document_position_params.position, &document.rope) {
-				if let Some(contents) = contents.get(..=offset.0)
-					&& let Some(idx) = contents.iter().rposition(|&c| c == b',' || c == b'(')
-				{
-					if contents[idx] == b'(' {
-						break 'find_param Some(0);
-					}
-					let prev_param = args.descendant_for_byte_range(idx, idx).unwrap().prev_named_sibling();
-					for (idx, arg) in args.named_children(&mut args.walk()).enumerate() {
-						if Some(arg) == prev_param {
-							// the index might be intentionally out of bounds w.r.t the actual number of arguments
-							// but this is better than leaving it as None because clients infer it as the first argument
-							break 'find_param Some((idx + 1) as u32);
-						}
+			if let Some(offset) = position_to_offset(params.text_document_position_params.position, &document.rope)
+				&& let Some(contents) = contents.get(..=offset.0)
+				&& let Some(idx) = contents.iter().rposition(|&c| c == b',' || c == b'(')
+			{
+				if contents[idx] == b'(' {
+					break 'find_param Some(0);
+				}
+				let prev_param = args.descendant_for_byte_range(idx, idx).unwrap().prev_named_sibling();
+				for (idx, arg) in args.named_children(&mut args.walk()).enumerate() {
+					if Some(arg) == prev_param {
+						// the index might be intentionally out of bounds w.r.t the actual number of arguments
+						// but this is better than leaving it as None because clients infer it as the first argument
+						break 'find_param Some((idx + 1) as u32);
 					}
 				}
 			}

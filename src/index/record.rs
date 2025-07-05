@@ -66,13 +66,13 @@ impl RecordIndex {
 			}
 		}
 	}
-	pub fn by_model(&self, model: &ModelName) -> impl Iterator<Item = Ref<RecordId, Record>> {
+	pub fn by_model(&self, model: &ModelName) -> impl Iterator<Item = Ref<'_, RecordId, Record>> {
 		self.by_model
 			.get(model)
 			.into_iter()
 			.flat_map(|ids| self.resolve_references(ids))
 	}
-	pub fn by_inherit_id(&self, inherit_id: &RecordId) -> impl Iterator<Item = Ref<RecordId, Record>> {
+	pub fn by_inherit_id(&self, inherit_id: &RecordId) -> impl Iterator<Item = Ref<'_, RecordId, Record>> {
 		self.by_inherit_id
 			.get(inherit_id)
 			.into_iter()
@@ -81,7 +81,7 @@ impl RecordIndex {
 	fn resolve_references<K>(
 		&self,
 		ids: Ref<K, HashSet<Symbol<Record>>>,
-	) -> impl IntoIterator<Item = Ref<RecordId, Record>>
+	) -> impl IntoIterator<Item = Ref<'_, RecordId, Record>>
 	where
 		K: PartialEq + Eq + Hash,
 	{
@@ -135,7 +135,7 @@ impl<K, T> SymbolMap<K, T> {
 	pub fn keys(&self) -> impl Iterator<Item = Symbol<K>> + '_ {
 		self.0.iter().map(|(key, _)| Spur::try_from_usize(key).unwrap().into())
 	}
-	pub fn iter(&self) -> IterMap<impl Iterator<Item = (usize, &T)>, K, T> {
+	pub fn iter(&self) -> IterMap<'_, impl Iterator<Item = (usize, &T)>, K, T> {
 		IterMap(self.0.iter(), PhantomData)
 	}
 }
@@ -149,7 +149,7 @@ impl<K> SymbolSet<K> {
 	pub fn contains_key(&self, key: Symbol<K>) -> bool {
 		self.0.0.contains_key(key.into_usize() as _)
 	}
-	pub fn iter(&self) -> IterSet<impl Iterator<Item = (usize, &())>, K> {
+	pub fn iter(&self) -> IterSet<'_, impl Iterator<Item = (usize, &())>, K> {
 		IterSet(self.0.0.iter(), PhantomData)
 	}
 	pub fn extend<I>(&mut self, items: I)
