@@ -26,10 +26,10 @@ tracing-subscriber.workspace = true
 odoo-lsp.path = ".."
 
 [target.'cfg(target_os = "linux")'.dependencies]
-iai-callgrind = { version = "0.14.0", features = ["client_requests"] }
+iai-callgrind = { version = "0.15.1", features = ["client_requests"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-iai-callgrind = { version = "0.14.0" }
+iai-callgrind = { version = "0.15.1" }
 
 [[bench]]
 name = "standard"

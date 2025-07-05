@@ -44,7 +44,6 @@ pub enum LogFormat {
 }
 
 const HELP: &str = include_str!("../contrib/usage.txt");
-const MANPAGE: &str = include_str!("../contrib/debian/usr/share/man/man1/odoo-lsp.1");
 
 pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 	let mut out = Args::default();
@@ -123,10 +122,8 @@ pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 }
 
 fn print_usage() -> anyhow::Result<()> {
-	use std::process::Command;
-
 	#[cfg(unix)]
-	if let Ok(stat) = Command::new("man")
+	if let Ok(stat) = std::process::Command::new("man")
 		.arg("-h")
 		.stdout(std::process::Stdio::null())
 		.stderr(std::process::Stdio::null())
@@ -134,11 +131,12 @@ fn print_usage() -> anyhow::Result<()> {
 		&& stat.success()
 	{
 		use std::io::Write;
+		const MANPAGE: &str = include_str!("../contrib/debian/usr/share/man/man1/odoo-lsp.1");
 
 		let manpage = tempfile::NamedTempFile::new()?;
 		let mut file = std::fs::File::options().write(true).open(manpage.path())?;
 		file.write_all(MANPAGE.as_bytes())?;
-		Command::new("man").arg(manpage.path()).status()?;
+		std::process::Command::new("man").arg(manpage.path()).status()?;
 		return Ok(());
 	}
 

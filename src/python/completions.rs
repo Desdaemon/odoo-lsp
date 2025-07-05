@@ -237,50 +237,48 @@ impl Backend {
 						| None => {}
 					}
 				}
-				if let Some((descriptor, value)) = field_descriptor_in_offset {
-					if descriptor == b"domain" {
-						let mut domain_node = value;
-						if domain_node.kind() == "lambda" {
-							let Some(body) = domain_node.child_by_field_name("body") else {
-								continue;
-							};
-							domain_node = body;
-						}
-						if domain_node.kind() != "list" {
-							continue;
-						}
-						let comodel_name = field_descriptors
-							.iter()
-							.find_map(|&(desc, node)| {
-								(desc == b"comodel_name").then(|| &contents[node.byte_range().shrink(1)])
-							})
-							.or(field_model);
-
-						let Some(mapped) = domain_node.named_children(&mut domain_node.walk()).find_map(|domain| {
-							// find the mapped domain element that contains the offset
-							// [("id", "=", 123)]
-							//    ^ this one
-							if domain.kind() != "tuple" {
-								return None;
-							}
-							let mapped = domain.named_child(0)?;
-							mapped.byte_range().contains(&offset).then_some(mapped)
-						}) else {
+				if let Some((b"domain", value)) = field_descriptor_in_offset {
+					let mut domain_node = value;
+					if domain_node.kind() == "lambda" {
+						let Some(body) = domain_node.child_by_field_name("body") else {
 							continue;
 						};
-
-						return self.python_completions_for_prop(
-							root,
-							&match_,
-							offset,
-							mapped,
-							comodel_name,
-							contents,
-							completions_limit,
-							Some(PropertyKind::Field),
-							rope,
-						);
+						domain_node = body;
 					}
+					if domain_node.kind() != "list" {
+						continue;
+					}
+					let comodel_name = field_descriptors
+						.iter()
+						.find_map(|&(desc, node)| {
+							(desc == b"comodel_name").then(|| &contents[node.byte_range().shrink(1)])
+						})
+						.or(field_model);
+
+					let Some(mapped) = domain_node.named_children(&mut domain_node.walk()).find_map(|domain| {
+						// find the mapped domain element that contains the offset
+						// [("id", "=", 123)]
+						//    ^ this one
+						if domain.kind() != "tuple" {
+							return None;
+						}
+						let mapped = domain.named_child(0)?;
+						mapped.byte_range().contains(&offset).then_some(mapped)
+					}) else {
+						continue;
+					};
+
+					return self.python_completions_for_prop(
+						root,
+						&match_,
+						offset,
+						mapped,
+						comodel_name,
+						contents,
+						completions_limit,
+						Some(PropertyKind::Field),
+						rope,
+					);
 				}
 			}
 			if early_return.is_none() {

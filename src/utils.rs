@@ -75,7 +75,7 @@ macro_rules! ok {
 
 #[macro_export]
 macro_rules! await_did_open_document {
-	($self:expr, $path:expr) => {	
+	($self:expr, $path:expr) => {
 		let mut blocker = None;
 		{
 			if let Some(document) = $self.document_map.get($path)
@@ -229,6 +229,9 @@ pub fn token_span<'r, 't>(token: &'r Token<'t>) -> &'r StrSpan<'t> {
 	}
 }
 
+/// Similar to [`str::split_once`]
+///
+/// Returns `src` if the string cannot be split by `sep`.
 pub fn cow_split_once<'src>(
 	mut src: Cow<'src, str>,
 	sep: &str,
@@ -446,7 +449,7 @@ impl Default for Semaphore {
 pub struct Blocker<'a>(&'a Semaphore);
 
 impl Semaphore {
-	pub fn block(&self) -> Blocker {
+	pub fn block(&self) -> Blocker<'_> {
 		self.should_wait.store(true, Ordering::SeqCst);
 		Blocker(self)
 	}
