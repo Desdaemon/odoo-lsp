@@ -79,10 +79,10 @@ impl Workspaces {
 	#[inline]
 	pub fn find_workspace_of<T>(&self, path: &Path, mut func: impl FnMut(&Path, &Workspace) -> Option<T>) -> Option<T> {
 		for ws in &self.inner {
-			if path.starts_with(ws.key()) {
-				if let Some(res) = func(ws.key(), &ws) {
-					return Some(res);
-				}
+			if path.starts_with(ws.key())
+				&& let Some(res) = func(ws.key(), &ws)
+			{
+				return Some(res);
 			}
 		}
 		None
@@ -188,10 +188,10 @@ impl Backend {
 				workspaces.push(root.into_owned());
 			}
 		}
-		if workspaces.is_empty() {
-			if let Ok(pwd) = std::env::current_dir() {
-				workspaces.push(pwd);
-			}
+		if workspaces.is_empty()
+			&& let Ok(pwd) = std::env::current_dir()
+		{
+			workspaces.push(pwd);
 		}
 		if workspaces.is_empty() {
 			warn!("No workspace folders were detected");

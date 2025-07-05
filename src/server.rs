@@ -212,15 +212,14 @@ impl LanguageServer for Backend {
 				if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
 					.await
 					.unwrap_or(false)
+					&& let Some(file_path) = path_.parent().and_then(|p| p.parent())
 				{
-					if let Some(file_path) = path_.parent().and_then(|p| p.parent()) {
-						_ = self
-							.index
-							.add_root(file_path, Some(self.client.clone()))
-							.await
-							.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
-						break;
-					}
+					_ = self
+						.index
+						.add_root(file_path, Some(self.client.clone()))
+						.await
+						.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
+					break;
 				}
 				path = path_.parent();
 			}
@@ -671,18 +670,18 @@ impl LanguageServer for Backend {
 		await_did_open_document!(self, path);
 
 		let mut diagnostics = vec![];
-		if let Some((_, "py")) = path.rsplit_once('.') {
-			if let Some(mut document) = self.document_map.get_mut(path) {
-				let damage_zone = document.damage_zone.take();
-				let rope = &document.rope.clone();
-				self.diagnose_python(
-					params.text_document.uri.path().as_str(),
-					rope,
-					damage_zone,
-					&mut document.diagnostics_cache,
-				);
-				diagnostics.clone_from(&document.diagnostics_cache);
-			}
+		if let Some((_, "py")) = path.rsplit_once('.')
+			&& let Some(mut document) = self.document_map.get_mut(path)
+		{
+			let damage_zone = document.damage_zone.take();
+			let rope = &document.rope.clone();
+			self.diagnose_python(
+				params.text_document.uri.path().as_str(),
+				rope,
+				damage_zone,
+				&mut document.diagnostics_cache,
+			);
+			diagnostics.clone_from(&document.diagnostics_cache);
 		}
 		Ok(DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
 			RelatedFullDocumentDiagnosticReport {

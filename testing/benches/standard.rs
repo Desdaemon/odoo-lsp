@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use async_lsp::{lsp_types::*, LanguageServer};
 use iai_callgrind::{
-	library_benchmark, library_benchmark_group, main, EntryPoint, FlamegraphConfig, LibraryBenchmarkConfig,
+	library_benchmark, library_benchmark_group, main, Callgrind, EntryPoint, FlamegraphConfig, LibraryBenchmarkConfig,
+	OutputFormat,
 };
 
 fn init_and_shutdown(max_concurrency: usize) {
@@ -101,8 +102,10 @@ library_benchmark_group!(
 // immediately, while we manually control when the main thread starts
 main!(
 	config = LibraryBenchmarkConfig::default()
-		.entry_point(EntryPoint::Custom("tokio::runtime::task::waker::wake_by_val".to_string()))
-		// .output_format(OutputFormat::default().show_intermediate(true))
-		.flamegraph(FlamegraphConfig::default());
+		.output_format(OutputFormat::default().show_intermediate(true))
+		.tool(Callgrind::default()
+			.entry_point(EntryPoint::Custom("tokio::runtime::task::waker::wake_by_val".to_string()))
+			.flamegraph(FlamegraphConfig::default())
+		);
 	library_benchmark_groups = bench_standard_group
 );

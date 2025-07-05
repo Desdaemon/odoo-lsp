@@ -521,11 +521,11 @@ impl Index {
 			if !node.is_named() {
 				continue;
 			}
-			if let Some(end) = scope_ends.last() {
-				if node.start_byte() > *end {
-					scope.exit();
-					scope_ends.pop();
-				}
+			if let Some(&end) = scope_ends.last()
+				&& node.start_byte() > end
+			{
+				scope.exit();
+				scope_ends.pop();
 			}
 			match step(&mut scope, node) {
 				ControlFlow::Break(value) => return (scope, value),

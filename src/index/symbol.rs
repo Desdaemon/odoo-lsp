@@ -113,7 +113,7 @@ impl<T> PartialEq for Symbol<T> {
 impl<T> PartialOrd for Symbol<T> {
 	#[inline]
 	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-		Some(self.inner.cmp(&other.inner))
+		Some(self.cmp(other))
 	}
 }
 

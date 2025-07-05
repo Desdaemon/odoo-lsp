@@ -205,9 +205,7 @@ impl Index {
 
 		self.load_module(module_name).await
 	}
-	// #[instrument(skip_all, ret, fields(module = _R(module_name)))]
 	async fn load_module(&self, module_name: ModuleName) -> Option<()> {
-		let mut outputs = tokio::task::JoinSet::new();
 		{
 			let root = self.find_root_from_module(module_name)?;
 			let root = self.roots.get(&root)?;
@@ -254,6 +252,7 @@ impl Index {
 			}
 		}
 
+		let mut outputs = tokio::task::JoinSet::new();
 		for (module_key, root) in modules.into_iter().zip(roots.into_iter()) {
 			info!("{} depends on {}", _R(module_name), _R(module_key));
 			let root_display = root.key().to_string_lossy();
@@ -406,8 +405,6 @@ impl Index {
 			.collect()
 	}
 	/// Inverse of [Index::load_module], useful for requests that work in the context of the larger codebase.
-	///
-	/// Dependents' information must be gathered by [Index::discover_all_module_dependents] first.
 	pub(crate) async fn load_modules_dependent_on(&self, module_name: ModuleName) -> Option<()> {
 		let root = self.find_root_from_module(module_name)?;
 		{
@@ -630,13 +627,14 @@ fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry
 		deps.push(ModuleName::from(_I("base")));
 	}
 
-	for match_ in cursor.matches(ManifestQuery::query(), root, &contents[..]) {
-		for capture in match_.captures {
-			if let Some(ManifestQuery::Depends) = ManifestQuery::from(capture.index) {
-				let dep = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
-				deps.push(_I(dep).into());
-			}
+	for (match_, idx) in cursor.captures(ManifestQuery::query(), root, &contents[..]) {
+		let capture = match_.captures[idx];
+		// for capture in match_.captures {
+		if let Some(ManifestQuery::Depends) = ManifestQuery::from(capture.index) {
+			let dep = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
+			deps.push(_I(dep).into());
 		}
+		// }
 	}
 
 	Ok(deps.into_boxed_slice())
