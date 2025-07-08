@@ -6,23 +6,19 @@ use std::collections::hash_map::Entry;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use dashmap::DashMap;
 use dashmap::mapref::one::RefMut;
 use derive_more::{Deref, DerefMut};
-use lasso::Spur;
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use smart_default::SmartDefault;
-use std::sync::RwLock;
-use tower_lsp_server::lsp_types::Range;
-use tracing::{debug, error, info, trace, warn};
-use tree_sitter::{Node, Parser, QueryCursor};
 use ts_macros::query;
 
+use crate::prelude::*;
+
 use crate::analyze::FunctionParam;
-use crate::index::{_G, _I, _R, PathSymbol, Symbol};
-use crate::utils::{ByteOffset, ByteRange, Erase, MinLoc, RangeExt, TryResultExt, ts_range_to_lsp_range};
 use crate::{ImStr, errloc, format_loc, test_utils};
 
 #[derive(Clone, Debug)]
@@ -524,7 +520,7 @@ impl ModelIndex {
 					if let Some(field) = field
 						&& let Some(type_) = type_
 					{
-						let range = ts_range_to_lsp_range(field.range());
+						let range = span_conv(field.range());
 						let field_str = String::from_utf8_lossy(&contents[field.byte_range()]);
 						let field = _I(&field_str);
 						let type_ = String::from_utf8_lossy(&contents[type_]);
@@ -563,11 +559,11 @@ impl ModelIndex {
 						let method_str = String::from_utf8_lossy(&contents[method.byte_range()]);
 						let calls_super = String::from_utf8_lossy(&contents[body.byte_range()]).contains("super(");
 						let method = _I(&method_str);
-						let range = ts_range_to_lsp_range(body.range());
+						let range = span_conv(body.range());
 						let top_level_scope = ast
 							.root_node()
 							.child_containing_descendant(body)
-							.map(|scope| ts_range_to_lsp_range(scope.range()));
+							.map(|scope| span_conv(scope.range()));
 						methods.push((
 							method,
 							top_level_scope,

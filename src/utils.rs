@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::try_result::TryResult;
 use futures::future::BoxFuture;
-use ropey::{Rope, RopeSlice};
+use ropey::RopeSlice;
 use smart_default::SmartDefault;
 use tower_lsp_server::lsp_types::*;
 use tracing::warn;
@@ -67,9 +67,11 @@ macro_rules! dig {
 /// Early return, with optional message passed to [`format_loc`](crate::format_loc!).
 #[macro_export]
 macro_rules! ok {
-    ($res:expr $(,)?) => { ($res)? };
+    ($res:expr $(,)?) => {
+    	anyhow::Context::context($res, concat!($crate::loc!(), " ", stringify!($res)))?
+    };
     ($res:expr, $($tt:tt)+) => {
-		anyhow::Context::with_context($res, || format_loc!($($tt)+))?
+		anyhow::Context::with_context($res, || $crate::format_loc!($($tt)+))?
     }
 }
 
@@ -144,71 +146,115 @@ impl From<MinLoc> for Location {
 	}
 }
 
-pub fn offset_to_position(offset: ByteOffset, rope: Rope) -> Option<Position> {
-	let line = rope.try_byte_to_line(offset.0).ok()?;
-	let line_start_char = rope.try_line_to_char(line).ok()?;
-	let char_offset = rope.try_byte_to_char(offset.0).ok()?;
-	let column = char_offset - line_start_char;
-	Some(Position::new(line as u32, column as u32))
+pub struct SpanAdapter<T>(T);
+pub struct RopeAdapter<'a, T>(T, RopeSlice<'a>);
+
+/// Infallible version of [rope_conv] that doesn't require a [Rope].
+/// Available conversions:
+/// - [xmlparser::TextPos] -> [Position]
+/// - [tree_sitter::Range] -> [Range]
+#[inline]
+pub fn span_conv<T, U>(src: T) -> U
+where
+	U: From<SpanAdapter<T>>,
+{
+	SpanAdapter(src).into()
 }
 
-pub fn position_to_offset(position: Position, rope: &Rope) -> Option<ByteOffset> {
-	let CharOffset(char_offset) = position_to_char(position, rope)?;
-	let byte_offset = rope.try_char_to_byte(char_offset).ok()?;
-	Some(ByteOffset(byte_offset))
+/// Specializations for conversion between several types of offsets and ranges.  
+/// Available conversions:
+/// - [ByteOffset] <-> [Position]
+/// - [Range] -> [CharRange]
+/// - [Range] <-> [ByteRange]
+#[inline]
+pub fn rope_conv<T, U>(src: T, rope: RopeSlice<'_>) -> Result<U, <U as TryFrom<RopeAdapter<'_, T>>>::Error>
+where
+	for<'a> U: TryFrom<RopeAdapter<'a, T>>,
+{
+	RopeAdapter(src, rope).try_into()
 }
 
-pub fn position_to_offset_slice(position: Position, slice: &RopeSlice) -> Option<ByteOffset> {
-	let CharOffset(char_offset) = position_to_char_slice(position, slice)?;
-	let byte_offset = slice.try_char_to_byte(char_offset).ok()?;
-	Some(ByteOffset(byte_offset))
-}
-
-fn position_to_char(position: Position, rope: &Rope) -> Option<CharOffset> {
-	let line_offset_in_char = rope.try_line_to_char(position.line as usize).ok()?;
-	Some(CharOffset(line_offset_in_char + position.character as usize))
-}
-
-fn position_to_char_slice(position: Position, rope: &RopeSlice) -> Option<CharOffset> {
-	let line_offset_in_char = rope.try_line_to_char(position.line as usize).ok()?;
-	Some(CharOffset(line_offset_in_char + position.character as usize))
-}
-
-pub fn lsp_range_to_char_range(range: Range, rope: &Rope) -> Option<CharRange> {
-	let start = position_to_char(range.start, rope)?;
-	let end = position_to_char(range.end, rope)?;
-	Some(start..end)
-}
-
-pub fn lsp_range_to_offset_range(range: Range, rope: &Rope) -> Option<ByteRange> {
-	let start = position_to_offset(range.start, rope)?;
-	let end = position_to_offset(range.end, rope)?;
-	Some(start..end)
-}
-
-pub fn offset_range_to_lsp_range(range: ByteRange, rope: Rope) -> Option<Range> {
-	let start = offset_to_position(range.start, rope.clone())?;
-	let end = offset_to_position(range.end, rope)?;
-	Some(Range { start, end })
-}
-
-pub fn xml_position_to_lsp_position(position: TextPos) -> Position {
-	Position {
-		line: position.row - 1_u32,
-		character: position.col - 1_u32,
+impl<'a> TryFrom<RopeAdapter<'a, ByteOffset>> for Position {
+	type Error = ropey::Error;
+	fn try_from(value: RopeAdapter<'a, ByteOffset>) -> Result<Self, Self::Error> {
+		let RopeAdapter(offset, rope) = value;
+		let line = rope.try_byte_to_line(offset.0)?;
+		let line_start_char = rope.try_line_to_char(line)?;
+		let char_offset = rope.try_byte_to_char(offset.0)?;
+		let column = char_offset - line_start_char;
+		Ok(Position::new(line as u32, column as u32))
 	}
 }
 
-pub fn ts_range_to_lsp_range(range: tree_sitter::Range) -> Range {
-	Range {
-		start: Position {
-			line: range.start_point.row as u32,
-			character: range.start_point.column as u32,
-		},
-		end: Position {
-			line: range.end_point.row as u32,
-			character: range.end_point.column as u32,
-		},
+impl<'a> TryFrom<RopeAdapter<'a, Position>> for ByteOffset {
+	type Error = ropey::Error;
+	fn try_from(value: RopeAdapter<'a, Position>) -> Result<Self, Self::Error> {
+		let RopeAdapter(position, rope) = value;
+		let CharOffset(char_offset) = position_to_char(position, rope)?;
+		let byte_offset = rope.try_char_to_byte(char_offset)?;
+		Ok(ByteOffset(byte_offset))
+	}
+}
+
+impl<'a> TryFrom<RopeAdapter<'a, Range>> for CharRange {
+	type Error = ropey::Error;
+	fn try_from(value: RopeAdapter<'a, Range>) -> Result<Self, Self::Error> {
+		let RopeAdapter(range, rope) = value;
+		let start = position_to_char(range.start, rope)?;
+		let end = position_to_char(range.end, rope)?;
+		Ok(start..end)
+	}
+}
+impl<'a> TryFrom<RopeAdapter<'a, Range>> for ByteRange {
+	type Error = ropey::Error;
+	fn try_from(value: RopeAdapter<'a, Range>) -> Result<Self, Self::Error> {
+		let RopeAdapter(range, rope) = value;
+		let start = rope_conv(range.start, rope)?;
+		let end = rope_conv(range.end, rope)?;
+		Ok(start..end)
+	}
+}
+
+impl<'a> TryFrom<RopeAdapter<'a, ByteRange>> for Range {
+	type Error = ropey::Error;
+	fn try_from(value: RopeAdapter<'a, ByteRange>) -> Result<Self, Self::Error> {
+		let RopeAdapter(range, rope) = value;
+		let start = rope_conv(range.start, rope)?;
+		let end = rope_conv(range.end, rope)?;
+		Ok(Range { start, end })
+	}
+}
+
+fn position_to_char(position: Position, rope: RopeSlice<'_>) -> ropey::Result<CharOffset> {
+	let line_offset_in_char = rope.try_line_to_char(position.line as usize)?;
+	Ok(CharOffset(line_offset_in_char + position.character as usize))
+}
+
+impl From<SpanAdapter<TextPos>> for Position {
+	#[inline]
+	fn from(value: SpanAdapter<TextPos>) -> Self {
+		let SpanAdapter(position) = value;
+		Position {
+			line: position.row - 1_u32,
+			character: position.col - 1_u32,
+		}
+	}
+}
+
+impl From<SpanAdapter<tree_sitter::Range>> for Range {
+	#[inline]
+	fn from(value: SpanAdapter<tree_sitter::Range>) -> Self {
+		let SpanAdapter(range) = value;
+		Range {
+			start: Position {
+				line: range.start_point.row as u32,
+				character: range.start_point.column as u32,
+			},
+			end: Position {
+				line: range.end_point.row as u32,
+				character: range.end_point.column as u32,
+			},
+		}
 	}
 }
 

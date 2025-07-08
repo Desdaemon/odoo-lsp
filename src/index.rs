@@ -7,35 +7,29 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 
-use anyhow::{Context, anyhow};
 use dashmap::DashMap;
 use derive_more::Deref;
-use futures::StreamExt;
-use futures::stream::FuturesUnordered;
 use globwalk::FileType;
 use ignore::Match;
 use ignore::gitignore::Gitignore;
-use lasso::{Spur, ThreadedRodeo};
-use ropey::Rope;
+use lasso::ThreadedRodeo;
 use smart_default::SmartDefault;
-use tower_lsp_server::{Client, UriExt, lsp_types::*};
-use tracing::{debug, info, instrument, warn};
-use tree_sitter::{Parser, QueryCursor};
-use ts_macros::query;
+use tower_lsp_server::{Client, lsp_types::*};
 use xmlparser::{Token, Tokenizer};
+
+use crate::prelude::*;
 
 pub use crate::component::{Component, ComponentName};
 use crate::model::{Model, ModelIndex, ModelLocation, ModelType};
 use crate::record::Record;
 use crate::template::{NewTemplate, gather_templates};
 pub use crate::template::{Template, TemplateName};
-use crate::utils::{ByteOffset, ByteRange, MinLoc, RangeExt, Semaphore, path_contains, ts_range_to_lsp_range};
-use crate::{ImStr, errloc, format_loc, loc, ok, test_utils};
+use crate::utils::Semaphore;
 
 mod js;
 mod module;
 mod record;
-mod symbol;
+pub(crate) mod symbol;
 mod template;
 
 pub use js::JsQuery;
@@ -614,9 +608,7 @@ fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry
 	let contents = test_utils::fs::read(manifest)?;
 	let mut parser = Parser::new();
 	parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
-	let ast = parser
-		.parse(&contents, None)
-		.with_context(|| errloc!("failed to parse manifest"))?;
+	let ast = ok!(parser.parse(&contents, None));
 
 	let mut cursor = QueryCursor::new();
 	let root = ast.root_node();
@@ -648,44 +640,31 @@ async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> any
 	let mut records = vec![];
 	let mut templates = vec![];
 	let rope = Rope::from_str(&file);
+	let rope = rope.slice(..);
 	loop {
 		match reader.next() {
 			Some(Ok(Token::ElementStart { local, span, .. })) => match local.as_str() {
 				"record" => {
-					let record = Record::from_reader(
-						ByteOffset(span.start()),
-						module_name,
-						path_uri,
-						&mut reader,
-						rope.clone(),
-					)?;
+					let record =
+						Record::from_reader(ByteOffset(span.start()), module_name, path_uri, &mut reader, rope)?;
 					records.extend(record);
 				}
 				"template" => {
-					if let Some(template) = Record::template(
-						ByteOffset(span.start()),
-						module_name,
-						path_uri,
-						&mut reader,
-						rope.clone(),
-					)? {
+					if let Some(template) =
+						Record::template(ByteOffset(span.start()), module_name, path_uri, &mut reader, rope)?
+					{
 						records.push(template);
 					} else {
-						gather_templates(path_uri, &mut reader, rope.clone(), &mut templates, true)?;
+						gather_templates(path_uri, &mut reader, rope, &mut templates, true)?;
 					}
 				}
 				"menuitem" => {
-					let menuitem = Record::menuitem(
-						ByteOffset(span.start()),
-						module_name,
-						path_uri,
-						&mut reader,
-						rope.clone(),
-					)?;
+					let menuitem =
+						Record::menuitem(ByteOffset(span.start()), module_name, path_uri, &mut reader, rope)?;
 					records.extend(menuitem);
 				}
 				"templates" => {
-					gather_templates(path_uri, &mut reader, rope.clone(), &mut templates, false)?;
+					gather_templates(path_uri, &mut reader, rope, &mut templates, false)?;
 				}
 				_ => {}
 			},
@@ -834,7 +813,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 			.into_iter()
 			.map(|inherit| ImStr::from(String::from_utf8_lossy(inherit).as_ref()))
 			.collect::<Vec<_>>();
-		let range = ts_range_to_lsp_range(model.range);
+		let range = span_conv(model.range);
 		let byte_range = model.byte_range;
 		match (inherits.is_empty(), model.name) {
 			(false, None) => Some(Model {

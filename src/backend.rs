@@ -14,20 +14,20 @@ use dashmap::DashMap;
 use derive_more::{Deref, DerefMut};
 use fomat_macros::fomat;
 use globwalk::FileType;
-use ropey::Rope;
-use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
 use tower_lsp_server::Client;
 use tower_lsp_server::{UriExt, lsp_types::*};
-use tracing::{debug, error, info, instrument, trace, warn};
 use tree_sitter::{Parser, Tree};
+
+use crate::prelude::*;
 
 use crate::component::{Prop, PropDescriptor};
 use crate::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig};
-use crate::index::{_G, _I, _P, _R, Component, Index, ModuleName, RecordId, Symbol, SymbolSet};
+use crate::index::{Component, Index, ModuleName, RecordId, Symbol, SymbolSet};
 use crate::model::{Field, FieldKind, Method, ModelEntry, ModelLocation, ModelName, PropertyKind};
 use crate::record::Record;
-use crate::{errloc, format_loc, some, utils::*};
+use crate::utils::{MaxVec, Semaphore, strict_canonicalize, to_display_path};
+use crate::{errloc, format_loc, some};
 
 #[derive(Deref)]
 pub struct Backend {
@@ -247,10 +247,7 @@ impl Backend {
 				}
 				rope = document.rope.clone();
 				path = params.uri.to_file_path().unwrap();
-				let root_path = self
-					.index
-					.find_root_of(&path)
-					.ok_or_else(|| errloc!("file not under any root"))?;
+				let root_path = ok!(self.index.find_root_of(&path), "file not under any root");
 				root = _P(root_path);
 				eager_diagnostics = self.eager_diagnostics(params.open, &rope);
 			}
@@ -261,26 +258,27 @@ impl Backend {
 				drop(blocker.block());
 			}
 		};
+		let slice = rope.slice(..);
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
 				let mut document = self.document_map.get_mut(params.uri.path().as_str()).unwrap();
-				self.on_change_python(&params.text, &params.uri, rope.clone(), params.old_rope)?;
+				self.on_change_python(&params.text, &params.uri, slice, params.old_rope)?;
 				if eager_diagnostics {
 					self.diagnose_python(
 						params.uri.path().as_str(),
-						&rope,
-						params.text.damage_zone(&rope, None),
+						slice,
+						params.text.damage_zone(slice, None),
 						&mut document.diagnostics_cache,
 					);
 				} else {
-					document.damage_zone = params.text.damage_zone(&rope, document.damage_zone.take());
+					document.damage_zone = params.text.damage_zone(slice, document.damage_zone.take());
 				}
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
-				self.update_xml(root, &params.text, &params.uri, rope, false)?;
+				self.update_xml(root, &params.text, &params.uri, slice, false)?;
 			}
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
-				self.on_change_js(&params.text, &params.uri, rope, params.old_rope)?;
+				self.on_change_js(&params.text, &params.uri, slice, params.old_rope)?;
 			}
 			other => return Err(errloc!("Unhandled language: {:?}", other)),
 		}
@@ -303,13 +301,9 @@ impl Backend {
 	pub async fn did_save_impl(&self, params: DidSaveTextDocumentParams) -> anyhow::Result<()> {
 		let uri = params.text_document.uri;
 		debug!("{}", uri.path().as_str());
-		let (_, extension) = uri
-			.path()
-			.as_str()
-			.rsplit_once('.')
-			.ok_or_else(|| errloc!("no extension"))?;
+		let (_, extension) = ok!(uri.path().as_str().rsplit_once('.'), "no extension");
 		let path = uri.to_file_path().unwrap();
-		let root = self.index.find_root_of(&path).ok_or_else(|| errloc!("out of root"))?;
+		let root = ok!(self.index.find_root_of(&path), "out of root");
 		let root = _P(&root);
 
 		match extension {
@@ -328,7 +322,7 @@ impl Backend {
 		&self,
 		text: &Text,
 		uri: &Uri,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 		old_rope: Option<Rope>,
 		mut parser: Parser,
 	) -> anyhow::Result<()> {
@@ -339,14 +333,15 @@ impl Backend {
 		let ast = match (text, ast) {
 			(Text::Full(full), _) => parser.parse(full, None),
 			(Text::Delta(delta), Some(mut ast)) => {
-				let old_rope = old_rope.ok_or_else(|| errloc!("delta requires old rope"))?;
+				let old_rope = ok!(old_rope, "delta requires old rope");
+				let old_rope = old_rope.slice(..);
 				for change in delta {
 					// TODO: Handle full text changes in delta
-					let range = change.range.ok_or_else(|| errloc!("delta without range"))?;
-					let start = position_to_offset(range.start, &rope).ok_or_else(|| errloc!("delta start"))?;
+					let range = ok!(change.range, "delta without range");
+					let start: ByteOffset = ok!(rope_conv(range.start, rope), "delta start");
 					// The old rope is used to calculate the *old* range-end, because
 					// the diff may have caused it to fall out of the new rope's bounds.
-					let end = position_to_offset(range.end, &old_rope).ok_or_else(|| errloc!("delta end"))?;
+					let end: ByteOffset = ok!(rope_conv(range.end, old_rope), "delta end");
 					let len_new = change.text.len();
 					let start_position = tree_sitter::Point {
 						row: range.start.line as usize,
@@ -358,8 +353,7 @@ impl Backend {
 					};
 					// calculate new_end_position using rope
 					let new_end_offset = ByteOffset(start.0 + len_new);
-					let new_end_position =
-						offset_to_position(new_end_offset, rope.clone()).ok_or_else(|| errloc!("new_end_position"))?;
+					let new_end_position: Position = ok!(rope_conv(new_end_offset, rope), "new_end_position");
 					let new_end_position = tree_sitter::Point {
 						row: new_end_position.line as usize,
 						column: new_end_position.character as usize,
@@ -379,7 +373,7 @@ impl Backend {
 			}
 			(Text::Delta(_), None) => Err(errloc!("(update_ast) got delta but no ast"))?,
 		};
-		let ast = ast.ok_or_else(|| errloc!("No AST was parsed"))?;
+		let ast = ok!(ast, "No AST was parsed");
 		self.ast_map.insert(uri.path().as_str().to_string(), ast);
 		Ok(())
 	}
@@ -387,7 +381,7 @@ impl Backend {
 		&self,
 		needle: &str,
 		range: ByteRange,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 		model_filter: Option<&str>,
 		current_module: ModuleName,
 		items: &mut MaxVec<CompletionItem>,
@@ -395,7 +389,7 @@ impl Backend {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_xml_id) range"))?;
+		let range = ok!(rope_conv(range, rope), "(complete_xml_id) range");
 		let Ok(by_prefix) = self.index.records.by_prefix.try_read() else {
 			return Ok(());
 		};
@@ -459,7 +453,7 @@ impl Backend {
 		needle: &str,
 		range: ByteRange,
 		model: String,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 		for_only_prop: Option<PropertyKind>,
 		in_string: bool,
 		items: &mut MaxVec<CompletionItem>,
@@ -468,7 +462,7 @@ impl Backend {
 			return Ok(());
 		}
 		let model_key = _I(&model);
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("range"))?;
+		let range = ok!(rope_conv(range, rope), "(complete_property_name) range");
 		let Some(model_entry) = self.index.models.populate_properties(model_key.into(), &[]) else {
 			return Ok(());
 		};
@@ -588,19 +582,14 @@ impl Backend {
 	}
 	pub fn complete_component_prop(
 		&self,
-		// needle: &str,
 		range: ByteRange,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 		component: &str,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
-		let component = _G(component).ok_or_else(|| errloc!("(complete_component_prop) component"))?;
-		let component = self
-			.index
-			.components
-			.get(&component.into())
-			.ok_or_else(|| errloc!("component"))?;
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_prop_of) range"))?;
+		let component = ok!(_G(component), "(complete_component_prop) component");
+		let component = ok!(self.index.components.get(&component.into()), "component");
+		let range = ok!(rope_conv(range, rope), "(complete_component_prop) range");
 		let completions = component.props.iter().map(|(prop, desc)| {
 			let prop = _R(prop);
 			CompletionItem {
@@ -621,10 +610,10 @@ impl Backend {
 	pub fn complete_widget(
 		&self,
 		range: ByteRange,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_widget) range"))?;
+		let range = ok!(rope_conv(range, rope));
 		let completions = self.index.widgets.iter().flat_map(|widget| {
 			let widget = widget.key().to_string();
 			Some(CompletionItem {
@@ -643,10 +632,10 @@ impl Backend {
 	pub fn complete_action_tag(
 		&self,
 		range: ByteRange,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
-		let range = offset_range_to_lsp_range(range, rope).ok_or_else(|| errloc!("(complete_action_tag) range"))?;
+		let range = ok!(rope_conv(range, rope));
 		let completions = self.index.actions.iter().flat_map(|tag| {
 			let tag = tag.key().to_string();
 			Some(CompletionItem {
@@ -1201,7 +1190,7 @@ impl Backend {
 
 impl Text {
 	/// Returns None if not a delta, the resulting range is empty, or if conversion of any range fails.
-	fn damage_zone(&self, rope: &Rope, seed: Option<ByteRange>) -> Option<ByteRange> {
+	fn damage_zone(&self, rope: RopeSlice<'_>, seed: Option<ByteRange>) -> Option<ByteRange> {
 		let deltas = match self {
 			Self::Full(_) => return None,
 			Self::Delta(deltas) => deltas,
@@ -1214,7 +1203,7 @@ impl Text {
 				out = NULL_RANGE;
 				continue;
 			};
-			let range = lsp_range_to_offset_range(range, rope)?;
+			let range: ByteRange = rope_conv(range, rope).ok()?;
 			out = out.start.min(range.start.0)..out.end.max(range.end.0);
 		}
 		debug!("(damage_zone)\nseed={seed:?}\n out={out:?}");

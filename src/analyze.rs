@@ -17,7 +17,7 @@ use crate::{
 	index::{_G, _I, _R, Index, Symbol},
 	model::{Method, MethodReturnType, ModelEntry, ModelName, PropertyKind},
 	test_utils,
-	utils::{ByteRange, PreTravel, RangeExt, TryResultExt, lsp_range_to_offset_range},
+	utils::{ByteRange, PreTravel, RangeExt, TryResultExt, rope_conv},
 };
 use ts_macros::query;
 
@@ -556,11 +556,12 @@ impl Index {
 
 		let contents = String::from_utf8(test_utils::fs::read(location.path.to_path()).unwrap()).unwrap();
 		let rope = Rope::from_str(&contents);
+		let rope = rope.slice(..);
 		let contents = contents.as_bytes();
 
 		let mut parser = Parser::new();
 		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-		let range = lsp_range_to_offset_range(location.range, &rope)?;
+		let range: ByteRange = rope_conv(location.range, rope).ok()?;
 		let ast = parser.parse(contents, None)?;
 
 		// TODO: Improve this heuristic
@@ -723,7 +724,8 @@ mod tests {
 
 	use crate::analyze::FieldCompletion;
 	use crate::index::{_I, _R};
-	use crate::{index::Index, test_utils::cases::foo::prepare_foo_index, utils::position_to_offset};
+	use crate::utils::{ByteOffset, rope_conv};
+	use crate::{index::Index, test_utils::cases::foo::prepare_foo_index};
 
 	#[test]
 	fn test_field_completion() {
@@ -779,7 +781,7 @@ class Foo(models.Model):
 "#;
 		let ast = parser.parse(contents, None).unwrap();
 		let rope = Rope::from(contents);
-		let fn_start = position_to_offset(Position { line: 3, character: 1 }, &rope).unwrap();
+		let fn_start: ByteOffset = rope_conv(Position { line: 3, character: 1 }, rope.slice(..)).unwrap();
 		let fn_scope = ast
 			.root_node()
 			.named_descendant_for_byte_range(fn_start.0, fn_start.0)
