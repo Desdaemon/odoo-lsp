@@ -78,7 +78,14 @@ impl Backend {
 							let range = range.map_unit(ByteOffset);
 							early_return.lift(move || async move {
 								let mut items = MaxVec::new(completions_limit);
-								self.complete_xml_id(&needle, range, rope, model_filter, current_module, &mut items)?;
+								self.index.complete_xml_id(
+									&needle,
+									range,
+									rope,
+									model_filter,
+									current_module,
+									&mut items,
+								)?;
 								Ok(Some(CompletionResponse::List(CompletionList {
 									is_incomplete: !items.has_space(),
 									items: items.into_inner(),
@@ -94,7 +101,7 @@ impl Backend {
 								let range = ok!(rope_conv(range.shrink(1).map_unit(ByteOffset), rope));
 								early_return.lift(move || async move {
 									let mut items = MaxVec::new(completions_limit);
-									self.complete_model(&needle, range, &mut items)?;
+									self.index.complete_model(&needle, range, &mut items)?;
 									Ok(Some(CompletionResponse::List(CompletionList {
 										is_incomplete: !items.has_space(),
 										items: items.into_inner(),
@@ -152,7 +159,7 @@ impl Backend {
 									true,
 								));
 								let mut items = MaxVec::new(completions_limit);
-								self.complete_property_name(
+								self.index.complete_property_name(
 									&needle,
 									range,
 									_R(model).to_string(),
@@ -202,7 +209,7 @@ impl Backend {
 										let range = ok!(rope_conv(range.shrink(1).map_unit(ByteOffset), rope));
 										early_return.lift(move || async move {
 											let mut items = MaxVec::new(completions_limit);
-											self.complete_model(&needle, range, &mut items)?;
+											self.index.complete_model(&needle, range, &mut items)?;
 											Ok(Some(CompletionResponse::List(CompletionList {
 												is_incomplete: !items.has_space(),
 												items: items.into_inner(),
@@ -278,7 +285,7 @@ impl Backend {
 			if early_return.is_none() {
 				let (model, needle, range) = some!(self.attribute_at_offset(offset, root, contents));
 				let mut items = MaxVec::new(completions_limit);
-				self.complete_property_name(
+				self.index.complete_property_name(
 					&needle,
 					range.map_unit(ByteOffset),
 					model.to_string(),
@@ -340,7 +347,7 @@ impl Backend {
 			);
 		}
 		let model_name = _R(model);
-		self.complete_property_name(
+		self.index.complete_property_name(
 			needle,
 			range,
 			model_name.to_string(),

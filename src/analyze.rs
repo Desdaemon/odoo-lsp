@@ -625,7 +625,7 @@ impl Index {
 			None => method.return_type = MethodReturnType::Value,
 		}
 
-		let docstring = Self::method_docstring(fn_scope, contents)
+		let docstring = Self::parse_method_docstring(fn_scope, contents)
 			.map(|doc| ImStr::from(Method::postprocess_docstring(String::from_utf8_lossy(doc).as_ref())));
 		method.docstring = docstring;
 
@@ -661,7 +661,7 @@ impl Index {
 
 		type_
 	}
-	fn method_docstring<'out>(fn_scope: Node, contents: &'out [u8]) -> Option<&'out [u8]> {
+	fn parse_method_docstring<'out>(fn_scope: Node, contents: &'out [u8]) -> Option<&'out [u8]> {
 		let block = fn_scope.child_by_field_name("body")?;
 		dig!(block, expression_statement.string.string_content(1)).map(|node| &contents[node.byte_range()])
 	}

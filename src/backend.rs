@@ -377,464 +377,6 @@ impl Backend {
 		self.ast_map.insert(uri.path().as_str().to_string(), ast);
 		Ok(())
 	}
-	pub fn complete_xml_id(
-		&self,
-		needle: &str,
-		range: ByteRange,
-		rope: RopeSlice<'_>,
-		model_filter: Option<&str>,
-		current_module: ModuleName,
-		items: &mut MaxVec<CompletionItem>,
-	) -> anyhow::Result<()> {
-		if !items.has_space() {
-			return Ok(());
-		}
-		let range = ok!(rope_conv(range, rope), "(complete_xml_id) range");
-		let Ok(by_prefix) = self.index.records.by_prefix.try_read() else {
-			return Ok(());
-		};
-		let model_filter = model_filter.and_then(|model| _G(model).map(ModelName::from));
-		fn completion_item(record: &Record, current_module: ModuleName, range: Range, scoped: bool) -> CompletionItem {
-			let label = if record.module == current_module && !scoped {
-				record.id.to_string()
-			} else {
-				record.qualified_id()
-			};
-			let model = record.model.as_ref().map(|model| _R(*model).to_string());
-			CompletionItem {
-				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-					new_text: label.clone(),
-					insert: range,
-					replace: range,
-				})),
-				label,
-				detail: model,
-				kind: Some(CompletionItemKind::REFERENCE),
-				..Default::default()
-			}
-		}
-		if let Some((module, needle)) = needle.split_once('.') {
-			let Some(module) = _G(module).map(Into::into) else {
-				return Ok(());
-			};
-			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
-				keys.iter().flat_map(|key| {
-					if let Some(record) = self.index.records.get(key)
-						&& record.module == module
-						&& (model_filter.is_none() || record.model == model_filter)
-					{
-						Some(completion_item(&record, current_module, range, true))
-					} else {
-						None
-					}
-				})
-			});
-			items.extend(completions);
-		} else {
-			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
-				keys.iter().flat_map(|key| {
-					if let Some(record) = self.index.records.get(key)
-						&& (model_filter.is_none() || record.model == model_filter)
-					{
-						Some(completion_item(&record, current_module, range, false))
-					} else {
-						None
-					}
-				})
-			});
-			items.extend(completions);
-		}
-		Ok(())
-	}
-	/// `for_only_prop` should be specified if a particular kind of [property][PropertyKind] should be included,
-	/// defaults to any if not specified.
-	pub fn complete_property_name(
-		&self,
-		needle: &str,
-		range: ByteRange,
-		model: String,
-		rope: RopeSlice<'_>,
-		for_only_prop: Option<PropertyKind>,
-		in_string: bool,
-		items: &mut MaxVec<CompletionItem>,
-	) -> anyhow::Result<()> {
-		if !items.has_space() {
-			return Ok(());
-		}
-		let model_key = _I(&model);
-		let range = ok!(rope_conv(range, rope), "(complete_property_name) range");
-		let Some(model_entry) = self.index.models.populate_properties(model_key.into(), &[]) else {
-			return Ok(());
-		};
-		trace!(needle, ?range, model, ?for_only_prop);
-		let iter = if needle.is_empty() {
-			model_entry.properties_by_prefix.iter()
-		} else {
-			model_entry.properties_by_prefix.iter_prefix(needle.as_bytes())
-		};
-		let completions = iter.filter_map(|(property_name, kind)| {
-			if for_only_prop.as_ref().is_some_and(|target| target != kind) {
-				return None;
-			}
-			// SAFETY: only utf-8 bytestrings from interner() are allowed
-			let label = unsafe { core::str::from_utf8_unchecked(property_name).to_string() };
-			let mut new_text = label.to_string();
-			let mut insert_text_format = None;
-			if !in_string && matches!(kind, PropertyKind::Method) {
-				// TODO: Change the snippet format when the method has no args
-				new_text += "(${1:})$0";
-				insert_text_format = Some(InsertTextFormat::SNIPPET);
-			}
-			let lsp_kind;
-			let mut label_details = None;
-			match kind {
-				PropertyKind::Field => {
-					lsp_kind = CompletionItemKind::FIELD;
-					if let Some(field_key) = _G(&label)
-						&& let Some(ref fields) = model_entry.fields
-						&& let Some(field) = fields.get(&field_key.into())
-					{
-						let mut description = None;
-						if let FieldKind::Relational(rel) = field.kind {
-							description = Some(_R(rel).to_string());
-						}
-						let field_type = _R(field.type_);
-						label_details = Some(CompletionItemLabelDetails {
-							detail: Some(format!(" {field_type}")),
-							description,
-						});
-					}
-				}
-				PropertyKind::Method => {
-					lsp_kind = CompletionItemKind::METHOD;
-				}
-			}
-			Some(CompletionItem {
-				label,
-				label_details,
-				kind: Some(lsp_kind),
-				insert_text_format,
-				text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
-				data: serde_json::to_value(CompletionData { model: model.clone() }).ok(),
-				..Default::default()
-			})
-		});
-		items.extend(completions);
-		Ok(())
-	}
-	pub fn complete_model(&self, needle: &str, range: Range, items: &mut MaxVec<CompletionItem>) -> anyhow::Result<()> {
-		if !items.has_space() {
-			return Ok(());
-		}
-		let Ok(by_prefix) = self.index.models.by_prefix.read() else {
-			return Ok(());
-		};
-		let matches = by_prefix
-			.iter_prefix(needle.as_bytes())
-			.flat_map(|(_, key)| self.index.models.get(key))
-			.map(|model| {
-				let label = _R(*model.key()).to_string();
-				let module = model.base.as_ref().and_then(|base| {
-					let module = self.index.find_module_of(&base.0.path.to_path())?;
-					Some(_R(module).to_string())
-				});
-				CompletionItem {
-					text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-						new_text: label.clone(),
-						range,
-					})),
-					label,
-					detail: module,
-					kind: Some(CompletionItemKind::CLASS),
-					..Default::default()
-				}
-			});
-		items.extend(matches);
-		Ok(())
-	}
-	pub fn complete_template_name(
-		&self,
-		needle: &str,
-		range: Range,
-		items: &mut MaxVec<CompletionItem>,
-	) -> anyhow::Result<()> {
-		if !items.has_space() {
-			return Ok(());
-		}
-		let Ok(by_prefix) = self.index.templates.by_prefix.read() else {
-			return Ok(());
-		};
-		let matches = by_prefix.iter_prefix(needle.as_bytes()).map(|(_, key)| {
-			let label = _R(*key).to_string();
-			CompletionItem {
-				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-					new_text: label.clone(),
-					insert: range,
-					replace: range,
-				})),
-				label,
-				kind: Some(CompletionItemKind::REFERENCE),
-				..Default::default()
-			}
-		});
-		items.extend(matches);
-		Ok(())
-	}
-	pub fn complete_component_prop(
-		&self,
-		range: ByteRange,
-		rope: RopeSlice<'_>,
-		component: &str,
-		items: &mut MaxVec<CompletionItem>,
-	) -> anyhow::Result<()> {
-		let component = ok!(_G(component), "(complete_component_prop) component");
-		let component = ok!(self.index.components.get(&component.into()), "component");
-		let range = ok!(rope_conv(range, rope), "(complete_component_prop) range");
-		let completions = component.props.iter().map(|(prop, desc)| {
-			let prop = _R(prop);
-			CompletionItem {
-				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-					new_text: prop.to_string(),
-					insert: range,
-					replace: range,
-				})),
-				label: prop.to_string(),
-				kind: Some(CompletionItemKind::PROPERTY),
-				detail: Some(format!("{:?}", desc.type_)),
-				..Default::default()
-			}
-		});
-		items.extend(completions);
-		Ok(())
-	}
-	pub fn complete_widget(
-		&self,
-		range: ByteRange,
-		rope: RopeSlice<'_>,
-		items: &mut MaxVec<CompletionItem>,
-	) -> anyhow::Result<()> {
-		let range = ok!(rope_conv(range, rope));
-		let completions = self.index.widgets.iter().flat_map(|widget| {
-			let widget = widget.key().to_string();
-			Some(CompletionItem {
-				text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-					range,
-					new_text: widget.clone(),
-				})),
-				label: widget,
-				kind: Some(CompletionItemKind::ENUM),
-				..Default::default()
-			})
-		});
-		items.extend(completions);
-		Ok(())
-	}
-	pub fn complete_action_tag(
-		&self,
-		range: ByteRange,
-		rope: RopeSlice<'_>,
-		items: &mut MaxVec<CompletionItem>,
-	) -> anyhow::Result<()> {
-		let range = ok!(rope_conv(range, rope));
-		let completions = self.index.actions.iter().flat_map(|tag| {
-			let tag = tag.key().to_string();
-			Some(CompletionItem {
-				text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-					range,
-					new_text: tag.clone(),
-				})),
-				label: tag,
-				kind: Some(CompletionItemKind::ENUM),
-				..Default::default()
-			})
-		});
-		items.extend(completions);
-		Ok(())
-	}
-	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Uri) -> anyhow::Result<Option<Location>> {
-		let mut value = Cow::from(cursor_value);
-		let path = some!(uri.to_file_path());
-		if !value.contains('.') {
-			'unscoped: {
-				if let Some(module) = self.index.find_module_of(&path) {
-					value = format!("{}.{value}", _R(module)).into();
-					break 'unscoped;
-				}
-				debug!(
-					"Could not find a reference for {} in {}: could not infer module",
-					cursor_value,
-					uri.path().as_str()
-				);
-				return Ok(None);
-			}
-		}
-		let record_id = some!(_G(value));
-		Ok((self.index.records.get(&record_id.into())).map(|record| record.location.clone().into()))
-	}
-	pub fn jump_def_model(&self, model: &str) -> anyhow::Result<Option<Location>> {
-		let model = some!(_G(model));
-		if let Some(model) = self.index.models.get(&model.into())
-			&& let Some(ModelLocation(ref base, _)) = model.base
-		{
-			return Ok(Some(base.clone().into()));
-		}
-
-		Ok(None)
-	}
-	#[instrument(level = "trace", skip(self), ret)]
-	pub fn hover_model(
-		&self,
-		model_str_key: &str,
-		range: Option<Range>,
-		definition: bool,
-		identifier: Option<&str>,
-	) -> anyhow::Result<Option<Hover>> {
-		let model_key = some!(_G(model_str_key));
-		let model = some!(self.index.models.get(&model_key.into()));
-		Ok(Some(Hover {
-			range,
-			contents: HoverContents::Markup(MarkupContent {
-				kind: MarkupKind::Markdown,
-				value: self.model_docstring(&model, definition.then_some(model_str_key), identifier),
-			}),
-		}))
-	}
-	pub fn hover_component(&self, name: &str, range: Option<Range>) -> Option<Hover> {
-		let key = _G(name)?;
-		let component = self.index.components.get(&key.into())?;
-		let module = component
-			.location
-			.as_ref()
-			.and_then(|loc| self.index.find_module_of(&loc.path.to_path()));
-		let value = fomat!(
-			"```js\n"
-			"(component) class " (name) "\n"
-			"```"
-			if let Some(module) = module {
-				"\n*Defined in:* `" (_R(module)) "`"
-			}
-		);
-		Some(Hover {
-			contents: HoverContents::Scalar(MarkedString::String(value)),
-			range,
-		})
-	}
-	pub fn hover_template(&self, name: &str, range: Option<Range>) -> Option<Hover> {
-		let key = _G(name)?;
-		let template = self.index.templates.get(&key.into())?;
-		let module = template
-			.location
-			.as_ref()
-			.and_then(|loc| self.index.find_module_of(&loc.path.to_path()));
-		let value = fomat!(
-			"```xml\n"
-			"<t t-name=\"" (name) "\"/>\n"
-			"```"
-			if let Some(module) = module {
-				"\n*Defined in:* `" (_R(module)) "`"
-			}
-		);
-		Some(Hover {
-			contents: HoverContents::Scalar(MarkedString::String(value)),
-			range,
-		})
-	}
-	pub fn jump_def_property_name(&self, property: &str, model: &str) -> anyhow::Result<Option<Location>> {
-		let model_key = _I(model);
-		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
-		let prop = some!(_G(property));
-		if let Some(ref fields) = entry.fields
-			&& let Some(field) = fields.get(&prop.into())
-		{
-			Ok(Some(field.location.deref().clone().into()))
-		} else if let Some(ref methods) = entry.methods
-			&& let Some(method) = methods.get(&prop.into())
-		{
-			Ok(Some(some!(method.locations.first()).deref().clone().into()))
-		} else {
-			Ok(None)
-		}
-	}
-	pub fn jump_def_template_name(&self, name: &str) -> anyhow::Result<Option<Location>> {
-		let name = some!(_G(name));
-		let entry = some!(self.index.templates.get(&name.into()));
-		let location = some!(&entry.value().location);
-		Ok(Some(location.clone().into()))
-	}
-	pub fn jump_def_component_prop(&self, component: &str, prop: &str) -> anyhow::Result<Option<Location>> {
-		let component = some!(_G(component));
-		let prop = some!(_G(prop));
-		let prop = some!(self.find_prop_recursive(&component.into(), &prop.into()));
-		Ok(Some(prop.location.into()))
-	}
-	pub fn jump_def_widget(&self, widget: &str) -> anyhow::Result<Option<Location>> {
-		let field = some!(self.index.widgets.get(widget.as_bytes()));
-		Ok(Some(field.value().clone().into()))
-	}
-	pub fn jump_def_action_tag(&self, tag: &str) -> anyhow::Result<Option<Location>> {
-		let field = some!(self.index.actions.get(tag.as_bytes()));
-		Ok(Some(field.value().clone().into()))
-	}
-	fn find_prop_recursive(&self, component: &Symbol<Component>, prop: &Symbol<Prop>) -> Option<PropDescriptor> {
-		let component = self.index.components.get(component)?;
-		if let Some(prop) = component.props.get(prop) {
-			return Some(prop.clone());
-		}
-		for ancestor in &component.ancestors {
-			if let Some(prop) = self.find_prop_recursive(ancestor, prop) {
-				return Some(prop);
-			}
-		}
-		None
-	}
-	pub fn hover_property_name(&self, name: &str, model: &str, range: Option<Range>) -> anyhow::Result<Option<Hover>> {
-		let model_key = _I(model);
-		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
-		let prop = some!(_G(name));
-		if let Some(ref fields) = entry.fields
-			&& let Some(field) = fields.get(&prop.into())
-		{
-			Ok(Some(Hover {
-				range,
-				contents: HoverContents::Markup(MarkupContent {
-					kind: MarkupKind::Markdown,
-					value: self.field_docstring(field, true),
-				}),
-			}))
-		} else if let Some(ref methods) = entry.methods
-			&& methods.contains_key(&prop.into())
-		{
-			drop(entry);
-			let rtype = self.index.resolve_method_returntype(prop.into(), model_key);
-			let model = self.index.models.get(&model_key.into()).unwrap();
-			let method = model.methods.as_ref().unwrap().get(&prop.into()).unwrap();
-			Ok(Some(Hover {
-				range,
-				contents: HoverContents::Markup(MarkupContent {
-					kind: MarkupKind::Markdown,
-					value: self.method_docstring(name, method, rtype.map(_R)),
-				}),
-			}))
-		} else {
-			Ok(None)
-		}
-	}
-	pub fn hover_record(&self, xml_id: &str, range: Option<Range>) -> anyhow::Result<Option<Hover>> {
-		let key = some!(_G(xml_id));
-		let record = some!(self.index.records.get(&key.into()));
-		let model = match record.model.as_ref() {
-			Some(model) => _R(*model),
-			None => "<unknown>",
-		};
-		let value = format!("<record id=\"{xml_id}\" model=\"{model}\"/>");
-		Ok(Some(Hover {
-			contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
-				language: "xml".to_owned(),
-				value,
-			})),
-			range,
-		}))
-	}
 	pub fn model_references(&self, path: &Path, model: &ModelName) -> anyhow::Result<Option<Vec<Location>>> {
 		let record_locations = self
 			.index
@@ -851,15 +393,6 @@ impl Backend {
 		} else {
 			Ok(Some(record_locations.take(limit).collect()))
 		}
-	}
-	pub fn method_references(&self, prop: &str, model: &str) -> anyhow::Result<Option<Vec<Location>>> {
-		let model_key = _I(model);
-		let entry = some!(self.index.models.populate_properties(model_key.into(), &[]));
-		let prop = some!(_G(prop));
-		let method = some!(some!(entry.methods.as_ref()).get(&prop.into()));
-		Ok(Some(
-			method.locations.iter().map(|loc| loc.deref().clone().into()).collect(),
-		))
 	}
 	pub fn record_references(
 		&self,
@@ -887,157 +420,6 @@ impl Backend {
 			.map(|record| record.location.clone().into())
 			.take(limit);
 		Ok(Some(locations.collect()))
-	}
-	pub fn template_references(&self, name: &str, include_definition: bool) -> anyhow::Result<Option<Vec<Location>>> {
-		let name = some!(_G(name));
-		let template = some!(self.index.templates.get(&name.into()));
-		let definition_location = if include_definition {
-			template.value().location.clone().map(Location::from)
-		} else {
-			None
-		};
-		let descendant_locations = (template.value().descendants)
-			.iter()
-			.flat_map(|tpl| tpl.location.clone().map(Location::from));
-		let mut locations = definition_location
-			.into_iter()
-			.chain(descendant_locations)
-			.collect::<Vec<_>>();
-
-		if let Some(component) = self.index.components.by_template.get(&name.into())
-			&& let Some(component) = self.index.components.get(&component)
-			&& let Some(ref location) = component.location
-		{
-			locations.push(location.clone().into());
-			let last = locations.swap_remove(0);
-			locations.push(last);
-		}
-		Ok(Some(locations))
-	}
-	/// Returns a Markdown-formatted docstring for a model.
-	pub fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>, identifier: Option<&str>) -> String {
-		let module = model
-			.base
-			.as_ref()
-			.and_then(|base| self.index.find_module_of(&base.0.path.to_path()));
-		let mut descendants = model
-			.descendants
-			.iter()
-			.map(|loc| &loc.0)
-			.scan(SymbolSet::default(), |mods, loc| {
-				let Some(module) = self.index.find_module_of(&loc.path.to_path()) else {
-					return Some(None);
-				};
-				if mods.insert(module) {
-					Some(Some(module))
-				} else {
-					Some(None)
-				}
-			})
-			.flatten();
-		fomat! {
-			if let Some(name) = model_name {
-				"```python\n"
-				if let Some(ident) = identifier { (ident) ": " } "Model[\"" (name) "\"]\n"
-				"```  \n"
-			}
-			if let Some(module) = module {
-				"*Defined in:* `" (_R(module)) "`  \n"
-			}
-			for (idx, descendant) in descendants
-				.by_ref()
-				.take(Self::INHERITS_LIMIT)
-				.enumerate()
-			{
-				if idx == 0 { "*Inherited in:* " } "`" (_R(descendant)) "`"
-			} sep { ", " }
-			match descendants.count() {
-				0 => {}
-				remaining => { " (+" (remaining) " modules)" }
-			}
-			if let Some(help) = &model.docstring {
-				match help.to_string() {
-					empty if empty.is_empty() => {}
-					other => {
-						"  \n" (other)
-					}
-				}
-			}
-		}
-	}
-	pub fn field_docstring(&self, field: &Field, signature: bool) -> String {
-		fomat! {
-			if signature {
-				"```python\n"
-				"(field) " (_R(field.type_)) r#"("#
-				match &field.kind {
-					FieldKind::Value | FieldKind::Related(_) => {}
-					FieldKind::Relational(relation) => { "\"" (_R(*relation)) "\", " }
-				}
-				"…)\n```  \n"
-			}
-			if let Some(module) = self
-				.index
-				.find_module_of(&field.location.path.to_path())
-			{
-				"*Defined in:* `" (_R(module)) "`  \n"
-			}
-			if let Some(help) = &field.help { (help.to_string()) }
-		}
-	}
-	pub fn method_docstring(&self, name: &str, method: &Method, rtype: Option<&str>) -> String {
-		let origin_fragment = match method.locations.as_slice() {
-			[] => String::new(),
-			[first, rest @ ..] => {
-				let rest = rest.iter().filter_map(|override_| {
-					self.index
-						.find_module_of(&override_.path.to_path())
-						.map(|module| (_R(module), override_, override_.range))
-				});
-				fomat! {
-					if let Some(module) = self
-						.index
-						.find_module_of(&first.path.to_path())
-					{
-						"*Defined in:* `" (_R(module)) "`  \n"
-					}
-					if let Some(help) = &method.docstring {
-						match help.to_string() {
-							empty if empty.is_empty() => {}
-							other => {
-								(other) "\n\n"
-							}
-						}
-					}
-					for (idx, (module, override_, range)) in rest.enumerate() {
-						if idx == 0 { "*Overridden in:*\n" }
-						"- [`" (module) "`](" (to_display_path(override_.path.to_path())) "#L" (range.start.line + 1) ") in " (override_.path.subpath()) ":" (range.start.line + 1)
-					} sep { "\n" }
-				}
-			}
-		};
-		let rtype = match rtype {
-			Some(type_) => format!("Model[\"{type_}\"]"),
-			None => "...".to_string(),
-		};
-		let params_fragment = match method.arguments.as_deref() {
-			None => "...".to_string(),
-			Some([]) => String::new(),
-			Some([single]) => format!("{single}"),
-			Some([one, two]) => format!("{one}, {two}"),
-			Some(params) => fomat! {
-				"\n    "
-				for param in params { (param) } sep { ",\n    " }
-				"\n"
-			},
-		};
-		fomat! {
-			"```python\n"
-			"(method) def " (name) "(" (params_fragment) ") -> " (rtype)
-			"\n"
-			"```\n"
-			(origin_fragment)
-		}
 	}
 	/// The main entrypoint for configuration changes.
 	///
@@ -1129,6 +511,311 @@ impl Backend {
 			self.workspaces.remove(Path::new(root));
 		}
 	}
+}
+
+// Helpers that can be scoped to Index and independently testable.
+impl Index {
+	pub fn complete_model(&self, needle: &str, range: Range, items: &mut MaxVec<CompletionItem>) -> anyhow::Result<()> {
+		if !items.has_space() {
+			return Ok(());
+		}
+		let Ok(by_prefix) = self.models.by_prefix.read() else {
+			return Ok(());
+		};
+		let matches = by_prefix
+			.iter_prefix(needle.as_bytes())
+			.flat_map(|(_, key)| self.models.get(key))
+			.map(|model| {
+				let label = _R(*model.key()).to_string();
+				let module = model.base.as_ref().and_then(|base| {
+					let module = self.find_module_of(&base.0.path.to_path())?;
+					Some(_R(module).to_string())
+				});
+				CompletionItem {
+					text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+						new_text: label.clone(),
+						range,
+					})),
+					label,
+					detail: module,
+					kind: Some(CompletionItemKind::CLASS),
+					..Default::default()
+				}
+			});
+		items.extend(matches);
+		Ok(())
+	}
+	pub fn complete_xml_id(
+		&self,
+		needle: &str,
+		range: ByteRange,
+		rope: RopeSlice<'_>,
+		model_filter: Option<&str>,
+		current_module: ModuleName,
+		items: &mut MaxVec<CompletionItem>,
+	) -> anyhow::Result<()> {
+		if !items.has_space() {
+			return Ok(());
+		}
+		let range = ok!(rope_conv(range, rope), "(complete_xml_id) range");
+		let Ok(by_prefix) = self.records.by_prefix.try_read() else {
+			return Ok(());
+		};
+		let model_filter = model_filter.and_then(|model| _G(model).map(ModelName::from));
+		fn completion_item(record: &Record, current_module: ModuleName, range: Range, scoped: bool) -> CompletionItem {
+			let label = if record.module == current_module && !scoped {
+				record.id.to_string()
+			} else {
+				record.qualified_id()
+			};
+			let model = record.model.as_ref().map(|model| _R(*model).to_string());
+			CompletionItem {
+				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+					new_text: label.clone(),
+					insert: range,
+					replace: range,
+				})),
+				label,
+				detail: model,
+				kind: Some(CompletionItemKind::REFERENCE),
+				..Default::default()
+			}
+		}
+		if let Some((module, needle)) = needle.split_once('.') {
+			let Some(module) = _G(module).map(Into::into) else {
+				return Ok(());
+			};
+			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
+				keys.iter().flat_map(|key| {
+					if let Some(record) = self.records.get(key)
+						&& record.module == module
+						&& (model_filter.is_none() || record.model == model_filter)
+					{
+						Some(completion_item(&record, current_module, range, true))
+					} else {
+						None
+					}
+				})
+			});
+			items.extend(completions);
+		} else {
+			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
+				keys.iter().flat_map(|key| {
+					if let Some(record) = self.records.get(key)
+						&& (model_filter.is_none() || record.model == model_filter)
+					{
+						Some(completion_item(&record, current_module, range, false))
+					} else {
+						None
+					}
+				})
+			});
+			items.extend(completions);
+		}
+		Ok(())
+	}
+	/// `for_only_prop` should be specified if a particular kind of [property][PropertyKind] should be included,
+	/// defaults to any if not specified.
+	pub fn complete_property_name(
+		&self,
+		needle: &str,
+		range: ByteRange,
+		model: String,
+		rope: RopeSlice<'_>,
+		for_only_prop: Option<PropertyKind>,
+		in_string: bool,
+		items: &mut MaxVec<CompletionItem>,
+	) -> anyhow::Result<()> {
+		if !items.has_space() {
+			return Ok(());
+		}
+		let model_key = _I(&model);
+		let range = ok!(rope_conv(range.clone(), rope), "range={:?}", range);
+		let Some(model_entry) = self.models.populate_properties(model_key.into(), &[]) else {
+			return Ok(());
+		};
+		trace!(needle, ?range, model, ?for_only_prop);
+		let iter = if needle.is_empty() {
+			model_entry.properties_by_prefix.iter()
+		} else {
+			model_entry.properties_by_prefix.iter_prefix(needle.as_bytes())
+		};
+		let completions = iter.filter_map(|(property_name, kind)| {
+			if for_only_prop.as_ref().is_some_and(|target| target != kind) {
+				return None;
+			}
+			// SAFETY: only utf-8 bytestrings from interner() are allowed
+			let label = unsafe { core::str::from_utf8_unchecked(property_name).to_string() };
+			let mut new_text = label.to_string();
+			let mut insert_text_format = None;
+			if !in_string && matches!(kind, PropertyKind::Method) {
+				// TODO: Change the snippet format when the method has no args
+				new_text += "(${1:})$0";
+				insert_text_format = Some(InsertTextFormat::SNIPPET);
+			}
+			let lsp_kind;
+			let mut label_details = None;
+			match kind {
+				PropertyKind::Field => {
+					lsp_kind = CompletionItemKind::FIELD;
+					if let Some(field_key) = _G(&label)
+						&& let Some(ref fields) = model_entry.fields
+						&& let Some(field) = fields.get(&field_key.into())
+					{
+						let mut description = None;
+						if let FieldKind::Relational(rel) = field.kind {
+							description = Some(_R(rel).to_string());
+						}
+						let field_type = _R(field.type_);
+						label_details = Some(CompletionItemLabelDetails {
+							detail: Some(format!(" {field_type}")),
+							description,
+						});
+					}
+				}
+				PropertyKind::Method => {
+					lsp_kind = CompletionItemKind::METHOD;
+				}
+			}
+			Some(CompletionItem {
+				label,
+				label_details,
+				kind: Some(lsp_kind),
+				insert_text_format,
+				text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
+				data: serde_json::to_value(CompletionData { model: model.clone() }).ok(),
+				..Default::default()
+			})
+		});
+		items.extend(completions);
+		Ok(())
+	}
+	pub fn complete_component_prop(
+		&self,
+		range: ByteRange,
+		rope: RopeSlice<'_>,
+		component: &str,
+		items: &mut MaxVec<CompletionItem>,
+	) -> anyhow::Result<()> {
+		let component = ok!(_G(component), "(complete_component_prop) component");
+		let component = ok!(self.components.get(&component.into()), "component");
+		let range = ok!(rope_conv(range, rope), "(complete_component_prop) range");
+		let completions = component.props.iter().map(|(prop, desc)| {
+			let prop = _R(prop);
+			CompletionItem {
+				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+					new_text: prop.to_string(),
+					insert: range,
+					replace: range,
+				})),
+				label: prop.to_string(),
+				kind: Some(CompletionItemKind::PROPERTY),
+				detail: Some(format!("{:?}", desc.type_)),
+				..Default::default()
+			}
+		});
+		items.extend(completions);
+		Ok(())
+	}
+	pub fn complete_template_name(
+		&self,
+		needle: &str,
+		range: Range,
+		items: &mut MaxVec<CompletionItem>,
+	) -> anyhow::Result<()> {
+		if !items.has_space() {
+			return Ok(());
+		}
+		let Ok(by_prefix) = self.templates.by_prefix.read() else {
+			return Ok(());
+		};
+		let matches = by_prefix.iter_prefix(needle.as_bytes()).map(|(_, key)| {
+			let label = _R(*key).to_string();
+			CompletionItem {
+				text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+					new_text: label.clone(),
+					insert: range,
+					replace: range,
+				})),
+				label,
+				kind: Some(CompletionItemKind::REFERENCE),
+				..Default::default()
+			}
+		});
+		items.extend(matches);
+		Ok(())
+	}
+	pub fn completion_resolve_method(&self, completion: &mut CompletionItem) -> Option<()> {
+		let CompletionData { model } = completion
+			.data
+			.take()
+			.and_then(|raw| serde_json::from_value(raw).ok())?;
+		let method = _G(&completion.label)?;
+		let model_key = _G(&model)?;
+		let method_name = _R(method);
+		let rtype = self.resolve_method_returntype(method.into(), model_key).map(_R);
+		let entry = self.models.get(&model_key.into())?;
+		let methods = entry.methods.as_ref()?;
+		let method_entry = methods.get(&method.into())?;
+
+		completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
+			kind: MarkupKind::Markdown,
+			value: self.method_docstring(method_name, method_entry, rtype),
+		}));
+
+		Some(())
+	}
+	pub fn method_docstring(&self, name: &str, method: &Method, rtype: Option<&str>) -> String {
+		let origin_fragment = match method.locations.as_slice() {
+			[] => String::new(),
+			[first, rest @ ..] => {
+				let rest = rest.iter().filter_map(|override_| {
+					self.find_module_of(&override_.path.to_path())
+						.map(|module| (_R(module), override_, override_.range))
+				});
+				fomat! {
+					if let Some(module) = self.find_module_of(&first.path.to_path())
+					{
+						"*Defined in:* `" (_R(module)) "`  \n"
+					}
+					if let Some(help) = &method.docstring {
+						match help.to_string() {
+							empty if empty.is_empty() => {}
+							other => {
+								(other) "\n\n"
+							}
+						}
+					}
+					for (idx, (module, override_, range)) in rest.enumerate() {
+						if idx == 0 { "*Overridden in:*\n" }
+						"- [`" (module) "`](" (to_display_path(override_.path.to_path())) "#L" (range.start.line + 1) ") in " (override_.path.subpath()) ":" (range.start.line + 1)
+					} sep { "\n" }
+				}
+			}
+		};
+		let rtype = match rtype {
+			Some(type_) => format!("Model[\"{type_}\"]"),
+			None => "...".to_string(),
+		};
+		let params_fragment = match method.arguments.as_deref() {
+			None => "...".to_string(),
+			Some([]) => String::new(),
+			Some([single]) => format!("{single}"),
+			Some([one, two]) => format!("{one}, {two}"),
+			Some(params) => fomat! {
+				"\n    "
+				for param in params { (param) } sep { ",\n    " }
+				"\n"
+			},
+		};
+		fomat! {
+			"```python\n"
+			"(method) def " (name) "(" (params_fragment) ") -> " (rtype)
+			"\n"
+			"```\n"
+			(origin_fragment)
+		}
+	}
 	pub fn completion_resolve_field(&self, completion: &mut CompletionItem) -> Option<()> {
 		let CompletionData { model } = completion
 			.data
@@ -1136,11 +823,7 @@ impl Backend {
 			.and_then(|raw| serde_json::from_value(raw).ok())?;
 		let field = _G(&completion.label)?;
 		let model = _G(model)?;
-		let mut entry = self
-			.index
-			.models
-			.try_get_mut(&model.into())
-			.expect(format_loc!("deadlock"))?;
+		let mut entry = self.models.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
 		let fields = entry.fields.as_mut()?;
 		let field_entry = fields.get(&field.into()).cloned()?;
 		drop(entry);
@@ -1151,7 +834,7 @@ impl Backend {
 			.as_ref()
 			.and_then(|label_details| label_details.description.as_deref());
 		if relation.is_none()
-			&& let Some(rel) = self.index.models.resolve_related_field(field.into(), model)
+			&& let Some(rel) = self.models.resolve_related_field(field.into(), model)
 		{
 			relation = Some(_R(rel))
 		}
@@ -1166,25 +849,337 @@ impl Backend {
 
 		Some(())
 	}
-	pub fn completion_resolve_method(&self, completion: &mut CompletionItem) -> Option<()> {
-		let CompletionData { model } = completion
-			.data
-			.take()
-			.and_then(|raw| serde_json::from_value(raw).ok())?;
-		let method = _G(&completion.label)?;
-		let model_key = _G(&model)?;
-		let method_name = _R(method);
-		let rtype = self.index.resolve_method_returntype(method.into(), model_key).map(_R);
-		let entry = self.index.models.get(&model_key.into())?;
-		let methods = entry.methods.as_ref()?;
-		let method_entry = methods.get(&method.into())?;
+	pub fn field_docstring(&self, field: &Field, signature: bool) -> String {
+		fomat! {
+			if signature {
+				"```python\n"
+				"(field) " (_R(field.type_)) r#"("#
+				match &field.kind {
+					FieldKind::Value | FieldKind::Related(_) => {}
+					FieldKind::Relational(relation) => { "\"" (_R(*relation)) "\", " }
+				}
+				"…)\n```  \n"
+			}
+			if let Some(module) = self.find_module_of(&field.location.path.to_path())
+			{
+				"*Defined in:* `" (_R(module)) "`  \n"
+			}
+			if let Some(help) = &field.help { (help.to_string()) }
+		}
+	}
+	pub fn hover_property_name(&self, name: &str, model: &str, range: Option<Range>) -> anyhow::Result<Option<Hover>> {
+		let model_key = _I(model);
+		let entry = some!(self.models.populate_properties(model_key.into(), &[]));
+		let prop = some!(_G(name));
+		if let Some(ref fields) = entry.fields
+			&& let Some(field) = fields.get(&prop.into())
+		{
+			Ok(Some(Hover {
+				range,
+				contents: HoverContents::Markup(MarkupContent {
+					kind: MarkupKind::Markdown,
+					value: self.field_docstring(field, true),
+				}),
+			}))
+		} else if let Some(ref methods) = entry.methods
+			&& methods.contains_key(&prop.into())
+		{
+			drop(entry);
+			let rtype = self.resolve_method_returntype(prop.into(), model_key);
+			let model = self.models.get(&model_key.into()).unwrap();
+			let method = model.methods.as_ref().unwrap().get(&prop.into()).unwrap();
+			Ok(Some(Hover {
+				range,
+				contents: HoverContents::Markup(MarkupContent {
+					kind: MarkupKind::Markdown,
+					value: self.method_docstring(name, method, rtype.map(_R)),
+				}),
+			}))
+		} else {
+			Ok(None)
+		}
+	}
+	/// Returns a Markdown-formatted docstring for a model.
+	pub fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>, identifier: Option<&str>) -> String {
+		let module = model
+			.base
+			.as_ref()
+			.and_then(|base| self.find_module_of(&base.0.path.to_path()));
+		let mut descendants = model
+			.descendants
+			.iter()
+			.map(|loc| &loc.0)
+			.scan(SymbolSet::default(), |mods, loc| {
+				let Some(module) = self.find_module_of(&loc.path.to_path()) else {
+					return Some(None);
+				};
+				if mods.insert(module) {
+					Some(Some(module))
+				} else {
+					Some(None)
+				}
+			})
+			.flatten();
+		fomat! {
+			if let Some(name) = model_name {
+				"```python\n"
+				if let Some(ident) = identifier { (ident) ": " } "Model[\"" (name) "\"]\n"
+				"```  \n"
+			}
+			if let Some(module) = module {
+				"*Defined in:* `" (_R(module)) "`  \n"
+			}
+			for (idx, descendant) in descendants
+				.by_ref()
+				.take(Backend::INHERITS_LIMIT)
+				.enumerate()
+			{
+				if idx == 0 { "*Inherited in:* " } "`" (_R(descendant)) "`"
+			} sep { ", " }
+			match descendants.count() {
+				0 => {}
+				remaining => { " (+" (remaining) " modules)" }
+			}
+			if let Some(help) = &model.docstring {
+				match help.to_string() {
+					empty if empty.is_empty() => {}
+					other => {
+						"  \n" (other)
+					}
+				}
+			}
+		}
+	}
+	pub fn template_references(&self, name: &str, include_definition: bool) -> anyhow::Result<Option<Vec<Location>>> {
+		let name = some!(_G(name));
+		let template = some!(self.templates.get(&name.into()));
+		let definition_location = if include_definition {
+			template.value().location.clone().map(Location::from)
+		} else {
+			None
+		};
+		let descendant_locations = (template.value().descendants)
+			.iter()
+			.flat_map(|tpl| tpl.location.clone().map(Location::from));
+		let mut locations = definition_location
+			.into_iter()
+			.chain(descendant_locations)
+			.collect::<Vec<_>>();
 
-		completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
-			kind: MarkupKind::Markdown,
-			value: self.method_docstring(method_name, method_entry, rtype),
-		}));
+		if let Some(component) = self.components.by_template.get(&name.into())
+			&& let Some(component) = self.components.get(&component)
+			&& let Some(ref location) = component.location
+		{
+			locations.push(location.clone().into());
+			let last = locations.swap_remove(0);
+			locations.push(last);
+		}
+		Ok(Some(locations))
+	}
+	pub fn method_references(&self, prop: &str, model: &str) -> anyhow::Result<Option<Vec<Location>>> {
+		let model_key = _I(model);
+		let entry = some!(self.models.populate_properties(model_key.into(), &[]));
+		let prop = some!(_G(prop));
+		let method = some!(some!(entry.methods.as_ref()).get(&prop.into()));
+		Ok(Some(
+			method.locations.iter().map(|loc| loc.deref().clone().into()).collect(),
+		))
+	}
+	pub fn hover_record(&self, xml_id: &str, range: Option<Range>) -> anyhow::Result<Option<Hover>> {
+		let key = some!(_G(xml_id));
+		let record = some!(self.records.get(&key.into()));
+		let model = match record.model.as_ref() {
+			Some(model) => _R(*model),
+			None => "<unknown>",
+		};
+		let value = format!("<record id=\"{xml_id}\" model=\"{model}\"/>");
+		Ok(Some(Hover {
+			contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
+				language: "xml".to_owned(),
+				value,
+			})),
+			range,
+		}))
+	}
+	fn find_prop_recursive(&self, component: &Symbol<Component>, prop: &Symbol<Prop>) -> Option<PropDescriptor> {
+		let component = self.components.get(component)?;
+		if let Some(prop) = component.props.get(prop) {
+			return Some(prop.clone());
+		}
+		for ancestor in &component.ancestors {
+			if let Some(prop) = self.find_prop_recursive(ancestor, prop) {
+				return Some(prop);
+			}
+		}
+		None
+	}
+	pub fn jump_def_component_prop(&self, component: &str, prop: &str) -> anyhow::Result<Option<Location>> {
+		let component = some!(_G(component));
+		let prop = some!(_G(prop));
+		let prop = some!(self.find_prop_recursive(&component.into(), &prop.into()));
+		Ok(Some(prop.location.into()))
+	}
+	pub fn jump_def_template_name(&self, name: &str) -> anyhow::Result<Option<Location>> {
+		let name = some!(_G(name));
+		let entry = some!(self.templates.get(&name.into()));
+		let location = some!(&entry.value().location);
+		Ok(Some(location.clone().into()))
+	}
+	pub fn jump_def_widget(&self, widget: &str) -> anyhow::Result<Option<Location>> {
+		let field = some!(self.widgets.get(widget.as_bytes()));
+		Ok(Some(field.value().clone().into()))
+	}
+	pub fn hover_template(&self, name: &str, range: Option<Range>) -> Option<Hover> {
+		let key = _G(name)?;
+		let template = self.templates.get(&key.into())?;
+		let module = template
+			.location
+			.as_ref()
+			.and_then(|loc| self.find_module_of(&loc.path.to_path()));
+		let value = fomat!(
+			"```xml\n"
+			"<t t-name=\"" (name) "\"/>\n"
+			"```"
+			if let Some(module) = module {
+				"\n*Defined in:* `" (_R(module)) "`"
+			}
+		);
+		Some(Hover {
+			contents: HoverContents::Scalar(MarkedString::String(value)),
+			range,
+		})
+	}
+	pub fn jump_def_property_name(&self, property: &str, model: &str) -> anyhow::Result<Option<Location>> {
+		let model_key = _I(model);
+		let entry = some!(self.models.populate_properties(model_key.into(), &[]));
+		let prop = some!(_G(property));
+		if let Some(ref fields) = entry.fields
+			&& let Some(field) = fields.get(&prop.into())
+		{
+			Ok(Some(field.location.deref().clone().into()))
+		} else if let Some(ref methods) = entry.methods
+			&& let Some(method) = methods.get(&prop.into())
+		{
+			Ok(Some(some!(method.locations.first()).deref().clone().into()))
+		} else {
+			Ok(None)
+		}
+	}
+	pub fn jump_def_action_tag(&self, tag: &str) -> anyhow::Result<Option<Location>> {
+		let field = some!(self.actions.get(tag.as_bytes()));
+		Ok(Some(field.value().clone().into()))
+	}
+	#[instrument(level = "trace", skip(self), ret)]
+	pub fn hover_model(
+		&self,
+		model_str_key: &str,
+		range: Option<Range>,
+		definition: bool,
+		identifier: Option<&str>,
+	) -> anyhow::Result<Option<Hover>> {
+		let model_key = some!(_G(model_str_key));
+		let model = some!(self.models.get(&model_key.into()));
+		Ok(Some(Hover {
+			range,
+			contents: HoverContents::Markup(MarkupContent {
+				kind: MarkupKind::Markdown,
+				value: self.model_docstring(&model, definition.then_some(model_str_key), identifier),
+			}),
+		}))
+	}
+	pub fn jump_def_model(&self, model: &str) -> anyhow::Result<Option<Location>> {
+		let model = some!(_G(model));
+		if let Some(model) = self.models.get(&model.into())
+			&& let Some(ModelLocation(ref base, _)) = model.base
+		{
+			return Ok(Some(base.clone().into()));
+		}
 
-		Some(())
+		Ok(None)
+	}
+	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Uri) -> anyhow::Result<Option<Location>> {
+		let mut value = Cow::from(cursor_value);
+		let path = some!(uri.to_file_path());
+		if !value.contains('.') {
+			'unscoped: {
+				if let Some(module) = self.find_module_of(&path) {
+					value = format!("{}.{value}", _R(module)).into();
+					break 'unscoped;
+				}
+				debug!(
+					"Could not find a reference for {} in {}: could not infer module",
+					cursor_value,
+					uri.path().as_str()
+				);
+				return Ok(None);
+			}
+		}
+		let record_id = some!(_G(value));
+		Ok((self.records.get(&record_id.into())).map(|record| record.location.clone().into()))
+	}
+	pub fn complete_action_tag(
+		&self,
+		range: ByteRange,
+		rope: RopeSlice<'_>,
+		items: &mut MaxVec<CompletionItem>,
+	) -> anyhow::Result<()> {
+		let range = ok!(rope_conv(range, rope));
+		let completions = self.actions.iter().flat_map(|tag| {
+			let tag = tag.key().to_string();
+			Some(CompletionItem {
+				text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+					range,
+					new_text: tag.clone(),
+				})),
+				label: tag,
+				kind: Some(CompletionItemKind::ENUM),
+				..Default::default()
+			})
+		});
+		items.extend(completions);
+		Ok(())
+	}
+	pub fn hover_component(&self, name: &str, range: Option<Range>) -> Option<Hover> {
+		let key = _G(name)?;
+		let component = self.components.get(&key.into())?;
+		let module = component
+			.location
+			.as_ref()
+			.and_then(|loc| self.find_module_of(&loc.path.to_path()));
+		let value = fomat!(
+			"```js\n"
+			"(component) class " (name) "\n"
+			"```"
+			if let Some(module) = module {
+				"\n*Defined in:* `" (_R(module)) "`"
+			}
+		);
+		Some(Hover {
+			contents: HoverContents::Scalar(MarkedString::String(value)),
+			range,
+		})
+	}
+	pub fn complete_widget(
+		&self,
+		range: ByteRange,
+		rope: RopeSlice<'_>,
+		items: &mut MaxVec<CompletionItem>,
+	) -> anyhow::Result<()> {
+		let range = ok!(rope_conv(range, rope));
+		let completions = self.widgets.iter().flat_map(|widget| {
+			let widget = widget.key().to_string();
+			Some(CompletionItem {
+				text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+					range,
+					new_text: widget.clone(),
+				})),
+				label: widget,
+				kind: Some(CompletionItemKind::ENUM),
+				..Default::default()
+			})
+		});
+		items.extend(completions);
+		Ok(())
 	}
 }
 
@@ -1210,3 +1205,6 @@ impl Text {
 		(!out.is_empty()).then(|| out.map_unit(ByteOffset))
 	}
 }
+
+#[cfg(test)]
+mod tests;
