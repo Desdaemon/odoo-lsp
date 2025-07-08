@@ -26,6 +26,63 @@ pub mod fs {
 	}
 }
 
+pub mod index {
+	#[cfg(test)]
+	use crate::{index::Index, test_utils::fs::TEST_FS};
+
+	/// Helper to index all models from Python, JS, and XML source and populate their properties using the virtual test FS.
+	#[cfg(test)]
+	pub fn index_models_with_properties(
+		index: &mut Index,
+		py: Option<&'static str>,
+		js: Option<&'static str>,
+		xml: Option<&'static str>,
+	) {
+		use crate::model::ModelEntry;
+		use crate::prelude::*;
+		use std::path::Path;
+
+		let root = "/test";
+		let py_path = "/test/dummy.py";
+		let js_path = "/test/dummy.js";
+		let xml_path = "/test/dummy.xml";
+		if let Ok(mut fs) = TEST_FS.write() {
+			if let Some(py) = py {
+				fs.insert(Path::new(py_path).to_path_buf(), py.as_bytes());
+			}
+			if let Some(js) = js {
+				fs.insert(Path::new(js_path).to_path_buf(), js.as_bytes());
+			}
+			if let Some(xml) = xml {
+				fs.insert(Path::new(xml_path).to_path_buf(), xml.as_bytes());
+			}
+		} else {
+			panic!("can't modify test_utils::fs::TEST_FS");
+		}
+		// Index the model from the file
+		let py_bytes = py.expect("Python source required").as_bytes();
+		let models = crate::index::index_models(py_bytes).unwrap();
+		for model in models {
+			if let crate::model::ModelType::Base { name, .. } = &model.type_ {
+				let entry = ModelEntry {
+					base: Some(crate::model::ModelLocation(
+						crate::utils::MinLoc {
+							path: crate::index::PathSymbol::strip_root(_I(root), Path::new(py_path)),
+							range: Range::default(),
+						},
+						ByteOffset(0)..ByteOffset(0),
+					)),
+					..Default::default()
+				};
+				index.models.insert(_I(name.as_str()).into(), entry);
+				let _ = index.models.populate_properties(_I(name.as_str()).into(), &[]);
+			}
+		}
+		// Optionally index JS and XML if needed by your backend (add logic here)
+		// e.g. index_js, index_xml, or append to index.components, index.templates, etc.
+	}
+}
+
 #[cfg(test)]
 pub mod cases {
 	use crate::index::{PathSymbol, index_models};

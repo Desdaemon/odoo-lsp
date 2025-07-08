@@ -597,7 +597,9 @@ impl Backend {
 						let range = range.shrink(1);
 						let slice = some!(rope.get_byte_slice(range.clone()));
 						let slice = Cow::from(slice);
-						return self.jump_def_xml_id(&slice, &params.text_document_position_params.text_document.uri);
+						return self
+							.index
+							.jump_def_xml_id(&slice, &params.text_document_position_params.text_document.uri);
 					}
 					Some(PyCompletions::Model) => {
 						let range = capture.node.byte_range();
@@ -610,7 +612,7 @@ impl Backend {
 							let range = range.shrink(1);
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
-							return self.jump_def_model(&slice);
+							return self.index.jump_def_model(&slice);
 						} else if range.end < offset && is_meta
 						// match_
 						// 	.nodes_for_capture_index(PyCompletions::FieldType as _)
@@ -638,7 +640,7 @@ impl Backend {
 								some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 							}
 							let model = _R(model);
-							return self.jump_def_property_name(needle, model);
+							return self.index.jump_def_property_name(needle, model);
 						} else if let Some(cmdlist) = capture.node.next_named_sibling()
 							&& Backend::is_commandlist(cmdlist, offset)
 						{
@@ -652,7 +654,7 @@ impl Backend {
 								contents,
 								false,
 							));
-							return self.jump_def_property_name(&needle, _R(model));
+							return self.index.jump_def_property_name(&needle, _R(model));
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
@@ -668,7 +670,7 @@ impl Backend {
 							let range = desc_value.byte_range().shrink(1);
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
-							return self.jump_def_model(&slice);
+							return self.index.jump_def_model(&slice);
 						} else if matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related") {
 							let single_field = descriptor != b"related";
 							// same as PyCompletions::Mapped
@@ -690,7 +692,7 @@ impl Backend {
 								some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 							}
 							let model = _R(model);
-							return self.jump_def_property_name(needle, model);
+							return self.index.jump_def_property_name(needle, model);
 						}
 
 						return Ok(None);
@@ -710,7 +712,7 @@ impl Backend {
 		}
 
 		let (model, prop, _) = some!(self.attribute_at_offset(offset, root, contents));
-		self.jump_def_property_name(&prop, model)
+		self.index.jump_def_property_name(&prop, model)
 	}
 	/// Resolves the attribute and the object's model at the cursor offset
 	/// using [`model_of_range`][Index::model_of_range].
@@ -884,7 +886,7 @@ impl Backend {
 							let range = desc_value.byte_range().shrink(1);
 							let model = String::from_utf8_lossy(some!(this_model.inner.as_ref()));
 							let prop = String::from_utf8_lossy(&contents[range]);
-							return self.method_references(&prop, &model);
+							return self.index.method_references(&prop, &model);
 						}
 
 						return Ok(None);
@@ -905,7 +907,7 @@ impl Backend {
 		}
 
 		let (model, prop, _) = some!(self.attribute_at_offset(offset, root, contents));
-		self.method_references(&prop, model)
+		self.index.method_references(&prop, model)
 	}
 
 	pub fn python_hover(&self, params: HoverParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Hover>> {
@@ -934,7 +936,7 @@ impl Backend {
 							let lsp_range = span_conv(capture.node.range());
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
-							return self.hover_model(&slice, Some(lsp_range), false, None);
+							return self.index.hover_model(&slice, Some(lsp_range), false, None);
 						} else if range.end < offset {
 							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
 						}
@@ -963,7 +965,9 @@ impl Backend {
 								);
 							}
 							let model = _R(model);
-							return self.hover_property_name(needle, model, rope_conv(range, rope).ok());
+							return self
+								.index
+								.hover_property_name(needle, model, rope_conv(range, rope).ok());
 						} else if let Some(cmdlist) = capture.node.next_named_sibling()
 							&& Backend::is_commandlist(cmdlist, offset)
 						{
@@ -978,19 +982,21 @@ impl Backend {
 								false,
 							));
 							let range = rope_conv(range, rope).ok();
-							return self.hover_property_name(&needle, _R(model), range);
+							return self.index.hover_property_name(&needle, _R(model), range);
 						}
 					}
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
 						let xml_id = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
-						return self.hover_record(&xml_id, rope_conv(range.map_unit(ByteOffset), rope).ok());
+						return self
+							.index
+							.hover_record(&xml_id, rope_conv(range.map_unit(ByteOffset), rope).ok());
 					}
 					Some(PyCompletions::Prop) if range.contains(&offset) => {
 						let model = some!(this_model.inner);
 						let model = String::from_utf8_lossy(model);
 						let name = String::from_utf8_lossy(&contents[range]);
 						let range = span_conv(capture.node.range());
-						return self.hover_property_name(&name, &model, Some(range));
+						return self.index.hover_property_name(&name, &model, Some(range));
 					}
 					Some(PyCompletions::FieldDescriptor) => {
 						let Some(desc_value) = capture.node.next_named_sibling() else {
@@ -1006,7 +1012,7 @@ impl Backend {
 							let lsp_range = span_conv(desc_value.range());
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
-							return self.hover_model(&slice, Some(lsp_range), false, None);
+							return self.index.hover_model(&slice, Some(lsp_range), false, None);
 						} else if matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related") {
 							let single_field = descriptor != b"related";
 							let mapped = some!(self.gather_mapped(
@@ -1031,7 +1037,9 @@ impl Backend {
 								);
 							}
 							let model = _R(model);
-							return self.hover_property_name(needle, model, rope_conv(range, rope).ok());
+							return self
+								.index
+								.hover_property_name(needle, model, rope_conv(range, rope).ok());
 						}
 
 						return Ok(None);
@@ -1051,7 +1059,7 @@ impl Backend {
 		}
 		if let Some((model, prop, range)) = self.attribute_at_offset(offset, root, contents) {
 			let lsp_range = rope_conv(range.map_unit(ByteOffset), rope).ok();
-			return self.hover_property_name(&prop, model, lsp_range);
+			return self.index.hover_property_name(&prop, model, lsp_range);
 		}
 
 		// No matches, assume arbitrary expression.
@@ -1064,12 +1072,14 @@ impl Backend {
 			let model = _R(model);
 			let identifier =
 				(needle.kind() == "identifier").then(|| String::from_utf8_lossy(&contents[needle.byte_range()]));
-			return self.hover_model(model, Some(lsp_range), true, identifier.as_deref());
+			return self
+				.index
+				.hover_model(model, Some(lsp_range), true, identifier.as_deref());
 		}
 
 		// not a model! we only have so many things we can hover...
 		match type_ {
-			Type::Method(model, method) => self.hover_property_name(&method, _R(model), Some(lsp_range)),
+			Type::Method(model, method) => self.index.hover_property_name(&method, _R(model), Some(lsp_range)),
 			_ => Ok(None),
 		}
 	}

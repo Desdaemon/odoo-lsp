@@ -441,14 +441,14 @@ impl LanguageServer for Backend {
 					}
 					completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 						kind: MarkupKind::Markdown,
-						value: self.model_docstring(&entry, None, None),
+						value: self.index.model_docstring(&entry, None, None),
 					}))
 				}
 				Some(CompletionItemKind::FIELD) => {
-					_ = self.completion_resolve_field(&mut completion);
+					_ = self.index.completion_resolve_field(&mut completion);
 				}
 				Some(CompletionItemKind::METHOD) => {
-					_ = self.completion_resolve_method(&mut completion);
+					_ = self.index.completion_resolve_method(&mut completion);
 				}
 				_ => {}
 			}

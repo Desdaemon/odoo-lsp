@@ -100,13 +100,13 @@ impl Backend {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
-					return Ok(self.hover_template(
+					return Ok(self.index.hover_template(
 						&String::from_utf8_lossy(&contents[range.shrink(1)]),
 						Some(span_conv(capture.node.range())),
 					));
 				}
 				if capture.index == JsQuery::Name as u32 && range.contains(&offset) {
-					return Ok(self.hover_component(
+					return Ok(self.index.hover_component(
 						&String::from_utf8_lossy(&contents[range]),
 						Some(span_conv(capture.node.range())),
 					));
