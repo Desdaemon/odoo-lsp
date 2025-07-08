@@ -591,6 +591,7 @@ impl Index {
 		debug!("Module resolution failed for: {}", module_path);
 		None
 	}
+	
 }
 
 fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry>]>> {

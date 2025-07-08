@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -166,6 +167,10 @@ impl Backend {
 			.insert(uri.path().as_str().to_string(), record_ranges.into_boxed_slice());
 		Ok(())
 	}
+	/// Returns `(slice, offset_at_cursor, relative_offset)`.
+	/// - `slice` spans the record range that contains the cursor.
+	/// - `offset_at_cursor` is `position` relative to the start of the slice.
+	/// - `relative_offset` is the offset of the entire slice relative to the start of the rope.
 	fn record_slice<'rope>(
 		&self,
 		rope: RopeSlice<'rope>,
@@ -225,176 +230,19 @@ impl Backend {
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
 		let path = some!(uri.to_file_path());
-
-		let current_module = self.index.find_module_of(&path).expect("must be in a module");
-
 		let completions_limit = self
 			.workspaces
 			.find_workspace_of(&path, |_, ws| ws.completions.limit)
 			.unwrap_or_else(|| self.project_config.completions_limit.load(Relaxed));
-		let mut items = MaxVec::new(completions_limit);
-		let XmlRefs {
-			ref_at_cursor,
-			ref_kind,
-			model_filter,
-			scope,
-		} = self.gather_refs(offset_at_cursor, &mut reader, slice)?;
-		let (Some((value, value_range)), Some(record_field)) = (ref_at_cursor, ref_kind) else {
-			return Ok(None);
-		};
-		let mut needle = if offset_at_cursor.0 >= value_range.end {
-			// Cursor is at or after the end of the value, use the full value as needle
-			value
-		} else if offset_at_cursor.0 >= value_range.start {
-			// Cursor is within the value, use substring up to cursor
-			&value[..offset_at_cursor.0 - value_range.start]
-		} else {
-			// Cursor is before the value, use empty needle
-			""
-		};
-		let replace_range = value_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset));
-		match record_field {
-			RefKind::Ref(relation) => {
-				let model_key = some!(model_filter);
-				let model = some!(_G(&model_key));
-				let relation = {
-					let fields = some!(self.index.models.populate_properties(model.into(), &[])).downgrade();
-					let fields = some!(fields.fields.as_ref());
-					let relation = some!(_G(relation));
-					let Some(Field {
-						kind: FieldKind::Relational(relation),
-						..
-					}) = fields.get(&relation.into()).map(Arc::as_ref)
-					else {
-						return Ok(None);
-					};
-					*relation
-				};
-				self.complete_xml_id(
-					needle,
-					replace_range,
-					rope,
-					Some(_R(relation)),
-					current_module,
-					&mut items,
-				)?
-			}
-			RefKind::Model => {
-				let range = rope_conv(replace_range, rope)?;
-				self.complete_model(needle, range, &mut items)?
-			}
-			ref ref_kind @ RefKind::PropertyName(ref access) | ref ref_kind @ RefKind::MethodName(ref access) => {
-				let mut model_filter = some!(model_filter);
-				let mapped = format!(
-					"{}.{needle}",
-					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
-				);
-				if !access.is_empty() {
-					needle = mapped.as_str();
-					let mut model = _I(model_filter);
-					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
-					model_filter = _R(model).to_string();
-				}
-				self.complete_property_name(
-					needle,
-					replace_range,
-					model_filter,
-					rope,
-					Some(if matches!(ref_kind, RefKind::MethodName(_)) {
-						PropertyKind::Method
-					} else {
-						PropertyKind::Field
-					}),
-					true,
-					&mut items,
-				)?;
-			}
-			RefKind::TInherit | RefKind::TCall => {
-				let range = rope_conv(replace_range, rope)?;
-				self.complete_template_name(needle, range, &mut items)?;
-			}
-			RefKind::PropOf(component) => {
-				self.complete_component_prop(/*needle,*/ replace_range, rope, component, &mut items)?;
-			}
-			RefKind::Id => {
-				self.complete_xml_id(
-					needle,
-					replace_range,
-					rope,
-					model_filter.as_deref(),
-					current_module,
-					&mut items,
-				)?;
-			}
-			RefKind::PyExpr(py_offset) => 'expr: {
-				let mut parser = Parser::new();
-				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-				let ast = some!(parser.parse(value, None));
-				let contents = value.as_bytes();
-				let Some((object, field, range)) = Self::attribute_node_at_offset(py_offset, ast.root_node(), contents)
-				else {
-					// Suggest items in the current scope
-					items.extend(scope.iter().map(|(ident, model)| {
-						let Some(model) = (self.index).try_resolve_model(model, &scope) else {
-							return CompletionItem {
-								label: ident.to_string(),
-								kind: Some(CompletionItemKind::VARIABLE),
-								..Default::default()
-							};
-						};
-						let model_name = _R(model);
-						let documentation = self.index.models.get(&model).map(|model| {
-							Documentation::MarkupContent(MarkupContent {
-								kind: MarkupKind::Markdown,
-								value: self.model_docstring(&model, Some(model_name), Some(ident)),
-							})
-						});
-						CompletionItem {
-							label: ident.to_string(),
-							kind: Some(CompletionItemKind::VARIABLE),
-							detail: Some(model_name.to_string()),
-							documentation,
-							..Default::default()
-						}
-					}));
-					break 'expr;
-				};
-				// in this case walk_scope eventually ends so just retrieve the scope under its control
-				let (default_scope, scope) = Index::walk_scope(ast.root_node(), Some(scope.clone()), |scope, node| {
-					self.index.build_scope(scope, node, range.end, contents)
-				});
-				let scope = scope.unwrap_or(default_scope);
-				let model = some!(self.index.type_of(object, &scope, contents));
-				let model = some!(self.index.try_resolve_model(&model, &scope));
-				let needle_end = py_offset.saturating_sub(range.start);
-				let mut needle = field.as_ref();
-				if !needle.is_empty() && needle_end < needle.len() {
-					needle = &needle[..needle_end];
-				}
-				let anchor = value_range.start + relative_offset;
-				self.complete_property_name(
-					needle,
-					range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)),
-					_R(model).to_string(),
-					rope,
-					None, // Field would be better, but leave this here at least until @property is implemented
-					false,
-					&mut items,
-				)?;
-			}
-			RefKind::Widget => {
-				self.complete_widget(/*needle/, */ replace_range, rope, &mut items)?;
-			}
-			RefKind::ActionTag => {
-				self.complete_action_tag(/*needle/, */ replace_range, rope, &mut items)?;
-			}
-			RefKind::TName | RefKind::Component => return Ok(None),
-		}
 
-		Ok(Some(CompletionResponse::List(CompletionList {
-			is_incomplete: !items.has_space(),
-			items: items.into_inner(),
-		})))
+		self.index.xml_completions(
+			&path,
+			completions_limit,
+			rope,
+			offset_at_cursor,
+			relative_offset,
+			&mut reader,
+		)
 	}
 	pub fn xml_jump_def(&self, params: GotoDefinitionParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
@@ -407,14 +255,14 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			scope,
-		} = self.gather_refs(cursor_by_char, &mut reader, slice)?;
+		} = self.index.gather_refs(cursor_by_char, &mut reader, slice)?;
 
 		let Some((mut needle, _)) = ref_at_cursor else {
 			return Ok(None);
 		};
 		match ref_kind {
-			Some(RefKind::Ref(_)) => self.jump_def_xml_id(needle, uri),
-			Some(RefKind::Model) => self.jump_def_model(needle),
+			Some(RefKind::Ref(_)) => self.index.jump_def_xml_id(needle, uri),
+			Some(RefKind::Model) => self.index.jump_def_model(needle),
 			Some(RefKind::PropertyName(access)) | Some(RefKind::MethodName(access)) => {
 				let mut model_filter = some!(model_filter);
 				let mapped = format!(
@@ -427,18 +275,18 @@ impl Backend {
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 					model_filter = _R(model).to_string();
 				}
-				self.jump_def_property_name(needle, &model_filter)
+				self.index.jump_def_property_name(needle, &model_filter)
 			}
 			Some(RefKind::TInherit) | Some(RefKind::TName) | Some(RefKind::TCall) => {
-				self.jump_def_template_name(needle)
+				self.index.jump_def_template_name(needle)
 			}
 			Some(RefKind::PropOf(component)) => {
 				if let Some((handler, _)) = needle.split_once('.') {
 					needle = handler;
 				}
-				self.jump_def_component_prop(component, needle)
+				self.index.jump_def_component_prop(component, needle)
 			}
-			Some(RefKind::Id) => self.jump_def_xml_id(needle, uri),
+			Some(RefKind::Id) => self.index.jump_def_xml_id(needle, uri),
 			Some(RefKind::PyExpr(py_offset)) => {
 				let mut parser = Parser::new();
 				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
@@ -447,7 +295,7 @@ impl Backend {
 				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), contents));
 				let model = some!(self.index.type_of(object, &scope, contents));
 				let model = some!(self.index.try_resolve_model(&model, &Scope::default()));
-				self.jump_def_property_name(&field, _R(model))
+				self.index.jump_def_property_name(&field, _R(model))
 			}
 			Some(RefKind::Component) => {
 				let component = some!(_G(needle));
@@ -455,10 +303,10 @@ impl Backend {
 				let Some(ComponentTemplate::Name(template)) = component.template.as_ref() else {
 					return Ok(None);
 				};
-				self.jump_def_template_name(_R(*template))
+				self.index.jump_def_template_name(_R(*template))
 			}
-			Some(RefKind::Widget) => self.jump_def_widget(needle),
-			Some(RefKind::ActionTag) => self.jump_def_action_tag(needle),
+			Some(RefKind::Widget) => self.index.jump_def_widget(needle),
+			Some(RefKind::ActionTag) => self.index.jump_def_action_tag(needle),
 			None => Ok(None),
 		}
 	}
@@ -477,7 +325,7 @@ impl Backend {
 			ref_at_cursor: cursor_value,
 			ref_kind,
 			..
-		} = self.gather_refs(cursor_by_char, &mut reader, slice)?;
+		} = self.index.gather_refs(cursor_by_char, &mut reader, slice)?;
 
 		let (cursor_value, _) = some!(cursor_value);
 		let current_module = self.index.find_module_of(&path);
@@ -487,8 +335,8 @@ impl Backend {
 				self.model_references(&path, &model.into())
 			}
 			Some(RefKind::Ref(_)) | Some(RefKind::Id) => self.record_references(&path, cursor_value, current_module),
-			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.template_references(cursor_value, true),
-			Some(RefKind::TName) => self.template_references(cursor_value, false),
+			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.index.template_references(cursor_value, true),
+			Some(RefKind::TName) => self.index.template_references(cursor_value, false),
 			Some(RefKind::PyExpr(_))
 			| Some(RefKind::PropertyName(_))
 			| Some(RefKind::MethodName(_))
@@ -511,7 +359,7 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			scope,
-		} = self.gather_refs(offset_at_cursor, &mut reader, slice)?;
+		} = self.index.gather_refs(offset_at_cursor, &mut reader, slice)?;
 
 		let (mut needle, ref_range) = some!(ref_at_cursor);
 
@@ -522,14 +370,14 @@ impl Backend {
 		.ok();
 		let current_module = self.index.find_module_of(&path);
 		match ref_kind {
-			Some(RefKind::Model) => self.hover_model(needle, lsp_range, false, None),
+			Some(RefKind::Model) => self.index.hover_model(needle, lsp_range, false, None),
 			Some(RefKind::Ref(_)) => {
 				if needle.contains('.') {
-					self.hover_record(needle, lsp_range)
+					self.index.hover_record(needle, lsp_range)
 				} else {
 					let current_module = some!(current_module);
 					let xml_id = format!("{}.{}", _R(current_module), needle);
-					self.hover_record(&xml_id, lsp_range)
+					self.index.hover_record(&xml_id, lsp_range)
 				}
 			}
 			Some(RefKind::PropertyName(access)) | Some(RefKind::MethodName(access)) => {
@@ -545,7 +393,7 @@ impl Backend {
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 					model_filter = _R(model).to_string();
 				}
-				self.hover_property_name(needle, &model_filter, lsp_range)
+				self.index.hover_property_name(needle, &model_filter, lsp_range)
 			}
 			Some(RefKind::Id) => {
 				let current_module = some!(current_module);
@@ -554,9 +402,9 @@ impl Backend {
 				} else {
 					format!("{}.{}", _R(current_module), needle).into()
 				};
-				self.hover_record(&xml_id, lsp_range)
+				self.index.hover_record(&xml_id, lsp_range)
 			}
-			Some(RefKind::TInherit) | Some(RefKind::TCall) => Ok(self.hover_template(needle, lsp_range)),
+			Some(RefKind::TInherit) | Some(RefKind::TCall) => Ok(self.index.hover_template(needle, lsp_range)),
 			Some(RefKind::PyExpr(py_offset)) => {
 				let mut parser = Parser::new();
 				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
@@ -576,7 +424,7 @@ impl Backend {
 					)
 					.ok();
 					if let Some(model) = (self.index).try_resolve_model(scope_type, &scope) {
-						return self.hover_model(_R(model), lsp_range, true, Some(&needle));
+						return self.index.hover_model(_R(model), lsp_range, true, Some(&needle));
 					}
 					return Ok(Some(Hover {
 						range: lsp_range,
@@ -589,13 +437,13 @@ impl Backend {
 				let model = some!(self.index.type_of(object, &scope, contents));
 				let model = some!(self.index.try_resolve_model(&model, &scope));
 				let anchor = ref_range.start + relative_offset;
-				self.hover_property_name(
+				self.index.hover_property_name(
 					&field,
 					_R(model),
 					rope_conv(range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)), rope).ok(),
 				)
 			}
-			Some(RefKind::Component) => Ok(self.hover_component(needle, lsp_range)),
+			Some(RefKind::Component) => Ok(self.index.hover_component(needle, lsp_range)),
 			Some(RefKind::PropOf(component_key)) => {
 				if let Some((handler, _)) = needle.split_once('.') {
 					// accept handler.bind syntax as well
@@ -669,7 +517,7 @@ impl Backend {
 			ref_at_cursor,
 			ref_kind,
 			..
-		} = self.gather_refs(offset_at_cursor, &mut reader, slice)?;
+		} = self.index.gather_refs(offset_at_cursor, &mut reader, slice)?;
 		let (Some((value, _)), Some(RefKind::Component)) = (ref_at_cursor, ref_kind) else {
 			return Ok(None);
 		};
@@ -679,6 +527,185 @@ impl Backend {
 			command: "goto_owl".to_string(),
 			arguments: Some(vec![String::new().into(), value.into()]),
 		})]))
+	}
+}
+
+impl Index {
+	fn xml_completions<'read>(
+		&self,
+		path: &Path,
+		completions_limit: usize,
+		rope: RopeSlice<'read>,
+		offset_at_cursor: ByteOffset,
+		relative_offset: usize,
+		reader: &mut Tokenizer<'read>,
+	) -> Result<Option<CompletionResponse>, anyhow::Error> {
+		let current_module = self.find_module_of(path).expect("must be in a module");
+
+		let mut items = MaxVec::new(completions_limit);
+		let XmlRefs {
+			ref_at_cursor,
+			ref_kind,
+			model_filter,
+			scope,
+		} = self.gather_refs(offset_at_cursor, reader, rope)?;
+		let (Some((value, value_range)), Some(record_field)) = (ref_at_cursor, ref_kind) else {
+			return Ok(None);
+		};
+		let mut needle = if offset_at_cursor.0 >= value_range.end {
+			// Cursor is at or after the end of the value, use the full value as needle
+			value
+		} else if offset_at_cursor.0 >= value_range.start {
+			// Cursor is within the value, use substring up to cursor
+			&value[..offset_at_cursor.0 - value_range.start]
+		} else {
+			// Cursor is before the value, use empty needle
+			""
+		};
+		let replace_range = value_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset));
+		match record_field {
+			RefKind::Ref(relation) => {
+				let model_key = some!(model_filter);
+				let model = some!(_G(&model_key));
+				let relation = {
+					let fields = some!(self.models.populate_properties(model.into(), &[])).downgrade();
+					let fields = some!(fields.fields.as_ref());
+					let relation = some!(_G(relation));
+					let Some(Field {
+						kind: FieldKind::Relational(relation),
+						..
+					}) = fields.get(&relation.into()).map(Arc::as_ref)
+					else {
+						return Ok(None);
+					};
+					*relation
+				};
+				self.complete_xml_id(
+					needle,
+					replace_range,
+					rope,
+					Some(_R(relation)),
+					current_module,
+					&mut items,
+				)?
+			}
+			RefKind::Model => {
+				let range = rope_conv(replace_range, rope)?;
+				self.complete_model(needle, range, &mut items)?
+			}
+			ref ref_kind @ RefKind::PropertyName(ref access) | ref ref_kind @ RefKind::MethodName(ref access) => {
+				let mut model_filter = some!(model_filter);
+				let mapped = format!(
+					"{}.{needle}",
+					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
+				);
+				if !access.is_empty() {
+					needle = mapped.as_str();
+					let mut model = _I(model_filter);
+					some!(self.models.resolve_mapped(&mut model, &mut needle, None).ok());
+					model_filter = _R(model).to_string();
+				}
+				self.complete_property_name(
+					needle,
+					replace_range,
+					model_filter,
+					rope,
+					Some(if matches!(ref_kind, RefKind::MethodName(_)) {
+						PropertyKind::Method
+					} else {
+						PropertyKind::Field
+					}),
+					true,
+					&mut items,
+				)?;
+			}
+			RefKind::TInherit | RefKind::TCall => {
+				let range = rope_conv(replace_range, rope)?;
+				self.complete_template_name(needle, range, &mut items)?;
+			}
+			RefKind::PropOf(component) => {
+				self.complete_component_prop(/*needle,*/ replace_range, rope, component, &mut items)?;
+			}
+			RefKind::Id => {
+				self.complete_xml_id(
+					needle,
+					replace_range,
+					rope,
+					model_filter.as_deref(),
+					current_module,
+					&mut items,
+				)?;
+			}
+			RefKind::PyExpr(py_offset) => 'expr: {
+				let mut parser = Parser::new();
+				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+				let ast = some!(parser.parse(value, None));
+				let contents = value.as_bytes();
+				let Some((object, field, range)) =
+					Backend::attribute_node_at_offset(py_offset, ast.root_node(), contents)
+				else {
+					// Suggest items in the current scope
+					items.extend(scope.iter().map(|(ident, model)| {
+						let Some(model) = self.try_resolve_model(model, &scope) else {
+							return CompletionItem {
+								label: ident.to_string(),
+								kind: Some(CompletionItemKind::VARIABLE),
+								..Default::default()
+							};
+						};
+						let model_name = _R(model);
+						let documentation = self.models.get(&model).map(|model| {
+							Documentation::MarkupContent(MarkupContent {
+								kind: MarkupKind::Markdown,
+								value: self.model_docstring(&model, Some(model_name), Some(ident)),
+							})
+						});
+						CompletionItem {
+							label: ident.to_string(),
+							kind: Some(CompletionItemKind::VARIABLE),
+							detail: Some(model_name.to_string()),
+							documentation,
+							..Default::default()
+						}
+					}));
+					break 'expr;
+				};
+				// in this case walk_scope eventually ends so just retrieve the scope under its control
+				let (default_scope, scope) = Index::walk_scope(ast.root_node(), Some(scope.clone()), |scope, node| {
+					self.build_scope(scope, node, range.end, contents)
+				});
+				let scope = scope.unwrap_or(default_scope);
+				let model = some!(self.type_of(object, &scope, contents));
+				let model = some!(self.try_resolve_model(&model, &scope));
+				let needle_end = py_offset.saturating_sub(range.start);
+				let mut needle = field.as_ref();
+				if !needle.is_empty() && needle_end < needle.len() {
+					needle = &needle[..needle_end];
+				}
+				let anchor = value_range.start + relative_offset;
+				self.complete_property_name(
+					needle,
+					range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)),
+					_R(model).to_string(),
+					rope,
+					None, // Field would be better, but leave this here at least until @property is implemented
+					false,
+					&mut items,
+				)?;
+			}
+			RefKind::Widget => {
+				self.complete_widget(/*needle/, */ replace_range, rope, &mut items)?;
+			}
+			RefKind::ActionTag => {
+				self.complete_action_tag(/*needle/, */ replace_range, rope, &mut items)?;
+			}
+			RefKind::TName | RefKind::Component => return Ok(None),
+		}
+
+		Ok(Some(CompletionResponse::List(CompletionList {
+			is_incomplete: !items.has_space(),
+			items: items.into_inner(),
+		})))
 	}
 	/// The main function that determines all the information needed
 	/// to resolve the symbol at the cursor.
@@ -1119,9 +1146,8 @@ impl Backend {
 		contents: &[u8],
 	) -> anyhow::Result<()> {
 		normalize(&mut root);
-		let type_ = self.index.type_of(root, scope, contents).unwrap_or(Type::Value);
+		let type_ = self.type_of(root, scope, contents).unwrap_or(Type::Value);
 		let type_ = self
-			.index
 			.try_resolve_model(&type_, scope)
 			.map(|model| Type::Model(_R(model).into()))
 			.unwrap_or(type_);
