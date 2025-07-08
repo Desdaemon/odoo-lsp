@@ -5,15 +5,16 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use fomat_macros::fomat;
 use lasso::Spur;
-use ropey::{Rope, RopeSlice};
 use tower_lsp_server::{UriExt, lsp_types::*};
 use tracing::{debug, instrument, warn};
 use tree_sitter::Parser;
 use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
 
+use crate::prelude::*;
+
 use crate::analyze::{Scope, Type, normalize};
 use crate::component::{ComponentTemplate, PropType};
-use crate::index::{_G, _I, _R, Index, PathSymbol};
+use crate::index::Index;
 use crate::model::{Field, FieldKind, PropertyKind};
 use crate::record::Record;
 use crate::template::gather_templates;
@@ -58,11 +59,18 @@ enum Tag<'a> {
 }
 
 impl Backend {
-	pub fn update_xml(&self, root: Spur, text: &Text, uri: &Uri, rope: Rope, did_save: bool) -> anyhow::Result<()> {
+	pub fn update_xml(
+		&self,
+		root: Spur,
+		text: &Text,
+		uri: &Uri,
+		rope: RopeSlice<'_>,
+		did_save: bool,
+	) -> anyhow::Result<()> {
 		let text = match text {
 			Text::Full(full) => Cow::Borrowed(full.as_str()),
 			// Assume rope is up to date
-			Text::Delta(_) => Cow::from(rope.slice(..)),
+			Text::Delta(_) => Cow::from(rope),
 		};
 		let mut reader = Tokenizer::from(text.as_ref());
 		let mut record_ranges = vec![];
@@ -90,11 +98,9 @@ impl Backend {
 					let offset = ByteOffset(span.start());
 					if matches!(local.as_str(), "record" | "template" | "menuitem") {
 						let record = match local.as_str() {
-							"record" => {
-								Record::from_reader(offset, current_module, path_uri, &mut reader, rope.clone())
-							}
-							"template" => Record::template(offset, current_module, path_uri, &mut reader, rope.clone()),
-							"menuitem" => Record::menuitem(offset, current_module, path_uri, &mut reader, rope.clone()),
+							"record" => Record::from_reader(offset, current_module, path_uri, &mut reader, rope),
+							"template" => Record::template(offset, current_module, path_uri, &mut reader, rope),
+							"menuitem" => Record::menuitem(offset, current_module, path_uri, &mut reader, rope),
 							_ => unreachable!(),
 						};
 						let record = match record {
@@ -105,15 +111,15 @@ impl Backend {
 								}
 								// legacy <templates /> container without id=
 								let mut entries = vec![];
-								if let Err(err) =
-									gather_templates(path_uri, &mut reader, rope.clone(), &mut entries, true)
-								{
+								if let Err(err) = gather_templates(path_uri, &mut reader, rope, &mut entries, true) {
 									warn!("{err}");
 									continue;
 								}
-								record_ranges.extend(entries.into_iter().map(|entry| {
-									lsp_range_to_offset_range(entry.template.location.unwrap().range, &rope).unwrap()
-								}));
+								record_ranges.extend(
+									entries
+										.into_iter()
+										.map(|entry| rope_conv(entry.template.location.unwrap().range, rope).unwrap()),
+								);
 								continue;
 							}
 							Err(err) => {
@@ -125,7 +131,7 @@ impl Backend {
 								continue;
 							}
 						};
-						let Some(range) = lsp_range_to_offset_range(record.location.range, &rope) else {
+						let Ok(range) = rope_conv(record.location.range, rope) else {
 							debug!("no range for {}", record.id);
 							continue;
 						};
@@ -137,13 +143,15 @@ impl Backend {
 						}
 					} else if local.as_str() == "templates" {
 						let mut entries = vec![];
-						if let Err(err) = gather_templates(path_uri, &mut reader, rope.clone(), &mut entries, false) {
+						if let Err(err) = gather_templates(path_uri, &mut reader, rope, &mut entries, false) {
 							warn!("gather_templates failed: {err}");
 							continue;
 						}
-						record_ranges.extend(entries.into_iter().map(|entry| {
-							lsp_range_to_offset_range(entry.template.location.unwrap().range, &rope).unwrap()
-						}));
+						record_ranges.extend(
+							entries
+								.into_iter()
+								.map(|entry| rope_conv(entry.template.location.unwrap().range, rope).unwrap()),
+						);
 					}
 				}
 				None => break,
@@ -160,7 +168,7 @@ impl Backend {
 	}
 	fn record_slice<'rope>(
 		&self,
-		rope: &'rope Rope,
+		rope: RopeSlice<'rope>,
 		uri: &Uri,
 		position: Position,
 	) -> anyhow::Result<(RopeSlice<'rope>, ByteOffset, usize)> {
@@ -168,7 +176,7 @@ impl Backend {
 			.record_ranges
 			.get(uri.path().as_str())
 			.ok_or_else(|| errloc!("Did not build record ranges for {}", uri.path().as_str()))?;
-		let mut offset_at_cursor = position_to_offset(position, rope).ok_or_else(|| errloc!("offset_at_cursor"))?;
+		let mut offset_at_cursor = ok!(rope_conv(position, rope));
 		let Ok(record) = ranges.value().binary_search_by(|range| {
 			if offset_at_cursor < range.start {
 				Ordering::Greater
@@ -203,13 +211,17 @@ impl Backend {
 				.ok_or_else(|| errloc!("(did_save) did not build document"))?;
 			document.rope.clone()
 		};
-		self.update_xml(root, &Text::Delta(vec![]), &uri, rope, true)?;
+		self.update_xml(root, &Text::Delta(vec![]), &uri, rope.slice(..), true)?;
 		Ok(())
 	}
-	pub fn xml_completions(&self, params: CompletionParams, rope: Rope) -> anyhow::Result<Option<CompletionResponse>> {
+	pub fn xml_completions(
+		&self,
+		params: CompletionParams,
+		rope: RopeSlice<'_>,
+	) -> anyhow::Result<Option<CompletionResponse>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
-		let (slice, offset_at_cursor, relative_offset) = self.record_slice(&rope, uri, position)?;
+		let (slice, offset_at_cursor, relative_offset) = self.record_slice(rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
 		let path = some!(uri.to_file_path());
@@ -226,7 +238,7 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			scope,
-		} = self.gather_refs(offset_at_cursor, &mut reader, &slice)?;
+		} = self.gather_refs(offset_at_cursor, &mut reader, slice)?;
 		let (Some((value, value_range)), Some(record_field)) = (ref_at_cursor, ref_kind) else {
 			return Ok(None);
 		};
@@ -261,14 +273,14 @@ impl Backend {
 				self.complete_xml_id(
 					needle,
 					replace_range,
-					rope.clone(),
+					rope,
 					Some(_R(relation)),
 					current_module,
 					&mut items,
 				)?
 			}
 			RefKind::Model => {
-				let range = some!(offset_range_to_lsp_range(replace_range, rope.clone()));
+				let range = rope_conv(replace_range, rope)?;
 				self.complete_model(needle, range, &mut items)?
 			}
 			ref ref_kind @ RefKind::PropertyName(ref access) | ref ref_kind @ RefKind::MethodName(ref access) => {
@@ -287,7 +299,7 @@ impl Backend {
 					needle,
 					replace_range,
 					model_filter,
-					rope.clone(),
+					rope,
 					Some(if matches!(ref_kind, RefKind::MethodName(_)) {
 						PropertyKind::Method
 					} else {
@@ -298,17 +310,17 @@ impl Backend {
 				)?;
 			}
 			RefKind::TInherit | RefKind::TCall => {
-				let range = some!(offset_range_to_lsp_range(replace_range, rope.clone()));
+				let range = rope_conv(replace_range, rope)?;
 				self.complete_template_name(needle, range, &mut items)?;
 			}
 			RefKind::PropOf(component) => {
-				self.complete_component_prop(/*needle,*/ replace_range, rope.clone(), component, &mut items)?;
+				self.complete_component_prop(/*needle,*/ replace_range, rope, component, &mut items)?;
 			}
 			RefKind::Id => {
 				self.complete_xml_id(
 					needle,
 					replace_range,
-					rope.clone(),
+					rope,
 					model_filter.as_deref(),
 					current_module,
 					&mut items,
@@ -364,17 +376,17 @@ impl Backend {
 					needle,
 					range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)),
 					_R(model).to_string(),
-					rope.clone(),
+					rope,
 					None, // Field would be better, but leave this here at least until @property is implemented
 					false,
 					&mut items,
 				)?;
 			}
 			RefKind::Widget => {
-				self.complete_widget(/*needle/, */ replace_range, rope.clone(), &mut items)?;
+				self.complete_widget(/*needle/, */ replace_range, rope, &mut items)?;
 			}
 			RefKind::ActionTag => {
-				self.complete_action_tag(/*needle/, */ replace_range, rope.clone(), &mut items)?;
+				self.complete_action_tag(/*needle/, */ replace_range, rope, &mut items)?;
 			}
 			RefKind::TName | RefKind::Component => return Ok(None),
 		}
@@ -384,10 +396,10 @@ impl Backend {
 			items: items.into_inner(),
 		})))
 	}
-	pub fn xml_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> anyhow::Result<Option<Location>> {
+	pub fn xml_jump_def(&self, params: GotoDefinitionParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
-		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
+		let (slice, cursor_by_char, _) = self.record_slice(rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
 		let XmlRefs {
@@ -395,7 +407,7 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			scope,
-		} = self.gather_refs(cursor_by_char, &mut reader, &slice)?;
+		} = self.gather_refs(cursor_by_char, &mut reader, slice)?;
 
 		let Some((mut needle, _)) = ref_at_cursor else {
 			return Ok(None);
@@ -450,18 +462,22 @@ impl Backend {
 			None => Ok(None),
 		}
 	}
-	pub fn xml_references(&self, params: ReferenceParams, rope: Rope) -> anyhow::Result<Option<Vec<Location>>> {
+	pub fn xml_references(
+		&self,
+		params: ReferenceParams,
+		rope: RopeSlice<'_>,
+	) -> anyhow::Result<Option<Vec<Location>>> {
 		let position = params.text_document_position.position;
 		let uri = &params.text_document_position.text_document.uri;
 		let path = some!(uri.to_file_path());
-		let (slice, cursor_by_char, _) = self.record_slice(&rope, uri, position)?;
+		let (slice, cursor_by_char, _) = self.record_slice(rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
 		let XmlRefs {
 			ref_at_cursor: cursor_value,
 			ref_kind,
 			..
-		} = self.gather_refs(cursor_by_char, &mut reader, &slice)?;
+		} = self.gather_refs(cursor_by_char, &mut reader, slice)?;
 
 		let (cursor_value, _) = some!(cursor_value);
 		let current_module = self.index.find_module_of(&path);
@@ -483,11 +499,11 @@ impl Backend {
 			| None => Ok(None),
 		}
 	}
-	pub fn xml_hover(&self, params: HoverParams, rope: Rope) -> anyhow::Result<Option<Hover>> {
+	pub fn xml_hover(&self, params: HoverParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Hover>> {
 		let position = params.text_document_position_params.position;
 		let uri = &params.text_document_position_params.text_document.uri;
 		let path = some!(uri.to_file_path());
-		let (slice, offset_at_cursor, relative_offset) = self.record_slice(&rope, uri, position)?;
+		let (slice, offset_at_cursor, relative_offset) = self.record_slice(rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
 		let XmlRefs {
@@ -495,14 +511,15 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			scope,
-		} = self.gather_refs(offset_at_cursor, &mut reader, &slice)?;
+		} = self.gather_refs(offset_at_cursor, &mut reader, slice)?;
 
 		let (mut needle, ref_range) = some!(ref_at_cursor);
 
-		let mut lsp_range = offset_range_to_lsp_range(
+		let mut lsp_range = rope_conv(
 			ref_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset)),
-			rope.clone(),
-		);
+			rope,
+		)
+		.ok();
 		let current_module = self.index.find_module_of(&path);
 		match ref_kind {
 			Some(RefKind::Model) => self.hover_model(needle, lsp_range, false, None),
@@ -550,13 +567,14 @@ impl Backend {
 					let cursor_node = some!(ast.root_node().named_descendant_for_byte_range(py_offset, py_offset));
 					let needle = String::from_utf8_lossy(&contents[cursor_node.byte_range()]);
 					let scope_type = some!(scope.get(needle.as_ref()));
-					let lsp_range = offset_range_to_lsp_range(
+					let lsp_range = rope_conv(
 						cursor_node
 							.byte_range()
 							.clone()
 							.map_unit(|unit| ByteOffset(unit + ref_range.start + relative_offset)),
-						rope.clone(),
-					);
+						rope,
+					)
+					.ok();
 					if let Some(model) = (self.index).try_resolve_model(scope_type, &scope) {
 						return self.hover_model(_R(model), lsp_range, true, Some(&needle));
 					}
@@ -574,7 +592,7 @@ impl Backend {
 				self.hover_property_name(
 					&field,
 					_R(model),
-					offset_range_to_lsp_range(range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)), rope.clone()),
+					rope_conv(range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)), rope).ok(),
 				)
 			}
 			Some(RefKind::Component) => Ok(self.hover_component(needle, lsp_range)),
@@ -636,10 +654,14 @@ impl Backend {
 			}
 		}
 	}
-	pub fn xml_code_actions(&self, params: CodeActionParams, rope: Rope) -> anyhow::Result<Option<CodeActionResponse>> {
+	pub fn xml_code_actions(
+		&self,
+		params: CodeActionParams,
+		rope: RopeSlice<'_>,
+	) -> anyhow::Result<Option<CodeActionResponse>> {
 		let uri = &params.text_document.uri;
 		let position = params.range.start;
-		let (slice, offset_at_cursor, _) = self.record_slice(&rope, uri, position)?;
+		let (slice, offset_at_cursor, _) = self.record_slice(rope, uri, position)?;
 		let slice_str = Cow::from(slice);
 		let mut reader = Tokenizer::from(slice_str.as_ref());
 
@@ -647,7 +669,7 @@ impl Backend {
 			ref_at_cursor,
 			ref_kind,
 			..
-		} = self.gather_refs(offset_at_cursor, &mut reader, &slice)?;
+		} = self.gather_refs(offset_at_cursor, &mut reader, slice)?;
 		let (Some((value, _)), Some(RefKind::Component)) = (ref_at_cursor, ref_kind) else {
 			return Ok(None);
 		};
@@ -665,7 +687,7 @@ impl Backend {
 		&self,
 		offset_at_cursor: ByteOffset,
 		reader: &mut Tokenizer<'read>,
-		slice: &'read RopeSlice<'read>,
+		slice: RopeSlice<'read>,
 	) -> anyhow::Result<XmlRefs<'read>> {
 		let mut tag = None;
 		let mut ref_at_cursor = None::<(&str, core::ops::Range<usize>)>;
@@ -1036,9 +1058,8 @@ impl Backend {
 					// <Component prop />
 					// move one place back to get the attribute name
 					expected_eq_pos.col = expected_eq_pos.col.saturating_sub(1);
-					let start_pos = position_to_offset_slice(xml_position_to_lsp_position(start_pos), slice).unwrap();
-					let expected_eq_pos =
-						position_to_offset_slice(xml_position_to_lsp_position(expected_eq_pos), slice).unwrap();
+					let start_pos: ByteOffset = rope_conv(span_conv(start_pos), slice)?;
+					let expected_eq_pos: ByteOffset = rope_conv(span_conv(expected_eq_pos), slice)?;
 
 					// may be an invalid attribute, but no point in checking
 					let mut range = (start_pos..expected_eq_pos).erase();

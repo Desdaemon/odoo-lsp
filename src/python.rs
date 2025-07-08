@@ -8,12 +8,12 @@ use tracing::{debug, instrument, trace, warn};
 use tree_sitter::{Node, Parser, QueryMatch};
 use ts_macros::query;
 
+use crate::prelude::*;
+
 use crate::analyze::Type;
 use crate::index::{_G, _I, _R, PathSymbol, index_models};
 use crate::model::{ModelName, ModelType};
 use crate::{backend::Backend, backend::Text};
-use crate::{dig, errloc, utils::*};
-use crate::{format_loc, some};
 
 use std::collections::HashMap;
 
@@ -279,7 +279,7 @@ impl Backend {
 			}
 			return Ok(Some(Location {
 				uri: Uri::from_file_path(file_path).unwrap(),
-				range: ts_range_to_lsp_range(range),
+				range: span_conv(range),
 			}));
 		}
 
@@ -298,12 +298,18 @@ impl Backend {
 	}
 
 	#[tracing::instrument(skip_all, fields(uri))]
-	pub fn on_change_python(&self, text: &Text, uri: &Uri, rope: Rope, old_rope: Option<Rope>) -> anyhow::Result<()> {
+	pub fn on_change_python(
+		&self,
+		text: &Text,
+		uri: &Uri,
+		rope: RopeSlice<'_>,
+		old_rope: Option<Rope>,
+	) -> anyhow::Result<()> {
 		let mut parser = Parser::new();
 		parser
 			.set_language(&tree_sitter_python::LANGUAGE.into())
 			.expect("bug: failed to init python parser");
-		self.update_ast(text, uri, rope.clone(), old_rope, parser)
+		self.update_ast(text, uri, rope, old_rope, parser)
 	}
 
 	/// Parse import statements from Python content and return a map of imported names to their module paths
@@ -420,9 +426,10 @@ impl Backend {
 			debug!("diagnostics");
 			{
 				let mut document = self.document_map.get_mut(uri.path().as_str()).unwrap();
+				let rope = document.rope.clone();
 				self.diagnose_python(
 					uri.path().as_str(),
-					&document.rope.clone(),
+					rope.slice(..),
 					zone,
 					&mut document.diagnostics_cache,
 				);
@@ -543,16 +550,20 @@ impl Backend {
 			range: range.map_unit(ByteOffset),
 		})
 	}
-	pub fn python_jump_def(&self, params: GotoDefinitionParams, rope: Rope) -> anyhow::Result<Option<Location>> {
+	pub fn python_jump_def(
+		&self,
+		params: GotoDefinitionParams,
+		rope: RopeSlice<'_>,
+	) -> anyhow::Result<Option<Location>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
 			.get(uri.path().as_str())
 			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
+		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position_params.position, rope) else {
 			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
 		};
-		let contents = Cow::from(rope.clone());
+		let contents = Cow::from(rope);
 		let contents = contents.as_bytes();
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 
@@ -801,8 +812,12 @@ impl Backend {
 
 		Some((lhs, field, range))
 	}
-	pub fn python_references(&self, params: ReferenceParams, rope: Rope) -> anyhow::Result<Option<Vec<Location>>> {
-		let ByteOffset(offset) = some!(position_to_offset(params.text_document_position.position, &rope));
+	pub fn python_references(
+		&self,
+		params: ReferenceParams,
+		rope: RopeSlice<'_>,
+	) -> anyhow::Result<Option<Vec<Location>>> {
+		let ByteOffset(offset) = ok!(rope_conv(params.text_document_position.position, rope));
 		let uri = &params.text_document_position.text_document.uri;
 		let ast = self
 			.ast_map
@@ -810,7 +825,7 @@ impl Backend {
 			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
-		let contents = Cow::from(rope.clone());
+		let contents = Cow::from(rope);
 		let contents = contents.as_bytes();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let path = some!(params.text_document_position.text_document.uri.to_file_path());
@@ -893,17 +908,17 @@ impl Backend {
 		self.method_references(&prop, model)
 	}
 
-	pub fn python_hover(&self, params: HoverParams, rope: Rope) -> anyhow::Result<Option<Hover>> {
+	pub fn python_hover(&self, params: HoverParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Hover>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let ast = self
 			.ast_map
 			.get(uri.path().as_str())
 			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position_params.position, &rope) else {
-			Err(errloc!("could not find offset for {}", uri.path().as_str()))?
+		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position_params.position, rope) else {
+			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
 		};
 
-		let contents = Cow::from(rope.clone());
+		let contents = Cow::from(rope);
 		let contents = contents.as_bytes();
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
@@ -916,7 +931,7 @@ impl Backend {
 					Some(PyCompletions::Model) => {
 						if range.contains_end(offset) {
 							let range = range.shrink(1);
-							let lsp_range = ts_range_to_lsp_range(capture.node.range());
+							let lsp_range = span_conv(capture.node.range());
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.hover_model(&slice, Some(lsp_range), false, None);
@@ -948,11 +963,7 @@ impl Backend {
 								);
 							}
 							let model = _R(model);
-							return self.hover_property_name(
-								needle,
-								model,
-								offset_range_to_lsp_range(range, rope.clone()),
-							);
+							return self.hover_property_name(needle, model, rope_conv(range, rope).ok());
 						} else if let Some(cmdlist) = capture.node.next_named_sibling()
 							&& Backend::is_commandlist(cmdlist, offset)
 						{
@@ -966,19 +977,19 @@ impl Backend {
 								contents,
 								false,
 							));
-							let range = offset_range_to_lsp_range(range, rope);
+							let range = rope_conv(range, rope).ok();
 							return self.hover_property_name(&needle, _R(model), range);
 						}
 					}
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
 						let xml_id = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
-						return self.hover_record(&xml_id, offset_range_to_lsp_range(range.map_unit(ByteOffset), rope));
+						return self.hover_record(&xml_id, rope_conv(range.map_unit(ByteOffset), rope).ok());
 					}
 					Some(PyCompletions::Prop) if range.contains(&offset) => {
 						let model = some!(this_model.inner);
 						let model = String::from_utf8_lossy(model);
 						let name = String::from_utf8_lossy(&contents[range]);
-						let range = ts_range_to_lsp_range(capture.node.range());
+						let range = span_conv(capture.node.range());
 						return self.hover_property_name(&name, &model, Some(range));
 					}
 					Some(PyCompletions::FieldDescriptor) => {
@@ -992,7 +1003,7 @@ impl Backend {
 
 						if matches!(descriptor, b"comodel_name") {
 							let range = desc_value.byte_range().shrink(1);
-							let lsp_range = ts_range_to_lsp_range(desc_value.range());
+							let lsp_range = span_conv(desc_value.range());
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.hover_model(&slice, Some(lsp_range), false, None);
@@ -1020,11 +1031,7 @@ impl Backend {
 								);
 							}
 							let model = _R(model);
-							return self.hover_property_name(
-								needle,
-								model,
-								offset_range_to_lsp_range(range, rope.clone()),
-							);
+							return self.hover_property_name(needle, model, rope_conv(range, rope).ok());
 						}
 
 						return Ok(None);
@@ -1043,14 +1050,14 @@ impl Backend {
 			}
 		}
 		if let Some((model, prop, range)) = self.attribute_at_offset(offset, root, contents) {
-			let lsp_range = offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone());
+			let lsp_range = rope_conv(range.map_unit(ByteOffset), rope).ok();
 			return self.hover_property_name(&prop, model, lsp_range);
 		}
 
 		// No matches, assume arbitrary expression.
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
-		let lsp_range = ts_range_to_lsp_range(needle.range());
+		let lsp_range = span_conv(needle.range());
 		let (type_, scope) =
 			some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), contents));
 		if let Some(model) = self.index.try_resolve_model(&type_, &scope) {
@@ -1094,7 +1101,8 @@ impl Backend {
 		}
 
 		let active_parameter = 'find_param: {
-			if let Some(offset) = position_to_offset(params.text_document_position_params.position, &document.rope)
+			if let Ok(offset) =
+				rope_conv::<_, ByteOffset>(params.text_document_position_params.position, document.rope.slice(..))
 				&& let Some(contents) = contents.get(..=offset.0)
 				&& let Some(idx) = contents.iter().rposition(|&c| c == b',' || c == b'(')
 			{
@@ -1178,7 +1186,7 @@ impl Backend {
 		let ast = some!(self.ast_map.get(uri.path().as_str()));
 		let rope = &document.rope;
 		let contents = Cow::from(rope);
-		let ByteOffset(offset) = some!(position_to_offset(params.position, rope));
+		let ByteOffset(offset) = some!(rope_conv(params.position, rope.slice(..)).ok());
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
 		let (type_, _) =

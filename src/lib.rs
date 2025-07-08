@@ -23,4 +23,6 @@ pub mod xml;
 pub mod version;
 pub use version::{GIT_VERSION, GITVER, NAME, VERSION};
 
+pub mod prelude;
+
 pub mod test_utils;

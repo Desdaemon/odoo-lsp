@@ -1,17 +1,15 @@
 use std::{borrow::Cow, cmp::Ordering, ops::ControlFlow};
 
-use ropey::Rope;
 use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
 use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 
-use crate::utils::{
-	ByteOffset, ByteRange, Erase, RangeExt, lsp_range_to_offset_range, offset_range_to_lsp_range, ts_range_to_lsp_range,
-};
+use crate::index::Index;
+use crate::prelude::*;
+
 use crate::{
 	analyze::{MODEL_METHODS, Scope, Type, determine_scope},
 	backend::Backend,
-	index::{_G, _I, _R, Index},
 	model::ResolveMappedError,
 };
 
@@ -21,7 +19,7 @@ impl Backend {
 	pub fn diagnose_python(
 		&self,
 		path: &str,
-		rope: &Rope,
+		rope: RopeSlice<'_>,
 		damage_zone: Option<ByteRange>,
 		diagnostics: &mut Vec<Diagnostic>,
 	) {
@@ -29,7 +27,7 @@ impl Backend {
 			warn!("Did not build AST for {path}");
 			return;
 		};
-		let contents = Cow::from(rope.clone());
+		let contents = Cow::from(rope);
 		let contents = contents.as_bytes();
 		let query = PyCompletions::query();
 		let mut root = ast.root_node();
@@ -38,7 +36,7 @@ impl Backend {
 			root = top_level_stmt(root, zone.end.0).unwrap_or(root);
 			diagnostics.retain(|diag| {
 				// If we couldn't get a range here, rope has changed significantly so just toss the diag.
-				let Some(range) = lsp_range_to_offset_range(diag.range, rope) else {
+				let Ok(range) = rope_conv::<_, ByteRange>(diag.range, rope) else {
 					return false;
 				};
 				!root.byte_range().contains(&range.start.0)
@@ -51,7 +49,7 @@ impl Backend {
 			|range: core::ops::Range<usize>| damage_zone.as_ref().map(|zone| zone.intersects(range)).unwrap_or(true);
 
 		// Diagnose missing imports
-		self.diagnose_python_imports(rope, diagnostics, contents, ast.root_node());
+		self.diagnose_python_imports(diagnostics, contents, ast.root_node());
 		let top_level_ranges = root
 			.named_children(&mut root.walk())
 			.map(|node| node.byte_range())
@@ -82,7 +80,7 @@ impl Backend {
 								.map(|content| content.range())
 								.unwrap_or_else(|| capture.node.range());
 							diagnostics.push(Diagnostic {
-								range: ts_range_to_lsp_range(content_range),
+								range: span_conv(content_range),
 								message: format!("No XML record with ID `{xml_id}` found"),
 								severity: Some(DiagnosticSeverity::WARNING),
 								..Default::default()
@@ -99,8 +97,7 @@ impl Backend {
 								let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 								if !has_model.unwrap_or(false) {
 									diagnostics.push(Diagnostic {
-										range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone())
-											.unwrap(),
+										range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
 										message: format!("`{model}` is not a valid model name"),
 										severity: Some(DiagnosticSeverity::ERROR),
 										..Default::default()
@@ -123,7 +120,7 @@ impl Backend {
 							let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 							if !has_model.unwrap_or(false) {
 								diagnostics.push(Diagnostic {
-									range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
+									range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
 									message: format!("`{model}` is not a valid model name"),
 									severity: Some(DiagnosticSeverity::ERROR),
 									..Default::default()
@@ -210,7 +207,7 @@ impl Backend {
 						let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 						if !has_model.unwrap_or(false) {
 							diagnostics.push(Diagnostic {
-								range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
+								range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
 								message: format!("`{model}` is not a valid model name"),
 								severity: Some(DiagnosticSeverity::ERROR),
 								..Default::default()
@@ -330,7 +327,7 @@ impl Backend {
 			}
 
 			diagnostics.push(Diagnostic {
-				range: ts_range_to_lsp_range(attribute.range()),
+				range: span_conv(attribute.range()),
 				severity: Some(DiagnosticSeverity::ERROR),
 				message: format!(
 					"Model `{}` has no property `{}`",
@@ -344,7 +341,7 @@ impl Backend {
 		});
 	}
 
-	fn diagnose_python_imports(&self, _rope: &Rope, diagnostics: &mut Vec<Diagnostic>, contents: &[u8], root: Node) {
+	fn diagnose_python_imports(&self, diagnostics: &mut Vec<Diagnostic>, contents: &[u8], root: Node) {
 		let query = PyImports::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 
@@ -386,7 +383,7 @@ impl Backend {
 				// Try to resolve the module path
 				if self.index.resolve_py_module(&full_module_path).is_none() {
 					diagnostics.push(Diagnostic {
-						range: ts_range_to_lsp_range(node.range()),
+						range: span_conv(node.range()),
 						message: format!("Cannot resolve import '{name}'"),
 						severity: Some(DiagnosticSeverity::ERROR),
 						..Default::default()
@@ -397,7 +394,7 @@ impl Backend {
 	}
 	pub(crate) fn diagnose_mapped(
 		&self,
-		rope: &Rope,
+		rope: RopeSlice<'_>,
 		diagnostics: &mut Vec<Diagnostic>,
 		contents: &[u8],
 		root: Node<'_>,
@@ -430,7 +427,7 @@ impl Backend {
 			if let Some(dot) = needle.find('.') {
 				let message_range = range.start.0 + dot..range.end.0;
 				diagnostics.push(Diagnostic {
-					range: offset_range_to_lsp_range(message_range.map_unit(ByteOffset), rope.clone()).unwrap(),
+					range: rope_conv(message_range.map_unit(ByteOffset), rope).unwrap(),
 					severity: Some(DiagnosticSeverity::ERROR),
 					message: "Dotted access is not supported in this context".to_string(),
 					..Default::default()
@@ -443,7 +440,7 @@ impl Backend {
 				Ok(()) => {}
 				Err(ResolveMappedError::NonRelational) => {
 					diagnostics.push(Diagnostic {
-						range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
+						range: rope_conv(range, rope).unwrap(),
 						severity: Some(DiagnosticSeverity::ERROR),
 						message: format!("`{needle}` is not a relational field"),
 						..Default::default()
@@ -484,7 +481,7 @@ impl Backend {
 		}
 		if !has_property {
 			diagnostics.push(Diagnostic {
-				range: offset_range_to_lsp_range(range, rope.clone()).unwrap(),
+				range: rope_conv(range, rope).unwrap(),
 				severity: Some(DiagnosticSeverity::ERROR),
 				message: format!(
 					"Model `{}` has no {} `{needle}`",

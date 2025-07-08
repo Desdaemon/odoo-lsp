@@ -1,4 +1,3 @@
-use ropey::Rope;
 use tower_lsp_server::lsp_types::{CompletionList, CompletionResponse};
 use tree_sitter::{Node, QueryMatch};
 
@@ -8,6 +7,8 @@ use std::sync::atomic::Ordering::Relaxed;
 use tower_lsp_server::{UriExt, lsp_types::*};
 use tracing::{debug, warn};
 use tree_sitter::Tree;
+
+use crate::prelude::*;
 
 use crate::backend::Backend;
 use crate::index::{_G, _R};
@@ -23,9 +24,9 @@ impl Backend {
 		&self,
 		params: CompletionParams,
 		ast: Tree,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<CompletionResponse>> {
-		let Some(ByteOffset(offset)) = position_to_offset(params.text_document_position.position, &rope) else {
+		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position.position, rope) else {
 			warn!("invalid position {:?}", params.text_document_position.position);
 			return Ok(None);
 		};
@@ -35,7 +36,7 @@ impl Backend {
 			return Ok(None);
 		};
 		let mut cursor = tree_sitter::QueryCursor::new();
-		let contents = Cow::from(rope.clone());
+		let contents = Cow::from(rope);
 		let contents = contents.as_bytes();
 		let query = PyCompletions::query();
 		let completions_limit = self
@@ -75,7 +76,6 @@ impl Backend {
 							let range = range.shrink(1);
 							let needle = String::from_utf8_lossy(&contents[range.start..offset]);
 							let range = range.map_unit(ByteOffset);
-							let rope = rope.clone();
 							early_return.lift(move || async move {
 								let mut items = MaxVec::new(completions_limit);
 								self.complete_xml_id(&needle, range, rope, model_filter, current_module, &mut items)?;
@@ -91,10 +91,7 @@ impl Backend {
 								let slice = some!(rope.get_byte_slice(range.clone()));
 								let relative_offset = range.start;
 								let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-								let range = some!(offset_range_to_lsp_range(
-									range.shrink(1).map_unit(ByteOffset),
-									rope.clone()
-								));
+								let range = ok!(rope_conv(range.shrink(1).map_unit(ByteOffset), rope));
 								early_return.lift(move || async move {
 									let mut items = MaxVec::new(completions_limit);
 									self.complete_model(&needle, range, &mut items)?;
@@ -139,7 +136,7 @@ impl Backend {
 									contents,
 									completions_limit,
 									Some(PropertyKind::Field),
-									rope.clone(),
+									rope,
 								);
 							} else if let Some(cmdlist) = capture.node.next_named_sibling()
 								&& Backend::is_commandlist(cmdlist, offset)
@@ -159,7 +156,7 @@ impl Backend {
 									&needle,
 									range,
 									_R(model).to_string(),
-									rope.clone(),
+									rope,
 									Some(PropertyKind::Field),
 									true,
 									&mut items,
@@ -202,10 +199,7 @@ impl Backend {
 										let slice = some!(rope.get_byte_slice(range.clone()));
 										let relative_offset = range.start;
 										let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-										let range = some!(offset_range_to_lsp_range(
-											range.shrink(1).map_unit(ByteOffset),
-											rope.clone()
-										));
+										let range = ok!(rope_conv(range.shrink(1).map_unit(ByteOffset), rope));
 										early_return.lift(move || async move {
 											let mut items = MaxVec::new(completions_limit);
 											self.complete_model(&needle, range, &mut items)?;
@@ -283,7 +277,6 @@ impl Backend {
 			}
 			if early_return.is_none() {
 				let (model, needle, range) = some!(self.attribute_at_offset(offset, root, contents));
-				let rope = rope.clone();
 				let mut items = MaxVec::new(completions_limit);
 				self.complete_property_name(
 					&needle,
@@ -314,7 +307,7 @@ impl Backend {
 		contents: &[u8],
 		completions_limit: usize,
 		prop_type: Option<PropertyKind>,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<CompletionResponse>> {
 		let Mapped {
 			needle,

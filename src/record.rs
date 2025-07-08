@@ -1,13 +1,12 @@
 //! XML [records][Record], as well as [`template`][Record::template] and [`menuitem`][Record::menuitem] shorthands.
 
-use ropey::Rope;
 use tower_lsp_server::lsp_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
+use crate::prelude::*;
+
 use crate::index::{_I, _R, ModuleName, PathSymbol, RecordId};
 use crate::model::ModelName;
-use crate::utils::{ByteOffset, MinLoc};
-use crate::utils::{offset_to_position, position_to_offset};
 use crate::{ImStr, errloc, some};
 
 #[derive(Debug)]
@@ -29,7 +28,7 @@ impl Record {
 		module: ModuleName,
 		path: PathSymbol,
 		reader: &mut Tokenizer,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<Self>> {
 		let mut id = None;
 		let mut model = None;
@@ -38,7 +37,7 @@ impl Record {
 		// nested records are a thing apparently
 		let mut stack = 1;
 		let mut in_record = true;
-		let start = offset_to_position(offset, rope.clone()).ok_or_else(|| errloc!("{}", path))?;
+		let start: Position = ok!(rope_conv(offset, rope), "{}", path);
 
 		loop {
 			match reader.next() {
@@ -98,7 +97,7 @@ impl Record {
 						line: err.pos().row - 1,
 						character: err.pos().col - 1,
 					};
-					end = position_to_offset(pos, &rope);
+					end = rope_conv(pos, rope).ok();
 					break;
 				}
 				_ => {}
@@ -106,7 +105,7 @@ impl Record {
 		}
 		let id = some!(id);
 		let end = end.ok_or_else(|| errloc!("Unbound range for record"))?;
-		let end = offset_to_position(end, rope.clone()).ok_or_else(|| errloc!("{}", path))?;
+		let end = ok!(rope_conv(end, rope), "{}", path);
 		let range = Range { start, end };
 
 		Ok(Some(Self {
@@ -123,9 +122,9 @@ impl Record {
 		module: ModuleName,
 		path: PathSymbol,
 		reader: &mut Tokenizer,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<Self>> {
-		let start = offset_to_position(offset, rope.clone()).ok_or_else(|| errloc!("{}", path))?;
+		let start: Position = ok!(rope_conv(offset, rope), "{}", path);
 		let mut id = None;
 		let mut inherit_id = None;
 		let mut end = None;
@@ -191,14 +190,14 @@ impl Record {
 						line: err.pos().row - 1,
 						character: err.pos().col - 1,
 					};
-					end = position_to_offset(pos, &rope);
+					end = rope_conv(pos, rope).ok();
 					break;
 				}
 				_ => {}
 			}
 		}
 		let end = end.ok_or_else(|| errloc!("Unbound range for template"))?;
-		let end = offset_to_position(end, rope).ok_or_else(|| errloc!("{}", path))?;
+		let end = ok!(rope_conv(end, rope), "{}", path);
 		let range = Range { start, end };
 
 		Ok(Some(Self {
@@ -215,11 +214,11 @@ impl Record {
 		module: ModuleName,
 		path: PathSymbol,
 		reader: &mut Tokenizer,
-		rope: Rope,
+		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<Self>> {
 		let mut id = None;
 		let mut end = None;
-		let start = offset_to_position(offset, rope.clone()).ok_or_else(|| errloc!("{}", path))?;
+		let start = ok!(rope_conv(offset, rope), "{}", path);
 
 		loop {
 			match reader.next() {
@@ -240,7 +239,7 @@ impl Record {
 						line: err.pos().row - 1,
 						character: err.pos().col - 1,
 					};
-					end = position_to_offset(pos, &rope);
+					end = rope_conv(pos, rope).ok();
 					break;
 				}
 				_ => {}
@@ -249,7 +248,7 @@ impl Record {
 
 		let id = some!(id);
 		let end = end.ok_or_else(|| errloc!("Unbound range for menuitem"))?;
-		let end = offset_to_position(end, rope).ok_or_else(|| errloc!("{}", path))?;
+		let end = ok!(rope_conv(end, rope), "{}", path);
 		let range = Range { start, end };
 
 		Ok(Some(Self {

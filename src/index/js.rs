@@ -10,7 +10,7 @@ use ts_macros::query;
 
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
 use crate::index::{_I, PathSymbol};
-use crate::utils::{ByteOffset, MinLoc, RangeExt, offset_range_to_lsp_range, ts_range_to_lsp_range};
+use crate::utils::{ByteOffset, MinLoc, RangeExt, rope_conv, span_conv};
 use crate::{ImStr, errloc, format_loc, ok};
 
 use super::{_R, Component, ComponentName, Output, TemplateName};
@@ -128,6 +128,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 	let path = PathSymbol::strip_root(root, &pathbuf);
 	let contents = ok!(tokio::fs::read(&pathbuf).await, "Could not read {:?}", pathbuf);
 	let rope = ropey::Rope::from(String::from_utf8_lossy(&contents));
+	let rope = rope.slice(..);
 	let mut parser = Parser::new();
 	ok!(parser.set_language(&tree_sitter_javascript::LANGUAGE.into()));
 	let ast = parser.parse(&contents, None).ok_or_else(|| errloc!("AST not parsed"))?;
@@ -154,7 +155,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 				if component.location.is_none() {
 					component.location = Some(MinLoc {
 						path,
-						range: ts_range_to_lsp_range(first.node.range()),
+						range: span_conv(first.node.range()),
 					});
 				}
 				Some(component)
@@ -181,7 +182,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 							type_: Default::default(),
 							location: MinLoc {
 								path,
-								range: offset_range_to_lsp_range(range.map_unit(ByteOffset), rope.clone()).unwrap(),
+								range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
 							},
 						}),
 					};
@@ -204,9 +205,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 				Some(JsQuery::TemplateInline) => {
 					let Some(component) = &mut component else { continue };
 					let range = capture.node.byte_range().shrink(1).map_unit(ByteOffset);
-					component.template = Some(ComponentTemplate::Inline(
-						offset_range_to_lsp_range(range, rope.clone()).unwrap(),
-					));
+					component.template = Some(ComponentTemplate::Inline(rope_conv(range, rope).unwrap()));
 				}
 				Some(JsQuery::Subcomponent) => {
 					let Some(component) = &mut component else { continue };
@@ -224,7 +223,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 					let field = String::from_utf8_lossy(&contents[range]);
 					let loc = MinLoc {
 						path,
-						range: ts_range_to_lsp_range(capture.node.range()),
+						range: span_conv(capture.node.range()),
 					};
 					match category {
 						Some(b"fields") => widgets.push((ImStr::from(field.as_ref()), loc)),

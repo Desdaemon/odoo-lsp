@@ -1,10 +1,8 @@
-use ropey::Rope;
+use ropey::RopeSlice;
 use tower_lsp_server::lsp_types::{Position, Range};
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
-use crate::errloc;
-use crate::index::{_I, PathSymbol, Symbol};
-use crate::utils::{ByteOffset, MinLoc, offset_to_position};
+use crate::prelude::*;
 
 #[derive(Default, Debug)]
 pub struct Template {
@@ -26,7 +24,7 @@ pub struct NewTemplate {
 pub fn gather_templates(
 	path: PathSymbol,
 	reader: &mut Tokenizer,
-	document: Rope,
+	document: RopeSlice<'_>,
 	templates: &mut Vec<NewTemplate>,
 	legacy: bool,
 ) -> anyhow::Result<()> {
@@ -82,10 +80,14 @@ pub fn gather_templates(
 						}
 					};
 					let name = _I(name).into();
-					let start = offset_to_position(ByteOffset(tag_start), document.clone())
-						.ok_or_else(|| errloc!("qweb_templates start <- tag_start"))?;
-					let end = offset_to_position(ByteOffset(span.end()), document.clone())
-						.ok_or_else(|| errloc!("qweb_templates end <- span.end()"))?;
+					let start = ok!(
+						rope_conv(ByteOffset(tag_start), document),
+						"qweb_templates start <- tag_start"
+					);
+					let end = ok!(
+						rope_conv(ByteOffset(span.end()), document),
+						"qweb_templates end <- span.end()"
+					);
 					let range = Range { start, end };
 					templates.push(NewTemplate {
 						base,
@@ -120,8 +122,10 @@ pub fn gather_templates(
 				let name_candidate = if base { t_name } else { t_inherit };
 				let Some(name) = name_candidate else { break };
 				let name = _I(name).into();
-				let start = offset_to_position(ByteOffset(tag_start), document.clone())
-					.ok_or_else(|| errloc!("qweb_templates start <- tag_start"))?;
+				let start = ok!(
+					rope_conv(ByteOffset(tag_start), document),
+					"qweb_templates start <- tag_start"
+				);
 				let end = Position {
 					line: err.pos().row,
 					character: err.pos().col,
@@ -175,7 +179,7 @@ mod tests {
 		let rope = Rope::from_str(contents);
 		_ = reader.next();
 
-		gather_templates(PathSymbol::empty(), &mut reader, rope, &mut templates, false).unwrap();
+		gather_templates(PathSymbol::empty(), &mut reader, rope.slice(..), &mut templates, false).unwrap();
 
 		assert!(
 			matches!(
@@ -214,7 +218,7 @@ mod tests {
 		_ = reader.next();
 		_ = reader.next();
 
-		gather_templates(PathSymbol::empty(), &mut reader, rope, &mut templates, false).unwrap();
+		gather_templates(PathSymbol::empty(), &mut reader, rope.slice(..), &mut templates, false).unwrap();
 
 		assert!(
 			matches!(templates[..], [NewTemplate { base: true, .. },]),

@@ -276,8 +276,8 @@ impl LanguageServer for Backend {
 					document.rope = ropey::Rope::from_str(&change.text);
 				} else {
 					let range = change.range.expect("LSP change event must have a range");
-					let range =
-						lsp_range_to_char_range(range, &document.rope).expect("did_change applying delta: no range");
+					let range: CharRange =
+						rope_conv(range, document.rope.slice(..)).expect("did_change applying delta: no range");
 					let rope = &mut document.rope;
 					rope.remove(range.erase());
 					if !change.text.is_empty() {
@@ -321,10 +321,11 @@ impl LanguageServer for Backend {
 		if document.setup.should_wait() {
 			return Ok(None);
 		}
+		let rope = document.rope.slice(..);
 		let location = match ext {
-			"xml" => self.xml_jump_def(params, document.rope.clone()),
-			"py" => self.python_jump_def(params, document.rope.clone()),
-			"js" => self.js_jump_def(params, &document.rope),
+			"xml" => self.xml_jump_def(params, rope),
+			"py" => self.python_jump_def(params, rope),
+			"js" => self.js_jump_def(params, rope),
 			_ => {
 				debug!("(goto_definition) unsupported: {}", uri.path().as_str());
 				return Ok(None);
@@ -356,10 +357,11 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 
+		let rope = document.rope.slice(..);
 		let refs = match ext {
-			"py" => self.python_references(params, document.rope.clone()),
-			"xml" => self.xml_references(params, document.rope.clone()),
-			"js" => self.js_references(params, &document.rope),
+			"py" => self.python_references(params, rope),
+			"xml" => self.xml_references(params, rope),
+			"js" => self.js_references(params, rope),
 			_ => return Ok(None),
 		};
 
@@ -387,7 +389,7 @@ impl LanguageServer for Backend {
 			document.rope.clone()
 		};
 		if ext == "xml" {
-			let completions = self.xml_completions(params, rope);
+			let completions = self.xml_completions(params, rope.slice(..));
 			match completions {
 				Ok(ret) => Ok(ret),
 				Err(report) => {
@@ -405,7 +407,7 @@ impl LanguageServer for Backend {
 				};
 				ast.value().clone()
 			};
-			let completions = self.python_completions(params, ast, rope).await;
+			let completions = self.python_completions(params, ast, rope.slice(..)).await;
 			match completions {
 				Ok(ret) => Ok(ret),
 				Err(err) => {
@@ -473,10 +475,11 @@ impl LanguageServer for Backend {
 
 		let document = some!(self.document_map.get(uri.path().as_str()));
 		let (_, ext) = some!(uri.path().as_str().rsplit_once('.'));
+		let rope = document.rope.slice(..);
 		let hover = match ext {
-			"py" => self.python_hover(params, document.rope.clone()),
-			"xml" => self.xml_hover(params, document.rope.clone()),
-			"js" => self.js_hover(params, document.rope.clone()),
+			"py" => self.python_hover(params, rope),
+			"xml" => self.xml_hover(params, rope),
+			"js" => self.js_hover(params, rope),
 			_ => {
 				debug!("(hover) unsupported {}", uri.path().as_str());
 				Ok(None)
@@ -674,10 +677,10 @@ impl LanguageServer for Backend {
 			&& let Some(mut document) = self.document_map.get_mut(path)
 		{
 			let damage_zone = document.damage_zone.take();
-			let rope = &document.rope.clone();
+			let rope = document.rope.clone();
 			self.diagnose_python(
 				params.text_document.uri.path().as_str(),
-				rope,
+				rope.slice(..),
 				damage_zone,
 				&mut document.diagnostics_cache,
 			);
@@ -708,7 +711,7 @@ impl LanguageServer for Backend {
 		}
 
 		Ok(self
-			.xml_code_actions(params, document.rope.clone())
+			.xml_code_actions(params, document.rope.slice(..))
 			.inspect_err(|err| {
 				error!("(code_lens) {err}");
 			})
