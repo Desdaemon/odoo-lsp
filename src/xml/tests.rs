@@ -294,7 +294,7 @@ fn test_insert_in_scope_shadowing() {
 
 #[test]
 fn test_xml_completions_field_and_ref() {
-	tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).init();
+	crate::utils::init_for_test();
 	use crate::index::{_I, ModuleEntry};
 	use crate::prelude::*;
 	use crate::test_utils::index::index_models_with_properties;
