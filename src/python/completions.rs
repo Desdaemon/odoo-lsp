@@ -19,6 +19,18 @@ use crate::utils::*;
 
 use super::{Mapped, PyCompletions, ThisModel, top_level_stmt};
 
+fn extract_string_needle_at_offset<'a>(
+	rope: RopeSlice<'a>,
+	range: core::ops::Range<usize>,
+	offset: usize,
+) -> Option<(Cow<'a, str>, core::ops::Range<ByteOffset>)> {
+	let slice = rope.get_byte_slice(range.clone())?;
+	let relative_offset = range.start;
+	let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+	let byte_range = range.shrink(1).map_unit(ByteOffset);
+	Some((needle, byte_range))
+}
+
 impl Backend {
 	pub(crate) async fn python_completions(
 		&self,
@@ -95,10 +107,8 @@ impl Backend {
 						}
 						Some(PyCompletions::Model) => {
 							if range.contains_end(offset) {
-								let slice = some!(rope.get_byte_slice(range.clone()));
-								let relative_offset = range.start;
-								let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-								let range = ok!(rope_conv(range.shrink(1).map_unit(ByteOffset), rope));
+								let (needle, byte_range) = some!(extract_string_needle_at_offset(rope, range, offset));
+								let range = ok!(rope_conv(byte_range, rope));
 								early_return.lift(move || async move {
 									let mut items = MaxVec::new(completions_limit);
 									self.index.complete_model(&needle, range, &mut items)?;
@@ -203,10 +213,9 @@ impl Backend {
 									b"comodel_name" => {
 										// same as model
 										let range = desc_value.byte_range();
-										let slice = some!(rope.get_byte_slice(range.clone()));
-										let relative_offset = range.start;
-										let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-										let range = ok!(rope_conv(range.shrink(1).map_unit(ByteOffset), rope));
+										let (needle, byte_range) =
+											some!(extract_string_needle_at_offset(rope, range, offset));
+										let range = ok!(rope_conv(byte_range, rope));
 										early_return.lift(move || async move {
 											let mut items = MaxVec::new(completions_limit);
 											self.index.complete_model(&needle, range, &mut items)?;
@@ -220,10 +229,8 @@ impl Backend {
 									b"groups" => {
 										// complete res.groups records
 										let range = desc_value.byte_range();
-										let slice = some!(rope.get_byte_slice(range.clone()));
-										let relative_offset = range.start;
-										let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-										let byte_range = range.shrink(1).map_unit(ByteOffset);
+										let (needle, byte_range) =
+											some!(extract_string_needle_at_offset(rope, range, offset));
 										early_return.lift(move || async move {
 											let mut items = MaxVec::new(completions_limit);
 											self.index.complete_xml_id(

@@ -38,12 +38,7 @@ pub mod index {
 		js: Option<&'static str>,
 		xml: Option<&'static str>,
 	) {
-		// Generate a unique test ID to avoid conflicts between parallel tests
-		use std::sync::atomic::{AtomicU64, Ordering};
-		static TEST_ID: AtomicU64 = AtomicU64::new(0);
-		let test_id = TEST_ID.fetch_add(1, Ordering::SeqCst);
-
-		index_models_with_properties_and_id(index, py, js, xml, test_id);
+		index_models_with_properties_and_id(index, py, js, xml);
 	}
 
 	/// Helper to index all models from Python, JS, and XML source with a specific test ID.
@@ -53,8 +48,11 @@ pub mod index {
 		py: Option<&'static str>,
 		js: Option<&'static str>,
 		xml: Option<&'static str>,
-		test_id: u64,
 	) {
+		// Generate a unique test ID to avoid conflicts between parallel tests
+		use std::sync::atomic::{AtomicU64, Ordering};
+		static TEST_ID: AtomicU64 = AtomicU64::new(0);
+		let test_id = TEST_ID.fetch_add(1, Ordering::SeqCst);
 		use crate::model::ModelEntry;
 		use crate::prelude::*;
 		use std::path::Path;
