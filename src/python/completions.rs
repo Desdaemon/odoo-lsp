@@ -217,11 +217,35 @@ impl Backend {
 										});
 										break 'match_;
 									}
+									b"groups" => {
+										// complete res.groups records
+										let range = desc_value.byte_range();
+										let slice = some!(rope.get_byte_slice(range.clone()));
+										let relative_offset = range.start;
+										let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+										let byte_range = range.shrink(1).map_unit(ByteOffset);
+										early_return.lift(move || async move {
+											let mut items = MaxVec::new(completions_limit);
+											self.index.complete_xml_id(
+												&needle,
+												byte_range,
+												rope,
+												Some("res.groups"),
+												current_module,
+												&mut items,
+											)?;
+											Ok(Some(CompletionResponse::List(CompletionList {
+												is_incomplete: !items.has_space(),
+												items: items.into_inner(),
+											})))
+										});
+										break 'match_;
+									}
 									_ => {}
 								}
 							}
 
-							if matches!(descriptor, b"comodel_name" | b"domain") {
+							if matches!(descriptor, b"comodel_name" | b"domain" | b"groups") {
 								field_descriptors.push((descriptor, desc_value));
 							}
 							if desc_value.byte_range().contains_end(offset) {
