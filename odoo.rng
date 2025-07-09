@@ -417,6 +417,11 @@
 							The title of the page.
 						</a:documentation>
 					</attribute>
+					<attribute name="name">
+						<a:documentation>
+							The name of the page, used to reference it in xpath expressions.
+						</a:documentation>
+					</attribute>
 				</choice>
 			</zeroOrMore>
 		</element>
