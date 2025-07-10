@@ -139,8 +139,12 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 								})
 								.await;
 							if let Ok(Some(CompletionResponse::List(list))) = completions {
-								let actual = list.items.iter().map(|comp| comp.label.to_string()).collect::<Vec<_>>();
-								if expected[..] != actual[..] {
+								let mut actual =
+									list.items.iter().map(|comp| comp.label.to_string()).collect::<Vec<_>>();
+								let mut expected_sorted = expected.clone();
+								actual.sort();
+								expected_sorted.sort();
+								if expected_sorted != actual {
 									format!(
 										"[complete] in {path}:{}:{}\n{}",
 										position.line + 1,

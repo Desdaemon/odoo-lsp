@@ -294,7 +294,7 @@ fn test_insert_in_scope_shadowing() {
 
 #[test]
 fn test_xml_completions_field_and_ref() {
-	tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).init();
+	crate::utils::init_for_test();
 	use crate::index::{_I, ModuleEntry};
 	use crate::prelude::*;
 	use crate::test_utils::index::index_models_with_properties;
@@ -398,5 +398,142 @@ fn test_xml_completions_template_name() {
 		println!("No completions returned for template name, as expected");
 	} else {
 		println!("Completions returned for template name: {result:?}");
+	}
+}
+
+#[test]
+fn test_gather_refs_field_groups() {
+	use crate::prelude::*;
+	use crate::xml::{Index, Tokenizer};
+	use ropey::Rope;
+
+	let index = Index::default();
+	let xml = r#"<field name="partner_id" groups="base.group_user"/>"#;
+	let rope = Rope::from_str(xml);
+	let mut reader = Tokenizer::from(xml);
+	let offset = xml.find("base.group_user").unwrap() + 5; // inside 'group_user'
+	let refs = index
+		.gather_refs(ByteOffset(offset), &mut reader, rope.slice(..))
+		.unwrap();
+
+	assert!(matches!(refs.ref_kind, Some(crate::xml::RefKind::Id)));
+	assert_eq!(refs.model_filter, Some("res.groups".to_string()));
+	assert_eq!(refs.ref_at_cursor, Some(("base.group_user", 33..48)));
+}
+
+#[test]
+fn test_gather_refs_field_groups_multiple() {
+	use crate::prelude::*;
+	use crate::xml::{Index, Tokenizer};
+	use ropey::Rope;
+
+	let index = Index::default();
+	let xml = r#"<field name="partner_id" groups="base.group_user,base.group_system"/>"#;
+	let rope = Rope::from_str(xml);
+
+	// Test first group
+	let mut reader = Tokenizer::from(xml);
+	let offset = xml.find("base.group_user").unwrap() + 5; // inside 'group_user'
+	let refs = index
+		.gather_refs(ByteOffset(offset), &mut reader, rope.slice(..))
+		.unwrap();
+
+	assert!(matches!(refs.ref_kind, Some(crate::xml::RefKind::Id)));
+	assert_eq!(refs.model_filter, Some("res.groups".to_string()));
+	assert_eq!(refs.ref_at_cursor, Some(("base.group_user", 33..48)));
+
+	// Test second group
+	let mut reader = Tokenizer::from(xml);
+	let offset = xml.find("base.group_system").unwrap() + 5; // inside 'group_system'
+	let refs = index
+		.gather_refs(ByteOffset(offset), &mut reader, rope.slice(..))
+		.unwrap();
+
+	assert!(matches!(refs.ref_kind, Some(crate::xml::RefKind::Id)));
+	assert_eq!(refs.model_filter, Some("res.groups".to_string()));
+	assert_eq!(refs.ref_at_cursor, Some(("base.group_system", 49..66)));
+}
+
+#[test]
+fn test_xml_completions_field_groups() {
+	use crate::index::{_I, ModuleEntry, PathSymbol};
+	use crate::prelude::*;
+	use crate::record::Record;
+	use crate::utils::MinLoc;
+	use crate::xml::{Index, Tokenizer};
+	use ropey::Rope;
+	use std::collections::HashMap;
+	use std::path::{Path, PathBuf};
+
+	let index = Index::default();
+
+	// Insert a dummy module into the index
+	let root = PathBuf::from("/fake");
+	let mut modules = HashMap::new();
+	modules.insert(
+		_I("base").into(),
+		ModuleEntry {
+			path: "base".into(),
+			dependencies: Box::new([]),
+			loaded: Default::default(),
+			loaded_dependents: Default::default(),
+		},
+	);
+	index.roots.insert(root.clone(), modules);
+
+	// Insert some group records
+	let base_path = PathSymbol::strip_root(_I("/fake"), Path::new("/fake/base/data/groups.xml"));
+	index.records.insert(
+		_I("base.group_user").into(),
+		Record {
+			deleted: false,
+			id: "group_user".into(),
+			module: _I("base").into(),
+			model: Some(_I("res.groups").into()),
+			inherit_id: None,
+			location: MinLoc {
+				path: base_path,
+				range: Range {
+					start: Position { line: 0, character: 0 },
+					end: Position { line: 0, character: 0 },
+				},
+			},
+		},
+		None,
+	);
+	index.records.insert(
+		_I("base.group_system").into(),
+		Record {
+			deleted: false,
+			id: "group_system".into(),
+			module: _I("base").into(),
+			model: Some(_I("res.groups").into()),
+			inherit_id: None,
+			location: MinLoc {
+				path: base_path,
+				range: Range {
+					start: Position { line: 0, character: 0 },
+					end: Position { line: 0, character: 0 },
+				},
+			},
+		},
+		None,
+	);
+
+	let xml = r#"<field name="partner_id" groups=""/>"#;
+	let rope = Rope::from_str(xml);
+	let path = PathBuf::from("/fake/base/views/test.xml");
+	let offset = xml.find(r#"groups="""#).unwrap() + 8; // inside the empty quotes
+
+	let mut reader = Tokenizer::from(xml);
+	let completions = index
+		.xml_completions(&path, 20, rope.slice(..), ByteOffset(offset), 0, &mut reader)
+		.expect("xml_completions should not error");
+
+	if let Some(CompletionResponse::List(list)) = completions {
+		assert!(list.items.iter().any(|item| item.label == "group_user"));
+		assert!(list.items.iter().any(|item| item.label == "group_system"));
+	} else {
+		panic!("Expected completion list for groups attribute");
 	}
 }

@@ -1,5 +1,10 @@
 <odoo>
 
+	<record id="group_name" model="res.groups">
+		<field name="name">Group Name</field>
+		<field name="category_id" ref="base.module_category_hidden"/>
+	</record>
+
 	<record id="action_button_xml" model="ir.actions.act_window">
 		<field name="name">action button</field>
 		<field name="res_model">foo</field>
@@ -7,6 +12,8 @@
 	</record>
 
 	<record id="foo.1" model="foo">
+		<field name="bar" groups="bar.group_name" />
+		<!--                      ^complete bar.group_name group_name -->
 		<field name="bar" />
 		<!--         ^complete bar -->
 		<button name="action_button" type="object" />

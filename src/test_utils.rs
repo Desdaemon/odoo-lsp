@@ -38,23 +38,38 @@ pub mod index {
 		js: Option<&'static str>,
 		xml: Option<&'static str>,
 	) {
+		index_models_with_properties_and_id(index, py, js, xml);
+	}
+
+	/// Helper to index all models from Python, JS, and XML source with a specific test ID.
+	#[cfg(test)]
+	pub fn index_models_with_properties_and_id(
+		index: &mut Index,
+		py: Option<&'static str>,
+		js: Option<&'static str>,
+		xml: Option<&'static str>,
+	) {
+		// Generate a unique test ID to avoid conflicts between parallel tests
+		use std::sync::atomic::{AtomicU64, Ordering};
+		static TEST_ID: AtomicU64 = AtomicU64::new(0);
+		let test_id = TEST_ID.fetch_add(1, Ordering::SeqCst);
 		use crate::model::ModelEntry;
 		use crate::prelude::*;
 		use std::path::Path;
 
-		let root = "/test";
-		let py_path = "/test/dummy.py";
-		let js_path = "/test/dummy.js";
-		let xml_path = "/test/dummy.xml";
+		let root = format!("/test_{}", test_id);
+		let py_path = format!("/test_{}/dummy.py", test_id);
+		let js_path = format!("/test_{}/dummy.js", test_id);
+		let xml_path = format!("/test_{}/dummy.xml", test_id);
 		if let Ok(mut fs) = TEST_FS.write() {
 			if let Some(py) = py {
-				fs.insert(Path::new(py_path).to_path_buf(), py.as_bytes());
+				fs.insert(Path::new(&py_path).to_path_buf(), py.as_bytes());
 			}
 			if let Some(js) = js {
-				fs.insert(Path::new(js_path).to_path_buf(), js.as_bytes());
+				fs.insert(Path::new(&js_path).to_path_buf(), js.as_bytes());
 			}
 			if let Some(xml) = xml {
-				fs.insert(Path::new(xml_path).to_path_buf(), xml.as_bytes());
+				fs.insert(Path::new(&xml_path).to_path_buf(), xml.as_bytes());
 			}
 		} else {
 			panic!("can't modify test_utils::fs::TEST_FS");
@@ -67,7 +82,7 @@ pub mod index {
 				let entry = ModelEntry {
 					base: Some(crate::model::ModelLocation(
 						crate::utils::MinLoc {
-							path: crate::index::PathSymbol::strip_root(_I(root), Path::new(py_path)),
+							path: crate::index::PathSymbol::strip_root(_I(&root), Path::new(&py_path)),
 							range: Range::default(),
 						},
 						ByteOffset(0)..ByteOffset(0),
