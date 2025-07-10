@@ -1,4 +1,9 @@
 <odoo>
+	<record id="group_name" model="res.groups">
+		<field name="name">Group Name Bar</field>
+		<field name="category_id" ref="base.module_category_hidden"/>
+	</record>
+
 	<record id="action_open_record" model="ir.actions.act_window">
 		<field name="name">action open record</field>
 		<field name="res_model">bar</field>

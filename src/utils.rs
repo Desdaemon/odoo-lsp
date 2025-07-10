@@ -470,12 +470,16 @@ impl<T: Sized> TryResultExt for TryResult<T> {
 
 #[cfg(test)]
 pub fn init_for_test() {
+	use std::sync::Once;
 	use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-	tracing_subscriber::registry()
-		.with(tracing_subscriber::fmt::layer())
-		.with(EnvFilter::from("info,odoo_lsp=trace"))
-		.init();
+	static INIT: Once = Once::new();
+	INIT.call_once(|| {
+		tracing_subscriber::registry()
+			.with(tracing_subscriber::fmt::layer())
+			.with(EnvFilter::from("info,odoo_lsp=trace"))
+			.init();
+	});
 }
 
 pub struct Semaphore {
