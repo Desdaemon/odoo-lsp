@@ -259,6 +259,159 @@
 		</element>
 	</define>
 
+	<define name="list">
+		<element name="list">
+			<a:documentation xml:space="preserve">
+				Define a list view. <br/>
+				See https://www.odoo.com/documentation/latest/developer/reference/user_interface/view_architectures.html#list
+			</a:documentation>
+			<zeroOrMore>
+				<choice>
+					<ref name="decoration"/>
+					<ref name="view_attrs"/>
+					<attribute name="import" a:defaultValue="True">
+						<a:documentation>
+							Disable/enable record deletion through the **Action** dropdown.
+						</a:documentation>
+					</attribute>
+					<attribute name="export_xlsx" a:defaultValue="True">
+						<a:documentation>
+							Disable/enable record exporting on this view.
+						</a:documentation>
+					</attribute>
+					<attribute name="editable">
+						<choice>
+							<value>top</value>
+							<value>bottom</value>
+						</choice>
+						<a:documentation>
+							Allow in-place record editing, and specifies whether new records
+							are inserted at the top or bottom of the list.
+						</a:documentation>
+					</attribute>
+					<attribute name="multi_edit">
+						<value>1</value>
+						<a:documentation>
+							Allow updating multiple records' fields to the same value.
+						</a:documentation>
+					</attribute>
+					<attribute name="open_form_view" a:defaultValue="False">
+						<a:documentation>
+							Display a button at each row's end to open the form view.
+						</a:documentation>
+					</attribute>
+					<attribute name="default_group_by">
+						<a:documentation>
+							Default field to group by, if none is specified on the action or the search filters.
+						</a:documentation>
+					</attribute>
+					<attribute name="default_order">
+						<a:documentation>
+							Comma-separated list of fields to order records, overriding the model's default `_order`.
+							To sort a field in decreasing order, specify `$field desc`.
+						</a:documentation>
+					</attribute>
+					<attribute name="limit" a:defaultValue="80">
+						<data type="nonNegativeInteger"/>
+						<a:documentation>
+							The default size of a page.
+						</a:documentation>
+					</attribute>
+					<attribute name="groups_limit" a:defaultValue="80">
+						<data type="nonNegativeInteger"/>
+						<a:documentation>
+							The default number of groups.
+						</a:documentation>
+					</attribute>
+					<attribute name="expand" a:defaultValue="False">
+						<a:documentation>
+							Whether to expand the first level of groups by default.
+						</a:documentation>
+					</attribute>
+					<attribute name="sample" a:defaultValue="False">
+						<a:documentation>
+							Populate the view with sample data if it's empty.
+						</a:documentation>
+					</attribute>
+					<ref name="tree_field"/>
+					<ref name="tree_button"/>
+					<element name="groupby">
+						<a:documentation>
+							Define a group-by header for `Many2one` fields.
+						</a:documentation>
+						<attribute name="name">
+							<a:documentation>
+								The name of a `Many2one` field by which to group records.
+							</a:documentation>
+						</attribute>
+						<oneOrMore>
+							<choice>
+								<ref name="tree_field"/>
+								<ref name="tree_button"/>
+							</choice>
+						</oneOrMore>
+					</element>
+					<element name="header">
+						<a:documentation>
+							A header displayed above the list view.
+						</a:documentation>
+						<oneOrMore>
+							<element name="button">
+								<a:documentation>
+									A button inside the header. Accepts the same attributes as button columns.
+								</a:documentation>
+								<ref name="tree_button_attrs"/>
+								<optional>
+									<attribute name="display">
+										<value>always</value>
+										<a:documentation>
+											Show this button even if no records are selected.
+										</a:documentation>
+									</attribute>
+								</optional>
+							</element>
+						</oneOrMore>
+					</element>
+					<element name="control">
+						<a:documentation xml:space="preserve">
+							Create a "control row" that accepts different ways to create records
+							a la Sales Order's "Add a section", "Add a note" etc.<br/>
+							Overrides the default "Add a line" button if specified.
+						</a:documentation>
+						<oneOrMore>
+							<choice>
+								<element name="create">
+									<a:documentation>
+										A button to create a new record, with optional context.
+									</a:documentation>
+									<attribute name="string" a:defaultValue="Add a line">
+										<a:documentation>
+											The text of the button.
+										</a:documentation>
+									</attribute>
+									<optional>
+										<attribute name="context" a:defaultValue="{}">
+											<a:documentation xml:space="preserve">
+												Additional context to pass before creating a record.<br/>
+												Useful for passing default values i.e. `{"default_field": ..}`
+											</a:documentation>
+										</attribute>
+									</optional>
+								</element>
+								<element name="button">
+									<a:documentation>
+										A button inside the control row. Accepts the same attributes as button columns.
+									</a:documentation>
+									<ref name="tree_button_attrs"/>
+								</element>
+							</choice>
+						</oneOrMore>
+					</element>
+				</choice>
+			</zeroOrMore>
+		</element>
+	</define>
+
 	<define name="form">
 		<element name="form">
 			<a:documentation xml:space="preserve">
@@ -505,6 +658,7 @@
 				<choice>
 					<ref name="view_field_attrs"/>
 					<ref name="tree"/>
+					<ref name="list"/>
 					<ref name="form"/>
 					<attribute name="colspan" a:defaultValue="1">
 						<data type="nonNegativeInteger"/>
@@ -526,6 +680,7 @@
 						<choice>
 							<text/>
 							<value>tree</value>
+							<value>list</value>
 							<value>form</value>
 							<value>kanban</value>
 							<value>graph</value>
@@ -809,11 +964,13 @@
 	<define name="any">
 		<choice>
 			<ref name="tree"/>
+			<ref name="list"/>
 			<ref name="tree_field"/>
 			<element>
 				<anyName>
 					<except>
 						<name>tree</name>
+						<name>list</name>
 						<name>field</name>
 					</except>
 				</anyName>
@@ -833,6 +990,7 @@
 	<define name="arch_fragment">
 		<choice>
 			<ref name="tree"/>
+			<ref name="list"/>
 			<ref name="form"/>
 			<element name="xpath">
 				<a:documentation>
@@ -850,6 +1008,7 @@
 				<anyName>
 					<except>
 						<name>tree</name>
+						<name>list</name>
 						<name>form</name>
 						<name>xpath</name>
 					</except>
