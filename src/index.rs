@@ -595,12 +595,12 @@ impl Index {
 
 fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry>]>> {
 	query! {
-		ManifestQuery(Depends);
+		ManifestQuery(DependsList);
 
 	((dictionary
 		(pair
 			(string (string_content) @_depends)
-			(list ((string) @DEPENDS ","?)*)
+			(list) @DEPENDS_LIST
 		)
 	) (#eq? @_depends "depends"))
 	}
@@ -621,12 +621,17 @@ fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry
 
 	for (match_, idx) in cursor.captures(ManifestQuery::query(), root, &contents[..]) {
 		let capture = match_.captures[idx];
-		// for capture in match_.captures {
-		if let Some(ManifestQuery::Depends) = ManifestQuery::from(capture.index) {
-			let dep = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
-			deps.push(_I(dep).into());
+		if let Some(ManifestQuery::DependsList) = ManifestQuery::from(capture.index) {
+			let list_node = capture.node;
+			let mut child_cursor = list_node.walk();
+			for child in list_node.children(&mut child_cursor) {
+				// Only process string nodes, skip comments, commas, brackets, etc.
+				if child.kind() == "string" {
+					let dep = String::from_utf8_lossy(&contents[child.byte_range().shrink(1)]);
+					deps.push(_I(dep).into());
+				}
+			}
 		}
-		// }
 	}
 
 	Ok(deps.into_boxed_slice())
@@ -1195,5 +1200,63 @@ class TransifexCodeTranslation(models.Model):
 				..
 			}]
 		));
+	}
+
+	#[test]
+	fn test_depends_manifest_parsing() {
+		use crate::test_utils;
+
+		if let Ok(mut fs) = test_utils::fs::TEST_FS.write() {
+			fs.insert(
+				"foobar/__manifest__.py".into(),
+				r#"{
+    "name": "foobar",
+    "depends": [
+        "foo",
+        # test dependencies
+        "bar",  # this was not recognized
+        # "skip",
+    ],
+}
+"#
+				.as_bytes(),
+			);
+		}
+
+		let manifest_path = std::path::Path::new("foobar/__manifest__.py");
+		let result = parse_dependencies(manifest_path);
+
+		match result {
+			Ok(deps) => {
+				println!("Dependencies found: {} total", deps.len());
+				for (i, dep) in deps.iter().enumerate() {
+					println!("  {}. {:?}", i + 1, dep);
+				}
+
+				assert_eq!(
+					deps.len(),
+					3,
+					"Expected to find 3 dependencies (base + foo + bar), but found {}",
+					deps.len()
+				);
+
+				let dep_names: Vec<String> = deps.iter().map(|d| format!("{:?}", d)).collect();
+				assert!(
+					dep_names.contains(&"Symbol<ModuleEntry>(\"base\")".to_string()),
+					"Expected to find 'base' dependency"
+				);
+				assert!(
+					dep_names.contains(&"Symbol<ModuleEntry>(\"foo\")".to_string()),
+					"Expected to find 'foo' dependency"
+				);
+				assert!(
+					dep_names.contains(&"Symbol<ModuleEntry>(\"bar\")".to_string()),
+					"Expected to find 'bar' dependency (should now be recognized despite comment)"
+				);
+			}
+			Err(e) => {
+				panic!("Parsing should succeed but with incomplete results, got error: {}", e);
+			}
+		}
 	}
 }
