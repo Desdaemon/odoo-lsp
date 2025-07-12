@@ -7,8 +7,9 @@ use crate::prelude::*;
 
 use crate::backend::Backend;
 use crate::backend::Text;
-use crate::index::{_G, _R, JsQuery, Symbol};
-use crate::utils::RangeExt;
+use crate::index::{_G, JsQuery};
+use crate::model::PropertyKind;
+use crate::utils::{ByteOffset, MaxVec, RangeExt, span_conv};
 use tracing::instrument;
 use ts_macros::query;
 
@@ -179,7 +180,14 @@ impl Backend {
 					// Extract the current prefix (excluding quotes)
 					let inner_range = range.shrink(1);
 					let prefix = String::from_utf8_lossy(&contents[inner_range.start..offset]);
-					return Ok(Some(self.complete_model_names(&prefix)));
+					let lsp_range = span_conv(model_node.range());
+					let mut items = MaxVec::new(100);
+					self.index.complete_model(&prefix, lsp_range, &mut items)?;
+
+					return Ok(Some(CompletionResponse::List(CompletionList {
+						is_incomplete: false,
+						items: items.into_inner(),
+					})));
 				}
 			}
 
@@ -190,12 +198,29 @@ impl Backend {
 					// Extract the model name from the first argument
 					if let Some(model_node) = model_arg_node {
 						let model_range = model_node.byte_range().shrink(1);
-						let model_name = String::from_utf8_lossy(&contents[model_range]);
+						let model_name = String::from_utf8_lossy(&contents[model_range]).to_string();
 
 						// Extract the current method prefix (excluding quotes)
-						let inner_range = range.shrink(1);
+						let inner_range = range.clone().shrink(1);
 						let prefix = String::from_utf8_lossy(&contents[inner_range.start..offset]);
-						return Ok(Some(self.complete_method_names(&model_name, &prefix)));
+
+						let byte_range = ByteOffset(range.start)..ByteOffset(range.end);
+
+						let mut items = MaxVec::new(100);
+						self.index.complete_property_name(
+							&prefix,
+							byte_range,
+							model_name,
+							rope,
+							Some(PropertyKind::Method),
+							true,
+							&mut items,
+						)?;
+
+						return Ok(Some(CompletionResponse::List(CompletionList {
+							is_incomplete: false,
+							items: items.into_inner(),
+						})));
 					}
 				}
 			}
@@ -221,70 +246,30 @@ impl Backend {
 					{
 						// We're completing the method name
 						let model_range = model_node.byte_range().shrink(1);
-						let model_name = String::from_utf8_lossy(&contents[model_range]);
-						return Ok(Some(self.complete_method_names(&model_name, "")));
+						let model_name = String::from_utf8_lossy(&contents[model_range]).to_string();
+
+						let synthetic_range = ByteOffset(i)..ByteOffset(offset.max(i));
+
+						let mut items = MaxVec::new(100);
+						self.index.complete_property_name(
+							"",
+							synthetic_range,
+							model_name,
+							rope,
+							Some(PropertyKind::Method),
+							true,
+							&mut items,
+						)?;
+
+						return Ok(Some(CompletionResponse::List(CompletionList {
+							is_incomplete: false,
+							items: items.into_inner(),
+						})));
 					}
 				}
 			}
 		}
 
 		Ok(None)
-	}
-
-	fn complete_model_names(&self, prefix: &str) -> CompletionResponse {
-		let mut items = Vec::new();
-
-		// Get all model names that match the prefix from the by_prefix trie
-		if let Ok(by_prefix) = self.index.models.by_prefix.read() {
-			for (key, _model_names) in by_prefix.iter_prefix(prefix.as_bytes()) {
-				// key is already a string slice (ImStr)
-				let model_name = key;
-				items.push(CompletionItem {
-					label: model_name.to_string(),
-					kind: Some(CompletionItemKind::CLASS),
-					detail: Some("Odoo Model".to_string()),
-					..Default::default()
-				});
-			}
-		}
-
-		CompletionResponse::List(CompletionList {
-			is_incomplete: false,
-			items,
-		})
-	}
-
-	fn complete_method_names(&self, model_name: &str, prefix: &str) -> CompletionResponse {
-		let mut items = Vec::new();
-
-		// Find the model using the interner
-		if let Some(model_symbol_spur) = _G(model_name) {
-			let model_symbol: Symbol<crate::model::ModelEntry> = model_symbol_spur.into();
-
-			// Populate properties to ensure methods are loaded
-			if let Some(model) = self.index.models.populate_properties(model_symbol, &[]) {
-				// Get all methods that match the prefix
-				if let Some(methods) = &model.methods {
-					for method_symbol in methods.keys() {
-						// Resolve the symbol to get the method name
-						let method_name = _R(*method_symbol);
-
-						if method_name.starts_with(prefix) {
-							items.push(CompletionItem {
-								label: method_name.to_string(),
-								kind: Some(CompletionItemKind::METHOD),
-								detail: Some(format!("Method of {model_name}")),
-								..Default::default()
-							});
-						}
-					}
-				}
-			}
-		}
-
-		CompletionResponse::List(CompletionList {
-			is_incomplete: false,
-			items,
-		})
 	}
 }
