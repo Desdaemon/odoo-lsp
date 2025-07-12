@@ -12,6 +12,7 @@ build = "build.rs"
 async-lsp = { version = "0.2.2", features = ["tokio", "forward"] }
 tokio-util = { version = "0.7.14", features = ["compat"] }
 tree-sitter-xml = "0.7.0"
+tree-sitter-javascript = "0.23.1"
 rstest = "0.25.0"
 ts-macros.workspace = true
 pretty_assertions.workspace = true

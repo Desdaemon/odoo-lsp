@@ -55,6 +55,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	// <!> collect expected samples
 	let mut expected = gather_expected(&root, TestLanguages::Python);
 	expected.extend(gather_expected(&root, TestLanguages::Xml));
+	expected.extend(gather_expected(&root, TestLanguages::JavaScript));
 	expected.retain(|_, expected| {
 		!expected.complete.is_empty()
 			|| !expected.diag.is_empty()
@@ -77,6 +78,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 				let language_id = match path.extension().unwrap().to_string_lossy().as_ref() {
 					"py" => "python",
 					"xml" => "xml",
+					"js" => "javascript",
 					unk => panic!("unknown file extension {unk}"),
 				}
 				.to_string();
@@ -318,6 +320,21 @@ fn xml_query() -> &'static Query {
 	QUERY.get_or_init(|| Query::new(&tree_sitter_xml::LANGUAGE_XML.into(), XML_QUERY).unwrap())
 }
 
+fn js_query() -> &'static Query {
+	static QUERY: OnceLock<Query> = OnceLock::new();
+	const JS_QUERY: &str = r#"
+		((comment) @diag
+		(#match? @diag "\\^diag "))
+
+		((comment) @complete
+		(#match? @complete "\\^complete "))
+
+		((comment) @def
+		(#match? @def "\\^def"))
+	"#;
+	QUERY.get_or_init(|| Query::new(&tree_sitter_javascript::LANGUAGE.into(), JS_QUERY).unwrap())
+}
+
 #[derive(Default)]
 struct Expected {
 	diag: Vec<(Position, String)>,
@@ -329,6 +346,7 @@ struct Expected {
 enum TestLanguages {
 	Python,
 	Xml,
+	JavaScript,
 }
 
 enum InspectType {}
@@ -342,6 +360,7 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 	let (glob, query, language) = match lang {
 		TestLanguages::Python => ("**/*.py", PyExpected::query as fn() -> _, tree_sitter_python::LANGUAGE),
 		TestLanguages::Xml => ("**/*.xml", xml_query as _, tree_sitter_xml::LANGUAGE_XML),
+		TestLanguages::JavaScript => ("**/*.js", js_query as _, tree_sitter_javascript::LANGUAGE),
 	};
 
 	let path = root.join(glob).to_string_lossy().into_owned();
@@ -358,7 +377,11 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 
 		for (match_, _) in cursor.captures(query(), ast.root_node(), &contents[..]) {
 			for capture in match_.captures {
-				let skip = if matches!(lang, TestLanguages::Xml) { 4 } else { 1 };
+				let skip = match lang {
+					TestLanguages::Xml => 4,
+					TestLanguages::JavaScript => 2, // Skip "//"
+					TestLanguages::Python => 1,     // Skip "#"
+				};
 				let text = &contents[capture.node.byte_range()][skip..];
 				let Some(idx) = text.iter().position(|ch| *ch == b'^') else {
 					continue;
