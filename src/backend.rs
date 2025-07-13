@@ -550,7 +550,7 @@ impl Index {
 		needle: &str,
 		range: ByteRange,
 		rope: RopeSlice<'_>,
-		model_filter: Option<&str>,
+		model_filter: Option<&[ImStr]>,
 		current_module: ModuleName,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
@@ -561,7 +561,12 @@ impl Index {
 		let Ok(by_prefix) = self.records.by_prefix.try_read() else {
 			return Ok(());
 		};
-		let model_filter = model_filter.and_then(|model| _G(model).map(ModelName::from));
+		let model_filters: Option<Vec<ModelName>> = model_filter.map(|models| {
+			models
+				.iter()
+				.filter_map(|model| _G(model).map(ModelName::from))
+				.collect()
+		});
 		fn completion_item(record: &Record, current_module: ModuleName, range: Range, scoped: bool) -> CompletionItem {
 			let label = if record.module == current_module && !scoped {
 				record.id.to_string()
@@ -589,7 +594,12 @@ impl Index {
 				keys.iter().flat_map(|key| {
 					if let Some(record) = self.records.get(key)
 						&& record.module == module
-						&& (model_filter.is_none() || record.model == model_filter)
+						&& (model_filters.is_none()
+							|| record
+								.model
+								.as_ref()
+								.map(|m| model_filters.as_ref().unwrap().contains(m))
+								.unwrap_or(false))
 					{
 						Some(completion_item(&record, current_module, range, true))
 					} else {
@@ -602,7 +612,12 @@ impl Index {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter().flat_map(|key| {
 					if let Some(record) = self.records.get(key)
-						&& (model_filter.is_none() || record.model == model_filter)
+						&& (model_filters.is_none()
+							|| record
+								.model
+								.as_ref()
+								.map(|m| model_filters.as_ref().unwrap().contains(m))
+								.unwrap_or(false))
 					{
 						Some(completion_item(&record, current_module, range, false))
 					} else {
@@ -620,7 +635,7 @@ impl Index {
 		&self,
 		needle: &str,
 		range: ByteRange,
-		model: String,
+		model: ImStr,
 		rope: RopeSlice<'_>,
 		for_only_prop: Option<PropertyKind>,
 		in_string: bool,
@@ -634,7 +649,7 @@ impl Index {
 		let Some(model_entry) = self.models.populate_properties(model_key.into(), &[]) else {
 			return Ok(());
 		};
-		trace!(needle, ?range, model, ?for_only_prop);
+		trace!(needle, ?range, model = %model, ?for_only_prop);
 		let iter = if needle.is_empty() {
 			model_entry.properties_by_prefix.iter()
 		} else {
@@ -683,7 +698,10 @@ impl Index {
 				kind: Some(lsp_kind),
 				insert_text_format,
 				text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
-				data: serde_json::to_value(CompletionData { model: model.clone() }).ok(),
+				data: serde_json::to_value(CompletionData {
+					model: model.to_string(),
+				})
+				.ok(),
 				..Default::default()
 			})
 		});
