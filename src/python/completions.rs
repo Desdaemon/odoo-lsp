@@ -12,7 +12,7 @@ use crate::prelude::*;
 
 use crate::backend::Backend;
 use crate::index::{_G, _R};
-use crate::model::PropertyKind;
+use crate::model::{FieldKind, ModelName, PropertyKind};
 use crate::some;
 use crate::utils::MaxVec;
 use crate::utils::*;
@@ -144,6 +144,111 @@ impl Backend {
 						}
 						Some(PyCompletions::Mapped) => {
 							if range.contains_end(offset) {
+								// Check if this is an ERROR node with broken syntax
+								tracing::debug!(
+									"Mapped capture node kind: {}, range: {:?}, offset: {}",
+									capture.node.kind(),
+									range,
+									offset
+								);
+								if capture.node.kind() == "ERROR" {
+									// This might be a string without a colon in a dictionary
+									let error_text = &contents[capture.node.byte_range()];
+									if error_text.starts_with(b"'") || error_text.starts_with(b"\"") {
+										// Extract the partial text
+										let quote_char = error_text[0];
+										let end_quote = error_text.iter().rposition(|&b| b == quote_char);
+										let needle = if let Some(end) = end_quote {
+											String::from_utf8_lossy(&error_text[1..end])
+										} else if offset > capture.node.start_byte() + 1 {
+											String::from_utf8_lossy(&error_text[1..offset - capture.node.start_byte()])
+										} else {
+											Cow::Borrowed("")
+										};
+
+										// Try to determine the model from context
+										// First, try to find if this is part of a mapped/commandlist expression
+										let mut field_model = None;
+
+										// Look for the commandlist pattern in the parent nodes
+										let mut current = capture.node;
+										while let Some(parent) = current.parent() {
+											// Check if we're in a list that's part of a mapped/commandlist
+											if parent.kind() == "list" {
+												// Try to find the full expression this list is part of
+												if let Some(expr_parent) = parent.parent() {
+													if expr_parent.kind() == "call" || expr_parent.kind() == "attribute"
+													{
+														break;
+													}
+												}
+											}
+
+											if parent.kind() == "dictionary" {
+												// Found the dictionary, now look for the field assignment
+												if let Some(list_parent) = parent.parent()
+													&& list_parent.kind() == "list" && let Some(pair_parent) =
+													list_parent.parent() && pair_parent.kind() == "pair"
+													&& let Some(key) = pair_parent.child_by_field_name("key")
+													&& key.kind() == "string"
+												{
+													let field_name =
+														String::from_utf8_lossy(&contents[key.byte_range().shrink(1)]);
+
+													if let Some(model_bytes) = &this_model.inner {
+														let model_str = String::from_utf8_lossy(model_bytes);
+														let model_key = ModelName::from(_I(&model_str));
+
+														if let Some(props) =
+															self.index.models.populate_properties(model_key, &[])
+															&& let Some(fields) = &props.fields
+															&& let Some(field_key) = _G(&field_name)
+															&& let Some(field_info) = fields.get(&field_key.into())
+														{
+															// Check if this field has a relational type
+															if let FieldKind::Relational(relation) = &field_info.kind {
+																field_model = Some(*relation);
+															}
+														}
+													}
+												}
+												break;
+											}
+											current = parent;
+										}
+
+										if let Some(model) = field_model {
+											let range = if let Some(end) = end_quote {
+												ByteRange {
+													start: ByteOffset(capture.node.start_byte() + 1),
+													end: ByteOffset(capture.node.start_byte() + end),
+												}
+											} else {
+												ByteRange {
+													start: ByteOffset(capture.node.start_byte() + 1),
+													end: ByteOffset(offset),
+												}
+											};
+
+											let mut items = MaxVec::new(completions_limit);
+											self.index.complete_property_name(
+												&needle,
+												range,
+												_R(model).to_string(),
+												rope,
+												Some(PropertyKind::Field),
+												true,
+												&mut items,
+											)?;
+											return Ok(Some(CompletionResponse::List(CompletionList {
+												is_incomplete: !items.has_space(),
+												items: items.into_inner(),
+											})));
+										}
+									}
+								}
+
+								// Normal case - not an ERROR node
 								return self.python_completions_for_prop(
 									root,
 									&match_,
@@ -158,7 +263,7 @@ impl Backend {
 							} else if let Some(cmdlist) = capture.node.next_named_sibling()
 								&& Backend::is_commandlist(cmdlist, offset)
 							{
-								let (needle, range, model) = some!(self.gather_commandlist(
+								if let Some((needle, range, model)) = self.gather_commandlist(
 									cmdlist,
 									root,
 									&match_,
@@ -167,21 +272,23 @@ impl Backend {
 									this_model.inner,
 									contents,
 									true,
-								));
-								let mut items = MaxVec::new(completions_limit);
-								self.index.complete_property_name(
-									&needle,
-									range,
-									_R(model).to_string(),
-									rope,
-									Some(PropertyKind::Field),
-									true,
-									&mut items,
-								)?;
-								return Ok(Some(CompletionResponse::List(CompletionList {
-									is_incomplete: !items.has_space(),
-									items: items.into_inner(),
-								})));
+								) {
+									let mut items = MaxVec::new(completions_limit);
+									self.index.complete_property_name(
+										&needle,
+										range,
+										_R(model).to_string(),
+										rope,
+										Some(PropertyKind::Field),
+										true,
+										&mut items,
+									)?;
+									return Ok(Some(CompletionResponse::List(CompletionList {
+										is_incomplete: !items.has_space(),
+										items: items.into_inner(),
+									})));
+								}
+								// If gather_commandlist returns None, don't fail - let it fall through to try_commandlist_completion_broken_syntax
 							}
 						}
 						Some(PyCompletions::FieldDescriptor) => {
@@ -314,6 +421,27 @@ impl Backend {
 				}
 			}
 			if early_return.is_none() {
+				// Try to handle broken syntax in command lists
+				if let Some((needle, range, model)) =
+					self.try_commandlist_completion_broken_syntax(offset, root, contents)
+				{
+					let mut items = MaxVec::new(completions_limit);
+					self.index.complete_property_name(
+						&needle,
+						range,
+						_R(model).to_string(),
+						rope,
+						Some(PropertyKind::Field),
+						true,
+						&mut items,
+					)?;
+					return Ok(Some(CompletionResponse::List(CompletionList {
+						is_incomplete: !items.has_space(),
+						items: items.into_inner(),
+					})));
+				}
+
+				// Fallback to regular attribute completion
 				let (model, needle, range) = some!(self.attribute_at_offset(offset, root, contents));
 				let mut items = MaxVec::new(completions_limit);
 				self.index.complete_property_name(

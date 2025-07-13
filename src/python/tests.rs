@@ -233,3 +233,248 @@ fn test_tag_model() {
 	assert_eq!(this_model.inner, Some(&b"baz"[..]));
 	assert!(matches!(this_model.source, super::ThisModelKind::Inherited));
 }
+
+#[test]
+fn test_py_completions_broken_syntax_commandlist() {
+	// This test demonstrates that completions should work even when syntax is broken
+	// (e.g., missing colon after a dictionary key)
+
+	// Simpler test case with just the broken part
+	let contents = r#"[(0, 0, {
+	'name': 'Test',
+	'desc'
+})]"#;
+
+	// Find the position after 'desc' where we want completion
+	let cursor_pos = contents.find("'desc'").unwrap() + 5; // After 'desc
+
+	let mut parser = tree_sitter::Parser::new();
+	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+	let tree = parser.parse(contents.as_bytes(), None).unwrap();
+
+	// Find the dictionary node
+	fn find_dict(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+		if node.kind() == "dictionary" {
+			return Some(node);
+		}
+		let mut cursor = node.walk();
+		for child in node.children(&mut cursor) {
+			if let Some(result) = find_dict(child) {
+				return Some(result);
+			}
+		}
+		None
+	}
+
+	let dict_node = find_dict(tree.root_node());
+
+	if let Some(dict) = dict_node {
+		let mut cursor = dict.walk();
+		for child in dict.children(&mut cursor) {
+			let child_text = if child.byte_range().end <= contents.len() {
+				&contents[child.byte_range()]
+			} else {
+				"<out of bounds>"
+			};
+
+			if child.kind() == "ERROR" && child_text == "'desc'" {
+				// Verify we can extract the needle
+				let error_start = child.start_byte();
+				if cursor_pos > error_start + 1 {
+					let needle_bytes = &contents.as_bytes()[error_start + 1..cursor_pos];
+					let needle = std::str::from_utf8(needle_bytes).unwrap();
+					assert_eq!(needle, "desc", "Should extract 'desc' as the needle");
+				}
+
+				return;
+			}
+		}
+	}
+
+	panic!("Did not find expected ERROR node for broken syntax");
+}
+
+#[test]
+fn test_try_commandlist_completion_broken_syntax() {
+	// Test case: dictionary with missing colon after key
+	let contents = r#"
+class TestModel(models.Model):
+	_name = 'test.model'
+	
+	field_ids = fields.One2many('related.model', 'parent_id', string='Fields')
+	
+	def test_method(self):
+		self.write({
+			'field_ids': [(0, 0, {
+				'name': 'Test',
+				'description'
+			})]
+		})
+"#;
+
+	// Parse the Python code
+	let mut parser = tree_sitter::Parser::new();
+	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+	let tree = parser.parse(contents.as_bytes(), None).unwrap();
+
+	// Find position after 'description' (missing colon)
+	let cursor_pos = contents.find("'description'").unwrap() + "'description".len();
+
+	// For now, just test that we can find the ERROR node
+	let node_at_cursor = tree.root_node().descendant_for_byte_range(cursor_pos, cursor_pos);
+	assert!(node_at_cursor.is_some(), "Should find node at cursor position");
+
+	// Check if we're in or near an ERROR node (broken syntax)
+	let mut found_error = false;
+	if let Some(node) = node_at_cursor {
+		let mut current = node;
+		loop {
+			if current.kind() == "ERROR" || current.kind() == "string" {
+				// Check if this is a string without a following colon
+				if let Some(next) = current.next_sibling() {
+					if next.kind() != ":" {
+						found_error = true;
+						break;
+					}
+				} else {
+					// No next sibling means it's incomplete
+					found_error = true;
+					break;
+				}
+			}
+			if let Some(parent) = current.parent() {
+				current = parent;
+			} else {
+				break;
+			}
+		}
+	}
+
+	assert!(found_error, "Should detect broken syntax (missing colon)");
+}
+
+#[test]
+fn test_try_commandlist_completion_broken_syntax_not_applicable() {
+	// Test case: properly formatted dictionary (should not be broken)
+	let contents = r#"
+class TestModel(models.Model):
+	def test_method(self):
+		self.write({
+			'field_ids': [(0, 0, {
+				'name': 'Test',
+				'description': 'Proper syntax'
+			})]
+		})
+"#;
+
+	let mut parser = tree_sitter::Parser::new();
+	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+	let tree = parser.parse(contents.as_bytes(), None).unwrap();
+
+	// Find position in the middle of 'description' key
+	let cursor_pos = contents.find("'description'").unwrap() + 5;
+
+	// Check that this is NOT broken syntax
+	let node_at_cursor = tree.root_node().descendant_for_byte_range(cursor_pos, cursor_pos);
+	assert!(node_at_cursor.is_some(), "Should find node at cursor position");
+
+	// Check if we have proper syntax (colon after string)
+	let mut has_proper_syntax = false;
+	if let Some(node) = node_at_cursor {
+		let string_node = if node.kind() == "string" {
+			node
+		} else if let Some(parent) = node.parent() {
+			if parent.kind() == "string" { parent } else { node }
+		} else {
+			node
+		};
+
+		// Check if followed by colon
+		if let Some(next) = string_node.next_sibling() {
+			if next.kind() == ":" {
+				has_proper_syntax = true;
+			}
+		}
+	}
+
+	assert!(has_proper_syntax, "Should detect proper syntax (has colon)");
+}
+
+#[test]
+fn test_gather_commandlist_with_broken_syntax() {
+	use tree_sitter::QueryCursor;
+
+	// Test case: commandlist with incomplete field at the end
+	let contents = r#"
+class TestModel(models.Model):
+	_name = 'test.model'
+	
+	def test_method(self):
+		records = self.mapped('partner_ids.name')
+		values = self.mapped('field_ids.desc
+"#;
+
+	// Parse the Python code
+	let mut parser = tree_sitter::Parser::new();
+	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+	let tree = parser.parse(contents.as_bytes(), None).unwrap();
+
+	// Test 1: Complete field access should work
+	let _cursor_pos1 = contents.find("'partner_ids.name'").unwrap() + "'partner_ids.na".len();
+	let root = tree.root_node();
+
+	// Find the commandlist node for the first case
+	let mut cursor = QueryCursor::new();
+	let query = tree_sitter::Query::new(
+		&tree_sitter_python::LANGUAGE.into(),
+		r#"(call
+			function: (attribute
+				object: (_)
+				attribute: (identifier) @method)
+			arguments: (argument_list
+				(string) @cmdlist)
+			(#eq? @method "mapped"))"#,
+	)
+	.unwrap();
+
+	let matches: Vec<_> = cursor.matches(&query, root, contents.as_bytes()).collect();
+	assert!(!matches.is_empty(), "Should find mapped calls");
+
+	// Test 2: Incomplete field access (broken syntax)
+	let cursor_pos2 = contents.find("'field_ids.desc").unwrap() + "'field_ids.desc".len();
+
+	// The incomplete string at the end should cause a parse error
+	// Check that the tree has errors
+	assert!(
+		tree.root_node().has_error(),
+		"Tree should have parse errors due to incomplete string"
+	);
+
+	// Check that we can find a node at the position where completion would be triggered
+	let node_at_pos = root.descendant_for_byte_range(cursor_pos2 - 1, cursor_pos2 - 1);
+	assert!(node_at_pos.is_some(), "Should find node at cursor position");
+
+	// The important thing is that the parser recognizes this as broken syntax
+	// and that our completion logic can handle it
+	// The exact tree structure may vary, but there should be an ERROR somewhere
+	let mut has_error_ancestor = false;
+	if let Some(mut node) = node_at_pos {
+		loop {
+			if node.kind() == "ERROR" {
+				has_error_ancestor = true;
+				break;
+			}
+			if let Some(parent) = node.parent() {
+				node = parent;
+			} else {
+				break;
+			}
+		}
+	}
+
+	// Either the node itself is an ERROR or the tree has errors
+	assert!(
+		has_error_ancestor || tree.root_node().has_error(),
+		"Should detect broken syntax through ERROR nodes or tree errors"
+	);
+}

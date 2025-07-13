@@ -106,10 +106,10 @@ query! {
     (_) @MAPPED_TARGET (identifier) @DEPENDS)
   (argument_list . [
     (set (string) @MAPPED)
-    (dictionary [
-      (pair key: (string) @MAPPED)
-      (ERROR (string) @MAPPED) ])
-    (_ [
+     (dictionary [
+       (pair key: (string) @MAPPED)
+       (ERROR (string) @MAPPED)
+       (ERROR) @MAPPED ])    (_ [
       (set (string) @MAPPED)
       (dictionary [
         (pair key: (string) @MAPPED)
@@ -1224,7 +1224,77 @@ impl Backend {
 	) -> Option<(Cow<'text, str>, ByteRange, Spur)> {
 		let mut access = vec![];
 		access.extend_from_slice(&contents[range.shrink(1)]);
-		let mut dest = cmdlist.descendant_for_byte_range(offset, offset)?;
+		tracing::debug!(
+			"gather_commandlist: cmdlist range: {:?}, offset: {}",
+			cmdlist.byte_range(),
+			offset
+		);
+		let mut dest = cmdlist.descendant_for_byte_range(offset, offset);
+		tracing::debug!("Initial dest: {:?}", dest.map(|n| (n.kind(), n.byte_range())));
+
+		// If we can't find a node at the exact offset, try to find the last string node
+		// This handles the case where cursor is after a string without a colon
+		if dest.is_none() && offset > cmdlist.start_byte() {
+			tracing::debug!("No node at offset {}, trying offset - 1", offset);
+			// Try offset - 1 to see if we're just after a string
+			if let Some(node) = cmdlist.descendant_for_byte_range(offset - 1, offset - 1) {
+				tracing::debug!(
+					"Found node at offset - 1: kind={}, range={:?}",
+					node.kind(),
+					node.byte_range()
+				);
+				if node.kind() == "string"
+					|| (node.kind() == "string_content" && node.parent().map(|p| p.kind()) == Some("string"))
+				{
+					// Check if this string is not part of a key-value pair (no colon after it)
+					let string_node = if node.kind() == "string" { node } else { node.parent()? };
+					if let Some(next_sibling) = string_node.next_sibling() {
+						tracing::debug!("String has next sibling: {}", next_sibling.kind());
+						if next_sibling.kind() != ":" {
+							// This is an incomplete field name, provide completions
+							dest = Some(string_node);
+						}
+					} else {
+						tracing::debug!("String has no next sibling, treating as incomplete");
+						// No next sibling means it's the last element, likely incomplete
+						dest = Some(string_node);
+					}
+				}
+			}
+		}
+
+		let mut dest = dest?;
+
+		// Handle broken syntax: if we're in an ERROR node that contains a string,
+		// try to find the string within it
+		if dest.kind() == "ERROR" {
+			let error_text = &contents[dest.byte_range()];
+			if error_text.starts_with(b"'") || error_text.starts_with(b"\"") {
+				// This is likely a string without a following colon
+				// We'll treat it as if it were a proper string node
+				let needle = if offset > dest.start_byte() {
+					let relative_offset = offset - dest.start_byte();
+					if relative_offset > 1 && relative_offset <= error_text.len() {
+						String::from_utf8_lossy(&error_text[1..relative_offset])
+					} else {
+						return None;
+					}
+				} else {
+					return None;
+				};
+
+				// For ERROR nodes, we need to manually construct the range
+				let range = ByteRange {
+					start: ByteOffset(dest.start_byte() + 1),
+					end: ByteOffset(offset),
+				};
+
+				// Return early with just the field name completion
+				// We can't traverse further up the tree reliably with ERROR nodes
+				return Some((needle, range, _I(String::from_utf8_lossy(&access))));
+			}
+		}
+
 		if dest.kind() != "string" {
 			dest = dest.parent()?;
 		}
@@ -1245,13 +1315,21 @@ impl Backend {
 			None,
 		)?;
 
+		tracing::debug!("gather_mapped returned: needle={}", needle);
+
 		// recursive descent to collect the chain of fields
 		let mut cursor = cmdlist;
 		let mut count = 0;
 		while count < 30 {
 			count += 1;
-			let candidate = cursor.child_containing_descendant(dest)?;
+			let candidate = cursor.child_containing_descendant(dest);
+			if candidate.is_none() {
+				tracing::debug!("child_containing_descendant returned None at count={}", count);
+				return None;
+			}
+			let candidate = candidate.unwrap();
 			let obj;
+			tracing::debug!("candidate kind: {}", candidate.kind());
 			if candidate.kind() == "tuple" {
 				// (0, 0, {})
 				obj = candidate.child_containing_descendant(dest)?;
@@ -1290,13 +1368,167 @@ impl Backend {
 
 		access.push(b'.'); // to force resolution of the last field
 		let access = String::from_utf8_lossy(&access).into_owned();
+		tracing::debug!("Access path: {}", access);
 		let access = &mut access.as_str();
 		let mut model = _I(&model);
 		if self.index.models.resolve_mapped(&mut model, access, None).is_err() {
+			tracing::debug!("resolve_mapped failed");
+			return None;
+		}
+		tracing::debug!("Resolved model");
+
+		Some((needle, range, model))
+	}
+
+	/// Try to provide completions for command lists with broken syntax
+	/// This handles cases like: [(0, 0, { 'field_name' })] where the colon is missing
+	pub(crate) fn try_commandlist_completion_broken_syntax<'a>(
+		&self,
+		offset: usize,
+		root: Node,
+		contents: &'a [u8],
+	) -> Option<(Cow<'a, str>, ByteRange, Spur)> {
+		// Find the node at the cursor position
+		let node_at_cursor = root.descendant_for_byte_range(offset, offset)?;
+
+		tracing::debug!(
+			"try_commandlist_completion_broken_syntax: node at cursor kind = {}, range = {:?}",
+			node_at_cursor.kind(),
+			node_at_cursor.byte_range()
+		);
+
+		// We might be in a string_content node that's part of broken syntax
+		// Look for a string node that doesn't have a following colon
+		let string_node = match node_at_cursor.kind() {
+			"string_content" | "string_end" => node_at_cursor.parent().filter(|&p| p.kind() == "string"),
+			"string" | "ERROR" => Some(node_at_cursor),
+			_ => node_at_cursor.parent().filter(|&parent| parent.kind() == "ERROR"),
+		}?;
+
+		// Check if this node looks like a string (starts with quote)
+		let node_text = &contents[string_node.byte_range()];
+		if !node_text.starts_with(b"'") && !node_text.starts_with(b"\"") {
 			return None;
 		}
 
-		Some((needle, range, model))
+		// Check if this string is followed by a colon (which would make it a proper pair)
+		// If it has a colon, it's not broken syntax
+		if let Some(next_sibling) = string_node.next_sibling() {
+			if next_sibling.kind() == ":" {
+				return None;
+			}
+		}
+
+		// Find the containing dictionary
+		let mut current = string_node;
+		let dict_node = loop {
+			if current.kind() == "dictionary" {
+				break Some(current);
+			}
+			current = current.parent()?;
+		}?;
+
+		// Check if this dictionary is part of a command list pattern
+		// We need to traverse up to find the list and check if it's in a field assignment
+		let mut current = dict_node;
+		let mut in_commandlist = false;
+		let mut field_name = None;
+
+		while let Some(parent) = current.parent() {
+			if parent.kind() == "list" {
+				// Check if this list is the value of a pair (field assignment)
+				if let Some(pair_parent) = parent.parent()
+					&& pair_parent.kind() == "pair"
+				{
+					// Get the field name
+					if let Some(key_node) = pair_parent.child_by_field_name("key")
+						&& key_node.kind() == "string"
+					{
+						field_name = Some(&contents[key_node.byte_range().shrink(1)]);
+						in_commandlist = true;
+						break;
+					}
+				}
+			}
+			current = parent;
+		}
+
+		if !in_commandlist || field_name.is_none() {
+			return None;
+		}
+
+		// Extract the needle (what the user has typed so far)
+		let needle = if offset > string_node.start_byte() + 1 {
+			let start = string_node.start_byte() + 1; // Skip opening quote
+			String::from_utf8_lossy(&contents[start..offset])
+		} else {
+			Cow::Borrowed("")
+		};
+
+		let range = ByteRange {
+			start: ByteOffset(string_node.start_byte() + 1),
+			end: ByteOffset(offset),
+		};
+
+		// Try to determine the model from the field name
+		let field_name_str = String::from_utf8_lossy(field_name.unwrap());
+
+		// Debug logging
+		tracing::debug!(
+			"Broken syntax completion: field_name = {:?}, needle = {:?}",
+			field_name_str,
+			needle
+		);
+
+		// For relational fields ending in _ids or _id, try to find the related model
+		let model = if field_name_str.ends_with("_ids") || field_name_str.ends_with("_id") {
+			// Try to extract model name from field name
+			// e.g., "line_ids" -> "line", "partner_id" -> "partner"
+			let model_hint = if let Some(stripped) = field_name_str.strip_suffix("_ids") {
+				stripped
+			} else {
+				field_name_str.strip_suffix("_id").unwrap()
+			};
+
+			tracing::debug!("Looking for model with hint: {:?}", model_hint);
+
+			// First, try to find the field definition to get the exact model
+			// This would require looking up the field in the parent model
+			// For now, use a heuristic approach
+
+			// Try to find a model that matches the hint
+			let found_model = self
+				.index
+				.models
+				.iter()
+				.find(|entry| {
+					let model_name = _R(*entry.key());
+					// Look for exact match or partial match
+					// e.g., "line" might match "test.broken.syntax.line"
+					model_name.ends_with(&format!(".{model_hint}"))
+						|| model_name == model_hint
+						|| (model_name.contains('.') && model_name.split('.').next_back() == Some(model_hint))
+				})
+				.map(|entry| (*entry.key()).into());
+
+			if found_model.is_none() {
+				tracing::debug!("No model found for hint: {:?}", model_hint);
+			}
+
+			found_model
+		} else {
+			tracing::debug!("Field name doesn't match relational pattern: {:?}", field_name_str);
+			None
+		};
+
+		// If we couldn't determine the model, we can't provide completions
+		let model = model?;
+
+		tracing::debug!("Found model for broken syntax completion: {:?}", _R(model));
+
+		// For broken syntax in command lists, return empty needle to show all fields
+		// The partial text is just an incomplete field name, not a filter
+		Some((Cow::Borrowed(""), range, model))
 	}
 }
 
