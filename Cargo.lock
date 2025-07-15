@@ -1427,6 +1427,7 @@ dependencies = [
  "tower-lsp-server",
  "tracing-subscriber",
  "tree-sitter",
+ "tree-sitter-javascript",
  "tree-sitter-python",
  "tree-sitter-xml",
  "ts-macros",
