@@ -594,12 +594,15 @@ impl Index {
 				keys.iter().flat_map(|key| {
 					if let Some(record) = self.records.get(key)
 						&& record.module == module
-						&& (model_filters.is_none()
-							|| record
-								.model
-								.as_ref()
-								.map(|m| model_filters.as_ref().unwrap().contains(m))
-								.unwrap_or(false))
+						&& model_filters
+							.as_ref()
+							.map_or(true, |filters| {
+								record
+									.model
+									.as_ref()
+									.map(|m| filters.contains(m))
+									.unwrap_or(false)
+							})
 					{
 						Some(completion_item(&record, current_module, range, true))
 					} else {
@@ -612,12 +615,15 @@ impl Index {
 			let completions = by_prefix.iter_prefix(needle.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter().flat_map(|key| {
 					if let Some(record) = self.records.get(key)
-						&& (model_filters.is_none()
-							|| record
-								.model
-								.as_ref()
-								.map(|m| model_filters.as_ref().unwrap().contains(m))
-								.unwrap_or(false))
+						&& model_filters
+							.as_ref()
+							.map_or(true, |filters| {
+								record
+									.model
+									.as_ref()
+									.map(|m| filters.contains(m))
+									.unwrap_or(false)
+							})
 					{
 						Some(completion_item(&record, current_module, range, false))
 					} else {
