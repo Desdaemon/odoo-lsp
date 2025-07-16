@@ -11,8 +11,8 @@ use tree_sitter::Tree;
 use crate::prelude::*;
 
 use crate::backend::Backend;
-use crate::index::{_G, _R};
-use crate::model::{FieldKind, ModelName, PropertyKind};
+use crate::index::{_G, _I, _R, symbol::Symbol};
+use crate::model::{FieldKind, ModelEntry, ModelName, PropertyKind};
 use crate::some;
 use crate::utils::MaxVec;
 use crate::utils::*;
@@ -167,54 +167,71 @@ impl Backend {
 										};
 
 										// Try to determine the model from context
-										// First, try to find if this is part of a mapped/commandlist expression
-										let mut field_model = None;
+										// First check if we have a MappedTarget in the match
+										let mut field_model: Option<Symbol<ModelEntry>> = None;
+										// Try to get the model from MappedTarget
+										if let Some(target_node) =
+											match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next()
+											&& let Some(model_) = self.index.model_of_range(
+												root,
+												target_node.byte_range().map_unit(ByteOffset),
+												contents,
+											) {
+											field_model = Some(model_);
+										}
 
-										// Look for the commandlist pattern in the parent nodes
-										let mut current = capture.node;
-										while let Some(parent) = current.parent() {
-											// Check if we're in a list that's part of a mapped/commandlist
-											if parent.kind() == "list" {
-												// Try to find the full expression this list is part of
-												if let Some(expr_parent) = parent.parent() {
-													if expr_parent.kind() == "call" || expr_parent.kind() == "attribute"
-													{
-														break;
-													}
-												}
-											}
-
-											if parent.kind() == "dictionary" {
-												// Found the dictionary, now look for the field assignment
-												if let Some(list_parent) = parent.parent()
-													&& list_parent.kind() == "list" && let Some(pair_parent) =
-													list_parent.parent() && pair_parent.kind() == "pair"
-													&& let Some(key) = pair_parent.child_by_field_name("key")
-													&& key.kind() == "string"
-												{
-													let field_name =
-														String::from_utf8_lossy(&contents[key.byte_range().shrink(1)]);
-
-													if let Some(model_bytes) = &this_model.inner {
-														let model_str = String::from_utf8_lossy(model_bytes);
-														let model_key = ModelName::from(_I(&model_str));
-
-														if let Some(props) =
-															self.index.models.populate_properties(model_key, &[])
-															&& let Some(fields) = &props.fields
-															&& let Some(field_key) = _G(&field_name)
-															&& let Some(field_info) = fields.get(&field_key.into())
+										// If we didn't find it from MappedTarget, look for the commandlist pattern in the parent nodes
+										if field_model.is_none() {
+											let mut current = capture.node;
+											while let Some(parent) = current.parent() {
+												// Check if we're in a list that's part of a mapped/commandlist
+												if parent.kind() == "list" {
+													// Try to find the full expression this list is part of
+													if let Some(expr_parent) = parent.parent() {
+														if expr_parent.kind() == "call"
+															|| expr_parent.kind() == "attribute"
 														{
-															// Check if this field has a relational type
-															if let FieldKind::Relational(relation) = &field_info.kind {
-																field_model = Some(*relation);
-															}
+															break;
 														}
 													}
 												}
-												break;
+
+												if parent.kind() == "dictionary" {
+													// Found the dictionary, now look for the field assignment
+													if let Some(list_parent) = parent.parent()
+														&& list_parent.kind() == "list" && let Some(pair_parent) =
+														list_parent.parent() && pair_parent.kind() == "pair"
+														&& let Some(key) = pair_parent.child_by_field_name("key")
+														&& key.kind() == "string"
+													{
+														let field_name = String::from_utf8_lossy(
+															&contents[key.byte_range().shrink(1)],
+														);
+
+														if let Some(model_bytes) = &this_model.inner {
+															let model_str = String::from_utf8_lossy(model_bytes);
+															let model_key = ModelName::from(_I(&model_str));
+
+															if let Some(props) =
+																self.index.models.populate_properties(model_key, &[])
+																&& let Some(fields) = &props.fields && let Some(
+																field_key,
+															) = _G(&field_name) && let Some(field_info) =
+																fields.get(&field_key.into())
+															{
+																// Check if this field has a relational type
+																if let FieldKind::Relational(relation) =
+																	&field_info.kind
+																{
+																	field_model = Some((*relation).into());
+																}
+															}
+														}
+													}
+													break;
+												}
+												current = parent;
 											}
-											current = parent;
 										}
 
 										if let Some(model) = field_model {
@@ -288,7 +305,7 @@ impl Backend {
 										items: items.into_inner(),
 									})));
 								}
-								// If gather_commandlist returns None, don't fail - let it fall through to try_commandlist_completion_broken_syntax
+								// If gather_commandlist returns None, continue to next match
 							}
 						}
 						Some(PyCompletions::FieldDescriptor) => {
@@ -421,24 +438,114 @@ impl Backend {
 				}
 			}
 			if early_return.is_none() {
-				// Try to handle broken syntax in command lists
-				if let Some((needle, range, model)) =
-					self.try_commandlist_completion_broken_syntax(offset, root, contents)
-				{
-					let mut items = MaxVec::new(completions_limit);
-					self.index.complete_property_name(
-						&needle,
-						range,
-						_R(model).to_string(),
-						rope,
-						Some(PropertyKind::Field),
-						true,
-						&mut items,
-					)?;
-					return Ok(Some(CompletionResponse::List(CompletionList {
-						is_incomplete: !items.has_space(),
-						items: items.into_inner(),
-					})));
+				// Check if we're in a broken syntax situation (string without colon in dictionary)
+				let cursor_node = root.descendant_for_byte_range(offset, offset);
+				if let Some(node) = cursor_node {
+					// Check if we're in a string that's part of an ERROR node
+					let mut current = node;
+					while let Some(parent) = current.parent() {
+						if parent.kind() == "ERROR" {
+							// Check if the ERROR's parent is a dictionary
+							if let Some(grandparent) = parent.parent() {
+								if grandparent.kind() == "dictionary" {
+									// For broken syntax (string without colon), we want to show all fields
+									// So we use an empty needle
+									let needle = Cow::Borrowed("");
+
+									// Try to determine the model from the context
+									// Look for the field assignment this dictionary belongs to
+									let mut field_model: Option<Symbol<ModelEntry>> = None;
+									let mut dict_parent = grandparent;
+
+									while let Some(parent) = dict_parent.parent() {
+										if parent.kind() == "list" {
+											if let Some(list_parent) = parent.parent() {
+												if list_parent.kind() == "pair" {
+													if let Some(key) = list_parent.child_by_field_name("key") {
+														if key.kind() == "string" {
+															let field_name = String::from_utf8_lossy(
+																&contents[key.byte_range().shrink(1)],
+															);
+
+															if let Some(model_bytes) = &this_model.inner {
+																let model_str = String::from_utf8_lossy(model_bytes);
+																let model_key = ModelName::from(_I(&model_str));
+
+																if let Some(props) = self
+																	.index
+																	.models
+																	.populate_properties(model_key, &[]) && let Some(
+																	fields,
+																) =
+																	&props.fields && let Some(field_key) =
+																	_G(&field_name) && let Some(field_info) =
+																	fields.get(&field_key.into())
+																{
+																	// Check if this field has a relational type
+																	if let FieldKind::Relational(relation) =
+																		&field_info.kind
+																	{
+																		field_model = Some((*relation).into());
+																	}
+																}
+															}
+														}
+													}
+													break;
+												}
+											}
+										}
+										dict_parent = parent;
+									}
+
+									if let Some(model) = field_model {
+										// For broken syntax, we want to replace the whole string
+										let range = if node.kind() == "string_content" {
+											// Find the parent string node to get the full range
+											if let Some(string_parent) = node.parent() {
+												if string_parent.kind() == "string" {
+													ByteRange {
+														start: ByteOffset(string_parent.start_byte() + 1), // Skip opening quote
+														end: ByteOffset(string_parent.end_byte() - 1),     // Skip closing quote
+													}
+												} else {
+													ByteRange {
+														start: ByteOffset(node.start_byte()),
+														end: ByteOffset(node.end_byte()),
+													}
+												}
+											} else {
+												ByteRange {
+													start: ByteOffset(node.start_byte()),
+													end: ByteOffset(node.end_byte()),
+												}
+											}
+										} else {
+											ByteRange {
+												start: ByteOffset(node.start_byte() + 1),
+												end: ByteOffset(node.end_byte() - 1),
+											}
+										};
+										let mut items = MaxVec::new(completions_limit);
+										self.index.complete_property_name(
+											&needle,
+											range,
+											_R(model).to_string(),
+											rope,
+											Some(PropertyKind::Field),
+											true,
+											&mut items,
+										)?;
+										return Ok(Some(CompletionResponse::List(CompletionList {
+											is_incomplete: !items.has_space(),
+											items: items.into_inner(),
+										})));
+									}
+								}
+							}
+						}
+						current = parent;
+					}
 				}
 
 				// Fallback to regular attribute completion

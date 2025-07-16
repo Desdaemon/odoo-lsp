@@ -295,7 +295,7 @@ fn test_py_completions_broken_syntax_commandlist() {
 }
 
 #[test]
-fn test_try_commandlist_completion_broken_syntax() {
+fn test_broken_syntax_string_detection() {
 	// Test case: dictionary with missing colon after key
 	let contents = r#"
 class TestModel(models.Model):
@@ -320,41 +320,42 @@ class TestModel(models.Model):
 	// Find position after 'description' (missing colon)
 	let cursor_pos = contents.find("'description'").unwrap() + "'description".len();
 
-	// For now, just test that we can find the ERROR node
+	// Find the node at cursor position
 	let node_at_cursor = tree.root_node().descendant_for_byte_range(cursor_pos, cursor_pos);
 	assert!(node_at_cursor.is_some(), "Should find node at cursor position");
 
-	// Check if we're in or near an ERROR node (broken syntax)
-	let mut found_error = false;
+	// We should be able to find a string node without a following colon
+	let mut found_broken_string = false;
 	if let Some(node) = node_at_cursor {
-		let mut current = node;
-		loop {
-			if current.kind() == "ERROR" || current.kind() == "string" {
-				// Check if this is a string without a following colon
-				if let Some(next) = current.next_sibling() {
-					if next.kind() != ":" {
-						found_error = true;
-						break;
+		// Look for a string node
+		let string_node = match node.kind() {
+			"string_content" | "string_end" => node.parent().filter(|&p| p.kind() == "string"),
+			"string" | "ERROR" => Some(node),
+			_ => node.parent().filter(|&parent| parent.kind() == "ERROR"),
+		};
+
+		if let Some(string_node) = string_node {
+			// Check if this node looks like a string (starts with quote)
+			let node_text = &contents[string_node.byte_range()];
+			if node_text.starts_with("'") || node_text.starts_with("\"") {
+				// Check if this string is followed by a colon
+				if let Some(next_sibling) = string_node.next_sibling() {
+					if next_sibling.kind() != ":" {
+						found_broken_string = true;
 					}
 				} else {
 					// No next sibling means it's incomplete
-					found_error = true;
-					break;
+					found_broken_string = true;
 				}
-			}
-			if let Some(parent) = current.parent() {
-				current = parent;
-			} else {
-				break;
 			}
 		}
 	}
 
-	assert!(found_error, "Should detect broken syntax (missing colon)");
+	assert!(found_broken_string, "Should find broken syntax string node");
 }
 
 #[test]
-fn test_try_commandlist_completion_broken_syntax_not_applicable() {
+fn test_proper_syntax_string_detection() {
 	// Test case: properly formatted dictionary (should not be broken)
 	let contents = r#"
 class TestModel(models.Model):
@@ -374,11 +375,11 @@ class TestModel(models.Model):
 	// Find position in the middle of 'description' key
 	let cursor_pos = contents.find("'description'").unwrap() + 5;
 
-	// Check that this is NOT broken syntax
+	// Find the node at cursor position
 	let node_at_cursor = tree.root_node().descendant_for_byte_range(cursor_pos, cursor_pos);
 	assert!(node_at_cursor.is_some(), "Should find node at cursor position");
 
-	// Check if we have proper syntax (colon after string)
+	// Check that this is NOT broken syntax
 	let mut has_proper_syntax = false;
 	if let Some(node) = node_at_cursor {
 		let string_node = if node.kind() == "string" {
