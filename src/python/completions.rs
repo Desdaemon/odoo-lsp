@@ -94,7 +94,7 @@ impl Backend {
 									&needle,
 									range,
 									rope,
-									model_filter,
+									model_filter.map(|m| vec![ImStr::from(m)]).as_deref(),
 									current_module,
 									&mut items,
 								)?;
@@ -172,7 +172,7 @@ impl Backend {
 								self.index.complete_property_name(
 									&needle,
 									range,
-									_R(model).to_string(),
+									ImStr::from(_R(model)),
 									rope,
 									Some(PropertyKind::Field),
 									true,
@@ -237,7 +237,7 @@ impl Backend {
 												&needle,
 												byte_range,
 												rope,
-												Some("res.groups"),
+												Some(&[ImStr::from("res.groups")]),
 												current_module,
 												&mut items,
 											)?;
@@ -319,7 +319,7 @@ impl Backend {
 				self.index.complete_property_name(
 					&needle,
 					range.map_unit(ByteOffset),
-					model.to_string(),
+					ImStr::from(model),
 					rope,
 					None,
 					false,
@@ -381,7 +381,7 @@ impl Backend {
 		self.index.complete_property_name(
 			needle,
 			range,
-			model_name.to_string(),
+			ImStr::from(model_name),
 			rope,
 			prop_type,
 			node.kind() == "string",
