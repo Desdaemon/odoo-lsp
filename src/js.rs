@@ -297,7 +297,7 @@ impl Backend {
 						self.index.complete_property_name(
 							&prefix,
 							byte_range,
-							model_name,
+							model_name.into(),
 							rope,
 							Some(PropertyKind::Method),
 							true,
@@ -341,7 +341,7 @@ impl Backend {
 						self.index.complete_property_name(
 							"",
 							synthetic_range,
-							model_name,
+							model_name.into(),
 							rope,
 							Some(PropertyKind::Method),
 							true,
