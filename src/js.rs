@@ -54,6 +54,8 @@ impl Backend {
 		};
 		let contents = Cow::from(rope);
 		let contents = contents.as_bytes();
+
+		// try templates first
 		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
 		for match_ in cursor.matches(query, ast.root_node(), contents) {
@@ -66,6 +68,45 @@ impl Backend {
 						.clone()
 						.map(Into::into));
 				}
+			}
+		}
+
+		// try gotodefs for ORM calls
+		let query = OrmCallQuery::query();
+		let mut cursor = QueryCursor::new();
+		for match_ in cursor.matches(query, ast.root_node(), contents) {
+			let mut model_arg_node = None;
+			let mut method_arg_node = None;
+
+			for capture in match_.captures {
+				match OrmCallQuery::from(capture.index) {
+					Some(OrmCallQuery::ModelArg) => {
+						model_arg_node = Some(capture.node);
+					}
+					Some(OrmCallQuery::MethodArg) => {
+						method_arg_node = Some(capture.node);
+					}
+					_ => {}
+				}
+			}
+
+			if let Some(model_node) = model_arg_node
+				&& let range = model_node.byte_range()
+				&& range.contains_end(offset)
+			{
+				let range = range.shrink(1);
+				let model = String::from_utf8_lossy(&contents[range]);
+				return self.index.jump_def_model(&model);
+			}
+
+			if let Some(model_node) = model_arg_node
+				&& let Some(method_node) = method_arg_node
+				&& let range = method_node.byte_range()
+				&& range.contains_end(offset)
+			{
+				let model = String::from_utf8_lossy(&contents[model_node.byte_range().shrink(1)]);
+				let method = String::from_utf8_lossy(&contents[range.shrink(1)]);
+				return self.index.jump_def_property_name(&method, &model);
 			}
 		}
 
@@ -132,6 +173,52 @@ impl Backend {
 						Some(span_conv(capture.node.range())),
 					));
 				}
+			}
+		}
+
+		// try hover for ORM calls
+		let query = OrmCallQuery::query();
+		let mut cursor = QueryCursor::new();
+		for match_ in cursor.matches(query, ast.root_node(), contents) {
+			let mut model_arg_node = None;
+			let mut method_arg_node = None;
+
+			for capture in match_.captures {
+				match OrmCallQuery::from(capture.index) {
+					Some(OrmCallQuery::ModelArg) => {
+						model_arg_node = Some(capture.node);
+					}
+					Some(OrmCallQuery::MethodArg) => {
+						method_arg_node = Some(capture.node);
+					}
+					_ => {}
+				}
+			}
+
+			if let Some(model_node) = model_arg_node
+				&& let range = model_node.byte_range()
+				&& range.contains_end(offset)
+			{
+				let range = range.shrink(1);
+				let model = String::from_utf8_lossy(&contents[range.clone()]);
+				return self
+					.index
+					.hover_model(&model, rope_conv(range.map_unit(ByteOffset), rope).ok(), false, None);
+			}
+
+			if let Some(model_node) = model_arg_node
+				&& let Some(method_node) = method_arg_node
+				&& let range = method_node.byte_range()
+				&& range.contains_end(offset)
+			{
+				let range = range.shrink(1);
+				let model = String::from_utf8_lossy(&contents[model_node.byte_range().shrink(1)]);
+				let method = String::from_utf8_lossy(&contents[range.clone()]);
+				return self.index.hover_property_name(
+					&method,
+					&model,
+					rope_conv(range.map_unit(ByteOffset), rope).ok(),
+				);
 			}
 		}
 
