@@ -25,6 +25,15 @@ use crate::{backend::Backend, backend::Text};
 #[cfg(test)]
 mod tests;
 
+/// All Odoo action model types that can be referenced in menuitem action attributes
+const ACTION_MODELS: &[&str] = &[
+	"ir.actions.act_window",
+	"ir.actions.report",
+	"ir.actions.server",
+	"ir.actions.client",
+	"ir.actions.act_url",
+];
+
 #[derive(Debug)]
 enum RefKind<'a> {
 	/// `<field name=bar ref=".."/>`
@@ -264,16 +273,18 @@ impl Backend {
 			Some(RefKind::Ref(_)) => self.index.jump_def_xml_id(needle, uri),
 			Some(RefKind::Model) => self.index.jump_def_model(needle),
 			Some(RefKind::PropertyName(access)) | Some(RefKind::MethodName(access)) => {
-				let mut model_filter = some!(model_filter);
+				let model_filters = some!(model_filter);
+				// For property/method access, we expect a single model
+				let mut model_filter = some!(model_filters.first()).clone();
 				let mapped = format!(
 					"{}.{needle}",
 					access.iter().map(|(_, prop)| *prop).collect::<Vec<_>>().join(".")
 				);
 				if !access.is_empty() {
 					needle = mapped.as_str();
-					let mut model = _I(model_filter);
+					let mut model = _I(&model_filter);
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
-					model_filter = _R(model).to_string();
+					model_filter = ImStr::from(_R(model));
 				}
 				self.index.jump_def_property_name(needle, &model_filter)
 			}
@@ -382,16 +393,18 @@ impl Backend {
 			}
 			Some(RefKind::PropertyName(access)) | Some(RefKind::MethodName(access)) => {
 				// let model = some!(model_filter);
-				let mut model_filter = some!(model_filter);
+				let model_filters = some!(model_filter);
+				// For property/method access, we expect a single model
+				let mut model_filter = some!(model_filters.first()).clone();
 				let mapped = format!(
 					"{}.{needle}",
 					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
 				);
 				if !access.is_empty() {
 					needle = mapped.as_str();
-					let mut model = _I(model_filter);
+					let mut model = _I(&model_filter);
 					some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
-					model_filter = _R(model).to_string();
+					model_filter = ImStr::from(_R(model));
 				}
 				self.index.hover_property_name(needle, &model_filter, lsp_range)
 			}
@@ -565,8 +578,10 @@ impl Index {
 		let replace_range = value_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset));
 		match record_field {
 			RefKind::Ref(relation) => {
-				let model_key = some!(model_filter);
-				let model = some!(_G(&model_key));
+				let model_filters = some!(model_filter);
+				// For Ref relation, we expect a single model
+				let model_key = some!(model_filters.first());
+				let model = some!(_G(model_key));
 				let relation = {
 					let fields = some!(self.models.populate_properties(model.into(), &[])).downgrade();
 					let fields = some!(fields.fields.as_ref());
@@ -584,7 +599,7 @@ impl Index {
 					needle,
 					replace_range,
 					rope,
-					Some(_R(relation)),
+					Some(&[ImStr::from(_R(relation))]),
 					current_module,
 					&mut items,
 				)?
@@ -594,16 +609,18 @@ impl Index {
 				self.complete_model(needle, range, &mut items)?
 			}
 			ref ref_kind @ RefKind::PropertyName(ref access) | ref ref_kind @ RefKind::MethodName(ref access) => {
-				let mut model_filter = some!(model_filter);
+				let model_filters = some!(model_filter);
+				// For property/method access, we expect a single model
+				let mut model_filter = some!(model_filters.first()).clone();
 				let mapped = format!(
 					"{}.{needle}",
 					access.iter().map(|(_, field)| *field).collect::<Vec<_>>().join(".")
 				);
 				if !access.is_empty() {
 					needle = mapped.as_str();
-					let mut model = _I(model_filter);
+					let mut model = _I(&model_filter);
 					some!(self.models.resolve_mapped(&mut model, &mut needle, None).ok());
-					model_filter = _R(model).to_string();
+					model_filter = ImStr::from(_R(model));
 				}
 				self.complete_property_name(
 					needle,
@@ -686,7 +703,7 @@ impl Index {
 				self.complete_property_name(
 					needle,
 					range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)),
-					_R(model).to_string(),
+					ImStr::from(_R(model)),
 					rope,
 					None, // Field would be better, but leave this here at least until @property is implemented
 					false,
@@ -758,7 +775,7 @@ impl Index {
 						}
 						"template" => {
 							tag = Some(Tag::Template);
-							model_filter = Some("ir.ui.view".to_string());
+							model_filter = Some(vec![ImStr::from("ir.ui.view")]);
 						}
 						"record" => tag = Some(Tag::Record),
 						"menuitem" => tag = Some(Tag::Menuitem),
@@ -829,7 +846,7 @@ impl Index {
 						}
 						"groups" if value_in_range => {
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some("res.groups".to_string());
+							model_filter = Some(vec![ImStr::from("res.groups")]);
 							arch_model = None;
 							determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
 						}
@@ -859,11 +876,11 @@ impl Index {
 								ref_at_cursor = Some((inner, start_offset..end_offset));
 							}
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some("ir.actions.act_window".to_string());
+							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from(s)).collect());
 						} else if button_type == Some("action") {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some("ir.actions.act_window".to_string());
+							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from(s)).collect());
 						} else {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::MethodName(vec![]));
@@ -888,7 +905,7 @@ impl Index {
 						ref_at_cursor = Some((value.as_str(), value.range()));
 						ref_kind = Some(RefKind::Model);
 					} else {
-						model_filter = Some(value.as_str().to_string());
+						model_filter = Some(vec![ImStr::from(value.as_str())]);
 					}
 				}
 				Ok(Token::Attribute { local, value, .. })
@@ -900,10 +917,10 @@ impl Index {
 					arch_model = None;
 					match tag {
 						Some(Tag::Template) => {
-							model_filter = Some("ir.ui.view".to_string());
+							model_filter = Some(vec![ImStr::from("ir.ui.view")]);
 						}
 						Some(Tag::Menuitem) => {
-							model_filter = Some("ir.ui.menu".to_string());
+							model_filter = Some(vec![ImStr::from("ir.ui.menu")]);
 						}
 						_ => {}
 					}
@@ -916,18 +933,18 @@ impl Index {
 						"parent" => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::Ref("parent_id"));
-							model_filter = Some("ir.ui.menu".to_string());
+							model_filter = Some(vec![ImStr::from("ir.ui.menu")]);
 						}
 						"action" => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							// ref_kind = Some(RefKind::Ref("action"));
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some("ir.actions.act_window".to_string());
+							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from(s)).collect());
 						}
 						"groups" => {
 							ref_kind = Some(RefKind::Id);
 							arch_model = None;
-							model_filter = Some("res.groups".to_string());
+							model_filter = Some(vec![ImStr::from("res.groups")]);
 							determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
 						}
 						_ => {}
@@ -965,7 +982,7 @@ impl Index {
 						}
 						"groups" => {
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some("res.groups".to_string());
+							model_filter = Some(vec![ImStr::from("res.groups")]);
 							arch_model = None;
 							determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
 						}
@@ -1010,7 +1027,7 @@ impl Index {
 					if text.range().contains_end(offset_at_cursor) {
 						ref_at_cursor = Some((text.as_str(), text.range()));
 						ref_kind = Some(RefKind::Ref("inherit_id"));
-						model_filter = Some("ir.ui.view".to_string());
+						model_filter = Some(vec![ImStr::from("ir.ui.view")]);
 					}
 				}
 				Ok(Token::Text { text }) if expect_action_tag => {
@@ -1122,10 +1139,15 @@ impl Index {
 		let model_filter = if arch_mode {
 			// For action references (%(...)d patterns), keep the specific model_filter
 			// Don't override with arch_model for action references
-			if matches!(ref_kind, Some(RefKind::Id)) && model_filter.as_deref() == Some("ir.actions.act_window") {
+			if matches!(ref_kind, Some(RefKind::Id))
+				&& model_filter
+					.as_ref()
+					.map(|v| v.iter().any(|m| m.as_str() == "ir.actions.act_window"))
+					.unwrap_or(false)
+			{
 				model_filter
 			} else {
-				arch_model.map(|span| span.to_string()).or(model_filter)
+				arch_model.map(|span| vec![ImStr::from(span.as_str())]).or(model_filter)
 			}
 		} else {
 			model_filter
@@ -1160,7 +1182,7 @@ impl Index {
 struct XmlRefs<'a> {
 	ref_at_cursor: Option<(&'a str, core::ops::Range<usize>)>,
 	ref_kind: Option<RefKind<'a>>,
-	model_filter: Option<String>,
+	model_filter: Option<Vec<ImStr>>,
 	/// used for Python inline expressions
 	scope: Scope,
 }
