@@ -7,7 +7,7 @@ use globwalk::FileType;
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{_R, Index};
 use odoo_lsp::utils::strict_canonicalize;
-use odoo_lsp::{GIT_VERSION, GITVER, NAME, VERSION, errloc, format_loc, loc};
+use odoo_lsp::{GIT_VERSION, GITVER, NAME, VERSION, errloc, format_loc, loc, ok};
 use self_update::{Status, backends::github};
 use serde_json::Value;
 use tracing::{debug, warn};
@@ -122,25 +122,19 @@ pub fn parse_args<'r>(mut args: &[&'r str]) -> Args<'r> {
 }
 
 fn print_usage() -> anyhow::Result<()> {
-	#[cfg(unix)]
-	if let Ok(stat) = std::process::Command::new("man")
-		.arg("-h")
-		.stdout(std::process::Stdio::null())
-		.stderr(std::process::Stdio::null())
-		.status()
-		&& stat.success()
+	use std::io::Write;
+	use std::process::{Command, Stdio};
+
+	const MANPAGE: &str = include_str!("../contrib/debian/usr/share/man/man1/odoo-lsp.1");
+
+	let mut man = Command::new("man").args(["-l", "-"]).stdin(Stdio::piped()).spawn()?;
 	{
-		use std::io::Write;
-		const MANPAGE: &str = include_str!("../contrib/debian/usr/share/man/man1/odoo-lsp.1");
-
-		let manpage = tempfile::NamedTempFile::new()?;
-		let mut file = std::fs::File::options().write(true).open(manpage.path())?;
-		file.write_all(MANPAGE.as_bytes())?;
-		std::process::Command::new("man").arg(manpage.path()).status()?;
-		return Ok(());
+		let mut stdin = ok!(man.stdin.take(), "failed to open man stdin");
+		stdin.write_all(MANPAGE.as_bytes())?;
 	}
+	man.wait()?;
 
-	Err(anyhow::anyhow!("no manpage support"))
+	Ok(())
 }
 
 /// Returns true if a CLI handler has been invoked.

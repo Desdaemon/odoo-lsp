@@ -102,4 +102,3 @@ pretty_assertions.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.0.2", features = ["system", "fs"] }
-tempfile = "3.20.0"

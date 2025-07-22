@@ -1397,7 +1397,6 @@ dependencies = [
  "serde",
  "serde_json",
  "smart-default",
- "tempfile",
  "tokio",
  "tower",
  "tower-lsp-server",
