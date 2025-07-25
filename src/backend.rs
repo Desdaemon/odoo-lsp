@@ -633,6 +633,7 @@ impl Index {
 		rope: RopeSlice<'_>,
 		for_only_prop: Option<PropertyKind>,
 		in_string: bool,
+		public_only: bool,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
 		if !items.has_space() {
@@ -651,6 +652,9 @@ impl Index {
 		};
 		let completions = iter.filter_map(|(property_name, kind)| {
 			if for_only_prop.as_ref().is_some_and(|target| target != kind) {
+				return None;
+			}
+			if public_only && property_name.starts_with(b"_") {
 				return None;
 			}
 			// SAFETY: only utf-8 bytestrings from interner() are allowed

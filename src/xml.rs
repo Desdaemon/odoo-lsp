@@ -633,6 +633,7 @@ impl Index {
 						PropertyKind::Field
 					}),
 					true,
+					false,
 					&mut items,
 				)?;
 			}
@@ -706,6 +707,7 @@ impl Index {
 					ImStr::from(_R(model)),
 					rope,
 					None, // Field would be better, but leave this here at least until @property is implemented
+					false,
 					false,
 					&mut items,
 				)?;

@@ -244,6 +244,7 @@ impl Backend {
 												rope,
 												Some(PropertyKind::Field),
 												true,
+												false,
 												&mut items,
 											)?;
 											return Ok(Some(CompletionResponse::List(CompletionList {
@@ -286,6 +287,7 @@ impl Backend {
 									rope,
 									Some(PropertyKind::Field),
 									true,
+									false,
 									&mut items,
 								)?;
 								return Ok(Some(CompletionResponse::List(CompletionList {
@@ -500,6 +502,7 @@ impl Backend {
 										rope,
 										Some(PropertyKind::Field),
 										true,
+										false,
 										&mut items,
 									)?;
 									return Ok(Some(CompletionResponse::List(CompletionList {
@@ -522,6 +525,7 @@ impl Backend {
 					ImStr::from(model),
 					rope,
 					None,
+					false,
 					false,
 					&mut items,
 				)?;
@@ -585,6 +589,7 @@ impl Backend {
 			rope,
 			prop_type,
 			node.kind() == "string",
+			false,
 			&mut items,
 		)?;
 		Ok(Some(CompletionResponse::List(CompletionList {
