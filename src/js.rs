@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::atomic::Ordering::Relaxed;
 
 use tower_lsp_server::lsp_types::*;
 use tree_sitter::{QueryCursor, Tree};
@@ -238,6 +239,12 @@ impl Backend {
 			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
 		};
 
+		let path = some!(params.text_document_position.text_document.uri.to_file_path());
+		let completions_limit = self
+			.workspaces
+			.find_workspace_of(&path, |_, ws| ws.completions.limit)
+			.unwrap_or_else(|| self.project_config.completions_limit.load(Relaxed));
+
 		let contents = Cow::from(rope);
 		let contents = contents.as_bytes();
 		let query = OrmCallQuery::query();
@@ -267,12 +274,15 @@ impl Backend {
 					// Extract the current prefix (excluding quotes)
 					let inner_range = range.shrink(1);
 					let prefix = String::from_utf8_lossy(&contents[inner_range.start..offset]);
-					let lsp_range = span_conv(model_node.range());
-					let mut items = MaxVec::new(100);
+					let lsp_range = ok!(
+						rope_conv(inner_range.map_unit(ByteOffset), rope),
+						"range conversion failed"
+					);
+					let mut items = MaxVec::new(completions_limit);
 					self.index.complete_model(&prefix, lsp_range, &mut items)?;
 
 					return Ok(Some(CompletionResponse::List(CompletionList {
-						is_incomplete: false,
+						is_incomplete: !items.has_space(),
 						items: items.into_inner(),
 					})));
 				}
@@ -291,9 +301,9 @@ impl Backend {
 						let inner_range = range.clone().shrink(1);
 						let prefix = String::from_utf8_lossy(&contents[inner_range.start..offset]);
 
-						let byte_range = ByteOffset(range.start)..ByteOffset(range.end);
+						let byte_range = inner_range.map_unit(ByteOffset);
 
-						let mut items = MaxVec::new(100);
+						let mut items = MaxVec::new(completions_limit);
 						self.index.complete_property_name(
 							&prefix,
 							byte_range,
@@ -301,11 +311,12 @@ impl Backend {
 							rope,
 							Some(PropertyKind::Method),
 							true,
+							true,
 							&mut items,
 						)?;
 
 						return Ok(Some(CompletionResponse::List(CompletionList {
-							is_incomplete: false,
+							is_incomplete: !items.has_space(),
 							items: items.into_inner(),
 						})));
 					}
@@ -344,6 +355,7 @@ impl Backend {
 							model_name.into(),
 							rope,
 							Some(PropertyKind::Method),
+							true,
 							true,
 							&mut items,
 						)?;
