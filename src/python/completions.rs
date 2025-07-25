@@ -16,20 +16,9 @@ use crate::model::{FieldKind, ModelEntry, ModelName, PropertyKind};
 use crate::some;
 use crate::utils::MaxVec;
 use crate::utils::*;
+use crate::xml::determine_csv_xmlid_subgroup;
 
-use super::{Mapped, PyCompletions, ThisModel, top_level_stmt};
-
-fn extract_string_needle_at_offset<'a>(
-	rope: RopeSlice<'a>,
-	range: core::ops::Range<usize>,
-	offset: usize,
-) -> Option<(Cow<'a, str>, core::ops::Range<ByteOffset>)> {
-	let slice = rope.get_byte_slice(range.clone())?;
-	let relative_offset = range.start;
-	let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
-	let byte_range = range.shrink(1).map_unit(ByteOffset);
-	Some((needle, byte_range))
-}
+use super::{Mapped, PyCompletions, ThisModel, extract_string_needle_at_offset, top_level_stmt};
 
 impl Backend {
 	pub(crate) async fn python_completions(
@@ -350,16 +339,19 @@ impl Backend {
 									}
 									b"groups" => {
 										// complete res.groups records
-										let range = desc_value.byte_range();
-										let (needle, byte_range) =
-											some!(extract_string_needle_at_offset(rope, range, offset));
+										let range = desc_value.byte_range().shrink(1);
+										let value = Cow::from(some!(rope.get_byte_slice(range.clone())));
+										let mut ref_ = None;
+										determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
+										let (needle, range) = some!(ref_);
+										let needle = needle[..offset - range.start - 1].to_string();
 										early_return.lift(move || async move {
 											let mut items = MaxVec::new(completions_limit);
 											self.index.complete_xml_id(
 												&needle,
-												byte_range,
+												range.map_unit(ByteOffset),
 												rope,
-												Some(&[ImStr::from("res.groups")]),
+												Some(&[ImStr::from_static("res.groups")]),
 												current_module,
 												&mut items,
 											)?;

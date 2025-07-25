@@ -13,6 +13,7 @@ use crate::prelude::*;
 use crate::analyze::Type;
 use crate::index::{_G, _I, _R, PathSymbol, index_models};
 use crate::model::{ModelName, ModelType};
+use crate::xml::determine_csv_xmlid_subgroup;
 use crate::{backend::Backend, backend::Text};
 
 use std::collections::HashMap;
@@ -693,6 +694,13 @@ impl Backend {
 							}
 							let model = _R(model);
 							return self.index.jump_def_property_name(needle, model);
+						} else if matches!(descriptor, b"groups") {
+							let range = desc_value.byte_range().shrink(1);
+							let value = Cow::from(some!(rope.get_byte_slice(range.clone())));
+							let mut ref_ = None;
+							determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
+							let (needle, _) = some!(ref_);
+							return self.index.jump_def_xml_id(needle, uri);
 						}
 
 						return Ok(None);
@@ -1040,6 +1048,15 @@ impl Backend {
 							return self
 								.index
 								.hover_property_name(needle, model, rope_conv(range, rope).ok());
+						} else if matches!(descriptor, b"groups") {
+							let range = desc_value.byte_range().shrink(1);
+							let value = Cow::from(some!(rope.get_byte_slice(range.clone())));
+							let mut ref_ = None;
+							determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
+							let (needle, byte_range) = some!(ref_);
+							return self
+								.index
+								.hover_record(needle, rope_conv(byte_range.map_unit(ByteOffset), rope).ok());
 						}
 
 						return Ok(None);
@@ -1505,4 +1522,16 @@ impl<'this> ThisModel<'this> {
 			}
 		}
 	}
+}
+
+fn extract_string_needle_at_offset<'a>(
+	rope: RopeSlice<'a>,
+	range: core::ops::Range<usize>,
+	offset: usize,
+) -> Option<(Cow<'a, str>, core::ops::Range<ByteOffset>)> {
+	let slice = rope.get_byte_slice(range.clone())?;
+	let relative_offset = range.start;
+	let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+	let byte_range = range.shrink(1).map_unit(ByteOffset);
+	Some((needle, byte_range))
 }

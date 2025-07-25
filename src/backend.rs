@@ -1109,6 +1109,7 @@ impl Index {
 
 		Ok(None)
 	}
+	/// - `uri`: the currently editing file's URL, used to determine the correct module if `cursor_value` is unscoped (i.e. contains no `.`)
 	pub fn jump_def_xml_id(&self, cursor_value: &str, uri: &Uri) -> anyhow::Result<Option<Location>> {
 		let mut value = Cow::from(cursor_value);
 		let path = some!(uri.to_file_path());
