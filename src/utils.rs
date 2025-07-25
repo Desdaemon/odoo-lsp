@@ -649,6 +649,15 @@ pub fn strict_canonicalize<P: AsRef<Path>>(path: P) -> anyhow::Result<std::path:
 	impl_(canon)
 }
 
+/// Replacement for `collect` since tree-sitter's StreamingIterator cannot be collected
+pub fn acc_vec<T>(mut acc: Vec<T>, item: &mut T) -> Vec<T>
+where
+	T: Default,
+{
+	acc.push(core::mem::take(item));
+	acc
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{WSL, to_display_path};

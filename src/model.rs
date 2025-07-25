@@ -451,7 +451,9 @@ impl ModelIndex {
 				let byte_range = byte_range.erase();
 				let mut cursor = QueryCursor::new();
 				cursor.set_byte_range(byte_range);
-				for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
+
+				let mut matches = cursor.matches(query, ast.root_node(), &contents[..]);
+				while let Some(match_) = matches.next() {
 					let mut field = None;
 					let mut type_ = None;
 					let mut is_relational = false;
@@ -562,7 +564,7 @@ impl ModelIndex {
 						let range = span_conv(body.range());
 						let top_level_scope = ast
 							.root_node()
-							.child_containing_descendant(body)
+							.child_with_descendant(body)
 							.map(|scope| span_conv(scope.range()));
 						methods.push((
 							method,
@@ -837,7 +839,8 @@ impl ModelEntry {
 			let query = ModelHelp::query();
 			let mut cursor = QueryCursor::new();
 			cursor.set_byte_range(byte_range.erase());
-			for match_ in cursor.matches(query, ast.root_node(), &contents[..]) {
+			let mut matches = cursor.matches(query, ast.root_node(), &contents[..]);
+			while let Some(match_) = matches.next() {
 				if let Some(docstring) = match_.nodes_for_capture_index(0).next() {
 					let contents = String::from_utf8_lossy(&contents[docstring.byte_range()]);
 					self.docstring = Some(ImStr::from(contents.trim()));
@@ -904,11 +907,12 @@ fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
 mod tests {
 	use pretty_assertions::assert_eq;
 	use std::collections::HashSet;
-	use tree_sitter::{Parser, QueryCursor};
+	use tree_sitter::{Parser, QueryCursor, StreamingIterator, StreamingIteratorMut};
 
 	use crate::{
 		index::{_I, _R, ModelQuery},
 		test_utils::cases::foo::{FOO_PY, prepare_foo_index},
+		utils::acc_vec,
 	};
 
 	fn clamp_str(str: &str) -> &str {
@@ -933,7 +937,7 @@ mod tests {
 					})
 					.collect::<Vec<_>>()
 			})
-			.collect::<Vec<_>>();
+			.fold_mut(vec![], acc_vec);
 		let matches = matches.iter().map(|match_| &match_[..]).collect::<Vec<_>>();
 		use ModelQuery as T;
 		assert_eq!(

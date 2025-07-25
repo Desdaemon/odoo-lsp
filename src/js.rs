@@ -59,7 +59,8 @@ impl Backend {
 		// try templates first
 		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
-		for match_ in cursor.matches(query, ast.root_node(), contents) {
+		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
@@ -75,7 +76,8 @@ impl Backend {
 		// try gotodefs for ORM calls
 		let query = OrmCallQuery::query();
 		let mut cursor = QueryCursor::new();
-		for match_ in cursor.matches(query, ast.root_node(), contents) {
+		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		while let Some(match_) = matches.next() {
 			let mut model_arg_node = None;
 			let mut method_arg_node = None;
 
@@ -126,7 +128,8 @@ impl Backend {
 		let contents = contents.as_bytes();
 		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
-		for match_ in cursor.matches(query, ast.root_node(), contents) {
+		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
@@ -159,7 +162,8 @@ impl Backend {
 		let contents = contents.as_bytes();
 		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
-		for match_ in cursor.matches(query, ast.root_node(), contents) {
+		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
@@ -180,7 +184,8 @@ impl Backend {
 		// try hover for ORM calls
 		let query = OrmCallQuery::query();
 		let mut cursor = QueryCursor::new();
-		for match_ in cursor.matches(query, ast.root_node(), contents) {
+		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		while let Some(match_) = matches.next() {
 			let mut model_arg_node = None;
 			let mut method_arg_node = None;
 
@@ -251,7 +256,8 @@ impl Backend {
 		let mut cursor = QueryCursor::new();
 
 		// Find the orm.call node that contains the cursor position
-		for match_ in cursor.matches(query, ast.root_node(), contents) {
+		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		while let Some(match_) = matches.next() {
 			let mut model_arg_node = None;
 			let mut method_arg_node = None;
 

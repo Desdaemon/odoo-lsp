@@ -619,8 +619,9 @@ fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry
 		deps.push(ModuleName::from(_I("base")));
 	}
 
-	for (match_, idx) in cursor.captures(ManifestQuery::query(), root, &contents[..]) {
-		let capture = match_.captures[idx];
+	let mut captures = cursor.captures(ManifestQuery::query(), root, &contents[..]);
+	while let Some((match_, idx)) = captures.next() {
+		let capture = match_.captures[*idx];
 		if let Some(ManifestQuery::DependsList) = ManifestQuery::from(capture.index) {
 			let list_node = capture.node;
 			let mut child_cursor = list_node.walk();
@@ -727,7 +728,8 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 		name: Option<&'a [u8]>,
 		inherits: Vec<&'a [u8]>,
 	}
-	for match_ in cursor.matches(query, ast.root_node(), contents) {
+	let mut matches = cursor.matches(query, ast.root_node(), contents);
+	while let Some(match_) = matches.next() {
 		let model_node = match_
 			.nodes_for_capture_index(ModelQuery::Model as _)
 			.next()
@@ -855,10 +857,11 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 mod tests {
 	use crate::index::{_I, Index, Interner, ModelQuery, ModuleEntry};
 	use crate::model::ModelType;
+	use crate::utils::acc_vec;
 	use pretty_assertions::assert_eq;
 	use std::collections::HashMap;
 	use std::path::{Path, PathBuf};
-	use tree_sitter::{Parser, QueryCursor};
+	use tree_sitter::{Parser, QueryCursor, StreamingIterator, StreamingIteratorMut};
 
 	use super::{index_models, parse_dependencies};
 
@@ -1178,7 +1181,7 @@ class Base(models.Model):
 					.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
 					.collect::<Vec<_>>()
 			})
-			.collect::<Vec<_>>();
+			.fold_mut(vec![], acc_vec);
 		assert_eq!(expected, actual);
 	}
 

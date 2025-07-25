@@ -328,7 +328,8 @@ impl Backend {
 
 		debug!("Parsing imports from {} bytes", contents.len());
 
-		for match_ in cursor.matches(query, ast.root_node(), contents) {
+		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		while let Some(match_) = matches.next() {
 			let mut module_path = None;
 			let mut import_name = None;
 			let mut alias = None;
@@ -591,7 +592,8 @@ impl Backend {
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut this_model = ThisModel::default();
 
-		for match_ in cursor.matches(query, root, contents) {
+		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				match PyCompletions::from(capture.index) {
@@ -621,14 +623,14 @@ impl Backend {
 						// 	.next()
 						// 	.is_none()
 						{
-							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
+							this_model.tag_model(capture.node, match_, root.byte_range(), contents);
 						}
 					}
 					Some(PyCompletions::Mapped) => {
 						if range.contains_end(offset)
 							&& let Some(mapped) = self.gather_mapped(
 								root,
-								&match_,
+								match_,
 								Some(offset),
 								range.clone(),
 								this_model.inner,
@@ -649,7 +651,7 @@ impl Backend {
 							let (needle, _, model) = some!(self.gather_commandlist(
 								cmdlist,
 								root,
-								&match_,
+								match_,
 								offset,
 								range,
 								this_model.inner,
@@ -678,7 +680,7 @@ impl Backend {
 							// same as PyCompletions::Mapped
 							let Some(mapped) = self.gather_mapped(
 								root,
-								&match_,
+								match_,
 								Some(offset),
 								desc_value.byte_range(),
 								this_model.inner,
@@ -843,7 +845,8 @@ impl Backend {
 		let current_module = self.index.find_module_of(&path);
 		let mut this_model = ThisModel::default();
 
-		for match_ in cursor.matches(query, root, contents) {
+		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				match PyCompletions::from(capture.index) {
@@ -872,7 +875,7 @@ impl Backend {
 								.next()
 								.is_none()
 						{
-							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
+							this_model.tag_model(capture.node, match_, root.byte_range(), contents);
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
@@ -935,7 +938,9 @@ impl Backend {
 		let query = PyCompletions::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut this_model = ThisModel::default();
-		for match_ in cursor.matches(query, root, contents) {
+
+		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				match PyCompletions::from(capture.index) {
@@ -947,14 +952,14 @@ impl Backend {
 							let slice = Cow::from(slice);
 							return self.index.hover_model(&slice, Some(lsp_range), false, None);
 						} else if range.end < offset {
-							this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
+							this_model.tag_model(capture.node, match_, root.byte_range(), contents);
 						}
 					}
 					Some(PyCompletions::Mapped) => {
 						if range.contains(&offset) {
 							let mapped = some!(self.gather_mapped(
 								root,
-								&match_,
+								match_,
 								Some(offset),
 								range.clone(),
 								this_model.inner,
@@ -983,7 +988,7 @@ impl Backend {
 							let (needle, range, model) = some!(self.gather_commandlist(
 								cmdlist,
 								root,
-								&match_,
+								match_,
 								offset,
 								range,
 								this_model.inner,
@@ -1026,7 +1031,7 @@ impl Backend {
 							let single_field = descriptor != b"related";
 							let mapped = some!(self.gather_mapped(
 								root,
-								&match_,
+								match_,
 								Some(offset),
 								desc_value.byte_range(),
 								this_model.inner,
@@ -1388,7 +1393,7 @@ impl Backend {
 		let mut count = 0;
 		while count < 30 {
 			count += 1;
-			let Some(candidate) = cursor.child_containing_descendant(dest) else {
+			let Some(candidate) = cursor.child_with_descendant(dest) else {
 				tracing::debug!("child_containing_descendant returned None at count={}", count);
 				return None;
 			};
@@ -1396,17 +1401,17 @@ impl Backend {
 			tracing::debug!("candidate kind: {}", candidate.kind());
 			if candidate.kind() == "tuple" {
 				// (0, 0, {})
-				obj = candidate.child_containing_descendant(dest)?;
+				obj = candidate.child_with_descendant(dest)?;
 			} else if candidate.kind() == "call" {
 				// Command.create({}), but we don't really care if the actual function is called.
 				let args = dig!(candidate, argument_list(1))?;
-				obj = args.child_containing_descendant(dest)?;
+				obj = args.child_with_descendant(dest)?;
 			} else {
 				return None;
 			}
 			tracing::debug!("obj kind: {}", obj.kind());
 			if obj.kind() == "dictionary" {
-				let pair = obj.child_containing_descendant(dest)?;
+				let pair = obj.child_with_descendant(dest)?;
 				tracing::debug!("pair kind: {}", pair.kind());
 				if pair.kind() != "pair" {
 					// Check if this is a broken syntax case (string without colon)
@@ -1433,7 +1438,7 @@ impl Backend {
 					break;
 				}
 
-				cursor = pair.child_containing_descendant(dest)?;
+				cursor = pair.child_with_descendant(dest)?;
 				access.push(b'.');
 				access.extend_from_slice(&contents[key.byte_range().shrink(1)]);
 			} else if obj.kind() == "set" {

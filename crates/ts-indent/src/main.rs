@@ -1,5 +1,5 @@
 use std::io::Read;
-use tree_sitter::QueryCursor;
+use tree_sitter::{QueryCursor, StreamingIterator};
 use ts_macros::query;
 
 query! {
@@ -47,7 +47,8 @@ fn main() {
 	let mut indent_stack = vec![0];
 	let mut last_indented_line = 0;
 
-	for (match_, _) in cursor.captures(IndentQuery::query(), tree.root_node(), input.as_bytes()) {
+	let mut captures = cursor.captures(IndentQuery::query(), tree.root_node(), input.as_bytes());
+	while let Some((match_, _)) = captures.next() {
 		for capture in match_.captures {
 			match IndentQuery::from(capture.index).unwrap() {
 				IndentQuery::Indent => {

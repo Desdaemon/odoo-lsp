@@ -56,7 +56,8 @@ impl Backend {
 			.collect::<Vec<_>>();
 		let mut cursor = QueryCursor::new();
 		let mut this_model = ThisModel::default();
-		for match_ in cursor.matches(query, root, contents) {
+		let mut matches = cursor.matches(query, root, contents);
+		while let Some(match_) = matches.next() {
 			let mut field_descriptors = vec![];
 			let mut field_model = None;
 
@@ -143,7 +144,7 @@ impl Backend {
 							debug!("binary search for top-level range failed");
 							continue;
 						};
-						this_model.tag_model(capture.node, &match_, top_level_ranges[idx].clone(), contents);
+						this_model.tag_model(capture.node, match_, top_level_ranges[idx].clone(), contents);
 					}
 					Some(PyCompletions::FieldDescriptor) => {
 						// fields.Many2one(field_descriptor=...)
@@ -166,7 +167,7 @@ impl Backend {
 						contents,
 						root,
 						this_model.inner,
-						&match_,
+						match_,
 						capture.node.byte_range(),
 						true,
 					),
@@ -196,7 +197,7 @@ impl Backend {
 						contents,
 						root,
 						this_model.inner,
-						&match_,
+						match_,
 						node.byte_range(),
 						descriptor == b"related",
 					),
@@ -251,7 +252,7 @@ impl Backend {
 								contents,
 								root,
 								Some(comodel_name),
-								&match_,
+								match_,
 								mapped.byte_range(),
 								true,
 							);
@@ -345,7 +346,8 @@ impl Backend {
 		let query = PyImports::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 
-		for match_ in cursor.matches(query, root, contents) {
+		let mut matches = cursor.matches(query, root, contents);
+		while let Some(match_) = matches.next() {
 			let mut module_path = None;
 			let mut import_name = None;
 			let mut import_node = None;

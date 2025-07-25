@@ -12,6 +12,7 @@ use rstest::*;
 use tree_sitter::Parser;
 use tree_sitter::Query;
 use tree_sitter::QueryCursor;
+use tree_sitter::StreamingIterator;
 use ts_macros::query;
 
 use crate::server;
@@ -375,7 +376,8 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 		let ast = parser.parse(&contents, None).unwrap();
 		let mut cursor = QueryCursor::new();
 
-		for (match_, _) in cursor.captures(query(), ast.root_node(), &contents[..]) {
+		let mut captures = cursor.captures(query(), ast.root_node(), &contents[..]);
+		while let Some((match_, _)) = captures.next() {
 			for capture in match_.captures {
 				let skip = match lang {
 					TestLanguages::Xml => 4,

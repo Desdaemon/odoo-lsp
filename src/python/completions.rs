@@ -49,7 +49,8 @@ impl Backend {
 		let mut early_return = EarlyReturn::<anyhow::Result<_>>::default();
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
-			'match_: for match_ in cursor.matches(query, root, contents) {
+			let mut matches = cursor.matches(query, root, contents);
+			'match_: while let Some(match_) = matches.next() {
 				let mut model_filter = None;
 				let mut field_descriptors = vec![];
 				let mut field_descriptor_in_offset = None;
@@ -128,7 +129,7 @@ impl Backend {
 									field_model = Some(&contents[capture.node.byte_range().shrink(1)]);
 								}
 							} else {
-								this_model.tag_model(capture.node, &match_, root.byte_range(), contents);
+								this_model.tag_model(capture.node, match_, root.byte_range(), contents);
 							}
 						}
 						Some(PyCompletions::Mapped) => {
@@ -258,7 +259,7 @@ impl Backend {
 								// Normal case - not an ERROR node
 								return self.python_completions_for_prop(
 									root,
-									&match_,
+									match_,
 									offset,
 									capture.node,
 									this_model.inner,
@@ -272,7 +273,7 @@ impl Backend {
 								&& let Some((needle, range, model)) = self.gather_commandlist(
 									cmdlist,
 									root,
-									&match_,
+									match_,
 									offset,
 									range,
 									this_model.inner,
@@ -313,7 +314,7 @@ impl Backend {
 										};
 										return self.python_completions_for_prop(
 											root,
-											&match_,
+											match_,
 											offset,
 											desc_value,
 											this_model.inner,
@@ -418,7 +419,7 @@ impl Backend {
 
 					return self.python_completions_for_prop(
 						root,
-						&match_,
+						match_,
 						offset,
 						mapped,
 						comodel_name,

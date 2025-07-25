@@ -9,7 +9,7 @@ pub use tower_lsp_server::UriExt;
 pub use tower_lsp_server::lsp_types::Range;
 pub use tower_lsp_server::lsp_types::Uri;
 pub use tracing::{debug, error, info, instrument, trace, warn};
-pub use tree_sitter::{Node, Parser, QueryCursor};
+pub use tree_sitter::{Node, Parser, QueryCursor, StreamingIterator, StreamingIteratorMut};
 pub use ts_macros::query;
 
 pub use crate::index::symbol::{_G, _I, _P, _R, PathSymbol, Symbol};

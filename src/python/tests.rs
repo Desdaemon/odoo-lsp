@@ -50,7 +50,7 @@ class Foo(models.Model):
 				.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
 				.collect::<Vec<_>>()
 		})
-		.collect::<Vec<_>>();
+		.fold_mut(vec![], acc_vec);
 	assert_eq!(expected, actual);
 }
 
@@ -84,7 +84,7 @@ foo = fields.Char()
 					.collect::<Vec<_>>(),
 			)
 		})
-		.collect::<Vec<_>>();
+		.fold_mut(vec![], acc_vec);
 	let actual = actual
 		.iter()
 		.map(|(index, captures)| (*index, captures.iter().map(|x| x.as_ref()).collect::<Vec<_>>()))
@@ -160,7 +160,7 @@ class Foo(models.AbstractModel):
 				})
 				.collect::<Vec<_>>()
 		})
-		.collect::<Vec<_>>();
+		.fold_mut(vec![], acc_vec);
 	assert_eq!(expected, actual);
 }
 
@@ -219,13 +219,14 @@ fn test_tag_model() {
 		.named_children(&mut ast.root_node().walk())
 		.filter(|n| n.kind() == "class_definition")
 	{
-		for m in cursor.matches(query, class_node, &contents[..]) {
-			for capture in m.captures {
+		let mut matches = cursor.matches(query, class_node, &contents[..]);
+		while let Some(match_) = matches.next() {
+			for capture in match_.captures {
 				if matches!(
 					super::PyCompletions::from(capture.index),
 					Some(super::PyCompletions::Model)
 				) {
-					this_model.tag_model(capture.node, &m, class_node.byte_range(), &contents[..]);
+					this_model.tag_model(capture.node, match_, class_node.byte_range(), &contents[..]);
 				}
 			}
 		}
@@ -438,8 +439,8 @@ class TestModel(models.Model):
 	)
 	.unwrap();
 
-	let matches: Vec<_> = cursor.matches(&query, root, contents.as_bytes()).collect();
-	assert!(!matches.is_empty(), "Should find mapped calls");
+	let mut matches = cursor.matches(&query, root, contents.as_bytes());
+	assert!(matches.next().is_some(), "Should find mapped calls");
 
 	// Test 2: Incomplete field access (broken syntax)
 	let cursor_pos2 = contents.find("'field_ids.desc").unwrap() + "'field_ids.desc".len();

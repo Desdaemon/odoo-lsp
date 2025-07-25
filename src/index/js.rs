@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use lasso::{Key, Spur};
 use smart_default::SmartDefault;
 use tokio::sync::RwLock;
-use tree_sitter::{Node, Parser, QueryCursor};
+use tree_sitter::{Node, Parser, QueryCursor, StreamingIterator};
 use ts_macros::query;
 
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
@@ -132,7 +132,8 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 	let mut widgets = Vec::new();
 	let mut actions = Vec::new();
 
-	for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
+	let mut matches = cursor.matches(query, ast.root_node(), contents.as_slice());
+	while let Some(match_) = matches.next() {
 		// let first = match_.captures.first().unwrap();
 		// debug_assert_eq!(
 		// 	first.index,
@@ -207,7 +208,6 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 					let subcomponent = _I(&subcomponent);
 					component.subcomponents.push(subcomponent.into());
 				}
-				// === registry ===
 				Some(JsQuery::RegistryItem) => {
 					let Some(registry) = match_.nodes_for_capture_index(JsQuery::Registry as _).next() else {
 						continue;
@@ -339,6 +339,7 @@ impl ComponentIndex {
 	}
 }
 
+/// - `node`: A tree-sitter [Node] from a JS AST
 fn registry_category_of_callee<'text>(mut callee: Node, contents: &'text [u8]) -> Option<&'text [u8]> {
 	loop {
 		// callee ?= registry.category($category)

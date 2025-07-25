@@ -8,7 +8,7 @@ use odoo_lsp::{
 	utils::RangeExt,
 };
 use tracing::debug;
-use tree_sitter::{Parser, QueryCursor};
+use tree_sitter::{Parser, QueryCursor, StreamingIterator};
 use ts_macros::query;
 
 /// path -> \[defines]
@@ -42,7 +42,8 @@ pub(super) async fn gather_defines(file: PathBuf, index: Arc<DefineIndex>) -> an
 	let query = OdooDefines::query();
 	let mut cursor = QueryCursor::new();
 
-	for match_ in cursor.matches(query, ast.root_node(), contents.as_slice()) {
+	let mut matches = cursor.matches(query, ast.root_node(), contents.as_slice());
+	while let Some(match_) = matches.next() {
 		debug!("{} captures in {}", match_.captures.len(), _R(file));
 		if let Some(name) = match_.nodes_for_capture_index(OdooDefines::Name as _).next() {
 			let name = String::from_utf8_lossy(&contents[name.byte_range().shrink(1)]);

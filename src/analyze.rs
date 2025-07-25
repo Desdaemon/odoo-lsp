@@ -10,7 +10,7 @@ use std::{
 use lasso::Spur;
 use ropey::Rope;
 use tracing::instrument;
-use tree_sitter::{Node, Parser, QueryCursor};
+use tree_sitter::{Node, Parser, QueryCursor, StreamingIterator};
 
 use crate::{
 	ImStr, dig, format_loc,
@@ -262,7 +262,8 @@ impl Index {
 				// model.{mapped,filtered,sorted,*}(lambda rec: ..)
 				let query = MappedCall::query();
 				let mut cursor = QueryCursor::new();
-				if let Some(mapped_call) = cursor.matches(query, node, contents).next()
+				let mut matches = cursor.matches(query, node, contents);
+				if let Some(mapped_call) = matches.next()
 					&& let callee = mapped_call
 						.nodes_for_capture_index(MappedCall::Callee as _)
 						.next()
@@ -681,7 +682,8 @@ pub fn determine_scope<'out, 'node>(
 	let mut self_param = None;
 	let mut fn_scope = None;
 	let mut cursor = QueryCursor::new();
-	'scoping: for match_ in cursor.matches(query, node, contents) {
+	let mut matches = cursor.matches(query, node, contents);
+	'scoping: while let Some(match_) = matches.next() {
 		// @class
 		let class = match_.captures.first()?;
 		if !class.node.byte_range().contains_end(offset) {
@@ -720,11 +722,11 @@ mod tests {
 	use pretty_assertions::assert_eq;
 	use ropey::Rope;
 	use tower_lsp_server::lsp_types::Position;
-	use tree_sitter::{Parser, QueryCursor};
+	use tree_sitter::{Parser, QueryCursor, StreamingIterator, StreamingIteratorMut};
 
 	use crate::analyze::FieldCompletion;
 	use crate::index::{_I, _R};
-	use crate::utils::{ByteOffset, rope_conv};
+	use crate::utils::{ByteOffset, acc_vec, rope_conv};
 	use crate::{index::Index, test_utils::cases::foo::prepare_foo_index};
 
 	#[test]
@@ -753,7 +755,7 @@ class Foo(models.AbstractModel):
 					.map(|capture| FieldCompletion::from(capture.index))
 					.collect::<Vec<_>>()
 			})
-			.collect::<Vec<_>>();
+			.fold_mut(vec![], acc_vec);
 		// Allow nested patterns
 		let actual = actual.iter().map(Vec::as_slice).collect::<Vec<_>>();
 		use FieldCompletion as T;
