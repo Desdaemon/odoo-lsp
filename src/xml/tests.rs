@@ -577,7 +577,7 @@ fn test_menuitem_action_completion_multiple_types() {
 
 	for (action_id, model) in actions {
 		index.records.insert(
-			_I(&format!("base.{}", action_id)).into(),
+			_I(format!("base.{action_id}")).into(),
 			Record {
 				deleted: false,
 				id: action_id.into(),

@@ -1240,7 +1240,7 @@ class TransifexCodeTranslation(models.Model):
 					deps.len()
 				);
 
-				let dep_names: Vec<String> = deps.iter().map(|d| format!("{:?}", d)).collect();
+				let dep_names: Vec<String> = deps.iter().map(|d| format!("{d:?}")).collect();
 				assert!(
 					dep_names.contains(&"Symbol<ModuleEntry>(\"base\")".to_string()),
 					"Expected to find 'base' dependency"
@@ -1255,7 +1255,7 @@ class TransifexCodeTranslation(models.Model):
 				);
 			}
 			Err(e) => {
-				panic!("Parsing should succeed but with incomplete results, got error: {}", e);
+				panic!("Parsing should succeed but with incomplete results, got error: {e}");
 			}
 		}
 	}
