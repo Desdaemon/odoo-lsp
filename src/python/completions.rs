@@ -279,8 +279,7 @@ impl Backend {
 								);
 							} else if let Some(cmdlist) = capture.node.next_named_sibling()
 								&& Backend::is_commandlist(cmdlist, offset)
-							{
-								if let Some((needle, range, model)) = self.gather_commandlist(
+								&& let Some((needle, range, model)) = self.gather_commandlist(
 									cmdlist,
 									root,
 									&match_,
@@ -290,21 +289,20 @@ impl Backend {
 									contents,
 									true,
 								) {
-									let mut items = MaxVec::new(completions_limit);
-									self.index.complete_property_name(
-										&needle,
-										range,
-										_R(model).to_string(),
-										rope,
-										Some(PropertyKind::Field),
-										true,
-										&mut items,
-									)?;
-									return Ok(Some(CompletionResponse::List(CompletionList {
-										is_incomplete: !items.has_space(),
-										items: items.into_inner(),
-									})));
-								}
+								let mut items = MaxVec::new(completions_limit);
+								self.index.complete_property_name(
+									&needle,
+									range,
+									_R(model).to_string(),
+									rope,
+									Some(PropertyKind::Field),
+									true,
+									&mut items,
+								)?;
+								return Ok(Some(CompletionResponse::List(CompletionList {
+									is_incomplete: !items.has_space(),
+									items: items.into_inner(),
+								})));
 								// If gather_commandlist returns None, continue to next match
 							}
 						}
@@ -446,101 +444,76 @@ impl Backend {
 					while let Some(parent) = current.parent() {
 						if parent.kind() == "ERROR" {
 							// Check if the ERROR's parent is a dictionary
-							if let Some(grandparent) = parent.parent() {
-								if grandparent.kind() == "dictionary" {
-									// For broken syntax (string without colon), we want to show all fields
-									// So we use an empty needle
-									let needle = Cow::Borrowed("");
+							if let Some(grandparent) = parent.parent()
+								&& grandparent.kind() == "dictionary"
+							{
+								// For broken syntax (string without colon), we want to show all fields
+								// So we use an empty needle
+								let needle = Cow::Borrowed("");
 
-									// Try to determine the model from the context
-									// Look for the field assignment this dictionary belongs to
-									let mut field_model: Option<Symbol<ModelEntry>> = None;
-									let mut dict_parent = grandparent;
+								// Try to determine the model from the context
+								// Look for the field assignment this dictionary belongs to
+								let mut field_model: Option<Symbol<ModelEntry>> = None;
+								let mut dict_parent = grandparent;
 
-									while let Some(parent) = dict_parent.parent() {
-										if parent.kind() == "list" {
-											if let Some(list_parent) = parent.parent() {
-												if list_parent.kind() == "pair" {
-													if let Some(key) = list_parent.child_by_field_name("key") {
-														if key.kind() == "string" {
-															let field_name = String::from_utf8_lossy(
-																&contents[key.byte_range().shrink(1)],
-															);
+								while let Some(parent) = dict_parent.parent() {
+									if parent.kind() == "list"
+										&& let Some(list_parent) = parent.parent()
+										&& list_parent.kind() == "pair"
+									{
+										if let Some(key) = list_parent.child_by_field_name("key")
+											&& key.kind() == "string" && let Some(model_bytes) = &this_model.inner
+										{
+											let field_name =
+												String::from_utf8_lossy(&contents[key.byte_range().shrink(1)]);
 
-															if let Some(model_bytes) = &this_model.inner {
-																let model_str = String::from_utf8_lossy(model_bytes);
-																let model_key = ModelName::from(_I(&model_str));
+											let model_str = String::from_utf8_lossy(model_bytes);
+											let model_key = ModelName::from(_I(&model_str));
 
-																if let Some(props) = self
-																	.index
-																	.models
-																	.populate_properties(model_key, &[]) && let Some(
-																	fields,
-																) =
-																	&props.fields && let Some(field_key) =
-																	_G(&field_name) && let Some(field_info) =
-																	fields.get(&field_key.into())
-																{
-																	// Check if this field has a relational type
-																	if let FieldKind::Relational(relation) =
-																		&field_info.kind
-																	{
-																		field_model = Some((*relation).into());
-																	}
-																}
-															}
-														}
-													}
-													break;
-												}
+											// Check if this field has a relational type
+											if let Some(props) = self.index.models.populate_properties(model_key, &[])
+												&& let Some(fields) = &props.fields && let Some(field_key) =
+												_G(&field_name) && let Some(field_info) = fields.get(&field_key.into())
+												&& let FieldKind::Relational(relation) = field_info.kind
+											{
+												field_model = Some(relation.into());
 											}
 										}
-										dict_parent = parent;
+										break;
 									}
+									dict_parent = parent;
+								}
 
-									if let Some(model) = field_model {
-										// For broken syntax, we want to replace the whole string
-										let range = if node.kind() == "string_content" {
-											// Find the parent string node to get the full range
-											if let Some(string_parent) = node.parent() {
-												if string_parent.kind() == "string" {
-													ByteRange {
-														start: ByteOffset(string_parent.start_byte() + 1), // Skip opening quote
-														end: ByteOffset(string_parent.end_byte() - 1),     // Skip closing quote
-													}
-												} else {
-													ByteRange {
-														start: ByteOffset(node.start_byte()),
-														end: ByteOffset(node.end_byte()),
-													}
-												}
+								if let Some(model) = field_model {
+									// For broken syntax, we want to replace the whole string
+									let range = if node.kind() == "string_content" {
+										// Find the parent string node to get the full range
+										if let Some(string_parent) = node.parent() {
+											if string_parent.kind() == "string" {
+												string_parent.byte_range().shrink(1).map_unit(ByteOffset)
 											} else {
-												ByteRange {
-													start: ByteOffset(node.start_byte()),
-													end: ByteOffset(node.end_byte()),
-												}
+												node.byte_range().map_unit(ByteOffset)
 											}
 										} else {
-											ByteRange {
-												start: ByteOffset(node.start_byte() + 1),
-												end: ByteOffset(node.end_byte() - 1),
-											}
-										};
-										let mut items = MaxVec::new(completions_limit);
-										self.index.complete_property_name(
-											&needle,
-											range,
-											_R(model).to_string(),
-											rope,
-											Some(PropertyKind::Field),
-											true,
-											&mut items,
-										)?;
-										return Ok(Some(CompletionResponse::List(CompletionList {
-											is_incomplete: !items.has_space(),
-											items: items.into_inner(),
-										})));
-									}
+											node.byte_range().map_unit(ByteOffset)
+										}
+									} else {
+										node.byte_range().shrink(1).map_unit(ByteOffset)
+									};
+									let mut items = MaxVec::new(completions_limit);
+									self.index.complete_property_name(
+										&needle,
+										range,
+										_R(model).to_string(),
+										rope,
+										Some(PropertyKind::Field),
+										true,
+										&mut items,
+									)?;
+									return Ok(Some(CompletionResponse::List(CompletionList {
+										is_incomplete: !items.has_space(),
+										items: items.into_inner(),
+									})));
 								}
 							}
 						}
