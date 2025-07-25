@@ -59,9 +59,8 @@ impl Backend {
 				for capture in match_.captures {
 					let range = capture.node.byte_range();
 					match PyCompletions::from(capture.index) {
-						Some(PyCompletions::Request) => {
-							model_filter = Some("ir.ui.view");
-						}
+						Some(PyCompletions::Request) => model_filter = Some("ir.ui.view"),
+						Some(PyCompletions::HasGroups) => model_filter = Some("res.groups"),
 						Some(PyCompletions::ForXmlId) => {
 							let model = || {
 								let model = capture.node.prev_named_sibling()?;
@@ -75,16 +74,26 @@ impl Backend {
 							model_filter = model()
 						}
 						Some(PyCompletions::XmlId) if range.contains_end(offset) => {
-							let range = range.shrink(1);
-							let needle = String::from_utf8_lossy(&contents[range.start..offset]);
-							let range = range.map_unit(ByteOffset);
+							let mut range = range.shrink(1);
+							let needle = String::from_utf8_lossy(&contents[range.clone()]);
+							let mut needle = needle.as_ref();
+							if match_
+								.nodes_for_capture_index(PyCompletions::HasGroups as _)
+								.next()
+								.is_some()
+							{
+								let mut ref_ = None;
+								determine_csv_xmlid_subgroup(&mut ref_, (needle, range), offset);
+								(needle, range) = some!(ref_);
+							}
+							let needle = needle[..offset - range.start].to_string();
 							early_return.lift(move || async move {
 								let mut items = MaxVec::new(completions_limit);
 								self.index.complete_xml_id(
 									&needle,
-									range,
+									range.map_unit(ByteOffset),
 									rope,
-									model_filter.map(|m| vec![ImStr::from(m)]).as_deref(),
+									model_filter.map(|m| vec![ImStr::from_static(m)]).as_deref(),
 									current_module,
 									&mut items,
 								)?;

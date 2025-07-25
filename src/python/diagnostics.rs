@@ -67,25 +67,44 @@ impl Backend {
 						if !in_active_root(capture.node.byte_range()) {
 							continue;
 						}
+
 						let range = capture.node.byte_range().shrink(1);
-						let xml_id = String::from_utf8_lossy(&contents[range.clone()]);
-						let xml_id_key = _G(&xml_id);
-						let mut id_found = false;
-						if let Some(id) = xml_id_key {
-							id_found = self.index.records.contains_key(&id.into());
+						let slice = String::from_utf8_lossy(&contents[range.clone()]);
+						let mut slice = slice.as_ref();
+
+						let mut xmlids = vec![];
+
+						if match_
+							.nodes_for_capture_index(PyCompletions::HasGroups as _)
+							.next()
+							.is_some()
+						{
+							let mut start = range.start;
+							while let Some((xmlid, rest)) = slice.split_once(',') {
+								let range = start..start + xmlid.len();
+								start = range.end + 1;
+								xmlids.push((xmlid, range));
+								slice = rest;
+							}
+						} else {
+							xmlids.push((slice, range));
 						}
-						if !id_found {
-							let content_range = capture
-								.node
-								.first_child_for_byte(range.start)
-								.map(|content| content.range())
-								.unwrap_or_else(|| capture.node.range());
-							diagnostics.push(Diagnostic {
-								range: span_conv(content_range),
-								message: format!("No XML record with ID `{xml_id}` found"),
-								severity: Some(DiagnosticSeverity::WARNING),
-								..Default::default()
-							})
+						for (xmlid, range) in xmlids {
+							let mut id_found = false;
+							if let Some(id) = _G(xmlid) {
+								id_found = self.index.records.contains_key(&id.into());
+							}
+
+							if !id_found {
+								let range = rope_conv(range.map_unit(ByteOffset), rope)
+									.expect(format_loc!("failed to get range for xmlid diag"));
+								diagnostics.push(Diagnostic {
+									range,
+									message: format!("No XML record with ID `{xmlid}` found"),
+									severity: Some(DiagnosticSeverity::WARNING),
+									..Default::default()
+								})
+							}
 						}
 					}
 					Some(PyCompletions::Model) => {
@@ -179,6 +198,7 @@ impl Backend {
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::ForXmlId)
+					| Some(PyCompletions::HasGroups)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
 					| Some(PyCompletions::Prop)

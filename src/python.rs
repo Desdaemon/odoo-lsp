@@ -26,7 +26,7 @@ mod tests;
 
 #[rustfmt::skip]
 query! {
-	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor, FieldType);
+	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor, FieldType, HasGroups);
 
 (call [
   (attribute [
@@ -35,13 +35,17 @@ query! {
   (attribute
     (identifier) @REQUEST (identifier) @_render)
   (attribute
-    (_) (identifier) @FOR_XML_ID) ]
+    (_) (identifier) @FOR_XML_ID)
+  (attribute
+  	(_) (identifier) @HAS_GROUPS) ]
   (argument_list . (string) @XML_ID)
   (#eq? @_env "env")
   (#eq? @_ref "ref")
   (#eq? @REQUEST "request")
   (#eq? @_render "render")
-  (#eq? @FOR_XML_ID "_for_xml_id"))
+  (#eq? @FOR_XML_ID "_for_xml_id")
+  (#match? @HAS_GROUPS "^(user_has_groups|has_group)$")
+)
 
 (subscript [
   (identifier) @_env
@@ -599,11 +603,20 @@ impl Backend {
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
 						let range = range.shrink(1);
-						let slice = some!(rope.get_byte_slice(range.clone()));
-						let slice = Cow::from(slice);
+						let slice = Cow::from(some!(rope.get_byte_slice(range.clone())));
+						let mut slice = slice.as_ref();
+						if match_
+							.nodes_for_capture_index(PyCompletions::HasGroups as _)
+							.next()
+							.is_some()
+						{
+							let mut ref_ = None;
+							determine_csv_xmlid_subgroup(&mut ref_, (slice, range.clone()), offset);
+							(slice, _) = some!(ref_);
+						}
 						return self
 							.index
-							.jump_def_xml_id(&slice, &params.text_document_position_params.text_document.uri);
+							.jump_def_xml_id(slice, &params.text_document_position_params.text_document.uri);
 					}
 					Some(PyCompletions::Model) => {
 						let range = capture.node.byte_range();
@@ -710,6 +723,7 @@ impl Backend {
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::ForXmlId)
+					| Some(PyCompletions::HasGroups)
 					| Some(PyCompletions::XmlId)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
@@ -852,9 +866,18 @@ impl Backend {
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
 						let range = range.shrink(1);
-						let slice = some!(rope.get_byte_slice(range.clone()));
-						let slice = Cow::from(slice);
-						return self.record_references(&path, &slice, current_module);
+						let slice = Cow::from(some!(rope.get_byte_slice(range.clone())));
+						let mut slice = slice.as_ref();
+						if match_
+							.nodes_for_capture_index(PyCompletions::HasGroups as _)
+							.next()
+							.is_some()
+						{
+							let mut ref_ = None;
+							determine_csv_xmlid_subgroup(&mut ref_, (slice, range.clone()), offset);
+							(slice, _) = some!(ref_);
+						}
+						return self.record_references(&path, slice, current_module);
 					}
 					Some(PyCompletions::Model) => {
 						let range = capture.node.byte_range();
@@ -906,6 +929,7 @@ impl Backend {
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)
 					| Some(PyCompletions::ForXmlId)
+					| Some(PyCompletions::HasGroups)
 					| Some(PyCompletions::Mapped)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
@@ -999,11 +1023,24 @@ impl Backend {
 							return self.index.hover_property_name(&needle, _R(model), range);
 						}
 					}
-					Some(PyCompletions::XmlId) if range.contains(&offset) => {
-						let xml_id = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
+					Some(PyCompletions::XmlId) if range.contains_end(offset) => {
+						let range = range.shrink(1);
+						let slice = Cow::from(some!(rope.get_byte_slice(range.clone())));
+						let mut slice = slice.as_ref();
+						if match_
+							.nodes_for_capture_index(PyCompletions::HasGroups as _)
+							.next()
+							.is_some()
+						{
+							let mut ref_ = None;
+							determine_csv_xmlid_subgroup(&mut ref_, (slice, range.clone()), offset);
+							if let Some((needle, _)) = ref_ {
+								slice = needle;
+							}
+						}
 						return self
 							.index
-							.hover_record(&xml_id, rope_conv(range.map_unit(ByteOffset), rope).ok());
+							.hover_record(slice, rope_conv(range.map_unit(ByteOffset), rope).ok());
 					}
 					Some(PyCompletions::Prop) if range.contains(&offset) => {
 						let model = some!(this_model.inner);
@@ -1070,6 +1107,7 @@ impl Backend {
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)
 					| Some(PyCompletions::ForXmlId)
+					| Some(PyCompletions::HasGroups)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::Depends)
 					| Some(PyCompletions::ReadFn)
