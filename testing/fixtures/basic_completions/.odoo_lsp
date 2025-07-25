@@ -1,0 +1,16 @@
+{
+  "module": {
+    "roots": [
+      "."
+    ]
+  },
+  "symbols": {
+    "limit": 80
+  },
+  "references": {
+    "limit": 80
+  },
+  "completions": {
+    "limit": 200
+  }
+}

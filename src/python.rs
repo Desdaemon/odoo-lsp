@@ -106,10 +106,10 @@ query! {
     (_) @MAPPED_TARGET (identifier) @DEPENDS)
   (argument_list . [
     (set (string) @MAPPED)
-    (dictionary [
-      (pair key: (string) @MAPPED)
-      (ERROR (string) @MAPPED) ])
-    (_ [
+     (dictionary [
+       (pair key: (string) @MAPPED)
+       (ERROR (string) @MAPPED)
+       (ERROR) @MAPPED ])    (_ [
       (set (string) @MAPPED)
       (dictionary [
         (pair key: (string) @MAPPED)
@@ -1224,7 +1224,59 @@ impl Backend {
 	) -> Option<(Cow<'text, str>, ByteRange, Spur)> {
 		let mut access = vec![];
 		access.extend_from_slice(&contents[range.shrink(1)]);
-		let mut dest = cmdlist.descendant_for_byte_range(offset, offset)?;
+		tracing::debug!(
+			"gather_commandlist: cmdlist range: {:?}, offset: {}",
+			cmdlist.byte_range(),
+			offset
+		);
+		let mut dest = cmdlist.descendant_for_byte_range(offset, offset);
+		tracing::debug!("Initial dest: {:?}", dest.map(|n| (n.kind(), n.byte_range())));
+
+		// If we can't find a node at the exact offset, try to find the last string node
+		// This handles the case where cursor is after a string without a colon
+		if dest.is_none() && offset > cmdlist.start_byte() {
+			tracing::debug!("No node at offset {}, trying offset - 1", offset);
+			// Try offset - 1 to see if we're just after a string
+			if let Some(node) = cmdlist.descendant_for_byte_range(offset - 1, offset - 1) {
+				tracing::debug!(
+					"Found node at offset - 1: kind={}, range={:?}",
+					node.kind(),
+					node.byte_range()
+				);
+				if node.kind() == "string"
+					|| (node.kind() == "string_content" && node.parent().map(|p| p.kind()) == Some("string"))
+					|| node.kind() == "string_end"
+				{
+					// Check if this string is not part of a key-value pair (no colon after it)
+					let string_node = if node.kind() == "string" {
+						node
+					// } else if node.kind() == "string_end" && node.parent().map(|p| p.kind()) == Some("string") {
+					// 	node.parent()?
+					} else {
+						node.parent()?
+					};
+					if let Some(next_sibling) = string_node.next_sibling() {
+						tracing::debug!("String has next sibling: {}", next_sibling.kind());
+						if next_sibling.kind() != ":" {
+							// This is an incomplete field name, provide completions
+							dest = Some(string_node);
+						}
+					} else {
+						tracing::debug!("String has no next sibling, treating as incomplete");
+						// No next sibling means it's the last element, likely incomplete
+						dest = Some(string_node);
+					}
+				}
+			}
+		}
+
+		let mut dest = dest?;
+
+		// If we're inside a string_content node, get the parent string node
+		if dest.kind() == "string_content" {
+			dest = dest.parent()?;
+		}
+
 		if dest.kind() != "string" {
 			dest = dest.parent()?;
 		}
@@ -1232,26 +1284,98 @@ impl Backend {
 			return None;
 		}
 
-		let Mapped {
-			needle, model, range, ..
-		} = self.gather_mapped(
-			root,
-			match_,
-			Some(offset),
-			dest.byte_range(),
-			this_model,
-			contents,
-			for_replacing,
-			None,
-		)?;
+		// First check if this string is in a broken syntax situation
+		// (i.e., it's a key in a dictionary without a following colon)
+		let mut is_broken_syntax = false;
+		if let Some(parent) = dest.parent() {
+			tracing::debug!("String parent kind: {}", parent.kind());
+			if parent.kind() == "dictionary" {
+				// Check if this string has a colon after it
+				if let Some(next_sibling) = dest.next_sibling() {
+					tracing::debug!("String next sibling kind: {}", next_sibling.kind());
+					if next_sibling.kind() != ":" {
+						is_broken_syntax = true;
+					}
+				} else {
+					tracing::debug!("String has no next sibling");
+					// No next sibling means it's the last element, likely incomplete
+					is_broken_syntax = true;
+				}
+			} else if parent.kind() == "ERROR" {
+				// When there's broken syntax, tree-sitter creates ERROR nodes
+				// Check if the parent of the ERROR is a dictionary
+				if let Some(grandparent) = parent.parent() {
+					tracing::debug!("ERROR parent (grandparent) kind: {}", grandparent.kind());
+					if grandparent.kind() == "dictionary" {
+						// This is likely a string in a dictionary with broken syntax
+						is_broken_syntax = true;
+					}
+				}
+			}
+		}
+
+		if is_broken_syntax {
+			tracing::debug!("Detected broken syntax: string in dictionary without colon");
+			// For broken syntax, we need to continue processing to determine the model
+			// but we'll use an empty needle to show all available fields
+		}
+
+		let (needle, model_str, range) = if is_broken_syntax {
+			// For broken syntax, we don't want to complete the partial field name
+			// We want to show all available fields
+			// We still need to get the model context, so we'll use the parent model if available
+			let range = ByteRange {
+				start: ByteOffset(offset),
+				end: ByteOffset(offset),
+			};
+			// Use the this_model if available, otherwise we'll need to determine it from context
+			let model_bytes = if let Some(model) = this_model {
+				model.to_vec()
+			} else {
+				// For command lists without explicit model, we need to continue processing
+				// to determine the model from the field context
+				vec![]
+			};
+			(
+				Cow::Borrowed(""),
+				String::from_utf8_lossy(&model_bytes).into_owned(),
+				range,
+			)
+		} else {
+			// Normal case - complete the field name
+			let Mapped {
+				needle, model, range, ..
+			} = self.gather_mapped(
+				root,
+				match_,
+				Some(offset),
+				dest.byte_range(),
+				this_model,
+				contents,
+				for_replacing,
+				None,
+			)?;
+			(needle, model, range)
+		};
+
+		tracing::debug!(
+			"needle={}, is_broken_syntax={}, model_str={}",
+			needle,
+			is_broken_syntax,
+			model_str
+		);
 
 		// recursive descent to collect the chain of fields
 		let mut cursor = cmdlist;
 		let mut count = 0;
 		while count < 30 {
 			count += 1;
-			let candidate = cursor.child_containing_descendant(dest)?;
+			let Some(candidate) = cursor.child_containing_descendant(dest) else {
+				tracing::debug!("child_containing_descendant returned None at count={}", count);
+				return None;
+			};
 			let obj;
+			tracing::debug!("candidate kind: {}", candidate.kind());
 			if candidate.kind() == "tuple" {
 				// (0, 0, {})
 				obj = candidate.child_containing_descendant(dest)?;
@@ -1262,9 +1386,27 @@ impl Backend {
 			} else {
 				return None;
 			}
+			tracing::debug!("obj kind: {}", obj.kind());
 			if obj.kind() == "dictionary" {
 				let pair = obj.child_containing_descendant(dest)?;
+				tracing::debug!("pair kind: {}", pair.kind());
 				if pair.kind() != "pair" {
+					// Check if this is a broken syntax case (string without colon)
+					if pair.kind() == "string" && pair.byte_range().contains(&offset) {
+						// This is a string in a dictionary without a colon
+						// We're completing field names for this dictionary
+						tracing::debug!("Breaking due to broken syntax string in dictionary");
+						// Break out of the loop to resolve the model
+						break;
+					} else if pair.kind() == "ERROR" {
+						// When there's broken syntax, tree-sitter might create an ERROR node
+						// Check if the ERROR contains our string
+						if pair.byte_range().contains(&offset) {
+							tracing::debug!("Breaking due to ERROR node containing offset");
+							break;
+						}
+					}
+					tracing::debug!("Returning None: pair kind {} is not 'pair'", pair.kind());
 					return None;
 				}
 
@@ -1290,11 +1432,15 @@ impl Backend {
 
 		access.push(b'.'); // to force resolution of the last field
 		let access = String::from_utf8_lossy(&access).into_owned();
+		tracing::debug!("Access path: {}", access);
+		tracing::debug!("Initial model before resolve: {}", model_str);
 		let access = &mut access.as_str();
-		let mut model = _I(&model);
+		let mut model = _I(&model_str);
 		if self.index.models.resolve_mapped(&mut model, access, None).is_err() {
+			tracing::debug!("resolve_mapped failed for model={} access={}", _R(model), access);
 			return None;
 		}
+		tracing::debug!("Resolved model: {}", _R(model));
 
 		Some((needle, range, model))
 	}

@@ -57,10 +57,10 @@ pub mod index {
 		use crate::prelude::*;
 		use std::path::Path;
 
-		let root = format!("/test_{}", test_id);
-		let py_path = format!("/test_{}/dummy.py", test_id);
-		let js_path = format!("/test_{}/dummy.js", test_id);
-		let xml_path = format!("/test_{}/dummy.xml", test_id);
+		let root = format!("/test_{test_id}");
+		let py_path = format!("/test_{test_id}/dummy.py");
+		let js_path = format!("/test_{test_id}/dummy.js");
+		let xml_path = format!("/test_{test_id}/dummy.xml");
 		if let Ok(mut fs) = TEST_FS.write() {
 			if let Some(py) = py {
 				fs.insert(Path::new(&py_path).to_path_buf(), py.as_bytes());
