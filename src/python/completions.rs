@@ -251,7 +251,7 @@ impl Backend {
 											self.index.complete_property_name(
 												&needle,
 												range,
-												_R(model).to_string(),
+												_R(model).into(),
 												rope,
 												Some(PropertyKind::Field),
 												true,
@@ -504,7 +504,7 @@ impl Backend {
 									self.index.complete_property_name(
 										&needle,
 										range,
-										_R(model).to_string(),
+										_R(model).into(),
 										rope,
 										Some(PropertyKind::Field),
 										true,

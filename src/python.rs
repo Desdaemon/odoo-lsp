@@ -1250,8 +1250,8 @@ impl Backend {
 					// Check if this string is not part of a key-value pair (no colon after it)
 					let string_node = if node.kind() == "string" {
 						node
-					} else if node.kind() == "string_end" && node.parent().map(|p| p.kind()) == Some("string") {
-						node.parent()?
+					// } else if node.kind() == "string_end" && node.parent().map(|p| p.kind()) == Some("string") {
+					// 	node.parent()?
 					} else {
 						node.parent()?
 					};
