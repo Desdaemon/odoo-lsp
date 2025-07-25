@@ -12,3 +12,5 @@ export class TestWidget extends Component {
         //                                                  ^complete another_method
     }
 }
+
+registry.category("fields").add("foo").add("bar").add("baz")

@@ -11,7 +11,7 @@ use ts_macros::query;
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
 use crate::index::{_I, PathSymbol};
 use crate::utils::{ByteOffset, MinLoc, RangeExt, rope_conv, span_conv};
-use crate::{ImStr, errloc, format_loc, ok};
+use crate::{ImStr, dig, errloc, format_loc, ok};
 
 use super::{_R, Component, ComponentName, Output, TemplateName};
 
@@ -22,7 +22,7 @@ use super::{_R, Component, ComponentName, Output, TemplateName};
 #[rustfmt::skip]
 query! {
 	#[lang = "tree_sitter_javascript"]
-	JsQuery(Name, Prop, Parent, TemplateName, TemplateInline, Subcomponent, RegistryCategory, RegistryField);
+	JsQuery(Name, Prop, Parent, TemplateName, TemplateInline, Subcomponent, Registry, RegistryItem);
 ((class_declaration
   (identifier) @NAME
   (class_body [
@@ -114,14 +114,8 @@ query! {
 
 // registry.category(CATEGORY).add(FIELD, ..)
 (call_expression
-  (member_expression
-    (call_expression
-      (member_expression (identifier) @_registry (property_identifier) @_category
-        (#eq? @_registry "registry")
-        (#eq? @_category "category"))
-      (arguments . (string) @REGISTRY_CATEGORY .))
-    (property_identifier) @_add (#eq? @_add "add"))
-  (arguments . (string) @REGISTRY_FIELD))
+  (member_expression (_) @REGISTRY (property_identifier) @_add (#eq? @_add "add"))
+  (arguments . (string) @REGISTRY_ITEM))
 }
 
 pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<Output> {
@@ -163,7 +157,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 			_ => None,
 		};
 
-		let mut category = None;
+		// let mut category = None;
 
 		for capture in match_.captures {
 			use intmap::Entry;
@@ -214,24 +208,23 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 					component.subcomponents.push(subcomponent.into());
 				}
 				// === registry ===
-				Some(JsQuery::RegistryCategory) => {
-					let range = capture.node.byte_range().shrink(1);
-					category = Some(&contents[range]);
-				}
-				Some(JsQuery::RegistryField) => {
+				Some(JsQuery::RegistryItem) => {
+					let Some(registry) = match_.nodes_for_capture_index(JsQuery::Registry as _).next() else {
+						continue;
+					};
 					let range = capture.node.byte_range().shrink(1);
 					let field = String::from_utf8_lossy(&contents[range]);
 					let loc = MinLoc {
 						path,
 						range: span_conv(capture.node.range()),
 					};
-					match category {
+					match registry_category_of_callee(registry, &contents) {
 						Some(b"fields") => widgets.push((ImStr::from(field.as_ref()), loc)),
 						Some(b"actions") => actions.push((ImStr::from(field.as_ref()), loc)),
-						_ => {}
+						Some(_) | None => {}
 					}
 				}
-				Some(JsQuery::Name) | None => {}
+				Some(JsQuery::Registry) | Some(JsQuery::Name) | None => {}
 			}
 		}
 	}
@@ -343,5 +336,50 @@ impl ComponentIndex {
 			}
 			self.insert(name, component);
 		}
+	}
+}
+
+fn registry_category_of_callee<'text>(mut callee: Node, contents: &'text [u8]) -> Option<&'text [u8]> {
+	loop {
+		// callee ?= registry.category($category)
+		if callee.kind() == "call_expression"
+			&& let Some(registry_category) = dig!(callee, member_expression)
+			&& let Some(registry) = dig!(registry_category, identifier)
+			&& b"registry" == &contents[registry.byte_range()]
+			&& let Some(prop_category) = dig!(registry_category, property_identifier(1))
+			&& b"category" == &contents[prop_category.byte_range()]
+			&& let Some(category_node) = dig!(callee, arguments(1).string)
+		{
+			return Some(&contents[category_node.byte_range().shrink(1)]);
+		}
+
+		callee = callee.named_child(0)?;
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::registry_category_of_callee;
+	use crate::prelude::*;
+	use pretty_assertions::assert_eq;
+
+	#[test]
+	fn test_registry_category_of_callee() {
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_javascript::LANGUAGE.into()).unwrap();
+		let contents = br#"registry.category("fields")"#;
+		let ast = parser.parse(contents, None).unwrap();
+		let call = dig!(ast.root_node(), expression_statement.call_expression).unwrap();
+		assert_eq!(registry_category_of_callee(call, contents), Some(b"fields".as_slice()));
+	}
+
+	#[test]
+	fn test_registry_category_of_callee_nested() {
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_javascript::LANGUAGE.into()).unwrap();
+		let contents = br#"registry.category("fields").add("foobar").add("barbaz")"#;
+		let ast = parser.parse(contents, None).unwrap();
+		let call = dig!(ast.root_node(), expression_statement.call_expression).expect(r#"$.add("barbaz")"#);
+		assert_eq!(registry_category_of_callee(call, contents), Some(b"fields".as_slice()));
 	}
 }

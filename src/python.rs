@@ -107,10 +107,11 @@ query! {
     (_) @MAPPED_TARGET (identifier) @DEPENDS)
   (argument_list . [
     (set (string) @MAPPED)
-     (dictionary [
-       (pair key: (string) @MAPPED)
-       (ERROR (string) @MAPPED)
-       (ERROR) @MAPPED ])    (_ [
+    (dictionary [
+      (pair key: (string) @MAPPED)
+      (ERROR (string) @MAPPED)
+      (ERROR) @MAPPED ])
+    (_ [
       (set (string) @MAPPED)
       (dictionary [
         (pair key: (string) @MAPPED)

@@ -1,0 +1,9 @@
+<odoo>
+    <record id="hoeh" model="ir.ui.view">
+        <field name="model">test.model</field>
+        <field name="arch" type="xml">
+            <field name="name" widget=""/>
+            <!--                       ^complete foo bar baz -->
+        </field>
+    </record>
+</odoo>
