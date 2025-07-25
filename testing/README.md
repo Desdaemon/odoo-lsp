@@ -2,7 +2,7 @@ End-to-end testing for odoo-lsp.
 
 ## Running tests
 
-Run tests with `cargo test`.
+Run tests with `just test` or simply `cargo test`.
 These tests are also run in CI, so it's recommended to add them after a bug fix to prevent regressions.
 
 ## Creating tests

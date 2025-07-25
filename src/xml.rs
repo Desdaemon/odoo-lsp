@@ -848,7 +848,7 @@ impl Index {
 							ref_kind = Some(RefKind::Id);
 							model_filter = Some(vec![ImStr::from("res.groups")]);
 							arch_model = None;
-							determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
+							determine_csv_xmlid_subgroup_of_xmlspan(&mut ref_at_cursor, value, offset_at_cursor);
 						}
 						"widget" if value_in_range && arch_depth > 0 => {
 							ref_kind = Some(RefKind::Widget);
@@ -876,11 +876,11 @@ impl Index {
 								ref_at_cursor = Some((inner, start_offset..end_offset));
 							}
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from(s)).collect());
+							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from_static(s)).collect());
 						} else if button_type == Some("action") {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from(s)).collect());
+							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from_static(s)).collect());
 						} else {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::MethodName(vec![]));
@@ -937,15 +937,14 @@ impl Index {
 						}
 						"action" => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
-							// ref_kind = Some(RefKind::Ref("action"));
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from(s)).collect());
+							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from_static(s)).collect());
 						}
 						"groups" => {
 							ref_kind = Some(RefKind::Id);
 							arch_model = None;
-							model_filter = Some(vec![ImStr::from("res.groups")]);
-							determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
+							model_filter = Some(vec![ImStr::from_static("res.groups")]);
+							determine_csv_xmlid_subgroup_of_xmlspan(&mut ref_at_cursor, value, offset_at_cursor);
 						}
 						_ => {}
 					}
@@ -984,7 +983,7 @@ impl Index {
 							ref_kind = Some(RefKind::Id);
 							model_filter = Some(vec![ImStr::from("res.groups")]);
 							arch_model = None;
-							determine_csv_xmlid_subgroup(&mut ref_at_cursor, value, offset_at_cursor);
+							determine_csv_xmlid_subgroup_of_xmlspan(&mut ref_at_cursor, value, offset_at_cursor);
 						}
 						_ => {}
 					}
@@ -1187,15 +1186,27 @@ struct XmlRefs<'a> {
 	scope: Scope,
 }
 
-fn determine_csv_xmlid_subgroup<'text>(
+#[inline]
+fn determine_csv_xmlid_subgroup_of_xmlspan<'text>(
 	ref_at_cursor: &mut Option<(&'text str, core::ops::Range<usize>)>,
 	value: StrSpan<'text>,
 	offset_at_cursor: usize,
 ) {
-	let mut start = value.range().start;
-	let mut csv_groups = value.as_str();
+	determine_csv_xmlid_subgroup(ref_at_cursor, (value.as_str(), value.range()), offset_at_cursor);
+}
+
+/// - `ref_at_cursor`: out-reference for the subgroup in cursor alongside its absolute range
+/// - `value`: a pair of (text, byterange) of the groups CSV string
+pub(crate) fn determine_csv_xmlid_subgroup<'text>(
+	ref_at_cursor: &mut Option<(&'text str, core::ops::Range<usize>)>,
+	value: (&'text str, core::ops::Range<usize>),
+	offset_at_cursor: usize,
+) {
+	let (value, range) = value;
+	let mut start = range.start;
+	let mut csv_groups = value;
 	if !csv_groups.contains(',') {
-		*ref_at_cursor = Some((csv_groups, value.range()));
+		*ref_at_cursor = Some((csv_groups, range));
 		return;
 	}
 	loop {
