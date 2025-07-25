@@ -417,6 +417,24 @@ impl LanguageServer for Backend {
 					Ok(None)
 				}
 			}
+		} else if ext == "js" {
+			let ast = {
+				let Some(ast) = self.ast_map.get(uri.path().as_str()) else {
+					debug!("Bug: did not build AST for {}", uri.path().as_str());
+					return Ok(None);
+				};
+				ast.value().clone()
+			};
+			let completions = self.js_completions(params, ast, rope.slice(..)).await;
+			match completions {
+				Ok(ret) => Ok(ret),
+				Err(err) => {
+					self.client
+						.show_message(MessageType::ERROR, format!("error during js completion:\n{err}"))
+						.await;
+					Ok(None)
+				}
+			}
 		} else {
 			debug!("(completion) unsupported {}", uri.path().as_str());
 			Ok(None)

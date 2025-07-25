@@ -417,7 +417,7 @@ fn test_gather_refs_field_groups() {
 		.unwrap();
 
 	assert!(matches!(refs.ref_kind, Some(crate::xml::RefKind::Id)));
-	assert_eq!(refs.model_filter, Some("res.groups".to_string()));
+	assert_eq!(refs.model_filter, Some(vec![ImStr::from("res.groups")]));
 	assert_eq!(refs.ref_at_cursor, Some(("base.group_user", 33..48)));
 }
 
@@ -439,7 +439,7 @@ fn test_gather_refs_field_groups_multiple() {
 		.unwrap();
 
 	assert!(matches!(refs.ref_kind, Some(crate::xml::RefKind::Id)));
-	assert_eq!(refs.model_filter, Some("res.groups".to_string()));
+	assert_eq!(refs.model_filter, Some(vec![ImStr::from("res.groups")]));
 	assert_eq!(refs.ref_at_cursor, Some(("base.group_user", 33..48)));
 
 	// Test second group
@@ -450,7 +450,7 @@ fn test_gather_refs_field_groups_multiple() {
 		.unwrap();
 
 	assert!(matches!(refs.ref_kind, Some(crate::xml::RefKind::Id)));
-	assert_eq!(refs.model_filter, Some("res.groups".to_string()));
+	assert_eq!(refs.model_filter, Some(vec![ImStr::from("res.groups")]));
 	assert_eq!(refs.ref_at_cursor, Some(("base.group_system", 49..66)));
 }
 
@@ -535,5 +535,92 @@ fn test_xml_completions_field_groups() {
 		assert!(list.items.iter().any(|item| item.label == "group_system"));
 	} else {
 		panic!("Expected completion list for groups attribute");
+	}
+}
+
+#[test]
+fn test_menuitem_action_completion_multiple_types() {
+	use crate::index::{_I, ModuleEntry, PathSymbol};
+	use crate::prelude::*;
+	use crate::record::Record;
+	use crate::utils::MinLoc;
+	use crate::xml::{Index, Tokenizer};
+	use ropey::Rope;
+	use std::collections::HashMap;
+	use std::path::{Path, PathBuf};
+
+	let index = Index::default();
+
+	// Insert a dummy module into the index
+	let root = PathBuf::from("/fake");
+	let mut modules = HashMap::new();
+	modules.insert(
+		_I("base").into(),
+		ModuleEntry {
+			path: "base".into(),
+			dependencies: Box::new([]),
+			loaded: Default::default(),
+			loaded_dependents: Default::default(),
+		},
+	);
+	index.roots.insert(root.clone(), modules);
+
+	// Insert different action types
+	let base_path = PathSymbol::strip_root(_I("/fake"), Path::new("/fake/base/data/actions.xml"));
+	let actions = vec![
+		("action_window_1", "ir.actions.act_window"),
+		("action_report_1", "ir.actions.report"),
+		("action_server_1", "ir.actions.server"),
+		("action_client_1", "ir.actions.client"),
+		("action_url_1", "ir.actions.act_url"),
+	];
+
+	for (action_id, model) in actions {
+		index.records.insert(
+			_I(&format!("base.{}", action_id)).into(),
+			Record {
+				deleted: false,
+				id: action_id.into(),
+				module: _I("base").into(),
+				model: Some(_I(model).into()),
+				inherit_id: None,
+				location: MinLoc {
+					path: base_path,
+					range: Range {
+						start: Position { line: 0, character: 0 },
+						end: Position { line: 0, character: 0 },
+					},
+				},
+			},
+			None,
+		);
+	}
+
+	let xml = r#"<menuitem id="menu_test" action=""/>"#;
+	let rope = Rope::from_str(xml);
+	let path = PathBuf::from("/fake/base/views/test.xml");
+	let offset = xml.find(r#"action="""#).unwrap() + 8; // inside the empty quotes
+
+	let mut reader = Tokenizer::from(xml);
+	let completions = index
+		.xml_completions(&path, 20, rope.slice(..), ByteOffset(offset), 0, &mut reader)
+		.expect("xml_completions should not error");
+
+	if let Some(CompletionResponse::List(list)) = completions {
+		// Check that all action types are included in completions
+		assert!(list.items.iter().any(|item| item.label == "action_window_1"));
+		assert!(list.items.iter().any(|item| item.label == "action_report_1"));
+		assert!(list.items.iter().any(|item| item.label == "action_server_1"));
+		assert!(list.items.iter().any(|item| item.label == "action_client_1"));
+		assert!(list.items.iter().any(|item| item.label == "action_url_1"));
+
+		// Verify that the details show the correct model
+		let window_action = list.items.iter().find(|item| item.label == "action_window_1").unwrap();
+		assert_eq!(window_action.detail, Some("ir.actions.act_window".to_string()));
+
+		let report_action = list.items.iter().find(|item| item.label == "action_report_1").unwrap();
+		assert_eq!(report_action.detail, Some("ir.actions.report".to_string()));
+	} else {
+		panic!("Expected completion list for menuitem action attribute");
 	}
 }
