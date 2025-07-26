@@ -2,7 +2,7 @@
 	"name": "odoo-lsp",
 	"description": "Language server for Odoo Python/JS/XML",
 	"license": "MIT",
-	"version": "0.6.0",
+	"version": "0.6.1",
 	"categories": [
 		"Programming Languages"
 	],
@@ -157,7 +157,7 @@
 		"esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
 		"compile": "cross-env NODE_ENV=production tsc -b",
 		"watch": "rm -rf dist && npm run esbuild-watch",
-		"lint": "prettier --write . && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged && ruff format",
+		"lint": "prettier --write . && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged",
 		"build": "npm run esbuild-base -- --sourcemap",
 		"package": "vsce package --no-dependencies",
 		"publish": "vsce publish --no-dependencies",
@@ -192,5 +192,6 @@
 			"esbuild",
 			"keytar"
 		]
-	}
+	},
+	"packageManager": "pnpm@10.13.1+sha512.37ebf1a5c7a30d5fabe0c5df44ee8da4c965ca0c5af3dbab28c3a1681b70a256218d05c81c9c0dcf767ef6b8551eb5b960042b9ed4300c59242336377e01cfad"
 }

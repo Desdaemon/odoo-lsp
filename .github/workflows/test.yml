@@ -43,7 +43,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: clippy
           cache-key: ${{ runner.os }}
-          rustflags: ''
+          rustflags: ""
 
       - name: Create dummy tag
         run: git tag -f CI

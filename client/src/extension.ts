@@ -235,7 +235,11 @@ function updateExtension(context: vscode.ExtensionContext, release: string) {
 					return;
 				}
 				vscode.window
-					.showInformationMessage(`Extension updated to ${release}. Reload to apply changes.`, "Reload extensions", "Later")
+					.showInformationMessage(
+						`Extension updated to ${release}. Reload to apply changes.`,
+						"Reload extensions",
+						"Later",
+					)
 					.then((resp) => {
 						if (resp === "Reload extensions") vscode.commands.executeCommand("workbench.action.restartExtensionHost");
 					});
