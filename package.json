@@ -159,8 +159,8 @@
 		"watch": "rm -rf dist && npm run esbuild-watch",
 		"lint": "prettier --write . && cargo fmt && cargo clippy --fix --allow-dirty --allow-staged",
 		"build": "npm run esbuild-base -- --sourcemap",
-		"package": "vsce package --no-dependencies",
-		"publish": "vsce publish --no-dependencies",
+		"package": "npx @vscode/vsce package --no-dependencies",
+		"publish": "npx @vscode/vsce publish --no-dependencies",
 		"install-for-vscode": "(rm *.vsix || true) && npm run package && code --install-extension *.vsix",
 		"miri": "cargo +nightly miri test",
 		"changelog": "conventional-changelog -p conventionalcommits -i CHANGELOG.md -s"

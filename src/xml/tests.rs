@@ -262,7 +262,7 @@ fn test_insert_in_scope_basic() {
 	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 	let ast = parser.parse(code, None).unwrap();
 	let root = ast.root_node();
-	index.insert_in_scope(&mut scope, "foo", root, code.as_bytes()).unwrap();
+	index.insert_in_scope(&mut scope, "foo", root, code).unwrap();
 	assert!(scope.get("foo").is_some());
 }
 
@@ -279,16 +279,12 @@ fn test_insert_in_scope_shadowing() {
 	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 	let ast1 = parser.parse(code1, None).unwrap();
 	let root1 = ast1.root_node();
-	index
-		.insert_in_scope(&mut scope, "foo", root1, code1.as_bytes())
-		.unwrap();
+	index.insert_in_scope(&mut scope, "foo", root1, code1).unwrap();
 	// Shadow with new identifier
 	let code2 = "'bar'";
 	let ast2 = parser.parse(code2, None).unwrap();
 	let root2 = ast2.root_node();
-	index
-		.insert_in_scope(&mut scope, "foo", root2, code2.as_bytes())
-		.unwrap();
+	index.insert_in_scope(&mut scope, "foo", root2, code2).unwrap();
 	assert!(scope.get("foo").is_some());
 }
 

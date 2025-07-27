@@ -68,6 +68,7 @@ enum Tag<'a> {
 	TComponent(&'a str),
 }
 
+/// XML extensions.
 impl Backend {
 	pub fn update_xml(
 		&self,
@@ -301,12 +302,11 @@ impl Backend {
 			Some(RefKind::PyExpr(py_offset)) => {
 				let mut parser = Parser::new();
 				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-				let contents = needle.as_bytes();
-				let ast = some!(parser.parse(contents, None));
-				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), contents));
-				let model = some!(self.index.type_of(object, &scope, contents));
+				let ast = some!(parser.parse(needle, None));
+				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), needle));
+				let model = some!(self.index.type_of(object, &scope, needle));
 				let model = some!(self.index.try_resolve_model(&model, &Scope::default()));
-				self.index.jump_def_property_name(&field, _R(model))
+				self.index.jump_def_property_name(field, _R(model))
 			}
 			Some(RefKind::Component) => {
 				let component = some!(_G(needle));
@@ -421,13 +421,12 @@ impl Backend {
 			Some(RefKind::PyExpr(py_offset)) => {
 				let mut parser = Parser::new();
 				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-				let contents = needle.as_bytes();
-				let ast = some!(parser.parse(contents, None));
-				let Some((object, field, range)) = Self::attribute_node_at_offset(py_offset, ast.root_node(), contents)
+				let ast = some!(parser.parse(needle, None));
+				let Some((object, field, range)) = Self::attribute_node_at_offset(py_offset, ast.root_node(), needle)
 				else {
 					let cursor_node = some!(ast.root_node().named_descendant_for_byte_range(py_offset, py_offset));
-					let needle = String::from_utf8_lossy(&contents[cursor_node.byte_range()]);
-					let scope_type = some!(scope.get(needle.as_ref()));
+					let needle = &needle[cursor_node.byte_range()];
+					let scope_type = some!(scope.get(needle));
 					let lsp_range = rope_conv(
 						cursor_node
 							.byte_range()
@@ -437,7 +436,7 @@ impl Backend {
 					)
 					.ok();
 					if let Some(model) = (self.index).try_resolve_model(scope_type, &scope) {
-						return self.index.hover_model(_R(model), lsp_range, true, Some(&needle));
+						return self.index.hover_model(_R(model), lsp_range, true, Some(needle));
 					}
 					return Ok(Some(Hover {
 						range: lsp_range,
@@ -447,11 +446,11 @@ impl Backend {
 						)),
 					}));
 				};
-				let model = some!(self.index.type_of(object, &scope, contents));
+				let model = some!(self.index.type_of(object, &scope, needle));
 				let model = some!(self.index.try_resolve_model(&model, &scope));
 				let anchor = ref_range.start + relative_offset;
 				self.index.hover_property_name(
-					&field,
+					field,
 					_R(model),
 					rope_conv(range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)), rope).ok(),
 				)
@@ -658,9 +657,7 @@ impl Index {
 				let mut parser = Parser::new();
 				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 				let ast = some!(parser.parse(value, None));
-				let contents = value.as_bytes();
-				let Some((object, field, range)) =
-					Backend::attribute_node_at_offset(py_offset, ast.root_node(), contents)
+				let Some((object, field, range)) = Backend::attribute_node_at_offset(py_offset, ast.root_node(), value)
 				else {
 					// Suggest items in the current scope
 					items.extend(scope.iter().map(|(ident, model)| {
@@ -690,13 +687,13 @@ impl Index {
 				};
 				// in this case walk_scope eventually ends so just retrieve the scope under its control
 				let (default_scope, scope) = Index::walk_scope(ast.root_node(), Some(scope.clone()), |scope, node| {
-					self.build_scope(scope, node, range.end, contents)
+					self.build_scope(scope, node, range.end, value)
 				});
 				let scope = scope.unwrap_or(default_scope);
-				let model = some!(self.type_of(object, &scope, contents));
+				let model = some!(self.type_of(object, &scope, value));
 				let model = some!(self.try_resolve_model(&model, &scope));
 				let needle_end = py_offset.saturating_sub(range.start);
-				let mut needle = field.as_ref();
+				let mut needle = field;
 				if !needle.is_empty() && needle_end < needle.len() {
 					needle = &needle[..needle_end];
 				}
@@ -993,18 +990,16 @@ impl Index {
 				// general bookkeeping
 				Ok(Token::Attribute { local, value, .. }) => {
 					(foreach_as.accept(local.as_str(), value)).and_then(|((foreach, _), (as_, _))| {
-						let contents = foreach.as_bytes();
-						let ast = parser.parse(contents, None)?;
-						self.insert_in_scope(&mut scope, &as_, ast.root_node(), contents)
+						let ast = parser.parse(&*foreach, None)?;
+						self.insert_in_scope(&mut scope, &as_, ast.root_node(), &foreach)
 							.inspect_err(|err| {
 								debug!("(gather_refs) foreach_as failed: {err}");
 							})
 							.ok()
 					});
 					(set_value.accept(local.as_str(), value)).and_then(|((set, _), (value, _))| {
-						let contents = value.as_bytes();
-						let ast = parser.parse(contents, None)?;
-						self.insert_in_scope(&mut scope, &set, ast.root_node(), contents)
+						let ast = parser.parse(&*value, None)?;
+						self.insert_in_scope(&mut scope, &set, ast.root_node(), &value)
 							.inspect_err(|err| {
 								debug!("(gather_refs) set_value failed: {err}");
 							})
@@ -1166,7 +1161,7 @@ impl Index {
 		scope: &mut Scope,
 		identifier: &str,
 		mut root: tree_sitter::Node,
-		contents: &[u8],
+		contents: &str,
 	) -> anyhow::Result<()> {
 		normalize(&mut root);
 		let type_ = self.type_of(root, scope, contents).unwrap_or(Type::Value);

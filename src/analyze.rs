@@ -24,28 +24,28 @@ use ts_macros::query;
 mod scope;
 pub use scope::Scope;
 
-pub static MODEL_METHODS: phf::Set<&[u8]> = phf::phf_set!(
-	b"create",
-	b"copy",
-	b"name_create",
-	b"browse",
-	b"filtered",
-	b"filtered_domain",
-	b"sorted",
-	b"search",
-	b"search_fetch",
-	b"name_search",
-	b"ensure_one",
-	b"with_context",
-	b"with_user",
-	b"with_company",
-	b"with_env",
-	b"sudo",
-	b"exists",
+pub static MODEL_METHODS: phf::Set<&str> = phf::phf_set!(
+	"create",
+	"copy",
+	"name_create",
+	"browse",
+	"filtered",
+	"filtered_domain",
+	"sorted",
+	"search",
+	"search_fetch",
+	"name_search",
+	"ensure_one",
+	"with_context",
+	"with_user",
+	"with_company",
+	"with_env",
+	"sudo",
+	"exists",
 	// TODO: Limit to Forms only
-	b"new",
-	b"edit",
-	b"save",
+	"new",
+	"edit",
+	"save",
 );
 
 /// The subset of types that may resolve to a model.
@@ -141,11 +141,11 @@ query! {
 pub type ScopeControlFlow = ControlFlow<Option<Scope>, bool>;
 impl Index {
 	#[inline]
-	pub fn model_of_range(&self, node: Node<'_>, range: ByteRange, contents: &[u8]) -> Option<ModelName> {
+	pub fn model_of_range(&self, node: Node<'_>, range: ByteRange, contents: &str) -> Option<ModelName> {
 		let (type_at_cursor, scope) = self.type_of_range(node, range, contents)?;
 		self.try_resolve_model(&type_at_cursor, &scope)
 	}
-	pub fn type_of_range(&self, root: Node<'_>, range: ByteRange, contents: &[u8]) -> Option<(Type, Scope)> {
+	pub fn type_of_range(&self, root: Node<'_>, range: ByteRange, contents: &str) -> Option<(Type, Scope)> {
 		// Phase 1: Determine the scope.
 		let (self_type, fn_scope, self_param) = determine_scope(root, contents, range.start.0)?;
 
@@ -159,13 +159,10 @@ impl Index {
 		let mut scope = Scope::default();
 		let self_type = match self_type {
 			Some(type_) => &contents[type_.byte_range().shrink(1)],
-			None => &[],
+			None => "",
 		};
-		scope.super_ = Some(self_param.as_ref().into());
-		scope.insert(
-			self_param.into_owned(),
-			Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
-		);
+		scope.super_ = Some(self_param.into());
+		scope.insert(self_param.to_string(), Type::Model(self_type.into()));
 		let (orig_scope, scope) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
 			self.build_scope(scope, node, range.end.0, contents)
 		});
@@ -178,12 +175,7 @@ impl Index {
 		// TODO: fields
 		if node_at_cursor.kind() == "identifier" && fn_scope.child_by_field_name("name") == Some(node_at_cursor) {
 			return Some((
-				Type::Method(
-					_I(String::from_utf8_lossy(self_type)).into(),
-					String::from_utf8_lossy(&contents[node_at_cursor.byte_range()])
-						.as_ref()
-						.into(),
-				),
+				Type::Method(_I(self_type).into(), contents[node_at_cursor.byte_range()].into()),
 				scope,
 			));
 		}
@@ -198,7 +190,7 @@ impl Index {
 	/// [Result] in that the try-operator (?) can be used to end iteration on a
 	/// [ControlFlow::Break]. Otherwise, [ControlFlow::Continue] has a continuation value
 	/// that must be passed up the chain, since it indicates whether [Scope::enter] was called.
-	pub fn build_scope(&self, scope: &mut Scope, node: Node, offset: usize, contents: &[u8]) -> ScopeControlFlow {
+	pub fn build_scope(&self, scope: &mut Scope, node: Node, offset: usize, contents: &str) -> ScopeControlFlow {
 		if node.start_byte() > offset {
 			return ControlFlow::Break(Some(core::mem::take(scope)));
 		}
@@ -210,8 +202,8 @@ impl Index {
 					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 				{
-					let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
-					scope.insert(lhs.into_owned(), type_);
+					let lhs = &contents[lhs.byte_range()];
+					scope.insert(lhs.to_string(), type_);
 				}
 			}
 			"for_statement" => {
@@ -222,8 +214,8 @@ impl Index {
 					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 				{
-					let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
-					scope.insert(lhs.into_owned(), type_);
+					let lhs = &contents[lhs.byte_range()];
+					scope.insert(lhs.to_string(), type_);
 				}
 				return ControlFlow::Continue(true);
 			}
@@ -254,15 +246,15 @@ impl Index {
 					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 				{
-					let lhs = String::from_utf8_lossy(&contents[lhs.byte_range()]);
-					scope.insert(lhs.into_owned(), type_);
+					let lhs = &contents[lhs.byte_range()];
+					scope.insert(lhs.to_string(), type_);
 				}
 			}
 			"call" if node.byte_range().contains_end(offset) => {
 				// model.{mapped,filtered,sorted,*}(lambda rec: ..)
 				let query = MappedCall::query();
 				let mut cursor = QueryCursor::new();
-				let mut matches = cursor.matches(query, node, contents);
+				let mut matches = cursor.matches(query, node, contents.as_bytes());
 				if let Some(mapped_call) = matches.next()
 					&& let callee = mapped_call
 						.nodes_for_capture_index(MappedCall::Callee as _)
@@ -273,8 +265,8 @@ impl Index {
 						.nodes_for_capture_index(MappedCall::Iter as _)
 						.next()
 						.unwrap();
-					let iter = String::from_utf8_lossy(&contents[iter.byte_range()]);
-					scope.insert(iter.into_owned(), type_);
+					let iter = &contents[iter.byte_range()];
+					scope.insert(iter.to_string(), type_);
 				}
 			}
 			"with_statement" => {
@@ -294,15 +286,15 @@ impl Index {
 				{
 					// TODO: Remove this hardcoded case
 					if callee.kind() == "identifier"
-						&& b"Form" == &contents[callee.byte_range()]
+						&& "Form" == &contents[callee.byte_range()]
 						&& let Some(first_arg) = value.named_child(1).expect("call args").named_child(0)
 						&& let Some(type_) = self.type_of(first_arg, scope, contents)
 					{
-						let alias = String::from_utf8_lossy(&contents[alias.byte_range()]).into_owned();
-						scope.insert(alias, type_);
+						let alias = &contents[alias.byte_range()];
+						scope.insert(alias.to_string(), type_);
 					} else if let Some(type_) = self.type_of(value, scope, contents) {
-						let alias = String::from_utf8_lossy(&contents[alias.byte_range()]).into_owned();
-						scope.insert(alias, type_);
+						let alias = &contents[alias.byte_range()];
+						scope.insert(alias.to_string(), type_);
 					}
 				}
 			}
@@ -312,7 +304,7 @@ impl Index {
 		ControlFlow::Continue(false)
 	}
 	/// [Type::Value] is not returned by this method.
-	pub fn type_of(&self, mut node: Node, scope: &Scope, contents: &[u8]) -> Option<Type> {
+	pub fn type_of(&self, mut node: Node, scope: &Scope, contents: &str) -> Option<Type> {
 		// What contributes to value types?
 		// 1. *.env['foo'] => Model('foo')
 		// 2. *.env.ref(<record-id>) => Model(<model of record-id>)
@@ -338,11 +330,7 @@ impl Index {
 		// 3. foo.mapped(lambda rec: 't): 't
 		#[cfg(debug_assertions)]
 		if node.byte_range().len() <= 64 {
-			tracing::trace!(
-				"type_of {} '{}'",
-				node.kind(),
-				String::from_utf8_lossy(&contents[node.byte_range()])
-			);
+			tracing::trace!("type_of {} '{}'", node.kind(), &contents[node.byte_range()]);
 		} else {
 			tracing::trace!("type_of {} range={:?}", node.kind(), node.byte_range());
 		}
@@ -352,22 +340,20 @@ impl Index {
 				let rhs = node.child_by_field_name("subscript")?;
 				let obj_ty = self.type_of(lhs, scope, contents)?;
 				match obj_ty {
-					Type::Env if rhs.kind() == "string" => Some(Type::Model(
-						String::from_utf8_lossy(&contents[rhs.byte_range().shrink(1)])
-							.as_ref()
-							.into(),
-					)),
+					Type::Env if rhs.kind() == "string" => {
+						Some(Type::Model(contents[rhs.byte_range().shrink(1)].into()))
+					}
 					Type::Model(_) | Type::Record(_) => Some(obj_ty),
 					_ => None,
 				}
 			}
 			"attribute" => self.type_of_attribute_node(node, scope, contents),
 			"identifier" => {
-				let key = String::from_utf8_lossy(&contents[node.byte_range()]);
+				let key = &contents[node.byte_range()];
 				if key == "super" {
 					return Some(Type::Super);
 				}
-				if let Some(type_) = scope.get(key.as_ref()) {
+				if let Some(type_) = scope.get(key) {
 					return Some(type_.clone());
 				}
 				if key == "request" {
@@ -387,7 +373,7 @@ impl Index {
 			_ => None,
 		}
 	}
-	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &[u8]) -> Option<Type> {
+	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &str) -> Option<Type> {
 		let func = call.named_child(0)?;
 		let func = self.type_of(func, scope, contents)?;
 		match func {
@@ -395,11 +381,7 @@ impl Index {
 				// (call (_) @func (argument_list . (string) @xml_id))
 				let xml_id = call.named_child(1)?.named_child(0)?;
 				if xml_id.kind() == "string" {
-					Some(Type::Record(
-						String::from_utf8_lossy(&contents[xml_id.byte_range().shrink(1)])
-							.as_ref()
-							.into(),
-					))
+					Some(Type::Record(contents[xml_id.byte_range().shrink(1)].into()))
 				} else {
 					None
 				}
@@ -412,10 +394,9 @@ impl Index {
 				match mapped.kind() {
 					"string" => {
 						let mut model: Spur = model.into();
-						let mapped = String::from_utf8_lossy(&contents[mapped.byte_range().shrink(1)]);
-						let mut mapped = mapped.as_ref();
+						let mut mapped = &contents[mapped.byte_range().shrink(1)];
 						self.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
-						self.type_of_attribute(&Type::Model(_R(model).into()), mapped.as_bytes(), scope)
+						self.type_of_attribute(&Type::Model(_R(model).into()), mapped, scope)
 					}
 					"lambda" => {
 						// (lambda (lambda_parameters)? body: (_))
@@ -423,8 +404,8 @@ impl Index {
 						if let Some(params) = mapped.child_by_field_name(b"parameters") {
 							let first_arg = params.named_child(0)?;
 							if first_arg.kind() == "identifier" {
-								let first_arg = String::from_utf8_lossy(&contents[first_arg.byte_range()]);
-								scope.insert(first_arg.into_owned(), Type::Model(_R(model).into()));
+								let first_arg = &contents[first_arg.byte_range()];
+								scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
 							}
 						}
 						let body = mapped.child_by_field_name(b"body")?;
@@ -441,16 +422,16 @@ impl Index {
 			Type::Env | Type::Record(..) | Type::Model(..) | Type::HttpRequest | Type::Value => None,
 		}
 	}
-	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &[u8]) -> Option<Type> {
+	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &str) -> Option<Type> {
 		let lhs = attribute.named_child(0)?;
 		let lhs = self.type_of(lhs, scope, contents)?;
 		let rhs = attribute.named_child(1)?;
 		match &contents[rhs.byte_range()] {
-			b"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
-			b"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
-			b"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
-			b"company" | b"companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
-			b"mapped" => {
+			"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
+			"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
+			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
+			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
+			"mapped" => {
 				let model = self.try_resolve_model(&lhs, scope)?;
 				Some(Type::Method(model, "mapped".into()))
 			}
@@ -467,11 +448,10 @@ impl Index {
 			_ => None,
 		}
 	}
-	pub fn type_of_attribute(&self, type_: &Type, attr: &[u8], scope: &Scope) -> Option<Type> {
+	pub fn type_of_attribute(&self, type_: &Type, attr: &str, scope: &Scope) -> Option<Type> {
 		let model = self.try_resolve_model(type_, scope)?;
-		let attr = String::from_utf8_lossy(attr);
 		let model_entry = self.models.populate_properties(model, &[])?;
-		let attr_key = _G(attr.as_ref())?;
+		let attr_key = _G(attr)?;
 		let attr_kind = model_entry.prop_kind(attr_key)?;
 		match attr_kind {
 			PropertyKind::Field => {
@@ -479,15 +459,14 @@ impl Index {
 				let relation = self.models.resolve_related_field(attr_key.into(), model.into())?;
 				Some(Type::Model(_R(relation).into()))
 			}
-			PropertyKind::Method => Some(Type::Method(model, attr.as_ref().into())),
+			PropertyKind::Method => Some(Type::Method(model, attr.into())),
 		}
 	}
-	pub fn has_attribute(&self, type_: &Type, attr: &[u8], scope: &Scope) -> bool {
+	pub fn has_attribute(&self, type_: &Type, attr: &str, scope: &Scope) -> bool {
 		(|| -> Option<()> {
 			let model = self.try_resolve_model(type_, scope)?;
-			let attr = String::from_utf8_lossy(attr);
 			let entry = self.models.populate_properties(model, &[])?;
-			let attr = _G(attr.as_ref())?;
+			let attr = _G(attr)?;
 			entry.prop_kind(attr).map(|_| ())
 		})()
 		.is_some()
@@ -555,15 +534,14 @@ impl Index {
 		Arc::make_mut(method_obj).return_type = MethodReturnType::Processing;
 		drop(model_entry);
 
-		let contents = String::from_utf8(test_utils::fs::read(location.path.to_path()).unwrap()).unwrap();
+		let contents = test_utils::fs::read_to_string(location.path.to_path()).unwrap();
 		let rope = Rope::from_str(&contents);
 		let rope = rope.slice(..);
-		let contents = contents.as_bytes();
 
 		let mut parser = Parser::new();
 		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 		let range: ByteRange = rope_conv(location.range, rope).ok()?;
-		let ast = parser.parse(contents, None)?;
+		let ast = parser.parse(contents.as_bytes(), None)?;
 
 		// TODO: Improve this heuristic
 		fn is_toplevel_return(mut node: Node) -> bool {
@@ -588,26 +566,23 @@ impl Index {
 			node.parent().is_some_and(is_block_of_class)
 		}
 
-		let (self_type, fn_scope, self_param) = determine_scope(ast.root_node(), contents, range.end.0)?;
+		let (self_type, fn_scope, self_param) = determine_scope(ast.root_node(), &contents, range.end.0)?;
 		let mut scope = Scope::default();
 		let self_type = match self_type {
 			Some(type_) => &contents[type_.byte_range().shrink(1)],
-			None => &[],
+			None => "",
 		};
-		scope.super_ = Some(self_param.as_ref().into());
-		scope.insert(
-			self_param.into_owned(),
-			Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
-		);
+		scope.super_ = Some(self_param.into());
+		scope.insert(self_param.to_string(), Type::Model(self_type.into()));
 		let offset = fn_scope.end_byte();
 		let (_, type_) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
-			let entered = self.build_scope(scope, node, offset, contents).map_break(|_| None)?;
+			let entered = self.build_scope(scope, node, offset, &contents).map_break(|_| None)?;
 			// TODO: When implementing freestanding functions, make the toplevel check optional
 			if node.kind() == "return_statement" && is_toplevel_return(node) {
 				let Some(child) = node.named_child(0) else {
 					return ControlFlow::Continue(entered);
 				};
-				let Some(type_) = self.type_of(child, scope, contents) else {
+				let Some(type_) = self.type_of(child, scope, &contents) else {
 					return ControlFlow::Continue(entered);
 				};
 				let Some(resolved) = self.try_resolve_model(&type_, scope) else {
@@ -626,8 +601,8 @@ impl Index {
 			None => method.return_type = MethodReturnType::Value,
 		}
 
-		let docstring = Self::parse_method_docstring(fn_scope, contents)
-			.map(|doc| ImStr::from(Method::postprocess_docstring(String::from_utf8_lossy(doc).as_ref())));
+		let docstring = Self::parse_method_docstring(fn_scope, &contents)
+			.map(|doc| ImStr::from(Method::postprocess_docstring(doc)));
 		method.docstring = docstring;
 
 		if let Some(params) = fn_scope.child_by_field_name("parameters") {
@@ -640,19 +615,17 @@ impl Index {
 			let mut cursor = params.walk();
 			let args = params.named_children(&mut cursor).skip(1).filter_map(|param| {
 				Some(match param.kind() {
-					"identifier" => FunctionParam::Param(ImStr::from(
-						String::from_utf8_lossy(&contents[param.byte_range()]).as_ref(),
-					)),
+					"identifier" => FunctionParam::Param(ImStr::from(&contents[param.byte_range()])),
 					"positional_separator" => FunctionParam::PosEnd,
 					"keyword_separator" => FunctionParam::EitherEnd(None),
-					"list_splat_pattern" => FunctionParam::EitherEnd(Some(ImStr::from(
-						String::from_utf8_lossy(&contents[param.named_child(0)?.byte_range()]).as_ref(),
-					))),
+					"list_splat_pattern" => {
+						FunctionParam::EitherEnd(Some(ImStr::from(&contents[param.named_child(0)?.byte_range()])))
+					}
 					"dictionary_splat_pattern" => FunctionParam::Kwargs("kwargs".into()),
 					"default_parameter" => {
 						let name = param.named_child(0)?;
-						let name = String::from_utf8_lossy(&contents[name.byte_range()]);
-						FunctionParam::Named(ImStr::from(name.as_ref()))
+						let name = &contents[name.byte_range()];
+						FunctionParam::Named(ImStr::from(name))
 					}
 					_ => return None,
 				})
@@ -662,7 +635,7 @@ impl Index {
 
 		type_
 	}
-	fn parse_method_docstring<'out>(fn_scope: Node, contents: &'out [u8]) -> Option<&'out [u8]> {
+	fn parse_method_docstring<'out>(fn_scope: Node, contents: &'out str) -> Option<&'out str> {
 		let block = fn_scope.child_by_field_name("body")?;
 		dig!(block, expression_statement.string.string_content(1)).map(|node| &contents[node.byte_range()])
 	}
@@ -674,15 +647,15 @@ impl Index {
 #[instrument(level = "trace", skip_all, ret)]
 pub fn determine_scope<'out, 'node>(
 	node: Node<'node>,
-	contents: &'out [u8],
+	contents: &'out str,
 	offset: usize,
-) -> Option<(Option<Node<'node>>, Node<'node>, std::borrow::Cow<'out, str>)> {
+) -> Option<(Option<Node<'node>>, Node<'node>, &'out str)> {
 	let query = FieldCompletion::query();
 	let mut self_type = None;
 	let mut self_param = None;
 	let mut fn_scope = None;
 	let mut cursor = QueryCursor::new();
-	let mut matches = cursor.matches(query, node, contents);
+	let mut matches = cursor.matches(query, node, contents.as_bytes());
 	'scoping: while let Some(match_) = matches.next() {
 		// @class
 		let class = match_.captures.first()?;
@@ -713,7 +686,7 @@ pub fn determine_scope<'out, 'node>(
 		}
 	}
 	let fn_scope = fn_scope?;
-	let self_param = String::from_utf8_lossy(&contents[self_param?.byte_range()]);
+	let self_param = &contents[self_param?.byte_range()];
 	Some((self_type, fn_scope, self_param))
 }
 
@@ -788,7 +761,7 @@ class Foo(models.Model):
 			.root_node()
 			.named_descendant_for_byte_range(fn_start.0, fn_start.0)
 			.unwrap();
-		super::determine_scope(ast.root_node(), contents.as_bytes(), fn_start.0)
+		super::determine_scope(ast.root_node(), contents, fn_start.0)
 			.unwrap_or_else(|| panic!("{}", fn_scope.to_sexp()));
 	}
 

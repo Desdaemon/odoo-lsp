@@ -605,7 +605,7 @@ fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry
 	) (#eq? @_depends "depends"))
 	}
 
-	let contents = test_utils::fs::read(manifest)?;
+	let contents = test_utils::fs::read_to_string(manifest)?;
 	let mut parser = Parser::new();
 	parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
 	let ast = ok!(parser.parse(&contents, None));
@@ -619,7 +619,7 @@ fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry
 		deps.push(ModuleName::from(_I("base")));
 	}
 
-	let mut captures = cursor.captures(ManifestQuery::query(), root, &contents[..]);
+	let mut captures = cursor.captures(ManifestQuery::query(), root, contents.as_bytes());
 	while let Some((match_, idx)) = captures.next() {
 		let capture = match_.captures[*idx];
 		if let Some(ManifestQuery::DependsList) = ManifestQuery::from(capture.index) {
@@ -628,7 +628,7 @@ fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry
 			for child in list_node.children(&mut child_cursor) {
 				// Only process string nodes, skip comments, commas, brackets, etc.
 				if child.kind() == "string" {
-					let dep = String::from_utf8_lossy(&contents[child.byte_range().shrink(1)]);
+					let dep = &contents[child.byte_range().shrink(1)];
 					deps.push(_I(dep).into());
 				}
 			}

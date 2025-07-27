@@ -175,7 +175,7 @@ fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 /// Recursively searches for a class definition with the given name in the AST.
 fn find_class_definition<'a>(
 	node: tree_sitter::Node<'a>,
-	contents: &[u8],
+	contents: &str,
 	class_name: &str,
 ) -> Option<tree_sitter::Node<'a>> {
 	use crate::utils::PreTravel;
@@ -185,10 +185,7 @@ fn find_class_definition<'a>(
 			node.kind() == "class_definition"
 				&& node
 					.child_by_field_name("name")
-					.map(|name_node| {
-						let name = String::from_utf8_lossy(&contents[name_node.byte_range()]);
-						name == class_name
-					})
+					.map(|name_node| class_name == &contents[name_node.byte_range()])
 					.unwrap_or(false)
 		})
 		.and_then(|node| node.child_by_field_name("name"))
@@ -196,8 +193,8 @@ fn find_class_definition<'a>(
 
 #[derive(Debug)]
 struct Mapped<'text> {
-	needle: Cow<'text, str>,
-	model: String,
+	needle: &'text str,
+	model: &'text str,
 	single_field: bool,
 	range: ByteRange,
 }
@@ -211,15 +208,11 @@ struct ImportInfo {
 
 type ImportMap = HashMap<String, ImportInfo>;
 
+/// Python extensions.
 impl Backend {
 	/// Helper function to resolve import-based jump-to-definition requests.
 	/// Returns the location if successful, None if not found, or an error if resolution fails.
-	fn resolve_import_location(
-		&self,
-		imports: &ImportMap,
-		identifier: &str,
-		_contents: &[u8],
-	) -> anyhow::Result<Option<Location>> {
+	fn resolve_import_location(&self, imports: &ImportMap, identifier: &str) -> anyhow::Result<Option<Location>> {
 		let Some(import_info) = imports.get(identifier) else {
 			return Ok(None);
 		};
@@ -244,8 +237,11 @@ impl Backend {
 
 		debug!("Resolved file path: {}", file_path.display());
 
-		let target_contents = std::fs::read(&file_path)
-			.map_err(|e| anyhow::anyhow!("Failed to read target file {}: {}", file_path.display(), e))?;
+		let target_contents = ok!(
+			test_utils::fs::read_to_string(&file_path),
+			"Failed to read target file {}",
+			file_path.display(),
+		);
 
 		let class_name = &import_info.imported_name;
 		if let Some(alias) = &import_info.alias {
@@ -319,7 +315,7 @@ impl Backend {
 	}
 
 	/// Parse import statements from Python content and return a map of imported names to their module paths
-	fn parse_imports(&self, contents: &[u8]) -> anyhow::Result<ImportMap> {
+	fn parse_imports(&self, contents: &str) -> anyhow::Result<ImportMap> {
 		let mut parser = Parser::new();
 		parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
 
@@ -332,7 +328,7 @@ impl Backend {
 
 		debug!("Parsing imports from {} bytes", contents.len());
 
-		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			let mut module_path = None;
 			let mut import_name = None;
@@ -341,7 +337,7 @@ impl Backend {
 			debug!("Found import match with {} captures", match_.captures.len());
 
 			for capture in match_.captures {
-				let capture_text = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+				let capture_text = &contents[capture.node.byte_range()];
 				debug!("Capture {}: = '{}'", capture.index, capture_text);
 
 				match PyImports::from(capture.index) {
@@ -471,24 +467,24 @@ impl Backend {
 	///      -------range
 	///      -------needle
 	/// ```
-	#[instrument(skip_all, ret, fields(range_content = String::from_utf8_lossy(&contents[range.clone()]).as_ref()))]
+	#[instrument(skip_all, ret, fields(range_content = &contents[range.clone()]))]
 	fn gather_mapped<'text>(
 		&self,
 		root: Node,
 		match_: &tree_sitter::QueryMatch,
 		offset: Option<usize>,
 		mut range: core::ops::Range<usize>,
-		this_model: Option<&[u8]>,
-		contents: &'text [u8],
+		this_model: Option<&'text str>,
+		contents: &'text str,
 		for_replacing: bool,
 		single_field_override: Option<bool>,
 	) -> Option<Mapped<'text>> {
 		let mut needle = if for_replacing {
 			range = range.shrink(1);
 			let offset = offset.unwrap_or(range.end);
-			String::from_utf8_lossy(&contents[range.start..offset])
+			&contents[range.start..offset]
 		} else {
-			let slice = String::from_utf8_lossy(&contents[range.clone().shrink(1)]);
+			let slice = &contents[range.clone().shrink(1)];
 			let relative_start = range.start + 1;
 			let offset = offset
 				.unwrap_or((range.end - 1).max(relative_start + 1))
@@ -506,23 +502,20 @@ impl Backend {
 			let limit = slice_till_end.find('.').unwrap_or(slice_till_end.len());
 			range = relative_start..offset + limit;
 			// Cow::from(rope.get_byte_slice(range.clone())?)
-			String::from_utf8_lossy(&contents[range.clone()])
+			&contents[range.clone()]
 		};
 		if needle == "|" || needle == "&" {
 			return None;
 		}
 
-		tracing::trace!(
-			"(gather_mapped) {} matches={match_:?}",
-			String::from_utf8_lossy(&contents[range.clone()])
-		);
+		tracing::trace!("(gather_mapped) {} matches={match_:?}", &contents[range.clone()]);
 
 		let model;
 		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next() {
 			let model_ = (self.index).model_of_range(root, local_model.byte_range().map_unit(ByteOffset), contents)?;
-			model = _R(model_).to_string();
+			model = _R(model_);
 		} else if let Some(this_model) = &this_model {
-			model = String::from_utf8_lossy(this_model).to_string();
+			model = this_model
 		} else {
 			return None;
 		}
@@ -531,16 +524,16 @@ impl Backend {
 		if let Some(depends) = match_.nodes_for_capture_index(PyCompletions::Depends as _).next() {
 			single_field = matches!(
 				&contents[depends.byte_range()],
-				b"write" | b"create" | b"constrains" | b"onchange"
+				"write" | "create" | "constrains" | "onchange"
 			);
 		} else if let Some(read_fn) = match_.nodes_for_capture_index(PyCompletions::ReadFn as _).next() {
 			// read or read_group, fields only
 			single_field = true;
-			if contents[read_fn.byte_range()].ends_with(b"read_group") {
+			if contents[read_fn.byte_range()].ends_with("read_group") {
 				// split off aggregate functions
-				needle = match cow_split_once(needle, ":") {
-					Err(unchanged) => unchanged,
-					Ok((field, _)) => {
+				needle = match needle.split_once(":") {
+					None => needle,
+					Some((field, _)) => {
 						range = range.start..range.start + field.len();
 						field
 					}
@@ -571,23 +564,21 @@ impl Backend {
 			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
 		};
 		let contents = Cow::from(rope);
-		let contents = contents.as_bytes();
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 
 		// Parse imports from the current file
-		let imports = self.parse_imports(contents).unwrap_or_default();
+		let imports = self.parse_imports(&contents).unwrap_or_default();
 		debug!("Parsed imports: {:?}", imports);
 
 		// Check if cursor is on an imported identifier
 		if let Some(cursor_node) = ast.root_node().descendant_for_byte_range(offset, offset)
 			&& cursor_node.kind() == "identifier"
 		{
-			let identifier_bytes = &contents[cursor_node.byte_range()];
-			let identifier = std::str::from_utf8(identifier_bytes).unwrap_or("");
+			let identifier = &contents[cursor_node.byte_range()];
 			debug!("Checking identifier '{}' at offset {}", identifier, offset);
 
 			// Try to resolve import location
-			if let Some(location) = self.resolve_import_location(&imports, identifier, contents)? {
+			if let Some(location) = self.resolve_import_location(&imports, identifier /*, contents_bytes*/)? {
 				return Ok(Some(location));
 			}
 		}
@@ -596,7 +587,7 @@ impl Backend {
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut this_model = ThisModel::default();
 
-		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
@@ -623,7 +614,7 @@ impl Backend {
 						let is_meta = match_
 							.nodes_for_capture_index(PyCompletions::Prop as _)
 							.next()
-							.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
+							.map(|prop| matches!(&contents[prop.byte_range()], "_name" | "_inherit"))
 							.unwrap_or(true);
 						if range.contains(&offset) {
 							let range = range.shrink(1);
@@ -636,7 +627,7 @@ impl Backend {
 						// 	.next()
 						// 	.is_none()
 						{
-							this_model.tag_model(capture.node, match_, root.byte_range(), contents);
+							this_model.tag_model(capture.node, match_, root.byte_range(), &contents);
 						}
 					}
 					Some(PyCompletions::Mapped) => {
@@ -647,11 +638,11 @@ impl Backend {
 								Some(offset),
 								range.clone(),
 								this_model.inner,
-								contents,
+								&contents,
 								false,
 								None,
 							) {
-							let mut needle = mapped.needle.as_ref();
+							let mut needle = mapped.needle;
 							let mut model = _I(mapped.model);
 							if !mapped.single_field {
 								some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
@@ -668,10 +659,10 @@ impl Backend {
 								offset,
 								range,
 								this_model.inner,
-								contents,
+								&contents,
 								false,
 							));
-							return self.index.jump_def_property_name(&needle, _R(model));
+							return self.index.jump_def_property_name(needle, _R(model));
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
@@ -683,13 +674,13 @@ impl Backend {
 						if !desc_value.byte_range().contains_end(offset) {
 							continue;
 						}
-						if matches!(descriptor, b"comodel_name") {
+						if matches!(descriptor, "comodel_name") {
 							let range = desc_value.byte_range().shrink(1);
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.index.jump_def_model(&slice);
-						} else if matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related") {
-							let single_field = descriptor != b"related";
+						} else if matches!(descriptor, "compute" | "search" | "inverse" | "related") {
+							let single_field = descriptor != "related";
 							// same as PyCompletions::Mapped
 							let Some(mapped) = self.gather_mapped(
 								root,
@@ -697,20 +688,20 @@ impl Backend {
 								Some(offset),
 								desc_value.byte_range(),
 								this_model.inner,
-								contents,
+								&contents,
 								false,
 								Some(single_field),
 							) else {
 								break;
 							};
-							let mut needle = mapped.needle.as_ref();
+							let mut needle = mapped.needle;
 							let mut model = _I(mapped.model);
 							if !mapped.single_field {
 								some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
 							}
 							let model = _R(model);
 							return self.index.jump_def_property_name(needle, model);
-						} else if matches!(descriptor, b"groups") {
+						} else if matches!(descriptor, "groups") {
 							let range = desc_value.byte_range().shrink(1);
 							let value = Cow::from(some!(rope.get_byte_slice(range.clone())));
 							let mut ref_ = None;
@@ -736,8 +727,8 @@ impl Backend {
 			}
 		}
 
-		let (model, prop, _) = some!(self.attribute_at_offset(offset, root, contents));
-		self.index.jump_def_property_name(&prop, model)
+		let (model, prop, _) = some!(self.attribute_at_offset(offset, root, &contents));
+		self.index.jump_def_property_name(prop, model)
 	}
 	/// Resolves the attribute and the object's model at the cursor offset
 	/// using [`model_of_range`][Index::model_of_range].
@@ -747,8 +738,8 @@ impl Backend {
 		&'out self,
 		offset: usize,
 		root: Node<'out>,
-		contents: &'out [u8],
-	) -> Option<(&'out str, Cow<'out, str>, core::ops::Range<usize>)> {
+		contents: &'out str,
+	) -> Option<(&'out str, &'out str, core::ops::Range<usize>)> {
 		let (lhs, field, range) = Self::attribute_node_at_offset(offset, root, contents)?;
 		let model = (self.index).model_of_range(root, lhs.byte_range().map_unit(ByteOffset), contents)?;
 		Some((_R(model), field, range))
@@ -759,8 +750,8 @@ impl Backend {
 	pub fn attribute_node_at_offset<'out>(
 		mut offset: usize,
 		root: Node<'out>,
-		contents: &'out [u8],
-	) -> Option<(Node<'out>, Cow<'out, str>, core::ops::Range<usize>)> {
+		contents: &'out str,
+	) -> Option<(Node<'out>, &'out str, core::ops::Range<usize>)> {
 		if contents.is_empty() {
 			return None;
 		}
@@ -775,8 +766,8 @@ impl Backend {
 		}
 		trace!(
 			"(attribute_node_to_offset) {} cursor={}\n  sexp={}",
-			String::from_utf8_lossy(&contents[cursor_node.byte_range()]),
-			contents[offset] as char,
+			&contents[cursor_node.byte_range()],
+			contents.as_bytes()[offset] as char,
 			cursor_node.to_sexp(),
 		);
 		let lhs;
@@ -785,8 +776,8 @@ impl Backend {
 			// We landed on one of the punctuations inside the attribute.
 			// Need to determine which one it is.
 			// We cannot depend on prev_named_sibling because the AST may be all messed up
-			let idx = contents[..=offset].iter().rposition(|c| *c == b'.')?;
-			let ident = contents[..=idx].iter().rposition(u8::is_ascii_alphanumeric)?;
+			let idx = contents[..=offset].bytes().rposition(|c| c == b'.')?;
+			let ident = contents[..=idx].bytes().rposition(|c| c.is_ascii_alphanumeric())?;
 			lhs = root.descendant_for_byte_range(ident, ident)?;
 			rhs = lhs.next_named_sibling().and_then(|attr| match attr.kind() {
 				"identifier" => Some(attr),
@@ -812,9 +803,8 @@ impl Backend {
 		}
 		trace!(
 			"(attribute_node_to_offset) lhs={} rhs={:?}",
-			String::from_utf8_lossy(&contents[lhs.byte_range()]),
-			rhs.as_ref()
-				.map(|rhs| String::from_utf8_lossy(&contents[rhs.byte_range()])),
+			&contents[lhs.byte_range()],
+			rhs.as_ref().map(|rhs| &contents[rhs.byte_range()]),
 		);
 		if lhs == cursor_node {
 			// We shouldn't recurse into cursor_node itself.
@@ -824,17 +814,17 @@ impl Backend {
 			// In single-expression mode, rhs could be empty in which case
 			// we return an empty needle/range.
 			let offset = real_offset.unwrap_or(offset);
-			return Some((lhs, Cow::from(""), offset..offset));
+			return Some((lhs, "", offset..offset));
 		};
 		let (field, range) = if rhs.range().start_point.row != lhs.range().end_point.row {
 			// tree-sitter has an issue with attributes spanning multiple lines
 			// which is NOT valid Python, but allows it anyways because tree-sitter's
 			// use cases don't require strict syntax trees.
 			let offset = real_offset.unwrap_or(offset);
-			(Cow::from(""), offset..offset)
+			("", offset..offset)
 		} else {
 			let range = rhs.byte_range();
-			(String::from_utf8_lossy(&contents[range.clone()]), range)
+			(&contents[range.clone()], range)
 		};
 
 		Some((lhs, field, range))
@@ -853,13 +843,12 @@ impl Backend {
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
 		let contents = Cow::from(rope);
-		let contents = contents.as_bytes();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let path = some!(params.text_document_position.text_document.uri.to_file_path());
 		let current_module = self.index.find_module_of(&path);
 		let mut this_model = ThisModel::default();
 
-		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
@@ -884,7 +873,7 @@ impl Backend {
 						let is_meta = match_
 							.nodes_for_capture_index(PyCompletions::Prop as _)
 							.next()
-							.map(|prop| matches!(&contents[prop.byte_range()], b"_name" | b"_inherit"))
+							.map(|prop| matches!(&contents[prop.byte_range()], "_name" | "_inherit"))
 							.unwrap_or(true);
 						if is_meta && range.contains(&offset) {
 							let range = range.shrink(1);
@@ -898,7 +887,7 @@ impl Backend {
 								.next()
 								.is_none()
 						{
-							this_model.tag_model(capture.node, match_, root.byte_range(), contents);
+							this_model.tag_model(capture.node, match_, root.byte_range(), &contents);
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
@@ -911,17 +900,17 @@ impl Backend {
 							continue;
 						};
 
-						if matches!(descriptor, b"comodel_name") {
+						if matches!(descriptor, "comodel_name") {
 							let range = desc_value.byte_range().shrink(1);
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
 							let slice = some!(_G(slice));
 							return self.model_references(&path, &slice.into());
-						} else if matches!(descriptor, b"compute" | b"search" | b"inverse") {
+						} else if matches!(descriptor, "compute" | "search" | "inverse") {
 							let range = desc_value.byte_range().shrink(1);
-							let model = String::from_utf8_lossy(some!(this_model.inner.as_ref()));
-							let prop = String::from_utf8_lossy(&contents[range]);
-							return self.index.method_references(&prop, &model);
+							let model = some!(this_model.inner.as_ref());
+							let prop = &contents[range];
+							return self.index.method_references(prop, model);
 						}
 
 						return Ok(None);
@@ -942,8 +931,8 @@ impl Backend {
 			}
 		}
 
-		let (model, prop, _) = some!(self.attribute_at_offset(offset, root, contents));
-		self.index.method_references(&prop, model)
+		let (model, prop, _) = some!(self.attribute_at_offset(offset, root, &contents));
+		self.index.method_references(prop, model)
 	}
 
 	pub fn python_hover(&self, params: HoverParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Hover>> {
@@ -957,13 +946,12 @@ impl Backend {
 		};
 
 		let contents = Cow::from(rope);
-		let contents = contents.as_bytes();
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut this_model = ThisModel::default();
 
-		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
@@ -976,7 +964,7 @@ impl Backend {
 							let slice = Cow::from(slice);
 							return self.index.hover_model(&slice, Some(lsp_range), false, None);
 						} else if range.end < offset {
-							this_model.tag_model(capture.node, match_, root.byte_range(), contents);
+							this_model.tag_model(capture.node, match_, root.byte_range(), &contents);
 						}
 					}
 					Some(PyCompletions::Mapped) => {
@@ -987,11 +975,11 @@ impl Backend {
 								Some(offset),
 								range.clone(),
 								this_model.inner,
-								contents,
+								&contents,
 								false,
 								None,
 							));
-							let mut needle = mapped.needle.as_ref();
+							let mut needle = mapped.needle;
 							let mut model = _I(mapped.model);
 							let mut range = mapped.range;
 							if !mapped.single_field {
@@ -1016,11 +1004,11 @@ impl Backend {
 								offset,
 								range,
 								this_model.inner,
-								contents,
+								&contents,
 								false,
 							));
 							let range = rope_conv(range, rope).ok();
-							return self.index.hover_property_name(&needle, _R(model), range);
+							return self.index.hover_property_name(needle, _R(model), range);
 						}
 					}
 					Some(PyCompletions::XmlId) if range.contains_end(offset) => {
@@ -1044,10 +1032,9 @@ impl Backend {
 					}
 					Some(PyCompletions::Prop) if range.contains(&offset) => {
 						let model = some!(this_model.inner);
-						let model = String::from_utf8_lossy(model);
-						let name = String::from_utf8_lossy(&contents[range]);
+						let name = &contents[range];
 						let range = span_conv(capture.node.range());
-						return self.index.hover_property_name(&name, &model, Some(range));
+						return self.index.hover_property_name(name, model, Some(range));
 					}
 					Some(PyCompletions::FieldDescriptor) => {
 						let Some(desc_value) = capture.node.next_named_sibling() else {
@@ -1058,25 +1045,25 @@ impl Backend {
 							continue;
 						}
 
-						if matches!(descriptor, b"comodel_name") {
+						if matches!(descriptor, "comodel_name") {
 							let range = desc_value.byte_range().shrink(1);
 							let lsp_range = span_conv(desc_value.range());
 							let slice = some!(rope.get_byte_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.index.hover_model(&slice, Some(lsp_range), false, None);
-						} else if matches!(descriptor, b"compute" | b"search" | b"inverse" | b"related") {
-							let single_field = descriptor != b"related";
+						} else if matches!(descriptor, "compute" | "search" | "inverse" | "related") {
+							let single_field = descriptor != "related";
 							let mapped = some!(self.gather_mapped(
 								root,
 								match_,
 								Some(offset),
 								desc_value.byte_range(),
 								this_model.inner,
-								contents,
+								&contents,
 								false,
 								Some(single_field)
 							));
-							let mut needle = mapped.needle.as_ref();
+							let mut needle = mapped.needle;
 							let mut model = _I(mapped.model);
 							let mut range = mapped.range;
 							if !mapped.single_field {
@@ -1091,7 +1078,7 @@ impl Backend {
 							return self
 								.index
 								.hover_property_name(needle, model, rope_conv(range, rope).ok());
-						} else if matches!(descriptor, b"groups") {
+						} else if matches!(descriptor, "groups") {
 							let range = desc_value.byte_range().shrink(1);
 							let value = Cow::from(some!(rope.get_byte_slice(range.clone())));
 							let mut ref_ = None;
@@ -1118,9 +1105,9 @@ impl Backend {
 				}
 			}
 		}
-		if let Some((model, prop, range)) = self.attribute_at_offset(offset, root, contents) {
+		if let Some((model, prop, range)) = self.attribute_at_offset(offset, root, &contents) {
 			let lsp_range = rope_conv(range.map_unit(ByteOffset), rope).ok();
-			return self.index.hover_property_name(&prop, model, lsp_range);
+			return self.index.hover_property_name(prop, model, lsp_range);
 		}
 
 		// No matches, assume arbitrary expression.
@@ -1128,14 +1115,11 @@ impl Backend {
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
 		let lsp_range = span_conv(needle.range());
 		let (type_, scope) =
-			some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), contents));
+			some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), &contents));
 		if let Some(model) = self.index.try_resolve_model(&type_, &scope) {
 			let model = _R(model);
-			let identifier =
-				(needle.kind() == "identifier").then(|| String::from_utf8_lossy(&contents[needle.byte_range()]));
-			return self
-				.index
-				.hover_model(model, Some(lsp_range), true, identifier.as_deref());
+			let identifier = (needle.kind() == "identifier").then(|| &contents[needle.byte_range()]);
+			return self.index.hover_model(model, Some(lsp_range), true, identifier);
 		}
 
 		// not a model! we only have so many things we can hover...
@@ -1152,7 +1136,6 @@ impl Backend {
 			some!((self.document_map).get(params.text_document_position_params.text_document.uri.path().as_str()));
 		let ast = some!((self.ast_map).get(params.text_document_position_params.text_document.uri.path().as_str()));
 		let contents = Cow::from(&document.rope);
-		let contents = contents.as_bytes();
 
 		let point = tree_sitter::Point::new(
 			params.text_document_position_params.position.line as _,
@@ -1175,9 +1158,9 @@ impl Backend {
 			if let Ok(offset) =
 				rope_conv::<_, ByteOffset>(params.text_document_position_params.position, document.rope.slice(..))
 				&& let Some(contents) = contents.get(..=offset.0)
-				&& let Some(idx) = contents.iter().rposition(|&c| c == b',' || c == b'(')
+				&& let Some(idx) = contents.bytes().rposition(|c| c == b',' || c == b'(')
 			{
-				if contents[idx] == b'(' {
+				if contents.as_bytes()[idx] == b'(' {
 					break 'find_param Some(0);
 				}
 				let prev_param = args.descendant_for_byte_range(idx, idx).unwrap().prev_named_sibling();
@@ -1195,7 +1178,7 @@ impl Backend {
 
 		let callee = some!(args.prev_named_sibling());
 		let Some((Type::Method(model_key, method), _)) =
-			(self.index).type_of_range(ast.root_node(), callee.byte_range().map_unit(ByteOffset), contents)
+			(self.index).type_of_range(ast.root_node(), callee.byte_range().map_unit(ByteOffset), &contents)
 		else {
 			return Ok(None);
 		};
@@ -1260,8 +1243,7 @@ impl Backend {
 		let ByteOffset(offset) = some!(rope_conv(params.position, rope.slice(..)).ok());
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
-		let (type_, _) =
-			some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), contents.as_bytes()));
+		let (type_, _) = some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), &contents));
 		Ok(Some(format!("{type_:?}").replacen("Text::", "", 1)))
 	}
 	fn is_commandlist(cmdlist: Node, offset: usize) -> bool {
@@ -1279,12 +1261,11 @@ impl Backend {
 		match_: &tree_sitter::QueryMatch,
 		offset: usize,
 		range: std::ops::Range<usize>,
-		this_model: Option<&[u8]>,
-		contents: &'text [u8],
+		this_model: Option<&'text str>,
+		contents: &'text str,
 		for_replacing: bool,
-	) -> Option<(Cow<'text, str>, ByteRange, Spur)> {
-		let mut access = vec![];
-		access.extend_from_slice(&contents[range.shrink(1)]);
+	) -> Option<(&'text str, ByteRange, Spur)> {
+		let mut access = contents[range.shrink(1)].to_string();
 		tracing::debug!(
 			"gather_commandlist: cmdlist range: {:?}, offset: {}",
 			cmdlist.byte_range(),
@@ -1390,18 +1371,10 @@ impl Backend {
 				end: ByteOffset(offset),
 			};
 			// Use the this_model if available, otherwise we'll need to determine it from context
-			let model_bytes = if let Some(model) = this_model {
-				model.to_vec()
-			} else {
-				// For command lists without explicit model, we need to continue processing
-				// to determine the model from the field context
-				vec![]
-			};
-			(
-				Cow::Borrowed(""),
-				String::from_utf8_lossy(&model_bytes).into_owned(),
-				range,
-			)
+			// For command lists without explicit model, we need to continue processing
+			// to determine the model from the field context
+			let model = this_model.unwrap_or("");
+			("", model, range)
 		} else {
 			// Normal case - complete the field name
 			let Mapped {
@@ -1477,8 +1450,8 @@ impl Backend {
 				}
 
 				cursor = pair.child_with_descendant(dest)?;
-				access.push(b'.');
-				access.extend_from_slice(&contents[key.byte_range().shrink(1)]);
+				access.push('.');
+				access.push_str(&contents[key.byte_range().shrink(1)]);
 			} else if obj.kind() == "set" {
 				break;
 			} else {
@@ -1491,12 +1464,11 @@ impl Backend {
 			warn!("recursion limit hit");
 		}
 
-		access.push(b'.'); // to force resolution of the last field
-		let access = String::from_utf8_lossy(&access).into_owned();
+		access.push('.'); // to force resolution of the last field
 		tracing::debug!("Access path: {}", access);
 		tracing::debug!("Initial model before resolve: {}", model_str);
 		let access = &mut access.as_str();
-		let mut model = _I(&model_str);
+		let mut model = _I(model_str);
 		if self.index.models.resolve_mapped(&mut model, access, None).is_err() {
 			tracing::debug!("resolve_mapped failed for model={} access={}", _R(model), access);
 			return None;
@@ -1509,7 +1481,7 @@ impl Backend {
 
 #[derive(Default, Clone)]
 struct ThisModel<'a> {
-	inner: Option<&'a [u8]>,
+	inner: Option<&'a str>,
 	source: ThisModelKind,
 	top_level_range: core::ops::Range<usize>,
 }
@@ -1528,7 +1500,7 @@ impl<'this> ThisModel<'this> {
 		model: Node,
 		match_: &QueryMatch,
 		top_level_range: core::ops::Range<usize>,
-		contents: &'this [u8],
+		contents: &'this str,
 	) {
 		if match_
 			.nodes_for_capture_index(PyCompletions::FieldType as _)
@@ -1545,7 +1517,7 @@ impl<'this> ThisModel<'this> {
 			.next()
 			.map(|prop| {
 				let prop = &contents[prop.byte_range()];
-				(prop == b"_name", prop == b"_inherit")
+				(prop == "_name", prop == "_inherit")
 			})
 			.unwrap_or((false, false));
 		let top_level_changed = top_level_range != self.top_level_range;

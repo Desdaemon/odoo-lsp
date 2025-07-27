@@ -170,12 +170,11 @@ fn test_attribute_node_at_offset() {
 	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 	let contents = "foo.mapped(lambda f: f.bar)";
 	let offset = contents.find("bar").unwrap();
-	let contents = contents.as_bytes();
 	let ast = parser.parse(contents, None).unwrap();
 	let (object, field, range) = Backend::attribute_node_at_offset(offset, ast.root_node(), contents).unwrap();
-	assert_eq!(&contents[object.byte_range()], b"f");
-	assert_eq!(field.as_ref(), "bar");
-	assert_eq!(&contents[range], b"bar");
+	assert_eq!(&contents[object.byte_range()], "f");
+	assert_eq!(field, "bar");
+	assert_eq!(&contents[range], "bar");
 }
 
 #[test]
@@ -184,12 +183,11 @@ fn test_attribute_at_offset_2() {
 	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 	let contents = "super().powerful()";
 	let offset = contents.find("powerful").unwrap();
-	let contents = contents.as_bytes();
 	let ast = parser.parse(contents, None).unwrap();
 	let (object, field, range) = Backend::attribute_node_at_offset(offset, ast.root_node(), contents).unwrap();
-	assert_eq!(&contents[object.byte_range()], b"super()");
-	assert_eq!(field.as_ref(), "powerful");
-	assert_eq!(&contents[range], b"powerful");
+	assert_eq!(&contents[object.byte_range()], "super()");
+	assert_eq!(field, "powerful");
+	assert_eq!(&contents[range], "powerful");
 }
 
 #[test]
@@ -209,8 +207,8 @@ fn test_top_level_stmt() {
 fn test_tag_model() {
 	let mut parser = Parser::new();
 	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-	let contents = b"class A(models.Model):\n    _name = 'foo'\n    _inherit = 'bar'\n\nclass B(models.Model):\n    _inherit = 'baz'\n";
-	let ast = parser.parse(&contents[..], None).unwrap();
+	let contents = "class A(models.Model):\n    _name = 'foo'\n    _inherit = 'bar'\n\nclass B(models.Model):\n    _inherit = 'baz'\n";
+	let ast = parser.parse(contents, None).unwrap();
 	let query = super::PyCompletions::query();
 	let mut cursor = QueryCursor::new();
 	let mut this_model = super::ThisModel::default();
@@ -219,19 +217,19 @@ fn test_tag_model() {
 		.named_children(&mut ast.root_node().walk())
 		.filter(|n| n.kind() == "class_definition")
 	{
-		let mut matches = cursor.matches(query, class_node, &contents[..]);
+		let mut matches = cursor.matches(query, class_node, contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				if matches!(
 					super::PyCompletions::from(capture.index),
 					Some(super::PyCompletions::Model)
 				) {
-					this_model.tag_model(capture.node, match_, class_node.byte_range(), &contents[..]);
+					this_model.tag_model(capture.node, match_, class_node.byte_range(), contents);
 				}
 			}
 		}
 	}
-	assert_eq!(this_model.inner, Some(&b"baz"[..]));
+	assert_eq!(this_model.inner, Some("baz"));
 	assert!(matches!(this_model.source, super::ThisModelKind::Inherited));
 }
 

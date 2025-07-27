@@ -30,6 +30,7 @@ query! {
 			. (string) @METHOD_ARG))
 }
 
+/// Javascript extensions.
 impl Backend {
 	pub fn on_change_js(
 		&self,
@@ -54,17 +55,16 @@ impl Backend {
 			Err(errloc!("could not find offset for {}", uri.path().as_str()))?
 		};
 		let contents = Cow::from(rope);
-		let contents = contents.as_bytes();
 
 		// try templates first
 		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
-		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
-					let key = some!(_G(String::from_utf8_lossy(&contents[range.shrink(1)])));
+					let key = some!(_G(&contents[range.shrink(1)]));
 					return Ok(some!(self.index.templates.get(&key.into()))
 						.location
 						.clone()
@@ -76,7 +76,7 @@ impl Backend {
 		// try gotodefs for ORM calls
 		let query = OrmCallQuery::query();
 		let mut cursor = QueryCursor::new();
-		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			let mut model_arg_node = None;
 			let mut method_arg_node = None;
@@ -98,8 +98,8 @@ impl Backend {
 				&& range.contains_end(offset)
 			{
 				let range = range.shrink(1);
-				let model = String::from_utf8_lossy(&contents[range]);
-				return self.index.jump_def_model(&model);
+				let model = &contents[range];
+				return self.index.jump_def_model(model);
 			}
 
 			if let Some(model_node) = model_arg_node
@@ -107,9 +107,9 @@ impl Backend {
 				&& let range = method_node.byte_range()
 				&& range.contains_end(offset)
 			{
-				let model = String::from_utf8_lossy(&contents[model_node.byte_range().shrink(1)]);
-				let method = String::from_utf8_lossy(&contents[range.shrink(1)]);
-				return self.index.jump_def_property_name(&method, &model);
+				let model = &contents[model_node.byte_range().shrink(1)];
+				let method = &contents[range.shrink(1)];
+				return self.index.jump_def_property_name(method, model);
 			}
 		}
 
@@ -125,15 +125,14 @@ impl Backend {
 			Err(errloc!("could not find offset for {}", uri.path().as_str()))?
 		};
 		let contents = Cow::from(rope);
-		let contents = contents.as_bytes();
 		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
-		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
-					let key = String::from_utf8_lossy(&contents[range.shrink(1)]);
+					let key = &contents[range.shrink(1)];
 					let key = some!(_G(key));
 					let template = some!(self.index.templates.get(&key.into()));
 					return Ok(Some(
@@ -159,24 +158,21 @@ impl Backend {
 			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
 		};
 		let contents = Cow::from(rope);
-		let contents = contents.as_bytes();
 		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
-		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			for capture in match_.captures {
 				let range = capture.node.byte_range();
 				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
-					return Ok(self.index.hover_template(
-						&String::from_utf8_lossy(&contents[range.shrink(1)]),
-						Some(span_conv(capture.node.range())),
-					));
+					return Ok(self
+						.index
+						.hover_template(&contents[range.shrink(1)], Some(span_conv(capture.node.range()))));
 				}
 				if capture.index == JsQuery::Name as u32 && range.contains(&offset) {
-					return Ok(self.index.hover_component(
-						&String::from_utf8_lossy(&contents[range]),
-						Some(span_conv(capture.node.range())),
-					));
+					return Ok(self
+						.index
+						.hover_component(&contents[range], Some(span_conv(capture.node.range()))));
 				}
 			}
 		}
@@ -184,7 +180,7 @@ impl Backend {
 		// try hover for ORM calls
 		let query = OrmCallQuery::query();
 		let mut cursor = QueryCursor::new();
-		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			let mut model_arg_node = None;
 			let mut method_arg_node = None;
@@ -206,10 +202,10 @@ impl Backend {
 				&& range.contains_end(offset)
 			{
 				let range = range.shrink(1);
-				let model = String::from_utf8_lossy(&contents[range.clone()]);
+				let model = &contents[range.clone()];
 				return self
 					.index
-					.hover_model(&model, rope_conv(range.map_unit(ByteOffset), rope).ok(), false, None);
+					.hover_model(model, rope_conv(range.map_unit(ByteOffset), rope).ok(), false, None);
 			}
 
 			if let Some(model_node) = model_arg_node
@@ -218,13 +214,11 @@ impl Backend {
 				&& range.contains_end(offset)
 			{
 				let range = range.shrink(1);
-				let model = String::from_utf8_lossy(&contents[model_node.byte_range().shrink(1)]);
-				let method = String::from_utf8_lossy(&contents[range.clone()]);
-				return self.index.hover_property_name(
-					&method,
-					&model,
-					rope_conv(range.map_unit(ByteOffset), rope).ok(),
-				);
+				let model = &contents[model_node.byte_range().shrink(1)];
+				let method = &contents[range.clone()];
+				return self
+					.index
+					.hover_property_name(method, model, rope_conv(range.map_unit(ByteOffset), rope).ok());
 			}
 		}
 
@@ -251,12 +245,11 @@ impl Backend {
 			.unwrap_or_else(|| self.project_config.completions_limit.load(Relaxed));
 
 		let contents = Cow::from(rope);
-		let contents = contents.as_bytes();
 		let query = OrmCallQuery::query();
 		let mut cursor = QueryCursor::new();
 
 		// Find the orm.call node that contains the cursor position
-		let mut matches = cursor.matches(query, ast.root_node(), contents);
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			let mut model_arg_node = None;
 			let mut method_arg_node = None;
@@ -279,13 +272,13 @@ impl Backend {
 				if range.contains(&offset) {
 					// Extract the current prefix (excluding quotes)
 					let inner_range = range.shrink(1);
-					let prefix = String::from_utf8_lossy(&contents[inner_range.start..offset]);
+					let prefix = &contents[inner_range.start..offset];
 					let lsp_range = ok!(
 						rope_conv(inner_range.map_unit(ByteOffset), rope),
 						"range conversion failed"
 					);
 					let mut items = MaxVec::new(completions_limit);
-					self.index.complete_model(&prefix, lsp_range, &mut items)?;
+					self.index.complete_model(prefix, lsp_range, &mut items)?;
 
 					return Ok(Some(CompletionResponse::List(CompletionList {
 						is_incomplete: !items.has_space(),
@@ -301,17 +294,17 @@ impl Backend {
 					// Extract the model name from the first argument
 					if let Some(model_node) = model_arg_node {
 						let model_range = model_node.byte_range().shrink(1);
-						let model_name = String::from_utf8_lossy(&contents[model_range]).to_string();
+						let model_name = &contents[model_range];
 
 						// Extract the current method prefix (excluding quotes)
 						let inner_range = range.clone().shrink(1);
-						let prefix = String::from_utf8_lossy(&contents[inner_range.start..offset]);
+						let prefix = &contents[inner_range.start..offset];
 
 						let byte_range = inner_range.map_unit(ByteOffset);
 
 						let mut items = MaxVec::new(completions_limit);
 						self.index.complete_property_name(
-							&prefix,
+							prefix,
 							byte_range,
 							model_name.into(),
 							rope,
@@ -332,16 +325,17 @@ impl Backend {
 			// Check if cursor is in a position where we should start a new string argument
 			// This handles cases where the user is typing after the comma but hasn't started the string yet
 			if let Some(model_node) = model_arg_node {
+				let contents_bytes = contents.as_bytes();
 				let model_end = model_node.byte_range().end;
 				// Look for comma after model argument
 				let mut i = model_end;
-				while i < contents.len() && contents[i].is_ascii_whitespace() {
+				while i < contents_bytes.len() && contents_bytes[i].is_ascii_whitespace() {
 					i += 1;
 				}
-				if i < contents.len() && contents[i] == b',' {
+				if i < contents_bytes.len() && contents_bytes[i] == b',' {
 					i += 1;
 					// Skip whitespace after comma
-					while i < contents.len() && contents[i].is_ascii_whitespace() {
+					while i < contents_bytes.len() && contents_bytes[i].is_ascii_whitespace() {
 						i += 1;
 					}
 					// If cursor is at or after this position and before any method argument
@@ -350,7 +344,7 @@ impl Backend {
 					{
 						// We're completing the method name
 						let model_range = model_node.byte_range().shrink(1);
-						let model_name = String::from_utf8_lossy(&contents[model_range]).to_string();
+						let model_name = &contents[model_range];
 
 						let synthetic_range = ByteOffset(i)..ByteOffset(offset.max(i));
 

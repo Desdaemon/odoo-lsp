@@ -146,6 +146,7 @@ pub struct CompletionData {
 	pub model: String,
 }
 
+/// General-purpose methods.
 impl Backend {
 	/// Maximum number of descendants to show in docstring.
 	const INHERITS_LIMIT: usize = 3;

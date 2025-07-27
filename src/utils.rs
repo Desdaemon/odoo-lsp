@@ -149,7 +149,7 @@ impl From<MinLoc> for Location {
 pub struct SpanAdapter<T>(T);
 pub struct RopeAdapter<'a, T>(T, RopeSlice<'a>);
 
-/// Infallible version of [rope_conv] that doesn't require a [Rope].
+/// Infallible version of [rope_conv] that doesn't require a [RopeSlice].
 /// Available conversions:
 /// - [xmlparser::TextPos] -> [Position]
 /// - [tree_sitter::Range] -> [Range]

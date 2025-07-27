@@ -2,27 +2,30 @@
 
 pub mod fs {
 	#[cfg(not(test))]
-	pub use std::fs::read;
+	pub use std::fs::read_to_string;
 
 	#[cfg(test)]
 	pub static TEST_FS: std::sync::LazyLock<
 		std::sync::RwLock<std::collections::HashMap<std::path::PathBuf, &'static [u8]>>,
 	> = std::sync::LazyLock::new(Default::default);
 
-	/// Mocked [`std::fs::read`] reading from [`TEST_FS`]
+	/// Mocked [`std::fs::read_to_string`] reading from [`TEST_FS`]
 	#[cfg(test)]
-	pub fn read<P>(path: P) -> std::io::Result<Vec<u8>>
+	pub fn read_to_string<P>(path: P) -> std::io::Result<String>
 	where
 		P: AsRef<std::path::Path>,
 	{
-		let fs = TEST_FS.read().unwrap();
-		let bytes = fs.get(path.as_ref()).ok_or_else(|| {
-			std::io::Error::new(
-				std::io::ErrorKind::NotFound,
-				format!("{} not found in test_utils::TEST_FS", path.as_ref().to_string_lossy()),
-			)
-		})?;
-		Ok(bytes.to_vec())
+		fn inner(path: &std::path::Path) -> std::io::Result<String> {
+			let fs = TEST_FS.read().unwrap();
+			let bytes = fs.get(path).ok_or_else(|| {
+				std::io::Error::new(
+					std::io::ErrorKind::NotFound,
+					format!("{} not found in test_utils::TEST_FS", path.display()),
+				)
+			})?;
+			Ok(String::from_utf8(bytes.to_vec()).expect("non utf-8"))
+		}
+		inner(path.as_ref())
 	}
 }
 

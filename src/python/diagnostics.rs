@@ -15,6 +15,7 @@ use crate::{
 
 use super::{Mapped, PyCompletions, PyImports, ThisModel, top_level_stmt};
 
+/// Python extensions.
 impl Backend {
 	pub fn diagnose_python(
 		&self,
@@ -28,7 +29,6 @@ impl Backend {
 			return;
 		};
 		let contents = Cow::from(rope);
-		let contents = contents.as_bytes();
 		let query = PyCompletions::query();
 		let mut root = ast.root_node();
 		// TODO: Limit range of diagnostics with new heuristics
@@ -49,14 +49,14 @@ impl Backend {
 			|range: core::ops::Range<usize>| damage_zone.as_ref().map(|zone| zone.intersects(range)).unwrap_or(true);
 
 		// Diagnose missing imports
-		self.diagnose_python_imports(diagnostics, contents, ast.root_node());
+		self.diagnose_python_imports(diagnostics, &contents, ast.root_node());
 		let top_level_ranges = root
 			.named_children(&mut root.walk())
 			.map(|node| node.byte_range())
 			.collect::<Vec<_>>();
 		let mut cursor = QueryCursor::new();
 		let mut this_model = ThisModel::default();
-		let mut matches = cursor.matches(query, root, contents);
+		let mut matches = cursor.matches(query, root, contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			let mut field_descriptors = vec![];
 			let mut field_model = None;
@@ -69,8 +69,7 @@ impl Backend {
 						}
 
 						let range = capture.node.byte_range().shrink(1);
-						let slice = String::from_utf8_lossy(&contents[range.clone()]);
-						let mut slice = slice.as_ref();
+						let mut slice = &contents[range.clone()];
 
 						let mut xmlids = vec![];
 
@@ -112,8 +111,8 @@ impl Backend {
 							Some(subscript) if subscript.kind() == "subscript" => {
 								// diagnose only, do not tag
 								let range = capture.node.byte_range().shrink(1);
-								let model = String::from_utf8_lossy(&contents[range.clone()]);
-								let model_key = _G(&model);
+								let model = &contents[range.clone()];
+								let model_key = _G(model);
 								let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 								if !has_model.unwrap_or(false) {
 									diagnostics.push(Diagnostic {
@@ -130,13 +129,13 @@ impl Backend {
 						if let Some(field_type) = match_.nodes_for_capture_index(PyCompletions::FieldType as _).next() {
 							if !matches!(
 								&contents[field_type.byte_range()],
-								b"One2many" | b"Many2one" | b"Many2many"
+								"One2many" | "Many2one" | "Many2many"
 							) {
 								continue;
 							}
 							let range = capture.node.byte_range().shrink(1);
-							let model = String::from_utf8_lossy(&contents[range.clone()]);
-							let model_key = _G(&model);
+							let model = &contents[range.clone()];
+							let model_key = _G(model);
 							let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 							if !has_model.unwrap_or(false) {
 								diagnostics.push(Diagnostic {
@@ -163,7 +162,7 @@ impl Backend {
 							debug!("binary search for top-level range failed");
 							continue;
 						};
-						this_model.tag_model(capture.node, match_, top_level_ranges[idx].clone(), contents);
+						this_model.tag_model(capture.node, match_, top_level_ranges[idx].clone(), &contents);
 					}
 					Some(PyCompletions::FieldDescriptor) => {
 						// fields.Many2one(field_descriptor=...)
@@ -175,7 +174,7 @@ impl Backend {
 						let descriptor = &contents[capture.node.byte_range()];
 						if matches!(
 							descriptor,
-							b"comodel_name" | b"domain" | b"compute" | b"search" | b"inverse" | b"related"
+							"comodel_name" | "domain" | "compute" | "search" | "inverse" | "related"
 						) {
 							field_descriptors.push((descriptor, desc_value));
 						}
@@ -183,7 +182,7 @@ impl Backend {
 					Some(PyCompletions::Mapped) => self.diagnose_mapped(
 						rope,
 						diagnostics,
-						contents,
+						&contents,
 						root,
 						this_model.inner,
 						match_,
@@ -194,7 +193,7 @@ impl Backend {
 						if !in_active_root(capture.node.byte_range()) {
 							continue;
 						}
-						self.diagnose_python_scope(root, capture.node, contents, diagnostics);
+						self.diagnose_python_scope(root, capture.node, &contents, diagnostics);
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::ForXmlId)
@@ -211,20 +210,20 @@ impl Backend {
 			// post-process for field_descriptors
 			for &(descriptor, node) in &field_descriptors {
 				match descriptor {
-					b"compute" | b"search" | b"inverse" | b"related" => self.diagnose_mapped(
+					"compute" | "search" | "inverse" | "related" => self.diagnose_mapped(
 						rope,
 						diagnostics,
-						contents,
+						&contents,
 						root,
 						this_model.inner,
 						match_,
 						node.byte_range(),
-						descriptor == b"related",
+						descriptor == "related",
 					),
-					b"comodel_name" => {
+					"comodel_name" => {
 						let range = node.byte_range().shrink(1);
-						let model = String::from_utf8_lossy(&contents[range.clone()]);
-						let model_key = _G(&model);
+						let model = &contents[range.clone()];
+						let model_key = _G(model);
 						let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 						if !has_model.unwrap_or(false) {
 							diagnostics.push(Diagnostic {
@@ -235,7 +234,7 @@ impl Backend {
 							})
 						}
 					}
-					b"domain" => {
+					"domain" => {
 						let mut domain_node = node;
 						if domain_node.kind() == "lambda" {
 							let Some(body) = domain_node.child_by_field_name("body") else {
@@ -249,7 +248,7 @@ impl Backend {
 
 						let Some(comodel_name) = field_model.or_else(|| {
 							field_descriptors.iter().find_map(|&(desc, node)| {
-								(desc == b"comodel_name").then(|| &contents[node.byte_range().shrink(1)])
+								(desc == "comodel_name").then(|| &contents[node.byte_range().shrink(1)])
 							})
 						}) else {
 							continue;
@@ -269,7 +268,7 @@ impl Backend {
 							self.diagnose_mapped(
 								rope,
 								diagnostics,
-								contents,
+								&contents,
 								root,
 								Some(comodel_name),
 								match_,
@@ -283,7 +282,7 @@ impl Backend {
 			}
 		}
 	}
-	fn diagnose_python_scope(&self, root: Node, node: Node, contents: &[u8], diagnostics: &mut Vec<Diagnostic>) {
+	fn diagnose_python_scope(&self, root: Node, node: Node, contents: &str, diagnostics: &mut Vec<Diagnostic>) {
 		// Most of these steps are similar to what is done inside model_of_range.
 		let offset = node.start_byte();
 		let Some((self_type, fn_scope, self_param)) = determine_scope(root, contents, offset) else {
@@ -291,14 +290,11 @@ impl Backend {
 		};
 		let mut scope = Scope::default();
 		let self_type = match self_type {
-			Some(type_) => &contents[type_.byte_range().shrink(1)],
-			None => &[],
+			Some(type_) => ImStr::from(&contents[type_.byte_range().shrink(1)]),
+			None => ImStr::from_static(""),
 		};
-		scope.super_ = Some(self_param.as_ref().into());
-		scope.insert(
-			self_param.into_owned(),
-			Type::Model(String::from_utf8_lossy(self_type).as_ref().into()),
-		);
+		scope.super_ = Some(self_param.into());
+		scope.insert(self_param.to_string(), Type::Model(self_type));
 		let scope_end = fn_scope.end_byte();
 		Index::walk_scope(fn_scope, Some(scope), |scope, node| {
 			let entered = (self.index).build_scope(scope, node, scope_end, contents)?;
@@ -325,8 +321,8 @@ impl Backend {
 				"fields_get",
 				"user_has_groups",
 			);
-			let prop = String::from_utf8_lossy(&contents[attribute.byte_range()]);
-			if prop.starts_with('_') || MODEL_BUILTINS.contains(&prop) || MODEL_METHODS.contains(prop.as_bytes()) {
+			let prop = &contents[attribute.byte_range()];
+			if prop.starts_with('_') || MODEL_BUILTINS.contains(prop) || MODEL_METHODS.contains(prop) {
 				return ControlFlow::Continue(entered);
 			}
 
@@ -353,7 +349,7 @@ impl Backend {
 				message: format!(
 					"Model `{}` has no property `{}`",
 					_R(model_name),
-					String::from_utf8_lossy(&contents[attribute.byte_range()]),
+					&contents[attribute.byte_range()],
 				),
 				..Default::default()
 			});
@@ -362,11 +358,11 @@ impl Backend {
 		});
 	}
 
-	fn diagnose_python_imports(&self, diagnostics: &mut Vec<Diagnostic>, contents: &[u8], root: Node) {
+	fn diagnose_python_imports(&self, diagnostics: &mut Vec<Diagnostic>, contents: &str, root: Node) {
 		let query = PyImports::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 
-		let mut matches = cursor.matches(query, root, contents);
+		let mut matches = cursor.matches(query, root, contents.as_bytes());
 		while let Some(match_) = matches.next() {
 			let mut module_path = None;
 			let mut import_name = None;
@@ -375,11 +371,11 @@ impl Backend {
 			for capture in match_.captures {
 				match PyImports::from(capture.index) {
 					Some(PyImports::ImportModule) => {
-						let capture_text = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+						let capture_text = &contents[capture.node.byte_range()];
 						module_path = Some(capture_text.to_string());
 					}
 					Some(PyImports::ImportName) => {
-						let capture_text = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+						let capture_text = &contents[capture.node.byte_range()];
 						import_name = Some(capture_text.to_string());
 						import_node = Some(capture.node);
 					}
@@ -418,15 +414,15 @@ impl Backend {
 		&self,
 		rope: RopeSlice<'_>,
 		diagnostics: &mut Vec<Diagnostic>,
-		contents: &[u8],
+		contents: &str,
 		root: Node<'_>,
-		model: Option<&[u8]>,
+		model: Option<&str>,
 		match_: &QueryMatch<'_, '_>,
 		mapped_range: std::ops::Range<usize>,
 		expect_field: bool,
 	) {
 		let Some(Mapped {
-			needle,
+			mut needle,
 			model,
 			single_field,
 			mut range,
@@ -443,8 +439,7 @@ impl Backend {
 		else {
 			return;
 		};
-		let mut model = _I(&model);
-		let mut needle = needle.as_ref();
+		let mut model = _I(model);
 		if single_field {
 			if let Some(dot) = needle.find('.') {
 				let message_range = range.start.0 + dot..range.end.0;

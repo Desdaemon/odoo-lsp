@@ -440,7 +440,7 @@ impl ModelIndex {
 				let mut fields = vec![];
 				let mut methods = vec![];
 				let fpath = location.path.to_path();
-				let contents = test_utils::fs::read(&fpath)
+				let contents = test_utils::fs::read_to_string(&fpath)
 					.map_err(|err| error!("Failed to read {}:\n{err}", fpath.display()))
 					.ok()?;
 				let mut parser = Parser::new();
@@ -452,7 +452,7 @@ impl ModelIndex {
 				let mut cursor = QueryCursor::new();
 				cursor.set_byte_range(byte_range);
 
-				let mut matches = cursor.matches(query, ast.root_node(), &contents[..]);
+				let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 				while let Some(match_) = matches.next() {
 					let mut field = None;
 					let mut type_ = None;
@@ -478,7 +478,7 @@ impl ModelIndex {
 								// TODO: fields.Reference
 								is_relational = matches!(
 									&contents[capture.node.byte_range()],
-									b"One2many" | b"Many2one" | b"Many2many"
+									"One2many" | "Many2one" | "Many2many"
 								);
 							}
 							Some(ModelProperties::Relation) => {
@@ -487,9 +487,9 @@ impl ModelIndex {
 								}
 							}
 							Some(ModelProperties::Arg) => match &contents[capture.node.byte_range()] {
-								b"comodel_name" if is_relational => kwarg = Some(Kwargs::ComodelName),
-								b"help" => kwarg = Some(Kwargs::Help),
-								b"related" => kwarg = Some(Kwargs::Related),
+								"comodel_name" if is_relational => kwarg = Some(Kwargs::ComodelName),
+								"help" => kwarg = Some(Kwargs::Help),
+								"related" => kwarg = Some(Kwargs::Related),
 								_ => kwarg = None,
 							},
 							Some(ModelProperties::Value) => match kwarg {
@@ -523,9 +523,9 @@ impl ModelIndex {
 						&& let Some(type_) = type_
 					{
 						let range = span_conv(field.range());
-						let field_str = String::from_utf8_lossy(&contents[field.byte_range()]);
-						let field = _I(&field_str);
-						let type_ = String::from_utf8_lossy(&contents[type_]);
+						let field_str = &contents[field.byte_range()];
+						let field = _I(field_str);
+						let type_ = &contents[type_];
 						let location = MinLoc {
 							path: location.path,
 							range,
@@ -533,18 +533,18 @@ impl ModelIndex {
 						.into();
 						let help = help.as_deref().map(ImStr::from);
 						let kind = if let Some(relation) = relation {
-							let relation = String::from_utf8_lossy(&contents[relation]);
-							let relation = _I(&relation);
+							let relation = &contents[relation];
+							let relation = _I(relation);
 							FieldKind::Relational(relation)
 						} else if let Some(related) = related {
-							FieldKind::Related(String::from_utf8_lossy(&contents[related]).as_ref().into())
+							FieldKind::Related(contents[related].into())
 						} else {
 							if is_relational {
 								debug!("is_relational but no relation found: field={field_str} type={type_}");
 							}
 							FieldKind::Value
 						};
-						let type_ = _I(&type_);
+						let type_ = _I(type_);
 						fields.push((
 							field,
 							Field {
@@ -558,9 +558,9 @@ impl ModelIndex {
 					if let Some(method) = method_name
 						&& let Some(body) = method_body
 					{
-						let method_str = String::from_utf8_lossy(&contents[method.byte_range()]);
-						let calls_super = String::from_utf8_lossy(&contents[body.byte_range()]).contains("super(");
-						let method = _I(&method_str);
+						let method_str = &contents[method.byte_range()];
+						let calls_super = contents[body.byte_range()].contains("super(");
+						let method = _I(method_str);
 						let range = span_conv(body.range());
 						let top_level_scope = ast
 							.root_node()
@@ -872,14 +872,14 @@ impl ModelEntry {
 }
 
 /// `node` must be `[(string) (concatenated_string)]`
-fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
+fn parse_help<'text>(node: &Node, contents: &'text str) -> Cow<'text, str> {
 	let mut cursor = node.walk();
 	match node.kind() {
 		"string" => {
 			let content = node
 				.children(&mut cursor)
 				.find_map(|child| (child.kind() == "string_content").then(|| &contents[child.byte_range()]));
-			String::from_utf8_lossy(content.unwrap_or(&[]))
+			content.unwrap_or("").into()
 		}
 		"concatenated_string" => {
 			let mut content = vec![];
@@ -888,7 +888,7 @@ fn parse_help<'text>(node: &Node, contents: &'text [u8]) -> Cow<'text, str> {
 					let mut cursor = string.walk();
 					let children = string.children(&mut cursor).find_map(|child| {
 						(child.kind() == "string_content").then(|| {
-							String::from_utf8_lossy(&contents[child.byte_range()])
+							contents[child.byte_range()]
 								.trim()
 								.replace("\\n", "  \n")
 								.replace("\\t", "\t")

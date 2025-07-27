@@ -61,7 +61,6 @@
 //! [data structure]: https://en.wikipedia.org/wiki/Rope_(data_structure)
 //! [interned strings]: https://en.wikipedia.org/wiki/String_interning
 //! [captures]: https://tree-sitter.github.io/tree-sitter/using-parsers#capturing-nodes
-//! [lexer]: quickxml::Reader
 //! [`Spur`]: lasso::Spur
 //! [`Symbol`]: odoo_lsp::index::Symbol
 //! [`LanguageServer`]: tower_lsp_server::LanguageServer

@@ -20,6 +20,7 @@ use crate::xml::determine_csv_xmlid_subgroup;
 
 use super::{Mapped, PyCompletions, ThisModel, extract_string_needle_at_offset, top_level_stmt};
 
+/// Python extensions for item completions.
 impl Backend {
 	pub(crate) async fn python_completions(
 		&self,
@@ -38,7 +39,6 @@ impl Backend {
 		};
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let contents = Cow::from(rope);
-		let contents = contents.as_bytes();
 		let query = PyCompletions::query();
 		let completions_limit = self
 			.workspaces
@@ -49,7 +49,7 @@ impl Backend {
 		let mut early_return = EarlyReturn::<anyhow::Result<_>>::default();
 		{
 			let root = some!(top_level_stmt(ast.root_node(), offset));
-			let mut matches = cursor.matches(query, root, contents);
+			let mut matches = cursor.matches(query, root, contents.as_bytes());
 			'match_: while let Some(match_) = matches.next() {
 				let mut model_filter = None;
 				let mut field_descriptors = vec![];
@@ -67,7 +67,7 @@ impl Backend {
 								let model = self.index.model_of_range(
 									root,
 									model.byte_range().map_unit(ByteOffset),
-									contents,
+									&contents,
 								)?;
 								Some(_R(model))
 							};
@@ -75,8 +75,7 @@ impl Backend {
 						}
 						Some(PyCompletions::XmlId) if range.contains_end(offset) => {
 							let mut range = range.shrink(1);
-							let needle = String::from_utf8_lossy(&contents[range.clone()]);
-							let mut needle = needle.as_ref();
+							let mut needle = &contents[range.clone()];
 							if match_
 								.nodes_for_capture_index(PyCompletions::HasGroups as _)
 								.next()
@@ -133,12 +132,12 @@ impl Backend {
 									match_.nodes_for_capture_index(PyCompletions::FieldType as _).next()
 							{
 								if field_model.is_none()
-									&& matches!(&contents[field.byte_range()], b"Many2one" | b"One2many" | b"Many2many")
+									&& matches!(&contents[field.byte_range()], "Many2one" | "One2many" | "Many2many")
 								{
 									field_model = Some(&contents[capture.node.byte_range().shrink(1)]);
 								}
 							} else {
-								this_model.tag_model(capture.node, match_, root.byte_range(), contents);
+								this_model.tag_model(capture.node, match_, root.byte_range(), &contents);
 							}
 						}
 						Some(PyCompletions::Mapped) => {
@@ -153,16 +152,16 @@ impl Backend {
 								if capture.node.kind() == "ERROR" {
 									// This might be a string without a colon in a dictionary
 									let error_text = &contents[capture.node.byte_range()];
-									if error_text.starts_with(b"'") || error_text.starts_with(b"\"") {
+									if error_text.starts_with("'") || error_text.starts_with("\"") {
 										// Extract the partial text
-										let quote_char = error_text[0];
-										let end_quote = error_text.iter().rposition(|&b| b == quote_char);
+										let quote_char = error_text.as_bytes()[0];
+										let end_quote = error_text.bytes().rposition(|b| b == quote_char);
 										let needle = if let Some(end) = end_quote {
-											String::from_utf8_lossy(&error_text[1..end])
+											&error_text[1..end]
 										} else if offset > capture.node.start_byte() + 1 {
-											String::from_utf8_lossy(&error_text[1..offset - capture.node.start_byte()])
+											&error_text[1..offset - capture.node.start_byte()]
 										} else {
-											Cow::Borrowed("")
+											""
 										};
 
 										// Try to determine the model from context
@@ -174,7 +173,7 @@ impl Backend {
 											&& let Some(model_) = self.index.model_of_range(
 												root,
 												target_node.byte_range().map_unit(ByteOffset),
-												contents,
+												&contents,
 											) {
 											field_model = Some(model_);
 										}
@@ -203,19 +202,16 @@ impl Backend {
 														&& let Some(key) = pair_parent.child_by_field_name("key")
 														&& key.kind() == "string"
 													{
-														let field_name = String::from_utf8_lossy(
-															&contents[key.byte_range().shrink(1)],
-														);
+														let field_name = &contents[key.byte_range().shrink(1)];
 
-														if let Some(model_bytes) = &this_model.inner {
-															let model_str = String::from_utf8_lossy(model_bytes);
-															let model_key = ModelName::from(_I(&model_str));
+														if let Some(model_str) = this_model.inner {
+															let model_key = ModelName::from(_I(model_str));
 
 															if let Some(props) =
 																self.index.models.populate_properties(model_key, &[])
 																&& let Some(fields) = &props.fields && let Some(
 																field_key,
-															) = _G(&field_name) && let Some(field_info) =
+															) = _G(field_name) && let Some(field_info) =
 																fields.get(&field_key.into())
 															{
 																// Check if this field has a relational type
@@ -248,7 +244,7 @@ impl Backend {
 
 											let mut items = MaxVec::new(completions_limit);
 											self.index.complete_property_name(
-												&needle,
+												needle,
 												range,
 												_R(model).into(),
 												rope,
@@ -272,7 +268,7 @@ impl Backend {
 									offset,
 									capture.node,
 									this_model.inner,
-									contents,
+									&contents,
 									completions_limit,
 									Some(PropertyKind::Field),
 									rope,
@@ -286,12 +282,12 @@ impl Backend {
 									offset,
 									range,
 									this_model.inner,
-									contents,
+									&contents,
 									true,
 								) {
 								let mut items = MaxVec::new(completions_limit);
 								self.index.complete_property_name(
-									&needle,
+									needle,
 									range,
 									ImStr::from(_R(model)),
 									rope,
@@ -315,8 +311,8 @@ impl Backend {
 							let descriptor = &contents[capture.node.byte_range()];
 							if desc_value.byte_range().contains_end(offset) {
 								match descriptor {
-									b"compute" | b"search" | b"inverse" | b"related" => {
-										let prop_kind = if descriptor == b"related" {
+									"compute" | "search" | "inverse" | "related" => {
+										let prop_kind = if descriptor == "related" {
 											PropertyKind::Field
 										} else {
 											PropertyKind::Method
@@ -327,13 +323,13 @@ impl Backend {
 											offset,
 											desc_value,
 											this_model.inner,
-											contents,
+											&contents,
 											completions_limit,
 											Some(prop_kind),
 											rope,
 										);
 									}
-									b"comodel_name" => {
+									"comodel_name" => {
 										// same as model
 										let range = desc_value.byte_range();
 										let (needle, byte_range) =
@@ -349,7 +345,7 @@ impl Backend {
 										});
 										break 'match_;
 									}
-									b"groups" => {
+									"groups" => {
 										// complete res.groups records
 										let range = desc_value.byte_range().shrink(1);
 										let value = Cow::from(some!(rope.get_byte_slice(range.clone())));
@@ -378,7 +374,7 @@ impl Backend {
 								}
 							}
 
-							if matches!(descriptor, b"comodel_name" | b"domain" | b"groups") {
+							if matches!(descriptor, "comodel_name" | "domain" | "groups") {
 								field_descriptors.push((descriptor, desc_value));
 							}
 							if desc_value.byte_range().contains_end(offset) {
@@ -395,7 +391,7 @@ impl Backend {
 						| None => {}
 					}
 				}
-				if let Some((b"domain", value)) = field_descriptor_in_offset {
+				if let Some(("domain", value)) = field_descriptor_in_offset {
 					let mut domain_node = value;
 					if domain_node.kind() == "lambda" {
 						let Some(body) = domain_node.child_by_field_name("body") else {
@@ -409,7 +405,7 @@ impl Backend {
 					let comodel_name = field_descriptors
 						.iter()
 						.find_map(|&(desc, node)| {
-							(desc == b"comodel_name").then(|| &contents[node.byte_range().shrink(1)])
+							(desc == "comodel_name").then(|| &contents[node.byte_range().shrink(1)])
 						})
 						.or(field_model);
 
@@ -432,7 +428,7 @@ impl Backend {
 						offset,
 						mapped,
 						comodel_name,
-						contents,
+						&contents,
 						completions_limit,
 						Some(PropertyKind::Field),
 						rope,
@@ -466,18 +462,16 @@ impl Backend {
 										&& list_parent.kind() == "pair"
 									{
 										if let Some(key) = list_parent.child_by_field_name("key")
-											&& key.kind() == "string" && let Some(model_bytes) = &this_model.inner
+											&& key.kind() == "string" && let Some(model_str) = &this_model.inner
 										{
-											let field_name =
-												String::from_utf8_lossy(&contents[key.byte_range().shrink(1)]);
+											let field_name = &contents[key.byte_range().shrink(1)];
 
-											let model_str = String::from_utf8_lossy(model_bytes);
-											let model_key = ModelName::from(_I(&model_str));
+											let model_key = ModelName::from(_I(model_str));
 
 											// Check if this field has a relational type
 											if let Some(props) = self.index.models.populate_properties(model_key, &[])
 												&& let Some(fields) = &props.fields && let Some(field_key) =
-												_G(&field_name) && let Some(field_info) = fields.get(&field_key.into())
+												_G(field_name) && let Some(field_info) = fields.get(&field_key.into())
 												&& let FieldKind::Relational(relation) = field_info.kind
 											{
 												field_model = Some(relation.into());
@@ -527,10 +521,10 @@ impl Backend {
 				}
 
 				// Fallback to regular attribute completion
-				let (model, needle, range) = some!(self.attribute_at_offset(offset, root, contents));
+				let (model, needle, range) = some!(self.attribute_at_offset(offset, root, &contents));
 				let mut items = MaxVec::new(completions_limit);
 				self.index.complete_property_name(
-					&needle,
+					needle,
 					range.map_unit(ByteOffset),
 					ImStr::from(model),
 					rope,
@@ -555,14 +549,14 @@ impl Backend {
 		match_: &QueryMatch,
 		offset: usize,
 		node: Node,
-		this_model: Option<&[u8]>,
-		contents: &[u8],
+		this_model: Option<&str>,
+		contents: &str,
 		completions_limit: usize,
 		prop_type: Option<PropertyKind>,
 		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<CompletionResponse>> {
 		let Mapped {
-			needle,
+			mut needle,
 			model,
 			single_field,
 			range,
@@ -581,7 +575,6 @@ impl Backend {
 		// needle: foo.ba
 		let mut range = range;
 		let mut items = MaxVec::new(completions_limit);
-		let mut needle = needle.as_ref();
 		let mut model = some!(_G(model));
 
 		if !single_field {
