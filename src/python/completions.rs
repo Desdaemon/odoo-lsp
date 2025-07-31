@@ -185,13 +185,12 @@ impl Backend {
 												// Check if we're in a list that's part of a mapped/commandlist
 												if parent.kind() == "list" {
 													// Try to find the full expression this list is part of
-													if let Some(expr_parent) = parent.parent() {
-														if expr_parent.kind() == "call"
-															|| expr_parent.kind() == "attribute"
+													if let Some(expr_parent) = parent.parent()
+														&& (expr_parent.kind() == "call"
+															|| expr_parent.kind() == "attribute")
 														{
 															break;
 														}
-													}
 												}
 
 												if parent.kind() == "dictionary" {

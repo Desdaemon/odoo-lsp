@@ -1,0 +1,1 @@
+# Base module - empty but required for auto_install to work

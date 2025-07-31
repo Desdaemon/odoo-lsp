@@ -160,18 +160,22 @@ impl Index {
 			);
 			match self.roots.entry(root.into()).or_default().entry(module_key.into()) {
 				std::collections::hash_map::Entry::Vacant(entry) => {
-					let dependencies = parse_dependencies(manifest.path())
+					let manifest_info = parse_manifest_info(manifest.path())
 						.inspect_err(|err| {
 							warn!(
-								"could not parse dependencies for {}: {}",
+								"could not parse manifest for {}: {}",
 								module_path.file_name().unwrap().display(),
 								err
 							)
 						})
-						.unwrap_or_default();
+						.unwrap_or(ManifestInfo {
+							dependencies: Box::new([]),
+							auto_install: false,
+						});
 					let module = ModuleEntry {
 						path: module_path.to_str().expect("non-utf8 path").into(),
-						dependencies,
+						dependencies: manifest_info.dependencies,
+						auto_install: manifest_info.auto_install,
 						loaded: Default::default(),
 						loaded_dependents: Default::default(),
 					};
@@ -199,6 +203,37 @@ impl Index {
 
 		self.load_module(module_name).await
 	}
+	/// Find all auto_install modules whose dependencies are satisfied by the given set of modules
+	fn find_auto_install_modules(&self, loaded_modules: &HashSet<ModuleName>) -> Vec<ModuleName> {
+		let mut auto_install_modules = Vec::new();
+
+		for root in self.roots.iter() {
+			for (&module_key, module_entry) in root.iter() {
+				if module_entry.auto_install && !loaded_modules.contains(&module_key) {
+					// Check if all dependencies are satisfied
+					let all_deps_satisfied = module_entry.dependencies.iter().all(|dep| loaded_modules.contains(dep));
+
+					if all_deps_satisfied {
+						debug!(
+							"Module {} is auto_install and all dependencies are satisfied",
+							_R(module_key)
+						);
+						auto_install_modules.push(module_key);
+					} else if module_entry.auto_install {
+						debug!(
+							"Module {} is auto_install but dependencies not satisfied. Deps: {:?}, Loaded: {:?}",
+							_R(module_key),
+							module_entry.dependencies,
+							loaded_modules
+						);
+					}
+				}
+			}
+		}
+
+		auto_install_modules
+	}
+
 	async fn load_module(&self, module_name: ModuleName) -> Option<()> {
 		{
 			let root = self.find_root_from_module(module_name)?;
@@ -336,6 +371,37 @@ impl Index {
 						}
 					}
 				}
+			}
+		}
+
+		// After loading all requested modules, check for auto_install modules
+		let mut all_loaded_modules = HashSet::new();
+		for root in self.roots.iter() {
+			for (&module_key, module_entry) in root.iter() {
+				if module_entry.loaded.load(Relaxed) {
+					all_loaded_modules.insert(module_key);
+				}
+			}
+		}
+		debug!(
+			"Currently loaded modules: {:?}",
+			all_loaded_modules.iter().map(|m| _R(*m)).collect::<Vec<_>>()
+		);
+
+		// Find and load auto_install modules
+		let auto_install_candidates = self.find_auto_install_modules(&all_loaded_modules);
+		if !auto_install_candidates.is_empty() {
+			info!(
+				"Found {} auto_install candidates after loading modules",
+				auto_install_candidates.len()
+			);
+			for auto_module in auto_install_candidates {
+				info!(
+					"Auto-installing module {} because all dependencies are satisfied",
+					_R(auto_module)
+				);
+				// Recursively load auto_install modules
+				Box::pin(self.load_module(auto_module)).await;
 			}
 		}
 
@@ -593,9 +659,15 @@ impl Index {
 	}
 }
 
-fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry>]>> {
+#[derive(Debug)]
+struct ManifestInfo {
+	dependencies: Box<[Symbol<ModuleEntry>]>,
+	auto_install: bool,
+}
+
+fn parse_manifest_info(manifest: &Path) -> anyhow::Result<ManifestInfo> {
 	query! {
-		ManifestQuery(DependsList);
+		ManifestQuery(DependsList, AutoInstall);
 
 	((dictionary
 		(pair
@@ -603,6 +675,13 @@ fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry
 			(list) @DEPENDS_LIST
 		)
 	) (#eq? @_depends "depends"))
+
+	((dictionary
+		(pair
+			(string (string_content) @_auto_install)
+			[(true) (false) (list)] @AUTO_INSTALL
+		)
+	) (#eq? @_auto_install "auto_install"))
 	}
 
 	let contents = test_utils::fs::read_to_string(manifest)?;
@@ -613,6 +692,8 @@ fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry
 	let mut cursor = QueryCursor::new();
 	let root = ast.root_node();
 	let mut deps = vec![];
+	let mut auto_install = false;
+
 	if let Some(parent) = manifest.parent()
 		&& parent.as_os_str() != OsStr::new("base")
 	{
@@ -622,20 +703,33 @@ fn parse_dependencies(manifest: &Path) -> anyhow::Result<Box<[Symbol<ModuleEntry
 	let mut captures = cursor.captures(ManifestQuery::query(), root, contents.as_bytes());
 	while let Some((match_, idx)) = captures.next() {
 		let capture = match_.captures[*idx];
-		if let Some(ManifestQuery::DependsList) = ManifestQuery::from(capture.index) {
-			let list_node = capture.node;
-			let mut child_cursor = list_node.walk();
-			for child in list_node.children(&mut child_cursor) {
-				// Only process string nodes, skip comments, commas, brackets, etc.
-				if child.kind() == "string" {
-					let dep = &contents[child.byte_range().shrink(1)];
-					deps.push(_I(dep).into());
+		match ManifestQuery::from(capture.index) {
+			Some(ManifestQuery::DependsList) => {
+				let list_node = capture.node;
+				let mut child_cursor = list_node.walk();
+				for child in list_node.children(&mut child_cursor) {
+					if child.kind() == "string" {
+						let dep = &contents[child.byte_range().shrink(1)];
+						deps.push(_I(dep).into());
+					}
 				}
 			}
+			Some(ManifestQuery::AutoInstall) => {
+				let node = capture.node;
+				auto_install = match node.kind() {
+					"true" => true,
+					"false" => false,
+					_ => false,
+				};
+			}
+			_ => {}
 		}
 	}
 
-	Ok(deps.into_boxed_slice())
+	Ok(ManifestInfo {
+		dependencies: deps.into_boxed_slice(),
+		auto_install,
+	})
 }
 
 async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> anyhow::Result<Output> {
@@ -863,7 +957,7 @@ mod tests {
 	use std::path::{Path, PathBuf};
 	use tree_sitter::{Parser, QueryCursor, StreamingIterator, StreamingIteratorMut};
 
-	use super::{index_models, parse_dependencies};
+	use super::{index_models, parse_manifest_info};
 
 	#[test]
 	fn test_interner_functionality() {
@@ -902,6 +996,7 @@ mod tests {
 		let module_entry = ModuleEntry {
 			path: "test_module".into(),
 			dependencies: Box::new([]),
+			auto_install: false,
 			loaded: Default::default(),
 			loaded_dependents: Default::default(),
 		};
@@ -952,6 +1047,7 @@ mod tests {
 		let module_entry = ModuleEntry {
 			path: "test_module".into(),
 			dependencies: Box::new([]),
+			auto_install: false,
 			loaded: Default::default(),
 			loaded_dependents: Default::default(),
 		};
@@ -980,6 +1076,7 @@ mod tests {
 		let module_entry = ModuleEntry {
 			path: "test_module".into(),
 			dependencies: Box::new([]),
+			auto_install: false,
 			loaded: Default::default(),
 			loaded_dependents: Default::default(),
 		};
@@ -1021,6 +1118,7 @@ mod tests {
 			ModuleEntry {
 				path: "base".into(),
 				dependencies: Box::new([]),
+				auto_install: false,
 				loaded: Default::default(),
 				loaded_dependents: Default::default(),
 			},
@@ -1031,6 +1129,7 @@ mod tests {
 			ModuleEntry {
 				path: "module_a".into(),
 				dependencies: Box::new([base_key]),
+				auto_install: false,
 				loaded: Default::default(),
 				loaded_dependents: Default::default(),
 			},
@@ -1041,6 +1140,7 @@ mod tests {
 			ModuleEntry {
 				path: "module_b".into(),
 				dependencies: Box::new([module_a_key]),
+				auto_install: false,
 				loaded: Default::default(),
 				loaded_dependents: Default::default(),
 			},
@@ -1076,6 +1176,71 @@ mod tests {
 	}
 
 	#[test]
+	fn test_discover_dependents_of_with_auto_install() {
+		let index = Index::default();
+
+		// Setup test data: sale and crm modules, plus sale_crm with auto_install
+		let root = PathBuf::from("/test/root");
+		let mut modules = HashMap::new();
+
+		let sale_key = _I("sale").into();
+		let crm_key = _I("crm").into();
+		let sale_crm_key = _I("sale_crm").into();
+
+		modules.insert(
+			sale_key,
+			ModuleEntry {
+				path: "sale".into(),
+				dependencies: Box::new([]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules.insert(
+			crm_key,
+			ModuleEntry {
+				path: "crm".into(),
+				dependencies: Box::new([]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules.insert(
+			sale_crm_key,
+			ModuleEntry {
+				path: "sale_crm".into(),
+				dependencies: Box::new([sale_key, crm_key]),
+				auto_install: true,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		index.roots.insert(root, modules);
+
+		// Test: sale should have sale_crm as dependent
+		let sale_dependents = index.discover_dependents_of(sale_key);
+
+		assert!(
+			sale_dependents.contains(&sale_crm_key),
+			"sale should have sale_crm as dependent due to auto_install, but got: {:?}",
+			sale_dependents
+		);
+
+		// Test: crm should have sale_crm as dependent
+		let crm_dependents = index.discover_dependents_of(crm_key);
+		assert!(
+			crm_dependents.contains(&sale_crm_key),
+			"crm should have sale_crm as dependent due to auto_install, but got: {:?}",
+			crm_dependents
+		);
+	}
+
+	#[test]
 	fn test_delete_marked_entries() {
 		let index = Index::default();
 
@@ -1105,7 +1270,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_parse_dependencies() {
+	fn test_parse_manifest() {
 		use crate::test_utils;
 
 		// Setup test manifest content
@@ -1124,17 +1289,53 @@ mod tests {
 			fs.insert(manifest_path.clone(), manifest_content);
 		}
 
-		let dependencies = parse_dependencies(&manifest_path).unwrap();
+		let manifest_info = parse_manifest_info(&manifest_path).unwrap();
 
 		// Should include 'base' (auto-added) plus the dependencies from the manifest
 		assert!(
-			dependencies.len() >= 3,
+			manifest_info.dependencies.len() >= 3,
 			"Should have at least base, web, and mail dependencies"
 		);
 
 		// Check that base is included (it's auto-added for non-base modules)
 		let base_key = _I("base").into();
-		assert!(dependencies.contains(&base_key), "Should include base dependency");
+		assert!(
+			manifest_info.dependencies.contains(&base_key),
+			"Should include base dependency"
+		);
+
+		// Check auto_install is false by default
+		assert!(!manifest_info.auto_install, "auto_install should be false by default");
+	}
+
+	#[test]
+	fn test_parse_manifest_with_auto_install() {
+		use crate::test_utils;
+
+		// Setup test manifest content with auto_install
+		let manifest_content = br#"
+{
+    'name': 'Test Auto Install Module',
+    'depends': ['base', 'web'],
+    'auto_install': True,
+}
+"#;
+
+		let manifest_path = PathBuf::from("/test/auto_module/__manifest__.py");
+
+		// Mock the file system
+		if let Ok(mut fs) = test_utils::fs::TEST_FS.write() {
+			fs.insert(manifest_path.clone(), manifest_content);
+		}
+
+		let manifest_info = parse_manifest_info(&manifest_path).unwrap();
+
+		assert!(
+			manifest_info.dependencies.len() >= 2,
+			"Should have at least base and web dependencies"
+		);
+
+		assert!(manifest_info.auto_install, "auto_install should be true");
 	}
 
 	#[test]
@@ -1227,10 +1428,11 @@ class TransifexCodeTranslation(models.Model):
 		}
 
 		let manifest_path = std::path::Path::new("foobar/__manifest__.py");
-		let result = parse_dependencies(manifest_path);
+		let result = parse_manifest_info(manifest_path);
 
 		match result {
-			Ok(deps) => {
+			Ok(manifest_info) => {
+				let deps = &manifest_info.dependencies;
 				println!("Dependencies found: {} total", deps.len());
 				for (i, dep) in deps.iter().enumerate() {
 					println!("  {}. {:?}", i + 1, dep);
