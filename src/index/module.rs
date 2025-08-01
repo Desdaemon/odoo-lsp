@@ -7,6 +7,7 @@ pub struct ModuleEntry {
 	/// Path relative to root
 	pub path: ImStr,
 	pub dependencies: Box<[ModuleName]>,
+	pub auto_install: bool,
 	pub loaded: AtomicBool,
 	pub loaded_dependents: AtomicBool,
 }

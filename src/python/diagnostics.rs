@@ -1,10 +1,10 @@
 use std::{borrow::Cow, cmp::Ordering, ops::ControlFlow};
 
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
+use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location};
 use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 
-use crate::index::Index;
+use crate::index::{_R, Index};
 use crate::prelude::*;
 
 use crate::{
@@ -34,6 +34,7 @@ impl Backend {
 		// TODO: Limit range of diagnostics with new heuristics
 		if let Some(zone) = damage_zone.as_ref() {
 			root = top_level_stmt(root, zone.end.0).unwrap_or(root);
+			let before_count = diagnostics.len();
 			diagnostics.retain(|diag| {
 				// If we couldn't get a range here, rope has changed significantly so just toss the diag.
 				let Ok(range) = rope_conv::<_, ByteRange>(diag.range, rope) else {
@@ -41,8 +42,14 @@ impl Backend {
 				};
 				!root.byte_range().contains(&range.start.0)
 			});
+			debug!(
+				"Retained {}/{} diagnostics after damage zone check",
+				diagnostics.len(),
+				before_count
+			);
 		} else {
 			// There is no damage zone, assume everything has been reset.
+			debug!("Clearing all diagnostics - no damage zone");
 			diagnostics.clear();
 		}
 		let in_active_root =
@@ -50,6 +57,11 @@ impl Backend {
 
 		// Diagnose missing imports
 		self.diagnose_python_imports(diagnostics, &contents, ast.root_node());
+
+		// Diagnose manifest dependencies if this is a __manifest__.py file
+		if path.ends_with("__manifest__.py") {
+			self.diagnose_manifest_dependencies(diagnostics, &contents, ast.root_node());
+		}
 		let top_level_ranges = root
 			.named_children(&mut root.walk())
 			.map(|node| node.byte_range())
@@ -343,14 +355,63 @@ impl Backend {
 				return ControlFlow::Continue(entered);
 			}
 
+			// Check if the attribute might belong to an unloaded auto_install module
+			let attr_name = &contents[attribute.byte_range()];
+			debug!(
+				"Checking unloaded auto_install for model: {} attribute: {}",
+				_R(model_name),
+				attr_name
+			);
+			let diagnostic_message = if let Some((module_name, missing_deps_with_chains)) =
+				self.index.get_unloaded_auto_install_for_model(_R(model_name))
+			{
+				debug!(
+					"Found unloaded auto_install module {} that extends model {}",
+					_R(module_name),
+					_R(model_name)
+				);
+				let deps_str = if missing_deps_with_chains.len() == 1 {
+					let (missing_dep, chain) = &missing_deps_with_chains[0];
+					if chain.len() > 2 {
+						// Show the dependency chain
+						let chain_str = chain.iter().map(|m| _R(*m)).collect::<Vec<_>>().join(" → ");
+						format!("'{}' (via: {})", _R(*missing_dep), chain_str)
+					} else {
+						format!("'{}'", _R(*missing_dep))
+					}
+				} else {
+					// Multiple missing deps, just list them
+					missing_deps_with_chains
+						.iter()
+						.map(|(dep, _)| format!("'{}'", _R(*dep)))
+						.collect::<Vec<_>>()
+						.join(", ")
+				};
+				format!(
+					"Model `{}` has no property `{}`. This might be because module '{}' is marked as auto_install but cannot be loaded due to missing dependencies: {}",
+					_R(model_name),
+					attr_name,
+					_R(module_name),
+					deps_str
+				)
+			} else {
+				format!("Model `{}` has no property `{}`", _R(model_name), attr_name,)
+			};
+
+			// Build related information if this is an auto_install issue
+			let related_information = if let Some((module_name, missing_deps_with_chains)) =
+				self.index.get_unloaded_auto_install_for_model(_R(model_name))
+			{
+				self.build_auto_install_related_info(module_name, &missing_deps_with_chains)
+			} else {
+				None
+			};
+
 			diagnostics.push(Diagnostic {
 				range: span_conv(attribute.range()),
 				severity: Some(DiagnosticSeverity::ERROR),
-				message: format!(
-					"Model `{}` has no property `{}`",
-					_R(model_name),
-					&contents[attribute.byte_range()],
-				),
+				message: diagnostic_message,
+				related_information,
 				..Default::default()
 			});
 
@@ -507,6 +568,195 @@ impl Backend {
 				),
 				..Default::default()
 			});
+		}
+	}
+
+	fn diagnose_manifest_dependencies(&self, diagnostics: &mut Vec<Diagnostic>, contents: &str, root: Node) {
+		use ts_macros::query;
+
+		query! {
+			ManifestDepsQuery(Dependency);
+
+			((dictionary
+				(pair
+					(string (string_content) @_depends)
+					(list
+						(string) @DEPENDENCY
+					)
+				)
+			) (#eq? @_depends "depends"))
+		}
+
+		// Get all available modules
+		let all_available_modules = self.index.get_all_available_modules();
+
+		let mut cursor = QueryCursor::new();
+		let mut captures = cursor.captures(ManifestDepsQuery::query(), root, contents.as_bytes());
+
+		while let Some((match_, idx)) = captures.next() {
+			let capture = match_.captures[*idx];
+			match ManifestDepsQuery::from(capture.index) {
+				Some(ManifestDepsQuery::Dependency) => {
+					let dep_node = capture.node;
+					// Get the string content without quotes
+					let dep_range = dep_node.byte_range();
+					let dep_with_quotes = &contents[dep_range.clone()];
+
+					// Skip if not a proper string
+					if !dep_with_quotes.starts_with('"') && !dep_with_quotes.starts_with('\'') {
+						continue;
+					}
+
+					// Extract the dependency name without quotes
+					let dep_name = &contents[dep_range.shrink(1)];
+					let dep_symbol = _I(dep_name).into();
+
+					// Check if the dependency is available
+					if !all_available_modules.contains(&dep_symbol) {
+						// Adjust the range to start after the opening quote
+						let mut range = dep_node.range();
+						range.start_point.column += 2; // Skip quote and following space
+						range.end_point.column -= 1;
+
+						diagnostics.push(Diagnostic {
+							range: span_conv(range),
+							severity: Some(DiagnosticSeverity::ERROR),
+							message: format!("Module '{dep_name}' is not available in your path"),
+							..Default::default()
+						});
+					}
+				}
+				None => {}
+			}
+		}
+	}
+
+	/// Build related information for auto_install module diagnostics
+	fn build_auto_install_related_info(
+		&self,
+		module_name: crate::index::ModuleName,
+		missing_deps_with_chains: &[(crate::index::ModuleName, Vec<crate::index::ModuleName>)],
+	) -> Option<Vec<DiagnosticRelatedInformation>> {
+		use tree_sitter::Parser;
+		use ts_macros::query;
+
+		// Define queries using the query! macro as per project guidelines
+		query! {
+			AutoInstallQuery(AutoInstallValue);
+
+			((dictionary
+				(pair
+					(string (string_content) @_auto_install)
+					(true) @AUTO_INSTALL_VALUE
+				)
+			) (#eq? @_auto_install "auto_install"))
+		}
+
+		query! {
+			DependencyQuery(Dependency);
+
+			((dictionary
+				(pair
+					(string (string_content) @_depends)
+					(list
+						(string (string_content) @DEPENDENCY)
+					)
+				)
+			) (#eq? @_depends "depends"))
+		}
+
+		let mut related_info = Vec::new();
+
+		// Helper function to get manifest path and URI for a module
+		let get_manifest_info = |module: crate::index::ModuleName| -> Option<(std::path::PathBuf, Uri)> {
+			// Find which root contains this module
+			for root_entry in self.index.roots.iter() {
+				let (root_path, modules) = root_entry.pair();
+				if let Some(module_entry) = modules.get(&module) {
+					// Construct manifest path
+					let manifest_path = root_path.join(module_entry.path.as_str()).join("__manifest__.py");
+					// Create URI from path
+					if let Some(uri) = Uri::from_file_path(&manifest_path) {
+						return Some((manifest_path, uri));
+					}
+				}
+			}
+			None
+		};
+
+		// Add auto_install module info
+		if let Some((manifest_path, uri)) = get_manifest_info(module_name)
+			&& let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
+				let mut parser = Parser::new();
+				if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
+					&& let Some(ast) = parser.parse(&contents, None) {
+						let mut cursor = QueryCursor::new();
+						let mut captures =
+							cursor.captures(AutoInstallQuery::query(), ast.root_node(), contents.as_bytes());
+
+						while let Some((match_, idx)) = captures.next() {
+							let capture = match_.captures[*idx];
+							if let Some(AutoInstallQuery::AutoInstallValue) = AutoInstallQuery::from(capture.index) {
+								let range = span_conv(capture.node.range());
+								related_info.push(DiagnosticRelatedInformation {
+									location: Location {
+										uri: uri.clone(),
+										range,
+									},
+									message: format!("Module '{}' is marked as auto_install", _R(module_name)),
+								});
+								break;
+							}
+						}
+					}
+			}
+
+		// Add missing dependencies info
+		for (missing_dep, chain) in missing_deps_with_chains {
+			if chain.len() >= 2 {
+				let declaring_module = chain[chain.len() - 2];
+				if let Some((manifest_path, uri)) = get_manifest_info(declaring_module)
+					&& let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
+						let mut parser = Parser::new();
+						if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
+							&& let Some(ast) = parser.parse(&contents, None) {
+								let mut cursor = QueryCursor::new();
+								let mut captures =
+									cursor.captures(DependencyQuery::query(), ast.root_node(), contents.as_bytes());
+
+								while let Some((match_, idx)) = captures.next() {
+									let capture = match_.captures[*idx];
+									if let Some(DependencyQuery::Dependency) = DependencyQuery::from(capture.index) {
+										let dep_text = &contents[capture.node.byte_range()];
+
+										if dep_text == _R(*missing_dep) {
+											let range = span_conv(capture.node.range());
+											let chain_str =
+												chain.iter().map(|m| _R(*m)).collect::<Vec<_>>().join(" → ");
+											related_info.push(DiagnosticRelatedInformation {
+												location: Location {
+													uri: uri.clone(),
+													range,
+												},
+												message: format!(
+													"Missing dependency '{}' (chain: {})",
+													_R(*missing_dep),
+													chain_str
+												),
+											});
+											break;
+										}
+									}
+								}
+							}
+					}
+			}
+		}
+
+		if related_info.is_empty() {
+			None
+		} else {
+			Some(related_info)
 		}
 	}
 }
