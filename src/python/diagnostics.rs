@@ -1,6 +1,6 @@
 use std::{borrow::Cow, cmp::Ordering, ops::ControlFlow};
 
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
+use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location};
 use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 
@@ -10,7 +10,7 @@ use crate::prelude::*;
 use crate::{
 	analyze::{MODEL_METHODS, Scope, Type, determine_scope},
 	backend::Backend,
-	model::ResolveMappedError,
+	model::{ModelName, ResolveMappedError},
 };
 
 use super::{Mapped, PyCompletions, PyImports, ThisModel, top_level_stmt};
@@ -205,7 +205,7 @@ impl Backend {
 						if !in_active_root(capture.node.byte_range()) {
 							continue;
 						}
-						self.diagnose_python_scope(root, capture.node, &contents, diagnostics);
+						self.diagnose_python_scope(root, capture.node, &contents, diagnostics, path);
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::ForXmlId)
@@ -294,7 +294,14 @@ impl Backend {
 			}
 		}
 	}
-	fn diagnose_python_scope(&self, root: Node, node: Node, contents: &str, diagnostics: &mut Vec<Diagnostic>) {
+	fn diagnose_python_scope(
+		&self,
+		root: Node,
+		node: Node,
+		contents: &str,
+		diagnostics: &mut Vec<Diagnostic>,
+		path: &str,
+	) {
 		// Most of these steps are similar to what is done inside model_of_range.
 		let offset = node.start_byte();
 		let Some((self_type, fn_scope, self_param)) = determine_scope(root, contents, offset) else {
@@ -362,46 +369,28 @@ impl Backend {
 				_R(model_name),
 				attr_name
 			);
-			let diagnostic_message = if let Some((module_name, missing_deps_with_chains)) =
+			let diagnostic_message = format!("Model `{}` has no property `{}`", _R(model_name), attr_name);
+
+			// Build related information if this is an auto_install issue
+			let related_information = if let Some((module_name, missing_deps_with_chains)) =
 				self.index.get_unloaded_auto_install_for_model(_R(model_name))
 			{
-				debug!(
-					"Found unloaded auto_install module {} that extends model {}",
-					_R(module_name),
-					_R(model_name)
-				);
-				let deps_str = if missing_deps_with_chains.len() == 1 {
-					let (missing_dep, chain) = &missing_deps_with_chains[0];
-					if chain.len() > 2 {
-						// Show the dependency chain
-						let chain_str = chain.iter().map(|m| _R(*m)).collect::<Vec<_>>().join(" → ");
-						format!("'{}' (via: {})", _R(*missing_dep), chain_str)
-					} else {
-						format!("'{}'", _R(*missing_dep))
-					}
-				} else {
-					// Multiple missing deps, just list them
-					missing_deps_with_chains
-						.iter()
-						.map(|(dep, _)| format!("'{}'", _R(*dep)))
-						.collect::<Vec<_>>()
-						.join(", ")
-				};
-				format!(
-					"Model `{}` has no property `{}`. This might be because module '{}' is marked as auto_install but cannot be loaded due to missing dependencies: {}",
-					_R(model_name),
+				self.build_auto_install_related_info(
+					module_name,
+					&missing_deps_with_chains,
+					model_name,
 					attr_name,
-					_R(module_name),
-					deps_str
+					path,
 				)
 			} else {
-				format!("Model `{}` has no property `{}`", _R(model_name), attr_name,)
+				None
 			};
 
 			diagnostics.push(Diagnostic {
 				range: span_conv(attribute.range()),
 				severity: Some(DiagnosticSeverity::ERROR),
 				message: diagnostic_message,
+				related_information,
 				..Default::default()
 			});
 
@@ -619,5 +608,239 @@ impl Backend {
 				None => {}
 			}
 		}
+	}
+
+	/// Build related information for auto_install module diagnostics
+	fn build_auto_install_related_info(
+		&self,
+		module_name: crate::index::ModuleName,
+		_missing_deps_with_chains: &[(crate::index::ModuleName, Vec<crate::index::ModuleName>)],
+		model_name: ModelName,
+		attr_name: &str,
+		current_path: &str,
+	) -> Option<Vec<DiagnosticRelatedInformation>> {
+		let mut related_info = Vec::new();
+
+		// Try to find where the property is defined
+		// First check if property is already in the index (for loaded modules)
+		let mut property_found = false;
+		if let Some(model_entry) = self.index.models.get(&model_name) {
+			// Check fields
+			if let Some(fields) = model_entry.fields.as_ref()
+				&& let Some(field) = fields.get(&_I(attr_name).into())
+				&& let Some(field_module) = self.index.find_module_of(&field.location.path.to_path())
+				&& field_module == module_name
+				&& let Some(uri) = Uri::from_file_path(field.location.path.to_path())
+			{
+				related_info.push(DiagnosticRelatedInformation {
+					location: Location {
+						uri,
+						range: field.location.range,
+					},
+					message: format!("This property is defined in `{}`", _R(module_name)),
+				});
+				property_found = true;
+			}
+
+			// Check methods if field not found
+			if !property_found
+				&& let Some(methods) = model_entry.methods.as_ref()
+				&& let Some(method) = methods.get(&_I(attr_name).into())
+				&& let Some(loc) = method.locations.first()
+				&& let Some(method_module) = self.index.find_module_of(&loc.path.to_path())
+				&& method_module == module_name
+				&& let Some(uri) = Uri::from_file_path(loc.path.to_path())
+			{
+				related_info.push(DiagnosticRelatedInformation {
+					location: Location { uri, range: loc.range },
+					message: format!("This property is defined in `{}`", _R(module_name)),
+				});
+				property_found = true;
+			}
+		}
+
+		// If property not found in index, point to the module's models directory
+		if !property_found && let Some(location) = self.get_module_models_location(module_name) {
+			related_info.push(DiagnosticRelatedInformation {
+				location,
+				message: format!("This property is defined in `{}`", _R(module_name)),
+			});
+		}
+
+		// Find current module's manifest to suggest adding dependency
+		if let Some(location) = self.find_manifest_depends_location(current_path) {
+			related_info.push(DiagnosticRelatedInformation {
+				location,
+				message: format!(
+					"To expose this property, depend directly on `{}` or all of its reverse dependencies",
+					_R(module_name)
+				),
+			});
+		}
+
+		// Find where auto_install is defined
+		if let Some(location) = self.find_auto_install_location(module_name) {
+			related_info.push(DiagnosticRelatedInformation {
+				location,
+				message: format!(
+					"`{}` is defined as a bridge module here, alongside its reverse dependencies",
+					_R(module_name)
+				),
+			});
+		}
+
+		debug!("Total related information entries: {}", related_info.len());
+		for (i, info) in related_info.iter().enumerate() {
+			debug!("  {}. {}", i + 1, info.message);
+		}
+
+		(!related_info.is_empty()).then_some(related_info)
+	}
+
+	/// Get the location of a module's models directory or main file
+	fn get_module_models_location(&self, module_name: crate::index::ModuleName) -> Option<Location> {
+		// Find the module in the index
+		for root_entry in self.index.roots.iter() {
+			let (root_path, modules) = root_entry.pair();
+			if let Some(module_entry) = modules.get(&module_name) {
+				let module_path = root_path.join(module_entry.path.as_str());
+
+				// Try models/__init__.py first
+				let models_init = module_path.join("models").join("__init__.py");
+				if models_init.exists()
+					&& let Some(uri) = Uri::from_file_path(&models_init)
+				{
+					return Some(Location {
+						uri,
+						range: Default::default(), // Point to start of file
+					});
+				}
+
+				// Fallback to module directory
+				if let Some(uri) = Uri::from_file_path(&module_path) {
+					return Some(Location {
+						uri,
+						range: Default::default(),
+					});
+				}
+			}
+		}
+		None
+	}
+
+	/// Find the depends location in the current module's manifest
+	fn find_manifest_depends_location(&self, current_path: &str) -> Option<Location> {
+		use tree_sitter::Parser;
+		use ts_macros::query;
+
+		// Define a simple query for finding the depends list
+		query! {
+			DependsListQuery(DependsList);
+
+			((dictionary
+				(pair
+					(string (string_content) @_depends)
+					(list) @DEPENDS_LIST
+				)
+			) (#eq? @_depends "depends"))
+		}
+
+		let path_buf = std::path::PathBuf::from(current_path);
+		if let Some(current_module) = self.index.find_module_of(&path_buf) {
+			// Find the module's manifest
+			for root_entry in self.index.roots.iter() {
+				let (root_path, modules) = root_entry.pair();
+				if let Some(module_entry) = modules.get(&current_module) {
+					let manifest_path = root_path.join(module_entry.path.as_str()).join("__manifest__.py");
+
+					if let Some(uri) = Uri::from_file_path(&manifest_path) {
+						// Try to parse and find depends
+						if let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
+							let mut parser = Parser::new();
+							if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
+								&& let Some(ast) = parser.parse(&contents, None)
+							{
+								let mut cursor = QueryCursor::new();
+								let mut captures =
+									cursor.captures(DependsListQuery::query(), ast.root_node(), contents.as_bytes());
+
+								if let Some((match_, idx)) = captures.next() {
+									let capture = match_.captures[*idx];
+									if let Some(DependsListQuery::DependsList) = DependsListQuery::from(capture.index) {
+										return Some(Location {
+											uri,
+											range: span_conv(capture.node.range()),
+										});
+									}
+								}
+							}
+						}
+
+						// If no depends found or parsing failed, just point to beginning of manifest
+						return Some(Location {
+							uri,
+							range: Default::default(), // Points to start of file
+						});
+					}
+					break;
+				}
+			}
+		}
+		None
+	}
+
+	/// Find where auto_install is defined in a module's manifest
+	fn find_auto_install_location(&self, module_name: crate::index::ModuleName) -> Option<Location> {
+		use tree_sitter::Parser;
+		use ts_macros::query;
+
+		// Define a query that handles Python's True (capital T) which is parsed as identifier
+		query! {
+			AutoInstallQuery(AutoInstallValue);
+
+			((dictionary
+				(pair
+					(string (string_content) @_auto_install)
+					[(true) (identifier)] @AUTO_INSTALL_VALUE
+				)
+			) (#eq? @_auto_install "auto_install"))
+		}
+
+		// Find the module's manifest
+		for root_entry in self.index.roots.iter() {
+			let (root_path, modules) = root_entry.pair();
+			if let Some(module_entry) = modules.get(&module_name) {
+				let manifest_path = root_path.join(module_entry.path.as_str()).join("__manifest__.py");
+
+				if let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path)
+					&& let Some(uri) = Uri::from_file_path(&manifest_path)
+				{
+					let mut parser = Parser::new();
+					if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
+						&& let Some(ast) = parser.parse(&contents, None)
+					{
+						let mut cursor = QueryCursor::new();
+						let mut captures =
+							cursor.captures(AutoInstallQuery::query(), ast.root_node(), contents.as_bytes());
+
+						if let Some((match_, _)) = captures.next() {
+							// Find the value capture
+							for capture in match_.captures {
+								if let Some(AutoInstallQuery::AutoInstallValue) = AutoInstallQuery::from(capture.index)
+								{
+									// Return the location of the value (True/true/1/"true"/etc)
+									return Some(Location {
+										uri,
+										range: span_conv(capture.node.range()),
+									});
+								}
+							}
+						}
+					}
+				}
+				break;
+			}
+		}
+		None
 	}
 }

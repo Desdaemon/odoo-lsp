@@ -8,4 +8,4 @@ class SaleOrder(models.Model):
 
     def sale_method(self):
         self.sale_crm_method()
-        #    ^diag Model `sale.order` has no property `sale_crm_method`. This might be because module 'sale_crm' is marked as auto_install but cannot be loaded due to missing dependencies: 'crm'
+        #    ^diag Model `sale.order` has no property `sale_crm_method`
