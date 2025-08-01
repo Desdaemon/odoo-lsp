@@ -4,7 +4,7 @@ use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
 use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 
-use crate::index::Index;
+use crate::index::{_R, Index};
 use crate::prelude::*;
 
 use crate::{
@@ -34,6 +34,7 @@ impl Backend {
 		// TODO: Limit range of diagnostics with new heuristics
 		if let Some(zone) = damage_zone.as_ref() {
 			root = top_level_stmt(root, zone.end.0).unwrap_or(root);
+			let before_count = diagnostics.len();
 			diagnostics.retain(|diag| {
 				// If we couldn't get a range here, rope has changed significantly so just toss the diag.
 				let Ok(range) = rope_conv::<_, ByteRange>(diag.range, rope) else {
@@ -41,8 +42,14 @@ impl Backend {
 				};
 				!root.byte_range().contains(&range.start.0)
 			});
+			debug!(
+				"Retained {}/{} diagnostics after damage zone check",
+				diagnostics.len(),
+				before_count
+			);
 		} else {
 			// There is no damage zone, assume everything has been reset.
+			debug!("Clearing all diagnostics - no damage zone");
 			diagnostics.clear();
 		}
 		let in_active_root =
@@ -50,6 +57,11 @@ impl Backend {
 
 		// Diagnose missing imports
 		self.diagnose_python_imports(diagnostics, &contents, ast.root_node());
+
+		// Diagnose manifest dependencies if this is a __manifest__.py file
+		if path.ends_with("__manifest__.py") {
+			self.diagnose_manifest_dependencies(diagnostics, &contents, ast.root_node());
+		}
 		let top_level_ranges = root
 			.named_children(&mut root.walk())
 			.map(|node| node.byte_range())
@@ -343,14 +355,53 @@ impl Backend {
 				return ControlFlow::Continue(entered);
 			}
 
+			// Check if the attribute might belong to an unloaded auto_install module
+			let attr_name = &contents[attribute.byte_range()];
+			debug!(
+				"Checking unloaded auto_install for model: {} attribute: {}",
+				_R(model_name),
+				attr_name
+			);
+			let diagnostic_message = if let Some((module_name, missing_deps_with_chains)) =
+				self.index.get_unloaded_auto_install_for_model(_R(model_name))
+			{
+				debug!(
+					"Found unloaded auto_install module {} that extends model {}",
+					_R(module_name),
+					_R(model_name)
+				);
+				let deps_str = if missing_deps_with_chains.len() == 1 {
+					let (missing_dep, chain) = &missing_deps_with_chains[0];
+					if chain.len() > 2 {
+						// Show the dependency chain
+						let chain_str = chain.iter().map(|m| _R(*m)).collect::<Vec<_>>().join(" → ");
+						format!("'{}' (via: {})", _R(*missing_dep), chain_str)
+					} else {
+						format!("'{}'", _R(*missing_dep))
+					}
+				} else {
+					// Multiple missing deps, just list them
+					missing_deps_with_chains
+						.iter()
+						.map(|(dep, _)| format!("'{}'", _R(*dep)))
+						.collect::<Vec<_>>()
+						.join(", ")
+				};
+				format!(
+					"Model `{}` has no property `{}`. This might be because module '{}' is marked as auto_install but cannot be loaded due to missing dependencies: {}",
+					_R(model_name),
+					attr_name,
+					_R(module_name),
+					deps_str
+				)
+			} else {
+				format!("Model `{}` has no property `{}`", _R(model_name), attr_name,)
+			};
+
 			diagnostics.push(Diagnostic {
 				range: span_conv(attribute.range()),
 				severity: Some(DiagnosticSeverity::ERROR),
-				message: format!(
-					"Model `{}` has no property `{}`",
-					_R(model_name),
-					&contents[attribute.byte_range()],
-				),
+				message: diagnostic_message,
 				..Default::default()
 			});
 
@@ -507,6 +558,66 @@ impl Backend {
 				),
 				..Default::default()
 			});
+		}
+	}
+
+	fn diagnose_manifest_dependencies(&self, diagnostics: &mut Vec<Diagnostic>, contents: &str, root: Node) {
+		use ts_macros::query;
+
+		query! {
+			ManifestDepsQuery(Dependency);
+
+			((dictionary
+				(pair
+					(string (string_content) @_depends)
+					(list
+						(string) @DEPENDENCY
+					)
+				)
+			) (#eq? @_depends "depends"))
+		}
+
+		// Get all available modules
+		let all_available_modules = self.index.get_all_available_modules();
+
+		let mut cursor = QueryCursor::new();
+		let mut captures = cursor.captures(ManifestDepsQuery::query(), root, contents.as_bytes());
+
+		while let Some((match_, idx)) = captures.next() {
+			let capture = match_.captures[*idx];
+			match ManifestDepsQuery::from(capture.index) {
+				Some(ManifestDepsQuery::Dependency) => {
+					let dep_node = capture.node;
+					// Get the string content without quotes
+					let dep_range = dep_node.byte_range();
+					let dep_with_quotes = &contents[dep_range.clone()];
+
+					// Skip if not a proper string
+					if !dep_with_quotes.starts_with('"') && !dep_with_quotes.starts_with('\'') {
+						continue;
+					}
+
+					// Extract the dependency name without quotes
+					let dep_name = &contents[dep_range.shrink(1)];
+					let dep_symbol = _I(dep_name).into();
+
+					// Check if the dependency is available
+					if !all_available_modules.contains(&dep_symbol) {
+						// Adjust the range to start after the opening quote
+						let mut range = dep_node.range();
+						range.start_point.column += 2; // Skip quote and following space
+						range.end_point.column -= 1;
+
+						diagnostics.push(Diagnostic {
+							range: span_conv(range),
+							severity: Some(DiagnosticSeverity::ERROR),
+							message: format!("Module '{dep_name}' is not available in your path"),
+							..Default::default()
+						});
+					}
+				}
+				None => {}
+			}
 		}
 	}
 }

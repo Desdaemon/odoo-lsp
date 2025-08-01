@@ -188,9 +188,9 @@ impl Backend {
 													if let Some(expr_parent) = parent.parent()
 														&& (expr_parent.kind() == "call"
 															|| expr_parent.kind() == "attribute")
-														{
-															break;
-														}
+													{
+														break;
+													}
 												}
 
 												if parent.kind() == "dictionary" {

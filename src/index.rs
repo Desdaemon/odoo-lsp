@@ -1,7 +1,6 @@
 //! The main indexer for all language items, including [`Record`]s, QWeb [`Template`]s, and Owl [`Component`]s
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -72,6 +71,13 @@ pub struct Index {
 	pub widgets: DashMap<ImStr, MinLoc>,
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub actions: DashMap<ImStr, MinLoc>,
+	/// Tracks auto_install modules that couldn't be loaded due to missing dependencies
+	/// Maps module_name -> list of missing dependencies with their dependency chains
+	#[default(_code = "DashMap::with_shard_amount(4)")]
+	pub unloaded_auto_install: DashMap<ModuleName, Vec<(ModuleName, Vec<ModuleName>)>>,
+	/// Cache for transitive dependencies to avoid recalculation
+	#[default(_code = "DashMap::with_shard_amount(4)")]
+	pub(crate) transitive_deps_cache: DashMap<ModuleName, HashSet<ModuleName>>,
 }
 
 pub type ModuleName = Symbol<ModuleEntry>;
@@ -194,6 +200,18 @@ impl Index {
 			}
 		}
 
+		// Add implicit base dependencies to all modules
+		self.add_implicit_base_dependencies();
+
+		// Clear transitive dependencies cache since modules have been added/modified
+		self.transitive_deps_cache.clear();
+
+		// After adding all modules in the root, check for auto_install modules with unsatisfied dependencies		// We pass an empty set because no modules are loaded yet, this will identify all auto_install
+		// modules and track those with missing dependencies
+		debug!("Checking for auto_install modules after adding root");
+		let auto_install_check = self.find_auto_install_modules(&HashSet::new());
+		debug!("Found {} auto_install modules to check", auto_install_check.len());
+
 		Ok(())
 	}
 	#[instrument(skip_all, ret, fields(path = path.display().to_string()))]
@@ -203,35 +221,272 @@ impl Index {
 
 		self.load_module(module_name).await
 	}
+	/// Resolve all transitive dependencies for a module
+	pub fn resolve_transitive_dependencies(&self, module: ModuleName) -> HashSet<ModuleName> {
+		// Check cache first
+		if let Some(cached) = self.transitive_deps_cache.get(&module) {
+			return cached.clone();
+		}
+
+		let mut dependencies = HashSet::new();
+		let mut stack = vec![module];
+
+		while let Some(current) = stack.pop() {
+			// If we've already processed this module, skip it (handles circular deps)
+			if !dependencies.insert(current) {
+				continue;
+			}
+
+			// Find the module in any root
+			for root in self.roots.iter() {
+				if let Some(module_entry) = root.get(&current) {
+					// Add all direct dependencies to the stack
+					for &dep in module_entry.dependencies.iter() {
+						if !dependencies.contains(&dep) {
+							stack.push(dep);
+						}
+					}
+					break;
+				}
+			}
+		}
+
+		// Cache the result
+		self.transitive_deps_cache.insert(module, dependencies.clone());
+
+		dependencies
+	}
+
+	/// Find the dependency chain from source module to target module
+	/// Returns None if no path exists, or Some(path) where path includes both source and target
+	fn find_dependency_chain(&self, source: ModuleName, target: ModuleName) -> Option<Vec<ModuleName>> {
+		let mut visited = HashSet::new();
+		let mut stack = vec![(source, vec![source])];
+
+		while let Some((current, path)) = stack.pop() {
+			if current == target {
+				return Some(path);
+			}
+
+			if !visited.insert(current) {
+				continue;
+			}
+
+			// Find the module in any root
+			for root in self.roots.iter() {
+				if let Some(module_entry) = root.get(&current) {
+					for &dep in module_entry.dependencies.iter() {
+						if !visited.contains(&dep) {
+							let mut new_path = path.clone();
+							new_path.push(dep);
+							stack.push((dep, new_path));
+						}
+					}
+					break;
+				}
+			}
+		}
+
+		None
+	}
+	/// Get all modules that are physically present in the filesystem
+	pub fn get_all_available_modules(&self) -> HashSet<ModuleName> {
+		let mut modules = HashSet::new();
+
+		for root in self.roots.iter() {
+			for (&module_key, _) in root.iter() {
+				modules.insert(module_key);
+			}
+		}
+
+		modules
+	}
+
+	/// Add implicit base dependency to all modules except base itself
+	fn add_implicit_base_dependencies(&self) {
+		let base_key: ModuleName = _I("base").into();
+
+		for mut root in self.roots.iter_mut() {
+			let modules = root.value_mut();
+
+			// Only add implicit base dependencies if base module exists
+			if !modules.contains_key(&base_key) {
+				continue;
+			}
+
+			// Collect modules that need base dependency
+			let mut updates = Vec::new();
+			for (&module_key, module_entry) in modules.iter() {
+				if module_key != base_key && !module_entry.dependencies.contains(&base_key) {
+					let mut deps = module_entry.dependencies.to_vec();
+					deps.push(base_key);
+					updates.push((module_key, deps));
+				}
+			}
+
+			// Apply updates
+			for (module_key, new_deps) in updates {
+				if let Some(entry) = modules.get_mut(&module_key) {
+					entry.dependencies = new_deps.into_boxed_slice();
+				}
+			}
+		}
+	}
+
 	/// Find all auto_install modules whose dependencies are satisfied by the given set of modules
 	fn find_auto_install_modules(&self, loaded_modules: &HashSet<ModuleName>) -> Vec<ModuleName> {
 		let mut auto_install_modules = Vec::new();
 
-		for root in self.roots.iter() {
-			for (&module_key, module_entry) in root.iter() {
-				if module_entry.auto_install && !loaded_modules.contains(&module_key) {
-					// Check if all dependencies are satisfied
-					let all_deps_satisfied = module_entry.dependencies.iter().all(|dep| loaded_modules.contains(dep));
+		// Get all available modules (not just loaded ones)
+		let all_available_modules = self.get_all_available_modules();
 
-					if all_deps_satisfied {
+		for root in self.roots.iter() {
+			debug!("Checking root: {:?}", root.key());
+			for (&module_key, module_entry) in root.iter() {
+				debug!(
+					"Checking module: {} auto_install={}",
+					_R(module_key),
+					module_entry.auto_install
+				);
+				if module_entry.auto_install && !loaded_modules.contains(&module_key) {
+					// Get all transitive dependencies for this module
+					let transitive_deps = self.resolve_transitive_dependencies(module_key);
+
+					// Check if all transitive dependencies are available (not necessarily loaded)
+					let missing_deps: Vec<ModuleName> = transitive_deps
+						.iter()
+						.filter(|dep| **dep != module_key && !all_available_modules.contains(dep))
+						.cloned()
+						.collect();
+
+					if missing_deps.is_empty() {
+						// Now check if all transitive dependencies are loaded
+						let unloaded_deps: Vec<ModuleName> = transitive_deps
+							.iter()
+							.filter(|dep| **dep != module_key && !loaded_modules.contains(dep))
+							.cloned()
+							.collect();
+
+						if unloaded_deps.is_empty() {
+							debug!(
+								"Module {} is auto_install and all transitive dependencies are loaded",
+								_R(module_key)
+							);
+							auto_install_modules.push(module_key);
+						} else {
+							debug!(
+								"Module {} is auto_install but not all transitive dependencies are loaded. Unloaded: {:?}",
+								_R(module_key),
+								unloaded_deps
+							);
+						}
+					} else {
 						debug!(
-							"Module {} is auto_install and all dependencies are satisfied",
-							_R(module_key)
-						);
-						auto_install_modules.push(module_key);
-					} else if module_entry.auto_install {
-						debug!(
-							"Module {} is auto_install but dependencies not satisfied. Deps: {:?}, Loaded: {:?}",
+							"Module {} is auto_install but some transitive dependencies are not available. Missing: {:?}",
 							_R(module_key),
-							module_entry.dependencies,
-							loaded_modules
+							missing_deps
 						);
+						// Track this module as unloaded with its missing dependencies and their chains
+						let missing_with_chains: Vec<(ModuleName, Vec<ModuleName>)> = missing_deps
+							.into_iter()
+							.map(|missing_dep| {
+								let chain = self
+									.find_dependency_chain(module_key, missing_dep)
+									.unwrap_or_else(|| vec![module_key, missing_dep]);
+								(missing_dep, chain)
+							})
+							.collect();
+						self.unloaded_auto_install.insert(module_key, missing_with_chains);
 					}
 				}
 			}
 		}
 
 		auto_install_modules
+	}
+
+	/// Check if there are any unloaded auto_install modules that might extend a model
+	/// Returns the first unloaded auto_install module with its missing dependencies and chains
+	pub fn get_unloaded_auto_install_for_model(
+		&self,
+		model_name: &str,
+	) -> Option<(ModuleName, Vec<(ModuleName, Vec<ModuleName>)>)> {
+		// Check each unloaded auto_install module to see if it extends the given model
+		for entry in self.unloaded_auto_install.iter() {
+			let module_name = *entry.key();
+
+			// Find the module's root and path
+			let Some(root_path) = self.find_root_from_module(module_name) else {
+				continue;
+			};
+
+			let Some(root) = self.roots.get(&root_path) else {
+				continue;
+			};
+
+			let Some(module_entry) = root.get(&module_name) else {
+				continue;
+			};
+
+			// Check if this module extends the given model by scanning its Python files
+			let module_path = root_path.join(module_entry.path.as_str());
+			if self.check_module_extends_model(&module_path, model_name) {
+				return Some((module_name, entry.value().clone()));
+			}
+		}
+		None
+	}
+
+	/// Check if a module extends a specific model by scanning its Python files
+	fn check_module_extends_model(&self, module_path: &Path, target_model: &str) -> bool {
+		// Look for Python files in the module
+		let models_path = module_path.join("models");
+		let py_files = if models_path.exists() {
+			// Check models directory
+			std::fs::read_dir(&models_path).ok()
+		} else {
+			// Check module root
+			std::fs::read_dir(module_path).ok()
+		};
+
+		let Some(entries) = py_files else {
+			return false;
+		};
+
+		for entry in entries.flatten() {
+			let path = entry.path();
+			if path.extension().and_then(|s| s.to_str()) != Some("py") {
+				continue;
+			}
+
+			// Read and parse the Python file
+			let Ok(contents) = std::fs::read(&path) else {
+				continue;
+			};
+
+			// Parse models from the file
+			let Ok(models) = index_models(&contents) else {
+				continue;
+			};
+
+			// Check if any model inherits from the target model
+			for model in models {
+				match &model.type_ {
+					ModelType::Base { ancestors, .. } => {
+						if ancestors.iter().any(|ancestor| ancestor.as_str() == target_model) {
+							return true;
+						}
+					}
+					ModelType::Inherit(inherits) => {
+						if inherits.iter().any(|inherit| inherit.as_str() == target_model) {
+							return true;
+						}
+					}
+				}
+			}
+		}
+
+		false
 	}
 
 	async fn load_module(&self, module_name: ModuleName) -> Option<()> {
@@ -400,6 +655,8 @@ impl Index {
 					"Auto-installing module {} because all dependencies are satisfied",
 					_R(auto_module)
 				);
+				// Remove from unloaded_auto_install since it's now being loaded
+				self.unloaded_auto_install.remove(&auto_module);
 				// Recursively load auto_install modules
 				Box::pin(self.load_module(auto_module)).await;
 			}
@@ -693,12 +950,6 @@ fn parse_manifest_info(manifest: &Path) -> anyhow::Result<ManifestInfo> {
 	let root = ast.root_node();
 	let mut deps = vec![];
 	let mut auto_install = false;
-
-	if let Some(parent) = manifest.parent()
-		&& parent.as_os_str() != OsStr::new("base")
-	{
-		deps.push(ModuleName::from(_I("base")));
-	}
 
 	let mut captures = cursor.captures(ManifestQuery::query(), root, contents.as_bytes());
 	while let Some((match_, idx)) = captures.next() {
@@ -1241,6 +1492,280 @@ mod tests {
 	}
 
 	#[test]
+	fn test_resolve_transitive_dependencies() {
+		let index = Index::default();
+		let root = PathBuf::from("/test/root");
+
+		// Setup: A depends on B, B depends on C, C depends on base
+		let a_key = _I("module_a").into();
+		let b_key = _I("module_b").into();
+		let c_key = _I("module_c").into();
+		let base_key = _I("base").into();
+
+		let mut modules = HashMap::new();
+
+		modules.insert(
+			base_key,
+			ModuleEntry {
+				path: "base".into(),
+				dependencies: Box::new([]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules.insert(
+			c_key,
+			ModuleEntry {
+				path: "module_c".into(),
+				dependencies: Box::new([base_key]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules.insert(
+			b_key,
+			ModuleEntry {
+				path: "module_b".into(),
+				dependencies: Box::new([c_key]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules.insert(
+			a_key,
+			ModuleEntry {
+				path: "module_a".into(),
+				dependencies: Box::new([b_key]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		index.roots.insert(root.clone(), modules);
+
+		// Test that resolving A returns all transitive dependencies
+		let deps = index.resolve_transitive_dependencies(a_key);
+		assert!(deps.contains(&a_key), "Should include the module itself");
+		assert!(deps.contains(&b_key), "Should include direct dependency B");
+		assert!(deps.contains(&c_key), "Should include transitive dependency C");
+		assert!(deps.contains(&base_key), "Should include transitive dependency base");
+		assert_eq!(deps.len(), 4, "Should have exactly 4 dependencies");
+	}
+
+	#[test]
+	fn test_circular_dependency_handling() {
+		let index = Index::default();
+		let root = PathBuf::from("/test/root");
+
+		// Setup: A depends on B, B depends on C, C depends on A (circular)
+		let a_key = _I("module_a").into();
+		let b_key = _I("module_b").into();
+		let c_key = _I("module_c").into();
+		let base_key = _I("base").into();
+
+		let mut modules = HashMap::new();
+
+		modules.insert(
+			base_key,
+			ModuleEntry {
+				path: "base".into(),
+				dependencies: Box::new([]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules.insert(
+			a_key,
+			ModuleEntry {
+				path: "module_a".into(),
+				dependencies: Box::new([b_key, base_key]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules.insert(
+			b_key,
+			ModuleEntry {
+				path: "module_b".into(),
+				dependencies: Box::new([c_key, base_key]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules.insert(
+			c_key,
+			ModuleEntry {
+				path: "module_c".into(),
+				dependencies: Box::new([a_key, base_key]), // Circular dependency back to A
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		index.roots.insert(root.clone(), modules);
+
+		// Test that circular dependencies don't cause infinite loop
+		let deps = index.resolve_transitive_dependencies(a_key);
+		assert!(deps.contains(&a_key), "Should include module A");
+		assert!(deps.contains(&b_key), "Should include module B");
+		assert!(deps.contains(&c_key), "Should include module C");
+		assert!(deps.contains(&base_key), "Should include base");
+		assert_eq!(deps.len(), 4, "Should handle circular deps correctly");
+	}
+
+	#[test]
+	fn test_get_all_available_modules() {
+		let index = Index::default();
+		let root1 = PathBuf::from("/test/root1");
+		let root2 = PathBuf::from("/test/root2");
+
+		let mut modules1 = HashMap::new();
+		let mut modules2 = HashMap::new();
+
+		let base_key = _I("base").into();
+		let sale_key = _I("sale").into();
+		let stock_key = _I("stock").into();
+
+		modules1.insert(
+			base_key,
+			ModuleEntry {
+				path: "base".into(),
+				dependencies: Box::new([]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules1.insert(
+			sale_key,
+			ModuleEntry {
+				path: "sale".into(),
+				dependencies: Box::new([base_key]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		modules2.insert(
+			stock_key,
+			ModuleEntry {
+				path: "stock".into(),
+				dependencies: Box::new([base_key]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		index.roots.insert(root1, modules1);
+		index.roots.insert(root2, modules2);
+
+		// Test that we get all modules from all roots
+		let all_modules = index.get_all_available_modules();
+		assert!(all_modules.contains(&base_key), "Should include base");
+		assert!(all_modules.contains(&sale_key), "Should include sale");
+		assert!(all_modules.contains(&stock_key), "Should include stock");
+		assert_eq!(all_modules.len(), 3, "Should have exactly 3 modules");
+	}
+
+	#[test]
+	fn test_implicit_base_dependency() {
+		let index = Index::default();
+		let root = PathBuf::from("/test/root");
+
+		// Test that non-base modules get base as implicit dependency
+		let sale_key = _I("sale").into();
+		let product_key = _I("product").into();
+		let base_key = _I("base").into();
+
+		let mut modules = HashMap::new();
+
+		// Add base module first
+		modules.insert(
+			base_key,
+			ModuleEntry {
+				path: "base".into(),
+				dependencies: Box::new([]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		// Add sale module with only product as explicit dependency
+		// This should get base added implicitly
+		modules.insert(
+			sale_key,
+			ModuleEntry {
+				path: "sale".into(),
+				dependencies: Box::new([product_key]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		// Add product module with no dependencies
+		// This should get base added implicitly
+		modules.insert(
+			product_key,
+			ModuleEntry {
+				path: "product".into(),
+				dependencies: Box::new([]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+
+		index.roots.insert(root.clone(), modules);
+
+		// Process implicit base dependencies
+		index.add_implicit_base_dependencies();
+
+		let modules = index.roots.get(&root).unwrap();
+		let sale_entry = modules.get(&sale_key).unwrap();
+		assert!(
+			sale_entry.dependencies.contains(&product_key),
+			"sale should have product as dependency"
+		);
+		assert!(
+			sale_entry.dependencies.contains(&base_key),
+			"sale should have base as implicit dependency"
+		);
+
+		// Test that base module doesn't get base as dependency
+		let base_entry = modules.get(&base_key).unwrap();
+		assert!(
+			!base_entry.dependencies.contains(&base_key),
+			"base should not have itself as dependency"
+		);
+
+		// Test that product gets base as implicit dependency
+		let product_entry = modules.get(&product_key).unwrap();
+		assert!(
+			product_entry.dependencies.contains(&base_key),
+			"product should have base as implicit dependency"
+		);
+	}
+
+	#[test]
 	fn test_delete_marked_entries() {
 		let index = Index::default();
 
@@ -1440,16 +1965,12 @@ class TransifexCodeTranslation(models.Model):
 
 				assert_eq!(
 					deps.len(),
-					3,
-					"Expected to find 3 dependencies (base + foo + bar), but found {}",
+					2,
+					"Expected to find 2 dependencies (foo + bar), but found {}",
 					deps.len()
 				);
 
 				let dep_names: Vec<String> = deps.iter().map(|d| format!("{d:?}")).collect();
-				assert!(
-					dep_names.contains(&"Symbol<ModuleEntry>(\"base\")".to_string()),
-					"Expected to find 'base' dependency"
-				);
 				assert!(
 					dep_names.contains(&"Symbol<ModuleEntry>(\"foo\")".to_string()),
 					"Expected to find 'foo' dependency"
