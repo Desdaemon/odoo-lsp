@@ -1,6 +1,6 @@
 use std::{borrow::Cow, cmp::Ordering, ops::ControlFlow};
 
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
+use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location};
 use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 
@@ -398,10 +398,20 @@ impl Backend {
 				format!("Model `{}` has no property `{}`", _R(model_name), attr_name,)
 			};
 
+			// Build related information if this is an auto_install issue
+			let related_information = if let Some((module_name, missing_deps_with_chains)) =
+				self.index.get_unloaded_auto_install_for_model(_R(model_name))
+			{
+				self.build_auto_install_related_info(module_name, &missing_deps_with_chains)
+			} else {
+				None
+			};
+
 			diagnostics.push(Diagnostic {
 				range: span_conv(attribute.range()),
 				severity: Some(DiagnosticSeverity::ERROR),
 				message: diagnostic_message,
+				related_information,
 				..Default::default()
 			});
 
@@ -618,6 +628,135 @@ impl Backend {
 				}
 				None => {}
 			}
+		}
+	}
+
+	/// Build related information for auto_install module diagnostics
+	fn build_auto_install_related_info(
+		&self,
+		module_name: crate::index::ModuleName,
+		missing_deps_with_chains: &[(crate::index::ModuleName, Vec<crate::index::ModuleName>)],
+	) -> Option<Vec<DiagnosticRelatedInformation>> {
+		use tree_sitter::Parser;
+		use ts_macros::query;
+
+		// Define queries using the query! macro as per project guidelines
+		query! {
+			AutoInstallQuery(AutoInstallValue);
+
+			((dictionary
+				(pair
+					(string (string_content) @_auto_install)
+					(true) @AUTO_INSTALL_VALUE
+				)
+			) (#eq? @_auto_install "auto_install"))
+		}
+
+		query! {
+			DependencyQuery(Dependency);
+
+			((dictionary
+				(pair
+					(string (string_content) @_depends)
+					(list
+						(string (string_content) @DEPENDENCY)
+					)
+				)
+			) (#eq? @_depends "depends"))
+		}
+
+		let mut related_info = Vec::new();
+
+		// Helper function to get manifest path and URI for a module
+		let get_manifest_info = |module: crate::index::ModuleName| -> Option<(std::path::PathBuf, Uri)> {
+			// Find which root contains this module
+			for root_entry in self.index.roots.iter() {
+				let (root_path, modules) = root_entry.pair();
+				if let Some(module_entry) = modules.get(&module) {
+					// Construct manifest path
+					let manifest_path = root_path.join(module_entry.path.as_str()).join("__manifest__.py");
+					// Create URI from path
+					if let Some(uri) = Uri::from_file_path(&manifest_path) {
+						return Some((manifest_path, uri));
+					}
+				}
+			}
+			None
+		};
+
+		// Add auto_install module info
+		if let Some((manifest_path, uri)) = get_manifest_info(module_name)
+			&& let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
+				let mut parser = Parser::new();
+				if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
+					&& let Some(ast) = parser.parse(&contents, None) {
+						let mut cursor = QueryCursor::new();
+						let mut captures =
+							cursor.captures(AutoInstallQuery::query(), ast.root_node(), contents.as_bytes());
+
+						while let Some((match_, idx)) = captures.next() {
+							let capture = match_.captures[*idx];
+							if let Some(AutoInstallQuery::AutoInstallValue) = AutoInstallQuery::from(capture.index) {
+								let range = span_conv(capture.node.range());
+								related_info.push(DiagnosticRelatedInformation {
+									location: Location {
+										uri: uri.clone(),
+										range,
+									},
+									message: format!("Module '{}' is marked as auto_install", _R(module_name)),
+								});
+								break;
+							}
+						}
+					}
+			}
+
+		// Add missing dependencies info
+		for (missing_dep, chain) in missing_deps_with_chains {
+			if chain.len() >= 2 {
+				let declaring_module = chain[chain.len() - 2];
+				if let Some((manifest_path, uri)) = get_manifest_info(declaring_module)
+					&& let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
+						let mut parser = Parser::new();
+						if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
+							&& let Some(ast) = parser.parse(&contents, None) {
+								let mut cursor = QueryCursor::new();
+								let mut captures =
+									cursor.captures(DependencyQuery::query(), ast.root_node(), contents.as_bytes());
+
+								while let Some((match_, idx)) = captures.next() {
+									let capture = match_.captures[*idx];
+									if let Some(DependencyQuery::Dependency) = DependencyQuery::from(capture.index) {
+										let dep_text = &contents[capture.node.byte_range()];
+
+										if dep_text == _R(*missing_dep) {
+											let range = span_conv(capture.node.range());
+											let chain_str =
+												chain.iter().map(|m| _R(*m)).collect::<Vec<_>>().join(" → ");
+											related_info.push(DiagnosticRelatedInformation {
+												location: Location {
+													uri: uri.clone(),
+													range,
+												},
+												message: format!(
+													"Missing dependency '{}' (chain: {})",
+													_R(*missing_dep),
+													chain_str
+												),
+											});
+											break;
+										}
+									}
+								}
+							}
+					}
+			}
+		}
+
+		if related_info.is_empty() {
+			None
+		} else {
+			Some(related_info)
 		}
 	}
 }
