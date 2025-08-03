@@ -751,27 +751,30 @@ impl Backend {
 			for root_entry in self.index.roots.iter() {
 				let (root_path, modules) = root_entry.pair();
 				if let Some(module_entry) = modules.get(&current_module) {
-					let manifest_path = root_path.join(module_entry.path.as_str()).join("__manifest__.py");
+					let mut manifest_path = root_path.clone();
+					manifest_path.push(module_entry.path.as_str());
+					manifest_path.push("__manifest__.py");
 
-					if let Some(uri) = Uri::from_file_path(&manifest_path) {
+					if let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
+						// Convert path to string with forward slashes for URI
+						let path_str = manifest_path.to_string_lossy().replace('\\', "/");
+						let uri: Uri = format!("file://{}", path_str).parse().unwrap();
 						// Try to parse and find depends
-						if let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
-							let mut parser = Parser::new();
-							if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
-								&& let Some(ast) = parser.parse(&contents, None)
-							{
-								let mut cursor = QueryCursor::new();
-								let mut captures =
-									cursor.captures(DependsListQuery::query(), ast.root_node(), contents.as_bytes());
+						let mut parser = Parser::new();
+						if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
+							&& let Some(ast) = parser.parse(&contents, None)
+						{
+							let mut cursor = QueryCursor::new();
+							let mut captures =
+								cursor.captures(DependsListQuery::query(), ast.root_node(), contents.as_bytes());
 
-								if let Some((match_, idx)) = captures.next() {
-									let capture = match_.captures[*idx];
-									if let Some(DependsListQuery::DependsList) = DependsListQuery::from(capture.index) {
-										return Some(Location {
-											uri,
-											range: span_conv(capture.node.range()),
-										});
-									}
+							if let Some((match_, idx)) = captures.next() {
+								let capture = match_.captures[*idx];
+								if let Some(DependsListQuery::DependsList) = DependsListQuery::from(capture.index) {
+									return Some(Location {
+										uri,
+										range: span_conv(capture.node.range()),
+									});
 								}
 							}
 						}
@@ -810,11 +813,14 @@ impl Backend {
 		for root_entry in self.index.roots.iter() {
 			let (root_path, modules) = root_entry.pair();
 			if let Some(module_entry) = modules.get(&module_name) {
-				let manifest_path = root_path.join(module_entry.path.as_str()).join("__manifest__.py");
+				let mut manifest_path = root_path.clone();
+				manifest_path.push(module_entry.path.as_str());
+				manifest_path.push("__manifest__.py");
 
-				if let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path)
-					&& let Some(uri) = Uri::from_file_path(&manifest_path)
-				{
+				if let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
+					// Convert path to string with forward slashes for URI
+					let path_str = manifest_path.to_string_lossy().replace('\\', "/");
+					let uri: Uri = format!("file://{}", path_str).parse().unwrap();
 					let mut parser = Parser::new();
 					if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
 						&& let Some(ast) = parser.parse(&contents, None)
