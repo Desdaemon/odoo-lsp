@@ -759,9 +759,7 @@ impl Backend {
 					tracing::warn!("Manifest path: {:?}, exists: {}", manifest_path, manifest_path.exists());
 
 					if let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
-						// Convert path to string with forward slashes for URI
-						let path_str = manifest_path.to_string_lossy().replace('\\', "/");
-						let uri: Uri = format!("file://{}", path_str).parse().unwrap();
+						let uri = Uri::from_file_path(&manifest_path).unwrap();
 						// Try to parse and find depends
 						let mut parser = Parser::new();
 						if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
@@ -821,9 +819,7 @@ impl Backend {
 				manifest_path.push("__manifest__.py");
 
 				if let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
-					// Convert path to string with forward slashes for URI
-					let path_str = manifest_path.to_string_lossy().replace('\\', "/");
-					let uri: Uri = format!("file://{}", path_str).parse().unwrap();
+					let uri = Uri::from_file_path(&manifest_path).unwrap();
 					let mut parser = Parser::new();
 					if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_ok()
 						&& let Some(ast) = parser.parse(&contents, None)
