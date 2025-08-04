@@ -732,6 +732,7 @@ impl Backend {
 	fn find_manifest_depends_location(&self, current_path: &str) -> Option<Location> {
 		use tree_sitter::Parser;
 		use ts_macros::query;
+		tracing::warn!("find_manifest_depends_location called with path: {}", current_path);
 
 		// Define a simple query for finding the depends list
 		query! {
@@ -747,6 +748,7 @@ impl Backend {
 
 		let path_buf = std::path::PathBuf::from(current_path);
 		if let Some(current_module) = self.index.find_module_of(&path_buf) {
+			tracing::warn!("Found module: {:?}", current_module);
 			// Find the module's manifest
 			for root_entry in self.index.roots.iter() {
 				let (root_path, modules) = root_entry.pair();
@@ -754,6 +756,7 @@ impl Backend {
 					let mut manifest_path = root_path.clone();
 					manifest_path.push(module_entry.path.as_str());
 					manifest_path.push("__manifest__.py");
+					tracing::warn!("Manifest path: {:?}, exists: {}", manifest_path, manifest_path.exists());
 
 					if let Ok(contents) = crate::test_utils::fs::read_to_string(&manifest_path) {
 						// Convert path to string with forward slashes for URI

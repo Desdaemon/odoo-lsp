@@ -124,7 +124,9 @@ impl LanguageServer for Backend {
 
 		self.document_map.remove(path);
 		self.record_ranges.remove(path);
-		self.ast_map.remove(path);
+		
+		let file_path = params.text_document.uri.to_file_path().unwrap();
+		self.ast_map.remove(file_path.to_str().unwrap());
 
 		self.client
 			.publish_diagnostics(params.text_document.uri, vec![], None)
@@ -173,7 +175,7 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
-	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.path().as_str()))]
+	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.as_str()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
 		self.root_setup.wait().await;
 		// NB: fixes a race condition where completions are requested even before
@@ -181,9 +183,11 @@ impl LanguageServer for Backend {
 		// flaky tests and the first completion request yielding nothing (super minor issue)
 		let _blocker = self.root_setup.block();
 
-		info!("{}", params.text_document.uri.path().as_str());
+		let file_path = params.text_document.uri.to_file_path().unwrap();
+		let file_path_str = file_path.to_str().unwrap();
+		info!("{}", file_path_str);
 		let language_id = params.text_document.language_id.as_str();
-		let split_uri = params.text_document.uri.path().as_str().rsplit_once('.');
+		let split_uri = file_path_str.rsplit_once('.');
 		let language = match (language_id, split_uri) {
 			("python", _) | (_, Some((_, "py"))) => Language::Python,
 			("javascript", _) | (_, Some((_, "js"))) => Language::Javascript,
@@ -202,10 +206,9 @@ impl LanguageServer for Backend {
 			Document::new(rope.clone()),
 		);
 
-		let path = params.text_document.uri.to_file_path().unwrap();
-		if self.index.find_module_of(&path).is_none() {
+		if self.index.find_module_of(&file_path).is_none() {
 			// outside of root?
-			debug!("oob: {}", params.text_document.uri.path().as_str());
+			debug!("oob: {}", file_path_str);
 			let path = params.text_document.uri.to_file_path();
 			let mut path = path.as_deref();
 			while let Some(path_) = path {
@@ -401,8 +404,9 @@ impl LanguageServer for Backend {
 			}
 		} else if ext == "py" {
 			let ast = {
-				let Some(ast) = self.ast_map.get(uri.path().as_str()) else {
-					debug!("Bug: did not build AST for {}", uri.path().as_str());
+				let file_path = uri.to_file_path().unwrap();
+				let Some(ast) = self.ast_map.get(file_path.to_str().unwrap()) else {
+					debug!("Bug: did not build AST for {}", file_path.display());
 					return Ok(None);
 				};
 				ast.value().clone()
@@ -419,8 +423,9 @@ impl LanguageServer for Backend {
 			}
 		} else if ext == "js" {
 			let ast = {
-				let Some(ast) = self.ast_map.get(uri.path().as_str()) else {
-					debug!("Bug: did not build AST for {}", uri.path().as_str());
+				let file_path = uri.to_file_path().unwrap();
+				let Some(ast) = self.ast_map.get(file_path.to_str().unwrap()) else {
+					debug!("Bug: did not build AST for {}", file_path.display());
 					return Ok(None);
 				};
 				ast.value().clone()
@@ -696,8 +701,9 @@ impl LanguageServer for Backend {
 		{
 			let damage_zone = document.damage_zone.take();
 			let rope = document.rope.clone();
+			let file_path = params.text_document.uri.to_file_path().unwrap();
 			self.diagnose_python(
-				params.text_document.uri.path().as_str(),
+				file_path.to_str().unwrap(),
 				rope.slice(..),
 				damage_zone,
 				&mut document.diagnostics_cache,
