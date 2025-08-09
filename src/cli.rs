@@ -7,8 +7,7 @@ use globwalk::FileType;
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
 use odoo_lsp::index::{_R, Index};
 use odoo_lsp::utils::strict_canonicalize;
-use odoo_lsp::{GIT_VERSION, GITVER, NAME, VERSION, errloc, format_loc, loc, ok};
-use self_update::{Status, backends::github};
+use odoo_lsp::{GITVER, NAME, VERSION, errloc, format_loc, loc, ok};
 use serde_json::Value;
 use tracing::{debug, warn};
 
@@ -154,11 +153,17 @@ pub async fn run(args: Args<'_>) -> bool {
 					.inspect_err(|err| eprintln!("{} tsconfig failed: {err}", loc!()));
 			}
 		}
+		#[cfg(feature = "self-update")]
 		Command::SelfUpdate { nightly } => {
 			_ = tokio::task::spawn_blocking(move || self_update(nightly))
 				.await
 				.unwrap()
 				.inspect_err(|err| eprintln!("{} self-update failed: {err}", loc!()));
+		}
+		#[cfg(not(feature = "self-update"))]
+		Command::SelfUpdate { .. } => {
+			eprintln!("This build of odoo-lsp has not been compiled with self-update support!");
+			exit(1);
 		}
 	}
 	true
@@ -299,7 +304,11 @@ fn init(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<()> {
 	Ok(())
 }
 
+#[cfg(feature = "self-update")]
 fn self_update(nightly: bool) -> anyhow::Result<()> {
+	use odoo_lsp::GIT_VERSION;
+	use self_update::{Status, backends::github};
+
 	const _: () = {
 		if option_env!("CI").is_some() {
 			assert!(!GIT_VERSION.is_empty(), "Git tag must be present when running in CI");

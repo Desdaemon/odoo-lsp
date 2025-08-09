@@ -106,7 +106,7 @@ jobs:
           sudo apt-get install -y musl-tools
 
       - name: Build
-        run: cargo -Zbuild-std build --profile release-lto --target ${{ matrix.target }}
+        run: cargo -Zbuild-std build --profile release-lto --all-features --target ${{ matrix.target }}
         env:
           RUSTFLAGS: "-Csplit-debuginfo=packed"
 

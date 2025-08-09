@@ -316,7 +316,8 @@ impl Backend {
 	}
 	/// Whether diagnostics should be processed/pushed with each `on_change`.
 	pub fn eager_diagnostics(&self, open: bool, rope: &Rope) -> bool {
-		!self.capabilities.pull_diagnostics.load(Relaxed) && (open || rope.len_lines() < Self::DIAGNOSTICS_LINE_LIMIT)
+		!self.capabilities.pull_diagnostics.load(Relaxed)
+			&& (open || rope.len_lines(LINE_TYPE) < Self::DIAGNOSTICS_LINE_LIMIT)
 	}
 	#[instrument(skip_all, fields(uri))]
 	pub fn update_ast(

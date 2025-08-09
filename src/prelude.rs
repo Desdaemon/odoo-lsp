@@ -3,6 +3,7 @@
 pub use anyhow::{Context, anyhow};
 pub use futures::{StreamExt, stream::FuturesUnordered};
 pub use lasso::{Key, Spur};
+pub use ropey::LineType::LF_CR as LINE_TYPE;
 pub use ropey::{Rope, RopeSlice};
 pub use serde::{Deserialize, Serialize};
 pub use tower_lsp_server::UriExt;

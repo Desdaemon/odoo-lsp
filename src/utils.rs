@@ -21,6 +21,7 @@ mod catch_panic;
 pub use catch_panic::CatchPanic;
 
 use crate::index::PathSymbol;
+use crate::prelude::*;
 
 #[cfg(not(windows))]
 pub use std::fs::canonicalize as strict_canonicalize;
@@ -175,12 +176,13 @@ where
 }
 
 impl<'a> TryFrom<RopeAdapter<'a, ByteOffset>> for Position {
-	type Error = ropey::Error;
+	type Error = std::convert::Infallible;
 	fn try_from(value: RopeAdapter<'a, ByteOffset>) -> Result<Self, Self::Error> {
 		let RopeAdapter(offset, rope) = value;
-		let line = rope.try_byte_to_line(offset.0)?;
-		let line_start_char = rope.try_line_to_char(line)?;
-		let char_offset = rope.try_byte_to_char(offset.0)?;
+		let line = rope.byte_to_line_idx(offset.0, LINE_TYPE);
+		let line_start_byte = rope.line_to_byte_idx(line, LINE_TYPE);
+		let line_start_char = rope.byte_to_char_idx(line_start_byte);
+		let char_offset = rope.byte_to_char_idx(offset.0);
 		let column = char_offset - line_start_char;
 		Ok(Position::new(line as u32, column as u32))
 	}
@@ -191,7 +193,7 @@ impl<'a> TryFrom<RopeAdapter<'a, Position>> for ByteOffset {
 	fn try_from(value: RopeAdapter<'a, Position>) -> Result<Self, Self::Error> {
 		let RopeAdapter(position, rope) = value;
 		let CharOffset(char_offset) = position_to_char(position, rope)?;
-		let byte_offset = rope.try_char_to_byte(char_offset)?;
+		let byte_offset = rope.char_to_byte_idx(char_offset);
 		Ok(ByteOffset(byte_offset))
 	}
 }
@@ -216,7 +218,7 @@ impl<'a> TryFrom<RopeAdapter<'a, Range>> for ByteRange {
 }
 
 impl<'a> TryFrom<RopeAdapter<'a, ByteRange>> for Range {
-	type Error = ropey::Error;
+	type Error = std::convert::Infallible;
 	fn try_from(value: RopeAdapter<'a, ByteRange>) -> Result<Self, Self::Error> {
 		let RopeAdapter(range, rope) = value;
 		let start = rope_conv(range.start, rope)?;
@@ -226,7 +228,8 @@ impl<'a> TryFrom<RopeAdapter<'a, ByteRange>> for Range {
 }
 
 fn position_to_char(position: Position, rope: RopeSlice<'_>) -> ropey::Result<CharOffset> {
-	let line_offset_in_char = rope.try_line_to_char(position.line as usize)?;
+	let line_offset_in_byte = rope.line_to_byte_idx(position.line as usize, LINE_TYPE);
+	let line_offset_in_char = rope.byte_to_char_idx(line_offset_in_byte);
 	Ok(CharOffset(line_offset_in_char + position.character as usize))
 }
 

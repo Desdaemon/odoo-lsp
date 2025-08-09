@@ -501,7 +501,7 @@ impl Backend {
 			// How many characters until the next period or end-of-string?
 			let limit = slice_till_end.find('.').unwrap_or(slice_till_end.len());
 			range = relative_start..offset + limit;
-			// Cow::from(rope.get_byte_slice(range.clone())?)
+			// Cow::from(rope.try_slice(range.clone())?)
 			&contents[range.clone()]
 		};
 		if needle == "|" || needle == "&" {
@@ -594,7 +594,7 @@ impl Backend {
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
 						let range = range.shrink(1);
-						let slice = Cow::from(some!(rope.get_byte_slice(range.clone())));
+						let slice = Cow::from(ok!(rope.try_slice(range.clone())));
 						let mut slice = slice.as_ref();
 						if match_
 							.nodes_for_capture_index(PyCompletions::HasGroups as _)
@@ -618,7 +618,7 @@ impl Backend {
 							.unwrap_or(true);
 						if range.contains(&offset) {
 							let range = range.shrink(1);
-							let slice = some!(rope.get_byte_slice(range.clone()));
+							let slice = ok!(rope.try_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.index.jump_def_model(&slice);
 						} else if range.end < offset && is_meta
@@ -676,7 +676,7 @@ impl Backend {
 						}
 						if matches!(descriptor, "comodel_name") {
 							let range = desc_value.byte_range().shrink(1);
-							let slice = some!(rope.get_byte_slice(range.clone()));
+							let slice = ok!(rope.try_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.index.jump_def_model(&slice);
 						} else if matches!(descriptor, "compute" | "search" | "inverse" | "related") {
@@ -703,7 +703,7 @@ impl Backend {
 							return self.index.jump_def_property_name(needle, model);
 						} else if matches!(descriptor, "groups") {
 							let range = desc_value.byte_range().shrink(1);
-							let value = Cow::from(some!(rope.get_byte_slice(range.clone())));
+							let value = Cow::from(ok!(rope.try_slice(range.clone())));
 							let mut ref_ = None;
 							determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
 							let (needle, _) = some!(ref_);
@@ -855,7 +855,7 @@ impl Backend {
 				match PyCompletions::from(capture.index) {
 					Some(PyCompletions::XmlId) if range.contains(&offset) => {
 						let range = range.shrink(1);
-						let slice = Cow::from(some!(rope.get_byte_slice(range.clone())));
+						let slice = Cow::from(ok!(rope.try_slice(range.clone())));
 						let mut slice = slice.as_ref();
 						if match_
 							.nodes_for_capture_index(PyCompletions::HasGroups as _)
@@ -877,7 +877,7 @@ impl Backend {
 							.unwrap_or(true);
 						if is_meta && range.contains(&offset) {
 							let range = range.shrink(1);
-							let slice = some!(rope.get_byte_slice(range.clone()));
+							let slice = ok!(rope.try_slice(range.clone()));
 							let slice = Cow::from(slice);
 							let slice = some!(_G(slice));
 							return self.model_references(&path, &slice.into());
@@ -902,7 +902,7 @@ impl Backend {
 
 						if matches!(descriptor, "comodel_name") {
 							let range = desc_value.byte_range().shrink(1);
-							let slice = some!(rope.get_byte_slice(range.clone()));
+							let slice = ok!(rope.try_slice(range.clone()));
 							let slice = Cow::from(slice);
 							let slice = some!(_G(slice));
 							return self.model_references(&path, &slice.into());
@@ -960,7 +960,7 @@ impl Backend {
 						if range.contains_end(offset) {
 							let range = range.shrink(1);
 							let lsp_range = span_conv(capture.node.range());
-							let slice = some!(rope.get_byte_slice(range.clone()));
+							let slice = ok!(rope.try_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.index.hover_model(&slice, Some(lsp_range), false, None);
 						} else if range.end < offset {
@@ -1013,7 +1013,7 @@ impl Backend {
 					}
 					Some(PyCompletions::XmlId) if range.contains_end(offset) => {
 						let range = range.shrink(1);
-						let slice = Cow::from(some!(rope.get_byte_slice(range.clone())));
+						let slice = Cow::from(ok!(rope.try_slice(range.clone())));
 						let mut slice = slice.as_ref();
 						if match_
 							.nodes_for_capture_index(PyCompletions::HasGroups as _)
@@ -1048,7 +1048,7 @@ impl Backend {
 						if matches!(descriptor, "comodel_name") {
 							let range = desc_value.byte_range().shrink(1);
 							let lsp_range = span_conv(desc_value.range());
-							let slice = some!(rope.get_byte_slice(range.clone()));
+							let slice = ok!(rope.try_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.index.hover_model(&slice, Some(lsp_range), false, None);
 						} else if matches!(descriptor, "compute" | "search" | "inverse" | "related") {
@@ -1080,7 +1080,7 @@ impl Backend {
 								.hover_property_name(needle, model, rope_conv(range, rope).ok());
 						} else if matches!(descriptor, "groups") {
 							let range = desc_value.byte_range().shrink(1);
-							let value = Cow::from(some!(rope.get_byte_slice(range.clone())));
+							let value = Cow::from(ok!(rope.try_slice(range.clone())));
 							let mut ref_ = None;
 							determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
 							let (needle, byte_range) = some!(ref_);
@@ -1544,10 +1544,10 @@ fn extract_string_needle_at_offset<'a>(
 	rope: RopeSlice<'a>,
 	range: core::ops::Range<usize>,
 	offset: usize,
-) -> Option<(Cow<'a, str>, core::ops::Range<ByteOffset>)> {
-	let slice = rope.get_byte_slice(range.clone())?;
+) -> anyhow::Result<(Cow<'a, str>, core::ops::Range<ByteOffset>)> {
+	let slice = rope.try_slice(range.clone())?;
 	let relative_offset = range.start;
-	let needle = Cow::from(slice.byte_slice(1..offset - relative_offset));
+	let needle = Cow::from(slice.try_slice(1..offset - relative_offset)?);
 	let byte_range = range.shrink(1).map_unit(ByteOffset);
-	Some((needle, byte_range))
+	Ok((needle, byte_range))
 }

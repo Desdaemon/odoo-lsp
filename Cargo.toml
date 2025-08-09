@@ -14,6 +14,10 @@ exclude = [
   "pnpm-lock.yaml", "package.json", "tsconfig.json", "webpack.*"
 ]
 
+[features]
+default = []
+self-update = ["dep:self_update"]
+
 [workspace]
 members = [
   ".",
@@ -53,7 +57,7 @@ pkg-fmt = "zip"
 tree-sitter = "0.25"
 ts-macros = { version = "0.5.0", path = "crates/ts-macros" }
 pretty_assertions = "1.4.0"
-tokio = { version = "1.46.0", default-features = false, features = ["macros", "rt-multi-thread", "fs", "io-std"] }
+tokio = { version = "1.46.0", default-features = false, features = ["macros", "rt-multi-thread", "fs", "io-std", "io-util", "net"] }
 tower-lsp-server = { version = "0.22.0", features = ["proposed"] }
 tower = { version = "0.5", features = ["timeout"] }
 futures = "0.3.31"
@@ -62,7 +66,7 @@ globwalk = "0.9.1"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 
 [dependencies]
-ropey = "1.5.0"
+ropey = { version = "2.0.0-beta.1", features = ["metric_chars"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dashmap = { version = "6.1.0", features = ["raw-api"] }
@@ -84,7 +88,7 @@ smart-default = "0.7.1"
 const_format = { version = "0.2.34", features = ["assertcp"] }
 tracing = "0.1.41"
 tree-sitter-javascript = "0.23.1"
-self_update = { version = "0.42.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }
+self_update = { version = "0.42.0", optional = true, default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }
 anyhow = { version = "1.0.97", features = ["backtrace"] }
 
 tree-sitter.workspace = true
