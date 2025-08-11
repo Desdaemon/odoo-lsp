@@ -105,7 +105,7 @@ impl Backend {
 						}
 						Some(PyCompletions::Model) => {
 							if range.contains_end(offset) {
-								let (needle, byte_range) = some!(extract_string_needle_at_offset(rope, range, offset));
+								let (needle, byte_range) = extract_string_needle_at_offset(rope, range, offset)?;
 								let range = ok!(rope_conv(byte_range, rope));
 								early_return.lift(move || async move {
 									let mut items = MaxVec::new(completions_limit);
@@ -332,7 +332,7 @@ impl Backend {
 										// same as model
 										let range = desc_value.byte_range();
 										let (needle, byte_range) =
-											some!(extract_string_needle_at_offset(rope, range, offset));
+											extract_string_needle_at_offset(rope, range, offset)?;
 										let range = ok!(rope_conv(byte_range, rope));
 										early_return.lift(move || async move {
 											let mut items = MaxVec::new(completions_limit);
@@ -347,7 +347,7 @@ impl Backend {
 									"groups" => {
 										// complete res.groups records
 										let range = desc_value.byte_range().shrink(1);
-										let value = Cow::from(some!(rope.get_byte_slice(range.clone())));
+										let value = Cow::from(ok!(rope.try_slice(range.clone())));
 										let mut ref_ = None;
 										determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
 										let (needle, range) = some!(ref_);

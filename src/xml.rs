@@ -214,7 +214,7 @@ impl Backend {
 		let relative_offset = record_range.start.0;
 		offset_at_cursor.0 = offset_at_cursor.0.saturating_sub(relative_offset);
 
-		let slice = rope.byte_slice(record_range.erase());
+		let slice = rope.try_slice(record_range.erase())?;
 
 		Ok((slice, offset_at_cursor, relative_offset))
 	}
@@ -1106,7 +1106,10 @@ impl Index {
 					if !range.contains_end(offset_at_cursor) {
 						break;
 					}
-					let Cow::Borrowed(mut attr) = Cow::from(slice.byte_slice(range.clone())) else {
+					let Ok(slice) = slice.try_slice(range.clone()) else {
+						break;
+					};
+					let Cow::Borrowed(mut attr) = Cow::from(slice) else {
 						panic!("(gather_refs) doesn't support cross-chunked boundaries");
 					};
 					let trimmed = attr.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
