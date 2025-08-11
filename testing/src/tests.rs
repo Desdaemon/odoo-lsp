@@ -62,12 +62,14 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 			|| !expected.diag.is_empty()
 			|| !expected.r#type.is_empty()
 			|| !expected.def.is_empty()
+			|| !expected.related.is_empty()
 	});
 
 	// <!> compare and run
 	let mut expected: FuturesUnordered<_> = expected
 		.into_iter()
 		.map(|(path, expected)| {
+
 			let mut server = server.clone();
 			let text = match std::fs::read_to_string(&path) {
 				Ok(t) => t,
@@ -117,6 +119,73 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 							path.display(),
 							Comparison::new(&expected.diag[..], &actual[..]),
 						));
+					}
+
+					if !expected.related.is_empty() {
+						// Group consecutive ^related assertions by their position
+						// They should all point to the same line/character where an assertion exists
+						let mut related_groups: Vec<(Position, Vec<String>)> = Vec::new();
+
+						for (pos, msg) in &expected.related {
+							if let Some(last_group) = related_groups.last_mut() {
+								if last_group.0 == *pos {
+									last_group.1.push(msg.clone());
+									continue;
+								}
+							}
+							// Start a new group
+							related_groups.push((*pos, vec![msg.clone()]));
+						}
+
+						for (pos, expected_msgs) in related_groups {
+							// The position of ^related assertions points to the line above them
+							// First check if there's a diagnostic at this position
+							let diag_at_pos = report.full_document_diagnostic_report.items.iter()
+								.find(|d| d.range.start.line == pos.line && d.range.start.character == pos.character);
+
+							if let Some(diag) = diag_at_pos {
+								let actual_related = diag.related_information.as_ref()
+									.map(|r| r.iter().map(|info| info.message.clone()).collect::<Vec<_>>())
+									.unwrap_or_default();
+
+								if expected_msgs.len() != actual_related.len() {
+									diffs.push(format!(
+										"[related] {}:{}:{}\n\nExpected {} related entries but found {}:\n\nExpected:\n{}\n\nActual:\n{}",
+										path.display(),
+										pos.line + 1,
+										pos.character + 1,
+										expected_msgs.len(),
+										actual_related.len(),
+										expected_msgs.iter().map(|m| format!("  - {}", m)).collect::<Vec<_>>().join("\n"),
+										if actual_related.is_empty() {
+											"  (no related information)".to_string()
+										} else {
+											actual_related.iter().map(|m| format!("  - {}", m)).collect::<Vec<_>>().join("\n")
+										}
+									));
+								} else {
+									for expected_msg in &expected_msgs {
+										if !actual_related.iter().any(|actual| actual.contains(expected_msg)) {
+											diffs.push(format!(
+												"[related] {}:{}:{}\n\nRelated entry mismatch:\n\nExpected to find:\n  \"{}\"\n\nBut actual related entries were:\n{}",
+												path.display(),
+												pos.line + 1,
+												pos.character + 1,
+												expected_msg,
+												actual_related.iter().map(|m| format!("  - {}", m)).collect::<Vec<_>>().join("\n")
+											));
+										}
+									}
+								}
+							} else {
+								diffs.push(format!(
+									"[related] {}:{}:{}\n\nNo diagnostic found at this position to attach related information to",
+									path.display(),
+									pos.line + 1,
+									pos.character + 1
+								));
+							}
+						}
 					}
 				} else {
 					diffs.push(format!("[diag] failed to get diag: {diags:?}\n\tat {}", path.display()))
@@ -178,7 +247,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 						async move {
 							let r#type = server
 								.request::<InspectType>(TextDocumentPositionParams {
-									text_document: TextDocumentIdentifier { uri },
+									text_document: TextDocumentIdentifier { uri: uri.clone() },
 									position: *position,
 								})
 								.await;
@@ -307,6 +376,9 @@ query! {
 
 	((comment) @def
 	(#match? @def "\\^def"))
+
+	((comment) @related
+	(#match? @related "\\^related "))
 }
 
 fn xml_query() -> &'static Query {
@@ -342,6 +414,7 @@ struct Expected {
 	complete: Vec<(Position, Vec<String>)>,
 	r#type: Vec<(Position, String)>,
 	def: Vec<Position>,
+	related: Vec<(Position, String)>,
 }
 
 enum TestLanguages {
@@ -350,11 +423,64 @@ enum TestLanguages {
 	JavaScript,
 }
 
+impl TestLanguages {
+	/// Returns the comment prefix for this language
+	fn comment_prefix(&self) -> &'static str {
+		match self {
+			TestLanguages::Xml => "<!--",
+			TestLanguages::JavaScript => "//",
+			TestLanguages::Python => "#",
+		}
+	}
+
+	/// Returns the comment suffix for this language (if any)
+	fn comment_suffix(&self) -> Option<&'static str> {
+		match self {
+			TestLanguages::Xml => Some("-->"),
+			_ => None,
+		}
+	}
+
+	/// Extracts the content from a comment node
+	fn extract_comment_content<'a>(&self, node_text: &'a str) -> &'a str {
+		let text = node_text.strip_prefix(self.comment_prefix()).unwrap_or(node_text);
+		if let Some(suffix) = self.comment_suffix() {
+			text.strip_suffix(suffix).unwrap_or(text).trim()
+		} else {
+			text.trim()
+		}
+	}
+}
+
 enum InspectType {}
 impl request::Request for InspectType {
+	const METHOD: &'static str = "odoo-lsp/inspect-type";
 	type Params = TextDocumentPositionParams;
 	type Result = Option<String>;
-	const METHOD: &str = "odoo-lsp/inspect-type";
+}
+
+/// Represents a parsed assertion from test files
+#[derive(Debug, Clone)]
+struct ParsedAssertion {
+	line: u32,
+	character: u32,
+	kind: String,
+	value: String,
+}
+
+impl ParsedAssertion {
+	/// Creates a Position pointing to the line above this assertion
+	fn target_position(&self) -> Position {
+		Position {
+			line: self.line.saturating_sub(1),
+			character: self.character,
+		}
+	}
+
+	/// Checks if this assertion is on the line immediately after another
+	fn is_consecutive_to(&self, other: &ParsedAssertion) -> bool {
+		self.line == other.line + 1
+	}
 }
 
 fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expected> {
@@ -369,48 +495,147 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 
 	for file in globwalk::glob(&path).unwrap() {
 		let Ok(file) = file else { continue };
-		let contents = std::fs::read_to_string(file.path()).unwrap().into_bytes();
+		let contents = std::fs::read_to_string(file.path()).unwrap();
 		let expected = expected.entry(file.into_path()).or_default();
 		let mut parser = Parser::new();
 		parser.set_language(&language.into()).unwrap();
-		let ast = parser.parse(&contents, None).unwrap();
+		let ast = parser.parse(contents.as_bytes(), None).unwrap();
 		let mut cursor = QueryCursor::new();
 
-		let mut captures = cursor.captures(query(), ast.root_node(), &contents[..]);
+		// First pass: collect all assertions
+		let mut assertions = Vec::new();
+		let mut captures = cursor.captures(query(), ast.root_node(), contents.as_bytes());
 		while let Some((match_, _)) = captures.next() {
 			for capture in match_.captures {
-				let skip = match lang {
-					TestLanguages::Xml => 4,
-					TestLanguages::JavaScript => 2, // Skip "//"
-					TestLanguages::Python => 1,     // Skip "#"
-				};
-				let text = &contents[capture.node.byte_range()][skip..];
-				let Some(idx) = text.iter().position(|ch| *ch == b'^') else {
-					continue;
-				};
-				let mut text = text.trim_ascii();
-				if matches!(lang, TestLanguages::Xml) {
-					text = text.strip_suffix(b"-->").unwrap_or(text).trim_ascii_end();
-				}
-				let range = capture.node.range();
-				let position = Position {
-					line: range.start_point.row as u32 - 1,
-					character: (range.start_point.column + idx + skip) as u32,
-				};
-				if let Some(complete) = text.strip_prefix(b"^complete ") {
-					let completions = String::from_utf8_lossy(complete);
-					let completions = completions.split(' ').map(String::from).collect();
-					(expected.complete).push((position, completions))
-				} else if let Some(diag) = text.strip_prefix(b"^diag ") {
-					(expected.diag).push((position, String::from_utf8_lossy(diag).to_string()));
-				} else if let Some(r#type) = text.strip_prefix(b"^type ") {
-					(expected.r#type).push((position, String::from_utf8_lossy(r#type).to_string()));
-				} else if text.starts_with(b"^def") {
-					(expected.def).push(position);
+				if let Some(assertion) = parse_assertion_from_capture(&capture, &contents, &lang) {
+					assertions.push(assertion);
 				}
 			}
 		}
+
+		// Sort assertions by line number to process them in order
+		assertions.sort_by_key(|a| a.line);
+
+		// Second pass: process assertions and handle consecutive related
+		process_assertions(expected, assertions);
 	}
 
 	expected
+}
+
+/// Parse a single assertion from a tree-sitter capture
+fn parse_assertion_from_capture(
+	capture: &tree_sitter::QueryCapture,
+	contents: &str,
+	lang: &TestLanguages,
+) -> Option<ParsedAssertion> {
+	let node_text = capture.node.utf8_text(contents.as_bytes()).ok()?;
+
+	// Find the caret position in the original node text
+	let caret_pos_in_node = node_text.find('^')?;
+
+	// Extract comment content for parsing the assertion
+	let comment_content = lang.extract_comment_content(node_text);
+
+	// Parse the assertion - find caret in the comment content
+	let caret_pos_in_content = comment_content.find('^')?;
+	let assertion_text = &comment_content[caret_pos_in_content..];
+	let assertion_content = assertion_text.strip_prefix("^")?.trim();
+
+	let (kind, value) = if let Some((k, v)) = assertion_content.split_once(' ') {
+		(k.to_string(), v.to_string())
+	} else if assertion_content == "def" {
+		("def".to_string(), String::new())
+	} else {
+		return None; // Skip invalid assertions
+	};
+
+	// Calculate position
+	let range = capture.node.range();
+	let line = range.start_point.row as u32;
+	// The character position is where the caret appears in the original line
+	let character = (range.start_point.column as usize + caret_pos_in_node) as u32;
+
+	Some(ParsedAssertion {
+		line,
+		character,
+		kind,
+		value,
+	})
+}
+
+/// Process parsed assertions and populate the Expected struct
+fn process_assertions(expected: &mut Expected, assertions: Vec<ParsedAssertion>) {
+	let mut i = 0;
+	let mut last_non_related_position: Option<Position> = None;
+
+	while i < assertions.len() {
+		let assertion = &assertions[i];
+		let position = assertion.target_position();
+
+		match assertion.kind.as_str() {
+			"complete" => {
+				let completions = assertion.value.split(' ').map(String::from).collect();
+				expected.complete.push((position, completions));
+				last_non_related_position = Some(position);
+				i += 1;
+			}
+			"diag" => {
+				expected.diag.push((position, assertion.value.clone()));
+				last_non_related_position = Some(position);
+				i += 1;
+			}
+			"type" => {
+				expected.r#type.push((position, assertion.value.clone()));
+				last_non_related_position = Some(position);
+				i += 1;
+			}
+			"def" => {
+				expected.def.push(position);
+				last_non_related_position = Some(position);
+				i += 1;
+			}
+			"related" => {
+				// For consecutive related assertions, they should all point to the same position
+				// which is the position of the last non-related assertion
+				if let Some(target_pos) = last_non_related_position {
+					// Collect all consecutive related assertions
+					let mut related_group = vec![assertion.value.clone()];
+					let mut j = i + 1;
+
+					while j < assertions.len() && assertions[j].kind == "related" {
+						if assertions[j].is_consecutive_to(&assertions[j - 1]) {
+							related_group.push(assertions[j].value.clone());
+							j += 1;
+						} else {
+							break;
+						}
+					}
+
+					// Add all related assertions with the same target position
+					for msg in related_group {
+						expected.related.push((target_pos, msg));
+					}
+
+					i = j;
+				} else {
+					// Standalone related without a preceding assertion
+					eprintln!(
+						"Warning: ^related assertion at line {} without preceding assertion",
+						assertion.line
+					);
+					expected.related.push((position, assertion.value.clone()));
+					i += 1;
+				}
+			}
+			_ => {
+				// Unknown assertion type
+				eprintln!(
+					"Warning: Unknown assertion type '{}' at line {}",
+					assertion.kind, assertion.line
+				);
+				i += 1;
+			}
+		}
+	}
 }

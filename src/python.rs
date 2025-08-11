@@ -430,8 +430,9 @@ impl Backend {
 			{
 				let mut document = self.document_map.get_mut(uri.path().as_str()).unwrap();
 				let rope = document.rope.clone();
+				let file_path = uri.to_file_path().unwrap();
 				self.diagnose_python(
-					uri.path().as_str(),
+					file_path.to_str().unwrap(),
 					rope.slice(..),
 					zone,
 					&mut document.diagnostics_cache,
@@ -556,12 +557,14 @@ impl Backend {
 		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<Location>> {
 		let uri = &params.text_document_position_params.text_document.uri;
+		let file_path = uri.to_file_path().unwrap();
+		let file_path_str = file_path.to_str().unwrap();
 		let ast = self
 			.ast_map
-			.get(uri.path().as_str())
-			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
+			.get(file_path_str)
+			.ok_or_else(|| errloc!("Did not build AST for {}", file_path_str))?;
 		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position_params.position, rope) else {
-			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
+			return Err(errloc!("could not find offset for {}", file_path_str));
 		};
 		let contents = Cow::from(rope);
 		let root = some!(top_level_stmt(ast.root_node(), offset));
@@ -836,10 +839,12 @@ impl Backend {
 	) -> anyhow::Result<Option<Vec<Location>>> {
 		let ByteOffset(offset) = ok!(rope_conv(params.text_document_position.position, rope));
 		let uri = &params.text_document_position.text_document.uri;
+		let file_path = uri.to_file_path().unwrap();
+		let file_path_str = file_path.to_str().unwrap();
 		let ast = self
 			.ast_map
-			.get(uri.path().as_str())
-			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
+			.get(file_path_str)
+			.ok_or_else(|| errloc!("Did not build AST for {}", file_path_str))?;
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
 		let contents = Cow::from(rope);
@@ -937,12 +942,14 @@ impl Backend {
 
 	pub fn python_hover(&self, params: HoverParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Hover>> {
 		let uri = &params.text_document_position_params.text_document.uri;
+		let file_path = uri.to_file_path().unwrap();
+		let file_path_str = file_path.to_str().unwrap();
 		let ast = self
 			.ast_map
-			.get(uri.path().as_str())
-			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
+			.get(file_path_str)
+			.ok_or_else(|| errloc!("Did not build AST for {}", file_path_str))?;
 		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position_params.position, rope) else {
-			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
+			return Err(errloc!("could not find offset for {}", file_path_str));
 		};
 
 		let contents = Cow::from(rope);
@@ -1132,9 +1139,11 @@ impl Backend {
 	pub(crate) fn python_signature_help(&self, params: SignatureHelpParams) -> anyhow::Result<Option<SignatureHelp>> {
 		use std::fmt::Write;
 
+		let uri = &params.text_document_position_params.text_document.uri;
 		let document =
-			some!((self.document_map).get(params.text_document_position_params.text_document.uri.path().as_str()));
-		let ast = some!((self.ast_map).get(params.text_document_position_params.text_document.uri.path().as_str()));
+			some!((self.document_map).get(uri.path().as_str()));
+		let file_path = uri.to_file_path().unwrap();
+		let ast = some!((self.ast_map).get(file_path.to_str().unwrap()));
 		let contents = Cow::from(&document.rope);
 
 		let point = tree_sitter::Point::new(
@@ -1237,7 +1246,8 @@ impl Backend {
 	) -> tower_lsp_server::jsonrpc::Result<Option<String>> {
 		let uri = &params.text_document.uri;
 		let document = some!(self.document_map.get(uri.path().as_str()));
-		let ast = some!(self.ast_map.get(uri.path().as_str()));
+		let file_path = uri.to_file_path().unwrap();
+		let ast = some!(self.ast_map.get(file_path.to_str().unwrap()));
 		let rope = &document.rope;
 		let contents = Cow::from(rope);
 		let ByteOffset(offset) = some!(rope_conv(params.position, rope.slice(..)).ok());

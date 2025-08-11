@@ -308,6 +308,7 @@ fn test_xml_completions_field_and_ref() {
 		ModuleEntry {
 			path: "test_module".into(),
 			dependencies: Box::new([]),
+			auto_install: false,
 			loaded: Default::default(),
 			loaded_dependents: Default::default(),
 		},
@@ -373,6 +374,7 @@ fn test_xml_completions_template_name() {
 		ModuleEntry {
 			path: "test_module".into(),
 			dependencies: Box::new([]),
+			auto_install: false,
 			loaded: Default::default(),
 			loaded_dependents: Default::default(),
 		},
@@ -471,6 +473,7 @@ fn test_xml_completions_field_groups() {
 		ModuleEntry {
 			path: "base".into(),
 			dependencies: Box::new([]),
+			auto_install: false,
 			loaded: Default::default(),
 			loaded_dependents: Default::default(),
 		},
@@ -555,6 +558,7 @@ fn test_menuitem_action_completion_multiple_types() {
 		ModuleEntry {
 			path: "base".into(),
 			dependencies: Box::new([]),
+			auto_install: false,
 			loaded: Default::default(),
 			loaded_dependents: Default::default(),
 		},

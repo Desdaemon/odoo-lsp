@@ -265,8 +265,9 @@ impl Backend {
 				let mut document = self.document_map.get_mut(params.uri.path().as_str()).unwrap();
 				self.on_change_python(&params.text, &params.uri, slice, params.old_rope)?;
 				if eager_diagnostics {
+					let file_path = params.uri.to_file_path().unwrap();
 					self.diagnose_python(
-						params.uri.path().as_str(),
+						file_path.to_str().unwrap(),
 						slice,
 						params.text.damage_zone(slice, None),
 						&mut document.diagnostics_cache,
@@ -376,7 +377,8 @@ impl Backend {
 			(Text::Delta(_), None) => Err(errloc!("(update_ast) got delta but no ast"))?,
 		};
 		let ast = ok!(ast, "No AST was parsed");
-		self.ast_map.insert(uri.path().as_str().to_string(), ast);
+		let file_path = uri.to_file_path().unwrap();
+		self.ast_map.insert(file_path.to_str().unwrap().to_string(), ast);
 		Ok(())
 	}
 	pub fn model_references(&self, path: &Path, model: &ModelName) -> anyhow::Result<Option<Vec<Location>>> {

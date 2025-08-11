@@ -47,9 +47,10 @@ impl Backend {
 	}
 	pub fn js_jump_def(&self, params: GotoDefinitionParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Location>> {
 		let uri = &params.text_document_position_params.text_document.uri;
+		let file_path = uri.to_file_path().unwrap();
 		let ast = self
 			.ast_map
-			.get(uri.path().as_str())
+			.get(file_path.to_str().unwrap())
 			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
 		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position_params.position, rope) else {
 			Err(errloc!("could not find offset for {}", uri.path().as_str()))?
@@ -117,9 +118,10 @@ impl Backend {
 	}
 	pub fn js_references(&self, params: ReferenceParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Vec<Location>>> {
 		let uri = &params.text_document_position.text_document.uri;
+		let file_path = uri.to_file_path().unwrap();
 		let ast = self
 			.ast_map
-			.get(uri.path().as_str())
+			.get(file_path.to_str().unwrap())
 			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
 		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position.position, rope) else {
 			Err(errloc!("could not find offset for {}", uri.path().as_str()))?
@@ -150,9 +152,10 @@ impl Backend {
 	}
 	pub fn js_hover(&self, params: HoverParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Hover>> {
 		let uri = &params.text_document_position_params.text_document.uri;
+		let file_path = uri.to_file_path().unwrap();
 		let ast = self
 			.ast_map
-			.get(uri.path().as_str())
+			.get(file_path.to_str().unwrap())
 			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
 		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position_params.position, rope) else {
 			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
