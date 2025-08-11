@@ -637,7 +637,7 @@ impl Backend {
 						uri,
 						range: field.location.range,
 					},
-					message: format!("This property is defined in `{}`", _R(module_name)),
+					message: format!("This field is defined in `{}`", _R(module_name)),
 				});
 				property_found = true;
 			}
@@ -653,7 +653,7 @@ impl Backend {
 			{
 				related_info.push(DiagnosticRelatedInformation {
 					location: Location { uri, range: loc.range },
-					message: format!("This property is defined in `{}`", _R(module_name)),
+					message: format!("This method is defined in `{}`", _R(module_name)),
 				});
 				property_found = true;
 			}
