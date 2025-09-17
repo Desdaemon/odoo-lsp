@@ -1,5 +1,6 @@
 //! The main indexer for all language items, including [`Record`]s, QWeb [`Template`]s, and Owl [`Component`]s
 
+use mini_moka::sync::Cache;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -78,6 +79,13 @@ pub struct Index {
 	/// Cache for transitive dependencies to avoid recalculation
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub(crate) transitive_deps_cache: DashMap<ModuleName, HashSet<ModuleName>>,
+	#[default(_code = "Cache::new(16)")]
+	pub(crate) ast_cache: Cache<PathBuf, Arc<AstCacheItem>>,
+}
+
+pub struct AstCacheItem {
+	pub tree: tree_sitter::Tree,
+	pub rope: Rope,
 }
 
 pub type ModuleName = Symbol<ModuleEntry>;

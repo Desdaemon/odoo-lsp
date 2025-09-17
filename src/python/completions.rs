@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::sync::atomic::Ordering::Relaxed;
 
 use tower_lsp_server::{UriExt, lsp_types::*};
-use tracing::{debug, warn};
+use tracing::debug;
 use tree_sitter::Tree;
 
 use crate::prelude::*;
@@ -28,10 +28,7 @@ impl Backend {
 		ast: Tree,
 		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<CompletionResponse>> {
-		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position.position, rope) else {
-			warn!("invalid position {:?}", params.text_document_position.position);
-			return Ok(None);
-		};
+		let ByteOffset(offset) = rope_conv(params.text_document_position.position, rope);
 		let path = some!(params.text_document_position.text_document.uri.to_file_path());
 		let Some(current_module) = self.index.find_module_of(&path) else {
 			debug!("no current module");
@@ -106,7 +103,7 @@ impl Backend {
 						Some(PyCompletions::Model) => {
 							if range.contains_end(offset) {
 								let (needle, byte_range) = extract_string_needle_at_offset(rope, range, offset)?;
-								let range = ok!(rope_conv(byte_range, rope));
+								let range = rope_conv(byte_range, rope);
 								early_return.lift(move || async move {
 									let mut items = MaxVec::new(completions_limit);
 									self.index.complete_model(&needle, range, &mut items)?;
@@ -333,7 +330,7 @@ impl Backend {
 										let range = desc_value.byte_range();
 										let (needle, byte_range) =
 											extract_string_needle_at_offset(rope, range, offset)?;
-										let range = ok!(rope_conv(byte_range, rope));
+										let range = rope_conv(byte_range, rope);
 										early_return.lift(move || async move {
 											let mut items = MaxVec::new(completions_limit);
 											self.index.complete_model(&needle, range, &mut items)?;
