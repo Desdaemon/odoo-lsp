@@ -37,10 +37,8 @@ impl Backend {
 			let before_count = diagnostics.len();
 			diagnostics.retain(|diag| {
 				// If we couldn't get a range here, rope has changed significantly so just toss the diag.
-				let Ok(range) = rope_conv::<_, ByteRange>(diag.range, rope) else {
-					return false;
-				};
-				!root.byte_range().contains(&range.start.0)
+				let ByteOffset(start) = rope_conv(diag.range.start, rope);
+				!root.byte_range().contains(&start)
 			});
 			debug!(
 				"Retained {}/{} diagnostics after damage zone check",
@@ -107,8 +105,7 @@ impl Backend {
 							}
 
 							if !id_found {
-								let range = rope_conv(range.map_unit(ByteOffset), rope)
-									.expect(format_loc!("failed to get range for xmlid diag"));
+								let range = rope_conv(range.map_unit(ByteOffset), rope);
 								diagnostics.push(Diagnostic {
 									range,
 									message: format!("No XML record with ID `{xmlid}` found"),
@@ -128,7 +125,7 @@ impl Backend {
 								let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 								if !has_model.unwrap_or(false) {
 									diagnostics.push(Diagnostic {
-										range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
+										range: rope_conv(range.map_unit(ByteOffset), rope),
 										message: format!("`{model}` is not a valid model name"),
 										severity: Some(DiagnosticSeverity::ERROR),
 										..Default::default()
@@ -151,7 +148,7 @@ impl Backend {
 							let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 							if !has_model.unwrap_or(false) {
 								diagnostics.push(Diagnostic {
-									range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
+									range: rope_conv(range.map_unit(ByteOffset), rope),
 									message: format!("`{model}` is not a valid model name"),
 									severity: Some(DiagnosticSeverity::ERROR),
 									..Default::default()
@@ -239,7 +236,7 @@ impl Backend {
 						let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 						if !has_model.unwrap_or(false) {
 							diagnostics.push(Diagnostic {
-								range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
+								range: rope_conv(range.map_unit(ByteOffset), rope),
 								message: format!("`{model}` is not a valid model name"),
 								severity: Some(DiagnosticSeverity::ERROR),
 								..Default::default()
@@ -484,7 +481,7 @@ impl Backend {
 			if let Some(dot) = needle.find('.') {
 				let message_range = range.start.0 + dot..range.end.0;
 				diagnostics.push(Diagnostic {
-					range: rope_conv(message_range.map_unit(ByteOffset), rope).unwrap(),
+					range: rope_conv(message_range.map_unit(ByteOffset), rope),
 					severity: Some(DiagnosticSeverity::ERROR),
 					message: "Dotted access is not supported in this context".to_string(),
 					..Default::default()
@@ -497,7 +494,7 @@ impl Backend {
 				Ok(()) => {}
 				Err(ResolveMappedError::NonRelational) => {
 					diagnostics.push(Diagnostic {
-						range: rope_conv(range, rope).unwrap(),
+						range: rope_conv(range, rope),
 						severity: Some(DiagnosticSeverity::ERROR),
 						message: format!("`{needle}` is not a relational field"),
 						..Default::default()
@@ -538,7 +535,7 @@ impl Backend {
 		}
 		if !has_property {
 			diagnostics.push(Diagnostic {
-				range: rope_conv(range, rope).unwrap(),
+				range: rope_conv(range, rope),
 				severity: Some(DiagnosticSeverity::ERROR),
 				message: format!(
 					"Model `{}` has no {} `{needle}`",

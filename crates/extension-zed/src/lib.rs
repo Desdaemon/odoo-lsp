@@ -31,17 +31,15 @@ impl zed::Extension for Extension {
 	fn language_server_command(&mut self, lsid: &zed::LanguageServerId, dir: &zed::Worktree) -> Result<zed::Command> {
 		let env = self.prepare_env(dir);
 
-		if let Some(binary) = LspSettings::for_worktree("odoo-lsp", dir)
-			.ok()
-			.and_then(|settings| settings.binary)
+		if let Ok(settings) = LspSettings::for_worktree("odoo-lsp", dir)
+			&& let Some(binary) = settings.binary
+			&& let Some(command) = binary.path
 		{
-			if let Some(command) = binary.path.clone() {
-				return Ok(zed::Command {
-					command,
-					args: binary.arguments.unwrap_or_default(),
-					env,
-				});
-			}
+			return Ok(zed::Command {
+				command,
+				args: binary.arguments.unwrap_or_default(),
+				env,
+			});
 		}
 
 		if let Some(command) = dir.which("odoo-lsp") {

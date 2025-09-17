@@ -124,7 +124,7 @@ impl LanguageServer for Backend {
 
 		self.document_map.remove(path);
 		self.record_ranges.remove(path);
-		
+
 		let file_path = params.text_document.uri.to_file_path().unwrap();
 		self.ast_map.remove(file_path.to_str().unwrap());
 
@@ -279,8 +279,7 @@ impl LanguageServer for Backend {
 					document.rope = ropey::Rope::from_str(&change.text);
 				} else {
 					let range = change.range.expect("LSP change event must have a range");
-					let range: CharRange =
-						rope_conv(range, document.rope.slice(..)).expect("did_change applying delta: no range");
+					let range: CharRange = rope_conv(range, document.rope.slice(..));
 					let rope = &mut document.rope;
 					rope.remove(range.erase());
 					if !change.text.is_empty() {

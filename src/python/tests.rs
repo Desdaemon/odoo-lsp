@@ -390,10 +390,10 @@ class TestModel(models.Model):
 		};
 
 		// Check if followed by colon
-		if let Some(next) = string_node.next_sibling() {
-			if next.kind() == ":" {
-				has_proper_syntax = true;
-			}
+		if let Some(next) = string_node.next_sibling()
+			&& next.kind() == ":"
+		{
+			has_proper_syntax = true;
 		}
 	}
 

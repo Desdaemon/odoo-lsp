@@ -177,7 +177,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 							type_: Default::default(),
 							location: MinLoc {
 								path,
-								range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
+								range: rope_conv(range.map_unit(ByteOffset), rope),
 							},
 						}),
 					};
@@ -200,7 +200,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 				Some(JsQuery::TemplateInline) => {
 					let Some(component) = &mut component else { continue };
 					let range = capture.node.byte_range().shrink(1).map_unit(ByteOffset);
-					component.template = Some(ComponentTemplate::Inline(rope_conv(range, rope).unwrap()));
+					component.template = Some(ComponentTemplate::Inline(rope_conv(range, rope)));
 				}
 				Some(JsQuery::Subcomponent) => {
 					let Some(component) = &mut component else { continue };

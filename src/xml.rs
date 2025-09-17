@@ -129,7 +129,7 @@ impl Backend {
 								record_ranges.extend(
 									entries
 										.into_iter()
-										.map(|entry| rope_conv(entry.template.location.unwrap().range, rope).unwrap()),
+										.map(|entry| rope_conv(entry.template.location.unwrap().range, rope)),
 								);
 								continue;
 							}
@@ -142,10 +142,7 @@ impl Backend {
 								continue;
 							}
 						};
-						let Ok(range) = rope_conv(record.location.range, rope) else {
-							debug!("no range for {}", record.id);
-							continue;
-						};
+						let range = rope_conv(record.location.range, rope);
 						record_ranges.push(range);
 						if let Some(prefix) = record_prefix.as_mut() {
 							self.index
@@ -161,7 +158,7 @@ impl Backend {
 						record_ranges.extend(
 							entries
 								.into_iter()
-								.map(|entry| rope_conv(entry.template.location.unwrap().range, rope).unwrap()),
+								.map(|entry| rope_conv(entry.template.location.unwrap().range, rope)),
 						);
 					}
 				}
@@ -191,7 +188,7 @@ impl Backend {
 			.record_ranges
 			.get(uri.path().as_str())
 			.ok_or_else(|| errloc!("Did not build record ranges for {}", uri.path().as_str()))?;
-		let mut offset_at_cursor = ok!(rope_conv(position, rope));
+		let mut offset_at_cursor = rope_conv(position, rope);
 		let Ok(record) = ranges.value().binary_search_by(|range| {
 			if offset_at_cursor < range.start {
 				Ordering::Greater
@@ -374,11 +371,10 @@ impl Backend {
 
 		let (mut needle, ref_range) = some!(ref_at_cursor);
 
-		let mut lsp_range = rope_conv(
+		let mut lsp_range = Some(rope_conv(
 			ref_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset)),
 			rope,
-		)
-		.ok();
+		));
 		let current_module = self.index.find_module_of(&path);
 		match ref_kind {
 			Some(RefKind::Model) => self.index.hover_model(needle, lsp_range, false, None),
@@ -427,14 +423,13 @@ impl Backend {
 					let cursor_node = some!(ast.root_node().named_descendant_for_byte_range(py_offset, py_offset));
 					let needle = &needle[cursor_node.byte_range()];
 					let scope_type = some!(scope.get(needle));
-					let lsp_range = rope_conv(
+					let lsp_range = Some(rope_conv(
 						cursor_node
 							.byte_range()
 							.clone()
 							.map_unit(|unit| ByteOffset(unit + ref_range.start + relative_offset)),
 						rope,
-					)
-					.ok();
+					));
 					if let Some(model) = (self.index).try_resolve_model(scope_type, &scope) {
 						return self.index.hover_model(_R(model), lsp_range, true, Some(needle));
 					}
@@ -452,7 +447,10 @@ impl Backend {
 				self.index.hover_property_name(
 					field,
 					_R(model),
-					rope_conv(range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)), rope).ok(),
+					Some(rope_conv(
+						range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)),
+						rope,
+					)),
 				)
 			}
 			Some(RefKind::Component) => Ok(self.index.hover_component(needle, lsp_range)),
@@ -604,7 +602,7 @@ impl Index {
 				)?
 			}
 			RefKind::Model => {
-				let range = rope_conv(replace_range, rope)?;
+				let range = rope_conv(replace_range, rope);
 				self.complete_model(needle, range, &mut items)?
 			}
 			ref ref_kind @ RefKind::PropertyName(ref access) | ref ref_kind @ RefKind::MethodName(ref access) => {
@@ -637,7 +635,7 @@ impl Index {
 				)?;
 			}
 			RefKind::TInherit | RefKind::TCall => {
-				let range = rope_conv(replace_range, rope)?;
+				let range = rope_conv(replace_range, rope);
 				self.complete_template_name(needle, range, &mut items)?;
 			}
 			RefKind::PropOf(component) => {
@@ -1098,8 +1096,8 @@ impl Index {
 					// <Component prop />
 					// move one place back to get the attribute name
 					expected_eq_pos.col = expected_eq_pos.col.saturating_sub(1);
-					let start_pos: ByteOffset = rope_conv(span_conv(start_pos), slice)?;
-					let expected_eq_pos: ByteOffset = rope_conv(span_conv(expected_eq_pos), slice)?;
+					let start_pos: ByteOffset = rope_conv(span_conv(start_pos), slice);
+					let expected_eq_pos: ByteOffset = rope_conv(span_conv(expected_eq_pos), slice);
 
 					// may be an invalid attribute, but no point in checking
 					let mut range = (start_pos..expected_eq_pos).erase();

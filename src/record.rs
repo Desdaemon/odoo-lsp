@@ -37,7 +37,7 @@ impl Record {
 		// nested records are a thing apparently
 		let mut stack = 1;
 		let mut in_record = true;
-		let start: Position = ok!(rope_conv(offset, rope), "{}", path);
+		let start: Position = rope_conv(offset, rope);
 
 		loop {
 			match reader.next() {
@@ -97,7 +97,7 @@ impl Record {
 						line: err.pos().row - 1,
 						character: err.pos().col - 1,
 					};
-					end = rope_conv(pos, rope).ok();
+					end = Some(rope_conv(pos, rope));
 					break;
 				}
 				_ => {}
@@ -105,7 +105,7 @@ impl Record {
 		}
 		let id = some!(id);
 		let end = end.ok_or_else(|| errloc!("Unbound range for record"))?;
-		let end = ok!(rope_conv(end, rope), "{}", path);
+		let end = rope_conv(end, rope);
 		let range = Range { start, end };
 
 		Ok(Some(Self {
@@ -124,7 +124,7 @@ impl Record {
 		reader: &mut Tokenizer,
 		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<Self>> {
-		let start: Position = ok!(rope_conv(offset, rope), "{}", path);
+		let start: Position = rope_conv(offset, rope);
 		let mut id = None;
 		let mut inherit_id = None;
 		let mut end = None;
@@ -190,14 +190,14 @@ impl Record {
 						line: err.pos().row - 1,
 						character: err.pos().col - 1,
 					};
-					end = rope_conv(pos, rope).ok();
+					end = Some(rope_conv(pos, rope));
 					break;
 				}
 				_ => {}
 			}
 		}
 		let end = end.ok_or_else(|| errloc!("Unbound range for template"))?;
-		let end = ok!(rope_conv(end, rope), "{}", path);
+		let end = rope_conv(end, rope);
 		let range = Range { start, end };
 
 		Ok(Some(Self {
@@ -218,7 +218,7 @@ impl Record {
 	) -> anyhow::Result<Option<Self>> {
 		let mut id = None;
 		let mut end = None;
-		let start = ok!(rope_conv(offset, rope), "{}", path);
+		let start = rope_conv(offset, rope);
 
 		loop {
 			match reader.next() {
@@ -239,7 +239,7 @@ impl Record {
 						line: err.pos().row - 1,
 						character: err.pos().col - 1,
 					};
-					end = rope_conv(pos, rope).ok();
+					end = Some(rope_conv(pos, rope));
 					break;
 				}
 				_ => {}
@@ -248,7 +248,7 @@ impl Record {
 
 		let id = some!(id);
 		let end = end.ok_or_else(|| errloc!("Unbound range for menuitem"))?;
-		let end = ok!(rope_conv(end, rope), "{}", path);
+		let end = rope_conv(end, rope);
 		let range = Range { start, end };
 
 		Ok(Some(Self {

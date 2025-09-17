@@ -507,7 +507,7 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 		let mut captures = cursor.captures(query(), ast.root_node(), contents.as_bytes());
 		while let Some((match_, _)) = captures.next() {
 			for capture in match_.captures {
-				if let Some(assertion) = parse_assertion_from_capture(&capture, &contents, &lang) {
+				if let Some(assertion) = parse_assertion_from_capture(capture, &contents, &lang) {
 					assertions.push(assertion);
 				}
 			}
@@ -554,7 +554,7 @@ fn parse_assertion_from_capture(
 	let range = capture.node.range();
 	let line = range.start_point.row as u32;
 	// The character position is where the caret appears in the original line
-	let character = (range.start_point.column as usize + caret_pos_in_node) as u32;
+	let character = (range.start_point.column + caret_pos_in_node) as u32;
 
 	Some(ParsedAssertion {
 		line,

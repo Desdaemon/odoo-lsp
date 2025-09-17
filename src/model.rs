@@ -7,6 +7,7 @@ use std::fmt::Display;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicBool;
 
 use dashmap::DashMap;
 use dashmap::mapref::one::RefMut;
@@ -86,6 +87,12 @@ pub enum PropertyKind {
 	Method,
 }
 
+/// Twin of [PropertyKind] where field contains field type info
+pub enum PropertyInfo {
+	Field(Spur),
+	Method,
+}
+
 #[derive(Clone, Debug)]
 pub struct Field {
 	pub kind: FieldKind,
@@ -94,12 +101,23 @@ pub struct Field {
 	pub help: Option<ImStr>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Method {
-	pub return_type: MethodReturnType,
 	pub locations: Vec<TrackedMinLoc>,
 	pub docstring: Option<ImStr>,
 	pub arguments: Option<Box<[FunctionParam]>>,
+	pub pending_eval: AtomicBool,
+}
+
+impl Clone for Method {
+	fn clone(&self) -> Self {
+		Self {
+			locations: self.locations.clone(),
+			docstring: self.docstring.clone(),
+			arguments: self.arguments.clone(),
+			pending_eval: AtomicBool::new(false),
+		}
+	}
 }
 
 #[derive(Deref, DerefMut, Clone, Debug)]
@@ -115,16 +133,6 @@ impl From<MinLoc> for TrackedMinLoc {
 	fn from(inner: MinLoc) -> Self {
 		Self { inner, active: true }
 	}
-}
-
-#[derive(Clone, Debug, Default)]
-pub enum MethodReturnType {
-	#[default]
-	Unprocessed,
-	/// Set to prevent recursion
-	Processing,
-	Value,
-	Relational(Symbol<ModelEntry>),
 }
 
 impl Field {
@@ -423,7 +431,9 @@ impl ModelIndex {
 		locations_filter: &[PathSymbol],
 	) -> Option<RefMut<'model, ModelName, ModelEntry>> {
 		let model_name = _R(model);
-		let mut entry = self.try_get_mut(&model).expect(format_loc!("deadlock"))?;
+		let Some(mut entry) = self.try_get_mut(&model).try_unwrap() else {
+			panic!("{} deadlock on model {}", loc!(), _R(model));
+		};
 		if entry.fields.is_some() && entry.methods.is_some() && locations_filter.is_empty() {
 			return Some(entry);
 		}
@@ -610,7 +620,6 @@ impl ModelIndex {
 					{
 						loc.active = false;
 						method.arguments = None;
-						method.return_type = MethodReturnType::Unprocessed;
 					}
 				}
 			}
@@ -675,10 +684,10 @@ impl ModelIndex {
 				Entry::Vacant(empty) => {
 					empty.insert(
 						Method {
-							return_type: Default::default(),
 							locations: vec![method_location.into()],
 							docstring: None,
 							arguments: None,
+							pending_eval: AtomicBool::new(false),
 						}
 						.into(),
 					);
@@ -852,19 +861,15 @@ impl ModelEntry {
 
 		Ok(())
 	}
-	pub fn prop_kind(&self, prop: Spur) -> Option<PropertyKind> {
-		if self
-			.fields
-			.as_ref()
-			.is_some_and(|fields| fields.contains_key(&prop.into()))
-		{
-			Some(PropertyKind::Field)
+	pub fn prop_kind(&self, prop: Spur) -> Option<PropertyInfo> {
+		if let Some(field) = self.fields.as_ref().and_then(|fields| fields.get(&prop.into())) {
+			Some(PropertyInfo::Field(field.type_))
 		} else if self
 			.methods
 			.as_ref()
 			.is_some_and(|methods| methods.contains_key(&prop.into()))
 		{
-			Some(PropertyKind::Method)
+			Some(PropertyInfo::Method)
 		} else {
 			None
 		}
