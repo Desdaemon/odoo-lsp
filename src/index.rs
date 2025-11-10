@@ -1099,7 +1099,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 		});
 		match &contents[capture.byte_range()] {
 			b"_name" => {
-				let Some(name_decl) = capture.next_named_sibling() else {
+				let Some(name_decl) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				if name_decl.kind() == "string" {
@@ -1111,7 +1111,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 				}
 			}
 			b"_inherit" => {
-				let Some(inherit_decl) = capture.next_named_sibling() else {
+				let Some(inherit_decl) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				match inherit_decl.kind() {
@@ -1137,7 +1137,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 				}
 			}
 			b"_inherits" => {
-				let Some(inherit_dict) = capture.next_named_sibling() else {
+				let Some(inherit_dict) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				if inherit_dict.kind() != "dictionary" {

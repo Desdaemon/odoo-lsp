@@ -269,7 +269,7 @@ impl Backend {
 									Some(PropertyKind::Field),
 									rope,
 								);
-							} else if let Some(cmdlist) = capture.node.next_named_sibling()
+							} else if let Some(cmdlist) = python_next_named_sibling(capture.node)
 								&& Backend::is_commandlist(cmdlist, offset)
 								&& let Some((needle, range, model)) = self.gather_commandlist(
 									cmdlist,
@@ -300,7 +300,7 @@ impl Backend {
 							}
 						}
 						Some(PyCompletions::FieldDescriptor) => {
-							let Some(desc_value) = capture.node.next_named_sibling() else {
+							let Some(desc_value) = python_next_named_sibling(capture.node) else {
 								continue;
 							};
 
