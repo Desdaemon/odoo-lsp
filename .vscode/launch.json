@@ -7,8 +7,13 @@
 			"type": "extensionHost",
 			"request": "launch",
 			"runtimeExecutable": "${execPath}",
-			"args": ["--extensionDevelopmentPath=${workspaceRoot}", "${workspaceRoot}/examples"],
-			"outFiles": ["${workspaceRoot}/dist/*.js"],
+			"args": [
+				"--extensionDevelopmentPath=${workspaceRoot}",
+				"${workspaceRoot}/examples"
+			],
+			"outFiles": [
+				"${workspaceRoot}/dist/*.js"
+			],
 			"preLaunchTask": "watch-all",
 			"env": {
 				"SERVER_PATH": "${workspaceRoot}/target/debug/odoo-lsp",
@@ -21,8 +26,13 @@
 			"type": "extensionHost",
 			"request": "launch",
 			"runtimeExecutable": "${execPath}",
-			"args": ["--extensionDevelopmentPath=${workspaceRoot}", "${workspaceRoot}/examples"],
-			"outFiles": ["${workspaceRoot}/dist/*.js"],
+			"args": [
+				"--extensionDevelopmentPath=${workspaceRoot}",
+				"${workspaceRoot}/examples"
+			],
+			"outFiles": [
+				"${workspaceRoot}/dist/*.js"
+			],
 			"preLaunchTask": {
 				"type": "npm",
 				"script": "watch"
@@ -38,7 +48,9 @@
 			"name": "Attach",
 			"program": "${workspaceFolder}/target/debug/odoo-lsp",
 			// "pid": "${command:pickMyProcess}",
-			"sourceLanguages": ["rust"],
+			"sourceLanguages": [
+				"rust"
+			],
 			"windows": {
 				"program": "${workspaceFolder}/target/debug/odoo-lsp.exe"
 			}
@@ -53,13 +65,149 @@
 				"--extensionTestsPath=${workspaceRoot}/client/out/test/index",
 				"${workspaceRoot}/client/testFixture"
 			],
-			"outFiles": ["${workspaceRoot}/client/out/test/**/*.js"]
+			"outFiles": [
+				"${workspaceRoot}/client/out/test/**/*.js"
+			]
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'odoo_lsp'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=odoo-lsp"
+				],
+				"filter": {
+					"name": "odoo_lsp",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug executable 'odoo-lsp'",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=odoo-lsp",
+					"--package=odoo-lsp"
+				],
+				"filter": {
+					"name": "odoo-lsp",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in executable 'odoo-lsp'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--bin=odoo-lsp",
+					"--package=odoo-lsp"
+				],
+				"filter": {
+					"name": "odoo-lsp",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in library 'odoo_lsp_tests'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--lib",
+					"--package=odoo-lsp-tests"
+				],
+				"filter": {
+					"name": "odoo_lsp_tests",
+					"kind": "lib"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug benchmark 'standard'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--bench=standard",
+					"--package=odoo-lsp-tests"
+				],
+				"filter": {
+					"name": "standard",
+					"kind": "bench"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug executable 'ts-indent'",
+			"cargo": {
+				"args": [
+					"build",
+					"--bin=ts-indent",
+					"--package=ts-indent"
+				],
+				"filter": {
+					"name": "ts-indent",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "Debug unit tests in executable 'ts-indent'",
+			"cargo": {
+				"args": [
+					"test",
+					"--no-run",
+					"--bin=ts-indent",
+					"--package=ts-indent"
+				],
+				"filter": {
+					"name": "ts-indent",
+					"kind": "bin"
+				}
+			},
+			"args": [],
+			"cwd": "${workspaceFolder}"
 		}
 	],
 	"compounds": [
 		{
 			"name": "Client + Server",
-			"configurations": ["Launch Client", "Attach"]
+			"configurations": [
+				"Launch Client",
+				"Attach"
+			]
 		}
 	]
 }

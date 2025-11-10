@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)]
+
 use std::ops::DerefMut;
 use std::{collections::HashMap, path::PathBuf};
 

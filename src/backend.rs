@@ -972,7 +972,7 @@ impl Index {
 		fomat! {
 			if let Some(name) = model_name {
 				"```python\n"
-				if let Some(ident) = identifier { (ident) ": " } "Model[\"" (name) "\"]\n"
+				if let Some(ident) = identifier { "(variable) " (ident) ": " } "Model[\"" (name) "\"]\n"
 				"```  \n"
 			}
 			if let Some(module) = module {

@@ -68,3 +68,43 @@ class Bread(models.Model):
         #^type List(PyBuiltin("str"))
         self._fields
              #^type Dict([PyBuiltin("str"), Model("ir.model.fields")])
+
+    def test_builtins(self):
+        for aaaa, bbbb in enumerate(self):
+            aaaa
+            #^type PyBuiltin("int")
+            bbbb
+            #^type Model("bakery.bread")
+
+        ints = [1, 2, 3]
+        for aaaa, bbbb in zip(self, ints):
+            aaaa
+            #^type Model("bakery.bread")
+            bbbb
+            #^type PyBuiltin("int")
+        
+        what = [
+            123 for
+            cccc,
+            #^type Model("bakery.bread")
+            dddd
+            #^type PyBuiltin("int")
+            in zip(self, ints)
+        ]
+
+
+class Wine(models.Model):
+    _name = 'bakery.wine'
+
+    name = fields.Char()
+    make = fields.Char()
+    value = fields.Float()
+
+    def _test(self):
+        domain = []
+        for name, make, value in self._read_group(domain, ['name', 'make'], ['value:sum']):
+            #^type PyBuiltin("str")
+            make
+            #^type PyBuiltin("str")
+            value
+            #^type PyBuiltin("float")

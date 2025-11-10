@@ -432,9 +432,10 @@ impl ModelIndex {
 	) -> Option<RefMut<'model, ModelName, ModelEntry>> {
 		let model_name = _R(model);
 		let Some(mut entry) = self.try_get_mut(&model).try_unwrap() else {
+			cold_path();
 			panic!("{} deadlock on model {}", loc!(), _R(model));
 		};
-		if entry.fields.is_some() && entry.methods.is_some() && locations_filter.is_empty() {
+		if likely(entry.fields.is_some() && entry.methods.is_some() && locations_filter.is_empty()) {
 			return Some(entry);
 		}
 		let t0 = std::time::Instant::now();

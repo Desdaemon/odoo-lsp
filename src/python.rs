@@ -650,7 +650,7 @@ impl Backend {
 							}
 							let model = _R(model);
 							return self.index.jump_def_property_name(needle, model);
-						} else if let Some(cmdlist) = capture.node.next_named_sibling()
+						} else if let Some(cmdlist) = python_next_named_sibling(capture.node)
 							&& Backend::is_commandlist(cmdlist, offset)
 						{
 							let (needle, _, model) = some!(self.gather_commandlist(
@@ -667,7 +667,7 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
-						let Some(desc_value) = capture.node.next_named_sibling() else {
+						let Some(desc_value) = python_next_named_sibling(capture.node) else {
 							continue;
 						};
 
@@ -780,7 +780,7 @@ impl Backend {
 			let idx = contents[..=offset].bytes().rposition(|c| c == b'.')?;
 			let ident = contents[..=idx].bytes().rposition(|c| c.is_ascii_alphanumeric())?;
 			lhs = root.descendant_for_byte_range(ident, ident)?;
-			rhs = lhs.next_named_sibling().and_then(|attr| match attr.kind() {
+			rhs = python_next_named_sibling(lhs).and_then(|attr| match attr.kind() {
 				"identifier" => Some(attr),
 				"attribute" => attr.child_by_field_name("attribute"),
 				_ => None,
@@ -894,7 +894,7 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
-						let Some(desc_value) = capture.node.next_named_sibling() else {
+						let Some(desc_value) = python_next_named_sibling(capture.node) else {
 							continue;
 						};
 						let descriptor = &contents[range];
@@ -1001,7 +1001,7 @@ impl Backend {
 							}
 							let model = _R(model);
 							return (self.index).hover_property_name(needle, model, Some(rope_conv(range, rope)));
-						} else if let Some(cmdlist) = capture.node.next_named_sibling()
+						} else if let Some(cmdlist) = python_next_named_sibling(capture.node)
 							&& Backend::is_commandlist(cmdlist, offset)
 						{
 							let (needle, range, model) = some!(self.gather_commandlist(
@@ -1042,7 +1042,7 @@ impl Backend {
 						return self.index.hover_property_name(name, model, Some(range));
 					}
 					Some(PyCompletions::FieldDescriptor) => {
-						let Some(desc_value) = capture.node.next_named_sibling() else {
+						let Some(desc_value) = python_next_named_sibling(capture.node) else {
 							continue;
 						};
 						let descriptor = &contents[range];

@@ -19,7 +19,7 @@ use crate::{
 	index::{_G, _I, _R, Index, Symbol},
 	model::{Method, ModelName, PropertyInfo},
 	test_utils,
-	utils::{ByteOffset, ByteRange, Defer, PreTravel, RangeExt, TryResultExt, rope_conv},
+	utils::{ByteOffset, ByteRange, Defer, PreTravel, RangeExt, TryResultExt, python_next_named_sibling, rope_conv},
 };
 use ts_macros::query;
 
@@ -71,6 +71,8 @@ pub enum Type {
 	/// Equivalent to Value, but may have a better semantic name
 	PyBuiltin(ImStr),
 	List(ListElement),
+	Tuple(Vec<Type>),
+	Iterable(Option<Box<Type>>),
 	/// Can never be resolved, useful for non-model bindings.
 	Value,
 }
@@ -86,6 +88,16 @@ impl Debug for ListElement {
 		match self {
 			Self::Vacant => f.write_str("..."),
 			Self::Occupied(inner) => inner.fmt(f),
+		}
+	}
+}
+
+impl From<ListElement> for Option<Type> {
+	#[inline]
+	fn from(value: ListElement) -> Self {
+		match value {
+			ListElement::Vacant => None,
+			ListElement::Occupied(inner) => Some(*inner),
 		}
 	}
 }
@@ -265,7 +277,7 @@ impl Index {
 				// (_ left right)
 				let lhs = node.named_child(0).unwrap();
 				if lhs.kind() == "identifier"
-					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
+					&& let rhs = python_next_named_sibling(lhs).expect(format_loc!("rhs"))
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 				{
 					let lhs = &contents[lhs.byte_range()];
@@ -273,7 +285,7 @@ impl Index {
 				} else if lhs.kind() == "subscript"
 					&& let Some(map) = dig!(lhs, identifier)
 					&& let Some(key) = dig!(lhs, string(1).string_content(1))
-					&& let Some(rhs) = lhs.next_named_sibling()
+					&& let Some(rhs) = python_next_named_sibling(lhs)
 					&& let type_ = self.type_of(rhs, scope, contents)
 					&& let Some(Type::DictBag(properties)) = scope.variables.get_mut(&contents[map.byte_range()])
 				{
@@ -293,12 +305,12 @@ impl Index {
 				// (for_statement left right body)
 				scope.enter(true);
 				let lhs = node.named_child(0).unwrap();
-				if lhs.kind() == "identifier"
-					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
+
+				if let Some(rhs) = python_next_named_sibling(lhs)
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
+					&& let Some(inner) = Self::type_of_iterable(type_)
 				{
-					let lhs = &contents[lhs.byte_range()];
-					scope.insert(lhs.to_string(), type_);
+					unpack_forloop_pattern(lhs, inner, scope, contents);
 				}
 				return ControlFlow::Continue(true);
 			}
@@ -322,15 +334,14 @@ impl Index {
 			"list_comprehension" | "set_comprehension" | "dictionary_comprehension" | "generator_expression"
 				if node.byte_range().contains(&offset) =>
 			{
-				// (_ body (for_in_clause left right))
+				// (_ body: _ (for_in_clause left: _ right: _))
 				let for_in = node.named_child(1).unwrap();
-				let lhs = for_in.named_child(0).unwrap();
-				if lhs.kind() == "identifier"
-					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
+				if let Some(lhs) = for_in.child_by_field_name("left")
+					&& let Some(rhs) = for_in.child_by_field_name("right")
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
+					&& let Some(inner) = Self::type_of_iterable(type_)
 				{
-					let lhs = &contents[lhs.byte_range()];
-					scope.insert(lhs.to_string(), type_);
+					unpack_forloop_pattern(lhs, inner, scope, contents);
 				}
 			}
 			"call" if node.byte_range().contains_end(offset) => {
@@ -441,7 +452,7 @@ impl Index {
 				//         (call (identifier) ..)
 				//         (as_pattern_target (identifier))))))
 				if let Some(value) = dig!(node, with_clause.with_item.as_pattern.call)
-					&& let Some(target) = value.next_named_sibling()
+					&& let Some(target) = python_next_named_sibling(value)
 					&& target.kind() == "as_pattern_target"
 					&& let Some(alias) = dig!(target, identifier)
 					&& let Some(callee) = value.named_child(0)
@@ -585,13 +596,14 @@ impl Index {
 				let mut comprehension_scope;
 				let mut pair_scope = scope;
 				if let Some(for_in_clause) = dig!(node, for_in_clause(1))
-					&& let Some(scrutinee) = dig!(for_in_clause, identifier) // TODO: pattern_list for `for a, b, ...`
+					&& let Some(scrutinee) = for_in_clause.child_by_field_name("left")
 					&& let Some(iteratee) = for_in_clause.child_by_field_name("right")
 					&& let Some(iter_ty) = self.type_of(iteratee, scope, contents)
+					&& let Some(iter_ty) = Self::type_of_iterable(iter_ty)
 				{
 					// FIXME: How to prevent this clone?
 					comprehension_scope = Scope::new(Some(scope.clone()));
-					comprehension_scope.insert(contents[scrutinee.byte_range()].to_string(), iter_ty);
+					unpack_forloop_pattern(scrutinee, iter_ty, &mut comprehension_scope, contents);
 					pair_scope = &comprehension_scope;
 				}
 				let lhs = pair
@@ -650,8 +662,53 @@ impl Index {
 			_ => None,
 		}
 	}
+	fn type_of_iterable(type_: Type) -> Option<Type> {
+		match type_ {
+			Type::Model(_) => Some(type_),
+			Type::List(inner) => inner.into(),
+			Type::Iterable(inner) => inner.map(|inner| *inner),
+			// TODO: tuple -> union
+			_ => None,
+		}
+	}
 	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &str) -> Option<Type> {
 		let func = call.named_child(0)?;
+		if func.kind() == "identifier" {
+			match &contents[func.byte_range()] {
+				"zip" => {
+					let args = call.named_child(1)?;
+					let mut cursor = args.walk();
+					let children = args.named_children(&mut cursor).map(|child| {
+						Self::type_of_iterable(self.type_of(child, scope, contents).unwrap_or(Type::Value))
+							.unwrap_or(Type::Value)
+					});
+					return Some(Type::Iterable(Some(Box::new(Type::Tuple(children.collect())))));
+				}
+				"enumerate" => {
+					let arg = call.named_child(1)?.named_child(0);
+					let arg = arg
+						.and_then(|arg| self.type_of(arg, scope, contents))
+						.unwrap_or(Type::Value);
+					return Some(Type::Iterable(Some(Box::new(Type::Tuple(vec![
+						Type::PyBuiltin(ImStr::from_static("int")),
+						arg,
+					])))));
+				}
+				"tuple" => {
+					let args = call.named_child(1)?;
+					if args.kind() == "argument_list" {
+						let mut cursor = args.walk();
+						let children = args
+							.named_children(&mut cursor)
+							.map(|child| self.type_of(child, scope, contents).unwrap_or(Type::Value));
+						return Some(Type::Tuple(children.collect()));
+					}
+				}
+				"super" => {}
+				_ => return None,
+			};
+		}
+
 		let func = self.type_of(func, scope, contents)?;
 		match func {
 			Type::RefFn => {
@@ -691,6 +748,58 @@ impl Index {
 					_ => None,
 				}
 			}
+			Type::Method(model, read_group) if read_group == "_read_group" => {
+				let mut groupby = vec![];
+				let mut aggs = vec![];
+				let args = call.named_child(1)?;
+
+				fn gather_attributes<'out>(contents: &'out str, arg: Node, out: &mut Vec<&'out str>) {
+					let mut cursor = arg.walk();
+					for field in arg.named_children(&mut cursor) {
+						if let Some(field) = dig!(field, string_content(1)) {
+							let mut field = &contents[field.byte_range()];
+							if let Some((inner, _)) = field.split_once(':') {
+								field = inner;
+							}
+							out.push(field);
+						}
+					}
+				}
+
+				for (idx, arg) in args.named_children(&mut args.walk()).enumerate().take(3) {
+					if arg.kind() == "keyword_argument" {
+						let out = match &contents[arg.child_by_field_name("key")?.byte_range()] {
+							"groupby" => &mut groupby,
+							"aggregates" => &mut aggs,
+							_ => continue,
+						};
+						let Some(arg) = arg.child_by_field_name("value") else {
+							continue;
+						};
+						if arg.kind() != "list" {
+							continue;
+						}
+						gather_attributes(contents, arg, out);
+						continue;
+					}
+
+					if arg.kind() != "list" || idx > 2 || idx == 0 {
+						continue;
+					}
+
+					let out = if idx == 1 { &mut groupby } else { &mut aggs };
+					gather_attributes(contents, arg, out);
+				}
+
+				groupby.extend(aggs);
+				groupby.dedup();
+				let model = Type::Model(ImStr::from_static(_R(model)));
+				// FIXME: This is not quite correct as only recordset and numeric aggregations make sense.
+				let aggs = groupby
+					.into_iter()
+					.map(|attr| self.type_of_attribute(&model, attr, scope).unwrap_or(Type::Value));
+				Some(Type::List(ListElement::Occupied(Box::new(Type::Tuple(aggs.collect())))))
+			}
 			Type::Method(model, method) => {
 				let method = _G(&method)?;
 				let args = self.prepare_call_scope(model, method.into(), call, scope, contents);
@@ -704,9 +813,12 @@ impl Index {
 			| Type::PyBuiltin(..)
 			| Type::Dict(..)
 			| Type::DictBag(..)
-			| Type::List(..) => None,
+			| Type::List(..)
+			| Type::Iterable(..)
+			| Type::Tuple(..) => None,
 		}
 	}
+
 	#[instrument(skip_all, fields(model, method))]
 	fn prepare_call_scope(
 		&self,
@@ -763,15 +875,16 @@ impl Index {
 		let lhs = attribute.named_child(0)?;
 		let lhs = self.type_of(lhs, scope, contents)?;
 		let rhs = attribute.named_child(1)?;
+		let attrname = &contents[rhs.byte_range()];
 		match &contents[rhs.byte_range()] {
 			"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
 			"website" if matches!(lhs, Type::HttpRequest) => Some(Type::Model("website".into())),
 			"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
 			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
 			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
-			"mapped" => {
+			"mapped" | "_read_group" => {
 				let model = self.try_resolve_model(&lhs, scope)?;
-				Some(Type::Method(model, "mapped".into()))
+				Some(Type::Method(model, attrname.into()))
 			}
 			func if MODEL_METHODS.contains(func) => match lhs {
 				Type::Model(model) => Some(Type::ModelFn(model)),
@@ -909,6 +1022,21 @@ impl Index {
 				let xml_id = _G(xml_id)?;
 				let record = self.records.get(&xml_id.into())?;
 				Some(_R(record.model?).into())
+			}
+			Type::Tuple(items) => Some(
+				fomat! {
+					"tuple["
+					for item in items {
+						(self.type_display(item).as_deref().unwrap_or("..."))
+					} sep { ", " }
+					"]"
+				}
+				.into(),
+			),
+			Type::Iterable(output) => {
+				let output = output.as_deref().and_then(|inner| self.type_display(inner));
+				let output = output.as_deref().unwrap_or("...");
+				Some(format!("Iterable[{output}]").into())
 			}
 			Type::Method(..) => unreachable!("Bug: this function should not handle methods"),
 			Type::RefFn | Type::ModelFn(_) | Type::Super | Type::HttpRequest | Type::Value => None,
@@ -1143,6 +1271,32 @@ pub fn determine_scope<'out, 'node>(
 	let fn_scope = fn_scope?;
 	let self_param = &contents[self_param?.byte_range()];
 	Some((self_type, fn_scope, self_param))
+}
+
+/// `pattern` is `(identifier | pattern_list | tuple_pattern)`, the `a, b` in `for a, b in ...`.
+fn unpack_forloop_pattern(pattern: Node, type_: Type, scope: &mut Scope, contents: &str) {
+	if pattern.kind() == "identifier" {
+		let name = &contents[pattern.byte_range()];
+		scope.insert(name.to_string(), type_);
+	} else if matches!(pattern.kind(), "pattern_list" | "tuple_pattern") {
+		if let Type::Tuple(mut inner) = type_ {
+			inner.reverse();
+			for child in pattern.named_children(&mut pattern.walk()) {
+				if matches!(child.kind(), "identifier" | "tuple_pattern")
+					&& let Some(type_) = inner.pop()
+				{
+					unpack_forloop_pattern(child, type_, scope, contents);
+				}
+			}
+		} else if let Some(inner) = Index::type_of_iterable(type_) {
+			// spread this type to all params
+			for child in pattern.named_children(&mut pattern.walk()) {
+				if matches!(child.kind(), "identifier" | "tuple_pattern") {
+					unpack_forloop_pattern(child, inner.clone(), scope, contents);
+				}
+			}
+		}
+	}
 }
 
 #[cfg(test)]
