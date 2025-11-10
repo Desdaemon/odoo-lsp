@@ -44,24 +44,23 @@ macro_rules! some {
 macro_rules! dig {
 	() => { None };
 	($start:expr, $($rest:tt)+) => {
-		dig!(@inner Some($start), $($rest)+)
+		$crate::dig!(@inner Some($start), $($rest)+)
 	};
 	(@inner $node:expr, $kind:ident($idx:literal).$($rest:tt)+) => {
-		dig!(
+		$crate::dig!(
 			@inner
-			if let Some(node) = $node && let Some(child) = node.named_child($idx) && child.kind() == stringify!($kind) { Some(child) } else { None },
+			if let Some(node) = $node && let Some(child) = $crate::utils::python_nth_named_child_matching::<$idx>(node, stringify!($kind)) { Some(child) } else { None },
 			$($rest)+
 		)
 	};
-
 	(@inner $node:expr, $kind:ident.$($rest:tt)+) => {
-		dig!(@inner $node, $kind(0).$($rest)+)
+		$crate::dig!(@inner $node, $kind(0).$($rest)+)
 	};
 	(@inner $node:expr, $kind:ident($idx:literal)) => {
-		if let Some(node) = $node && let Some(child) = node.named_child($idx) && child.kind() == stringify!($kind) { Some(child) } else { None }
+		if let Some(node) = $node && let Some(child) = $crate::utils::python_nth_named_child_matching::<$idx>(node, stringify!($kind)) { Some(child) } else { None }
 	};
 	(@inner $node:expr, $kind:ident) => {
-		dig!(@inner $node, $kind(0))
+		$crate::dig!(@inner $node, $kind(0))
 	};
 }
 
@@ -293,6 +292,62 @@ pub fn cow_split_once<'src>(
 			rhs.replace_range(0..sep.len(), "");
 			Ok((Cow::Owned(core::mem::take(inner)), Cow::Owned(rhs)))
 		}
+	}
+}
+
+#[inline(always)]
+#[cold]
+pub const fn cold_path() {}
+
+/// Copied from https://github.com/rust-lang/hashbrown/commit/64bd7db1d1b148594edfde112cdb6d6260e2cfc3
+#[inline(always)]
+pub const fn likely(cond: bool) -> bool {
+	if cond {
+		true
+	} else {
+		cold_path();
+		false
+	}
+}
+
+#[inline(always)]
+pub const fn unlikely(cond: bool) -> bool {
+	if !cond {
+		true
+	} else {
+		cold_path();
+		false
+	}
+}
+
+/// Only useful for Python, since the default grammar does not mark comments as extra nodes.
+#[allow(clippy::disallowed_methods)]
+#[inline]
+pub fn python_next_named_sibling(mut node: Node) -> Option<Node> {
+	loop {
+		node = node.next_named_sibling()?;
+		if likely(node.kind() != "comment") {
+			return Some(node);
+		}
+	}
+}
+
+#[allow(clippy::disallowed_methods)]
+#[inline]
+pub fn python_nth_named_child_matching<'node, const NTH: usize>(
+	mut node: Node<'node>,
+	kind: &'static str,
+) -> Option<Node<'node>> {
+	let mut idx = 0;
+	node = node.named_child(0)?;
+	loop {
+		if idx == NTH && likely(node.kind() == kind) {
+			return Some(node);
+		}
+		if likely(node.kind() != "comment") {
+			idx += 1;
+		}
+		node = node.next_named_sibling()?;
 	}
 }
 
@@ -694,5 +749,29 @@ mod tests {
 		let lhs = strict_canonicalize(Path::new(".")).unwrap();
 		let rhs = strict_canonicalize(&lhs).unwrap();
 		assert_eq!(lhs, rhs);
+	}
+
+	#[test]
+	fn test_python_first_nth_child_matching() {
+		use tree_sitter::Parser;
+		use tree_sitter_python::LANGUAGE;
+
+		let contents = r#"[
+			# A comment
+			1,
+			# Another comment
+			2,
+			3,	
+			}
+		}"#;
+
+		let mut parser = Parser::new();
+		parser.set_language(&LANGUAGE.into()).unwrap();
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+		let list_node = root.named_child(0).unwrap();
+		let first_element = list_node.named_child(1).unwrap();
+		let second_element = super::python_nth_named_child_matching::<0>(list_node, "integer").unwrap();
+		pretty_assertions::assert_eq!(first_element, second_element);
 	}
 }

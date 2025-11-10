@@ -176,7 +176,7 @@ impl Backend {
 					Some(PyCompletions::FieldDescriptor) => {
 						// fields.Many2one(field_descriptor=...)
 
-						let Some(desc_value) = capture.node.next_named_sibling() else {
+						let Some(desc_value) = python_next_named_sibling(capture.node) else {
 							continue;
 						};
 
