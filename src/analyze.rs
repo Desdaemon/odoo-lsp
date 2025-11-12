@@ -973,31 +973,37 @@ impl Index {
 			_ => None,
 		}
 	}
+	#[inline]
 	pub fn type_display<'a>(&self, type_: &'a Type) -> Option<Cow<'a, str>> {
+		self.type_display_indent(type_, 0)
+	}
+	fn type_display_indent<'a>(&self, type_: &'a Type, indent: usize) -> Option<Cow<'a, str>> {
 		match type_ {
 			Type::Dict(pair) => {
 				let [lhs, rhs] = &**pair;
-				let lhs = self.type_display(lhs);
+				let lhs = self.type_display_indent(lhs, indent);
 				let lhs = lhs.as_deref().unwrap_or("...");
-				let rhs = self.type_display(rhs);
+				let rhs = self.type_display_indent(rhs, indent);
 				let rhs = rhs.as_deref().unwrap_or("...");
 				Some(fomat! { "dict[" (lhs) ", " (rhs) "]" }.into())
 			}
 			Type::DictBag(properties) => {
+				let preindent = " ".repeat(indent + 2);
 				let properties_fragment = fomat! {
 					for (key, value) in properties {
-						"  "
+						(preindent)
 						match key {
 							DictKey::String(key) => { "\"" (key) "\"" }
 							DictKey::Type(Type::Dict(..) | Type::DictBag(..)) => { "{...}" }
-							DictKey::Type(key) => { (self.type_display(key).as_deref().unwrap_or("...")) }
-						} ": " (self.type_display(value).as_deref().unwrap_or("..."))
+							DictKey::Type(key) => { (self.type_display_indent(key, indent + 2).as_deref().unwrap_or("...")) }
+						} ": " (self.type_display_indent(value, indent + 2).as_deref().unwrap_or("..."))
 					} sep { ",\n" }
 				};
+				let unindent = " ".repeat(indent);
 				Some(
 					fomat! {
 						if !properties.is_empty() {
-							"{\n" (properties_fragment) "\n}"
+							"{\n" (properties_fragment) "\n" (unindent) "}"
 						} else {
 							"{}"
 						}
@@ -1009,7 +1015,7 @@ impl Index {
 			Type::List(slot) => {
 				let slot = match slot {
 					ListElement::Vacant => None,
-					ListElement::Occupied(slot) => self.type_display(slot),
+					ListElement::Occupied(slot) => self.type_display_indent(slot, indent),
 				};
 				Some(match slot {
 					Some(slot) => format!("list[{slot}]").into(),
@@ -1027,14 +1033,16 @@ impl Index {
 				fomat! {
 					"tuple["
 					for item in items {
-						(self.type_display(item).as_deref().unwrap_or("..."))
+						(self.type_display_indent(item, indent).as_deref().unwrap_or("..."))
 					} sep { ", " }
 					"]"
 				}
 				.into(),
 			),
 			Type::Iterable(output) => {
-				let output = output.as_deref().and_then(|inner| self.type_display(inner));
+				let output = output
+					.as_deref()
+					.and_then(|inner| self.type_display_indent(inner, indent));
 				let output = output.as_deref().unwrap_or("...");
 				Some(format!("Iterable[{output}]").into())
 			}

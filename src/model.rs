@@ -11,6 +11,7 @@ use std::sync::atomic::AtomicBool;
 
 use dashmap::DashMap;
 use dashmap::mapref::one::RefMut;
+use dashmap::try_result::TryResult;
 use derive_more::{Deref, DerefMut};
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
@@ -430,10 +431,15 @@ impl ModelIndex {
 		model: ModelName,
 		locations_filter: &[PathSymbol],
 	) -> Option<RefMut<'model, ModelName, ModelEntry>> {
-		let model_name = _R(model);
-		let Some(mut entry) = self.try_get_mut(&model).try_unwrap() else {
-			cold_path();
-			panic!("{} deadlock on model {}", loc!(), _R(model));
+		let mut entry = match self.try_get_mut(&model) {
+			TryResult::Present(entry) => entry,
+			TryResult::Absent => {
+				return None;
+			}
+			TryResult::Locked => {
+				cold_path();
+				panic!("{} deadlock on model {}", loc!(), _R(model));
+			}
 		};
 		if likely(entry.fields.is_some() && entry.methods.is_some() && locations_filter.is_empty()) {
 			return Some(entry);
@@ -707,11 +713,12 @@ impl ModelIndex {
 			});
 		}
 
+		let model_name = _R(model);
 		info!(
 			"{model_name}: {} fields, {} methods, {}ms",
 			out_fields.len(),
 			out_methods.len(),
-			t0.elapsed().as_millis()
+			t0.elapsed().as_millis(),
 		);
 		let mut entry = self.try_get_mut(&model).expect(format_loc!("deadlock")).unwrap();
 		entry.fields = Some(out_fields);
