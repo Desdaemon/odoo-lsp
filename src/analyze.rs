@@ -299,6 +299,11 @@ impl Index {
 					} else {
 						properties.push((DictKey::String(ImStr::from(key)), type_));
 					}
+				} else if lhs.kind() == "pattern_list"
+					&& let Some(rhs) = python_next_named_sibling(lhs)
+					&& let Some(type_) = self.type_of(rhs, scope, contents)
+				{
+					destructure_into_patternlist_like(lhs, type_, scope, contents);
 				}
 			}
 			"for_statement" => {
@@ -310,7 +315,7 @@ impl Index {
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 					&& let Some(inner) = Self::type_of_iterable(type_)
 				{
-					unpack_forloop_pattern(lhs, inner, scope, contents);
+					destructure_into_patternlist_like(lhs, inner, scope, contents);
 				}
 				return ControlFlow::Continue(true);
 			}
@@ -341,7 +346,7 @@ impl Index {
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 					&& let Some(inner) = Self::type_of_iterable(type_)
 				{
-					unpack_forloop_pattern(lhs, inner, scope, contents);
+					destructure_into_patternlist_like(lhs, inner, scope, contents);
 				}
 			}
 			"call" if node.byte_range().contains_end(offset) => {
@@ -603,7 +608,7 @@ impl Index {
 				{
 					// FIXME: How to prevent this clone?
 					comprehension_scope = Scope::new(Some(scope.clone()));
-					unpack_forloop_pattern(scrutinee, iter_ty, &mut comprehension_scope, contents);
+					destructure_into_patternlist_like(scrutinee, iter_ty, &mut comprehension_scope, contents);
 					pair_scope = &comprehension_scope;
 				}
 				let lhs = pair
@@ -654,6 +659,16 @@ impl Index {
 					}
 				}
 				Some(Type::List(slot))
+			}
+			"expression_list" => {
+				let mut cursor = node.walk();
+				let tuple = node.named_children(&mut cursor).filter_map(|child| {
+					if child.kind() == "comment" {
+						return None;
+					}
+					Some(self.type_of(child, scope, contents).unwrap_or(Type::Value))
+				});
+				Some(Type::Tuple(tuple.collect()))
 			}
 			"string" => Some(Type::PyBuiltin(ImStr::from_static("str"))),
 			"integer" => Some(Type::PyBuiltin(ImStr::from_static("int"))),
@@ -1282,7 +1297,7 @@ pub fn determine_scope<'out, 'node>(
 }
 
 /// `pattern` is `(identifier | pattern_list | tuple_pattern)`, the `a, b` in `for a, b in ...`.
-fn unpack_forloop_pattern(pattern: Node, type_: Type, scope: &mut Scope, contents: &str) {
+fn destructure_into_patternlist_like(pattern: Node, type_: Type, scope: &mut Scope, contents: &str) {
 	if pattern.kind() == "identifier" {
 		let name = &contents[pattern.byte_range()];
 		scope.insert(name.to_string(), type_);
@@ -1293,14 +1308,14 @@ fn unpack_forloop_pattern(pattern: Node, type_: Type, scope: &mut Scope, content
 				if matches!(child.kind(), "identifier" | "tuple_pattern")
 					&& let Some(type_) = inner.pop()
 				{
-					unpack_forloop_pattern(child, type_, scope, contents);
+					destructure_into_patternlist_like(child, type_, scope, contents);
 				}
 			}
 		} else if let Some(inner) = Index::type_of_iterable(type_) {
 			// spread this type to all params
 			for child in pattern.named_children(&mut pattern.walk()) {
 				if matches!(child.kind(), "identifier" | "tuple_pattern") {
-					unpack_forloop_pattern(child, inner.clone(), scope, contents);
+					destructure_into_patternlist_like(child, inner.clone(), scope, contents);
 				}
 			}
 		}
