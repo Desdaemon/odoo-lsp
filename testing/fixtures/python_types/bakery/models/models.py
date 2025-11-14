@@ -92,6 +92,15 @@ class Bread(models.Model):
             in zip(self, ints)
         ]
 
+    def _identity_tuple(self, obj):
+        return self, obj
+
+    def _test_tuple(self):
+        foo, bar = self._identity_tuple(123)
+        #^type Model("bakery.bread")
+        bar
+        #^type PyBuiltin("int")
+
 
 class Wine(models.Model):
     _name = 'bakery.wine'
