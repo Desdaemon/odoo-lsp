@@ -101,6 +101,13 @@ class Bread(models.Model):
         bar
         #^type PyBuiltin("int")
 
+    def test_subscript(self):
+        foobar = {'abcde': 123, 'fool': 234}
+        foobar['']
+        #      ^complete abcde fool
+        foobar['f']
+        #        ^complete fool
+
 
 class Wine(models.Model):
     _name = 'bakery.wine'
