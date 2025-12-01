@@ -63,6 +63,8 @@ pub enum Type {
 	Record(ImStr),
 	Super,
 	Method(ModelName, ImStr),
+	/// To hardcode some methods, such as dict.items()
+	PythonMethod(Box<Type>, ImStr),
 	/// `odoo.http.request`
 	HttpRequest,
 	Dict(Box<[Type; 2]>),
@@ -75,6 +77,17 @@ pub enum Type {
 	Iterable(Option<Box<Type>>),
 	/// Can never be resolved, useful for non-model bindings.
 	Value,
+}
+
+impl Type {
+	#[inline]
+	fn list_of(inner: Type) -> Self {
+		Type::List(ListElement::Occupied(Box::new(inner)))
+	}
+	#[inline]
+	fn is_dict(&self) -> bool {
+		matches!(self, Type::Dict(_))
+	}
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -186,7 +199,7 @@ query! {
       (identifier) @_func
       (lambda (lambda_parameters . (identifier) @ITER)))]))
   (#match? @_func "^(func|key)$")
-  (#match? @_mapped "^(mapp|filter|sort)ed$"))
+  (#match? @_mapped "^(mapp|filter|sort|group)ed$"))
 }
 
 #[rustfmt::skip]
@@ -660,7 +673,7 @@ impl Index {
 				}
 				Some(Type::List(slot))
 			}
-			"expression_list" => {
+			"expression_list" | "tuple" => {
 				let mut cursor = node.walk();
 				let tuple = node.named_children(&mut cursor).filter_map(|child| {
 					if child.kind() == "comment" {
@@ -684,6 +697,12 @@ impl Index {
 			Type::Iterable(inner) => inner.map(|inner| *inner),
 			// TODO: tuple -> union
 			_ => None,
+		}
+	}
+	fn wrap_in_container<F: FnOnce(Type) -> Type>(type_: Type, producer: F) -> Type {
+		match type_ {
+			Type::Model(..) => type_,
+			_ => producer(type_),
 		}
 	}
 	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &str) -> Option<Type> {
@@ -745,7 +764,7 @@ impl Index {
 						let mut model: Spur = model.into();
 						let mut mapped = &contents[mapped.byte_range().shrink(1)];
 						self.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
-						self.type_of_attribute(&Type::Model(_R(model).into()), mapped, scope)
+						self.type_of_attribute(&Type::Model(ImStr::from_static(_R(model))), mapped, scope)
 					}
 					"lambda" => {
 						// (lambda (lambda_parameters)? body: (_))
@@ -754,11 +773,41 @@ impl Index {
 							let first_arg = params.named_child(0)?;
 							if first_arg.kind() == "identifier" {
 								let first_arg = &contents[first_arg.byte_range()];
-								scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
+								scope.insert(first_arg.to_string(), Type::Model(ImStr::from_static(_R(model))));
 							}
 						}
 						let body = mapped.child_by_field_name(b"body")?;
-						self.type_of(body, &scope, contents)
+						let type_ = self.type_of(body, &scope, contents).unwrap_or(Type::Value);
+						Some(Index::wrap_in_container(type_, Type::list_of))
+					}
+					_ => None,
+				}
+			}
+			Type::Method(model, grouped) if grouped == "grouped" => {
+				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
+				let grouped = call.named_child(1)?.named_child(0)?;
+				match grouped.kind() {
+					"string" => {
+						let mut model: Spur = model.into();
+						let mut grouped = &contents[grouped.byte_range().shrink(1)];
+						self.models.resolve_mapped(&mut model, &mut grouped, None).ok()?;
+						let model = Type::Model(ImStr::from_static(_R(model)));
+						let groupby = self.type_of_attribute(&model, grouped, scope)?;
+						Some(Type::Dict(Box::new([groupby, model])))
+					}
+					"lambda" => {
+						let mut scope = Scope::new(Some(scope.clone()));
+						if let Some(params) = grouped.child_by_field_name(b"parameters") {
+							let first_arg = params.named_child(0)?;
+							if first_arg.kind() == "identifier" {
+								let first_arg = &contents[first_arg.byte_range()];
+								scope.insert(first_arg.to_string(), Type::Model(ImStr::from_static(_R(model))));
+							}
+						}
+						let body = grouped.child_by_field_name(b"body")?;
+						let groupby = self.type_of(body, &scope, contents).unwrap_or(Type::Value);
+						let model = Type::Model(ImStr::from_static(_R(model)));
+						Some(Type::Dict(Box::new([groupby, model])))
 					}
 					_ => None,
 				}
@@ -820,6 +869,10 @@ impl Index {
 				let args = self.prepare_call_scope(model, method.into(), call, scope, contents);
 				self.eval_method_rtype(method.into(), *model, args)
 			}
+			Type::PythonMethod(dict, items) if dict.is_dict() && items == "items" => {
+				let Type::Dict(dict) = *dict else { unreachable!() };
+				Some(Type::Iterable(Some(Box::new(Type::Tuple(dict.to_vec())))))
+			}
 			Type::Env
 			| Type::Record(..)
 			| Type::Model(..)
@@ -830,7 +883,8 @@ impl Index {
 			| Type::DictBag(..)
 			| Type::List(..)
 			| Type::Iterable(..)
-			| Type::Tuple(..) => None,
+			| Type::Tuple(..)
+			| Type::PythonMethod(..) => None,
 		}
 	}
 
@@ -895,12 +949,13 @@ impl Index {
 			"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
 			"website" if matches!(lhs, Type::HttpRequest) => Some(Type::Model("website".into())),
 			"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
-			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
-			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
-			"mapped" | "_read_group" => {
+			"user" if matches!(lhs, Type::Env) => Some(Type::Model(ImStr::from_static("res.users"))),
+			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model(ImStr::from_static("res.company"))),
+			"mapped" | "grouped" | "_read_group" => {
 				let model = self.try_resolve_model(&lhs, scope)?;
 				Some(Type::Method(model, attrname.into()))
 			}
+			dict_method @ "items" if lhs.is_dict() => Some(Type::PythonMethod(Box::new(lhs), dict_method.into())),
 			func if MODEL_METHODS.contains(func) => match lhs {
 				Type::Model(model) => Some(Type::ModelFn(model)),
 				Type::Record(xml_id) => {
@@ -1062,7 +1117,13 @@ impl Index {
 				Some(format!("Iterable[{output}]").into())
 			}
 			Type::Method(..) => unreachable!("Bug: this function should not handle methods"),
-			Type::RefFn | Type::ModelFn(_) | Type::Super | Type::HttpRequest | Type::Value => None,
+			Type::RefFn | Type::ModelFn(_) | Type::Super | Type::HttpRequest | Type::Value | Type::PythonMethod(..) => {
+				if cfg!(debug_assertions) {
+					Some(format!("{type_:?}").into())
+				} else {
+					None
+				}
+			}
 		}
 	}
 	/// Iterates depth-first over `node` using [`PreTravel`]. Automatically calls [`Scope::exit`] at suitable points.
