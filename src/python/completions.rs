@@ -10,6 +10,7 @@ use tree_sitter::Tree;
 
 use crate::prelude::*;
 
+use crate::analyze::{DictKey, Type};
 use crate::backend::Backend;
 use crate::index::{_G, _I, _R, symbol::Symbol};
 use crate::model::{FieldKind, ModelEntry, ModelName, PropertyKind};
@@ -432,14 +433,12 @@ impl Backend {
 				}
 			}
 			if early_return.is_none() {
-				// Check if we're in a broken syntax situation (string without colon in dictionary)
 				let cursor_node = root.descendant_for_byte_range(offset, offset);
 				if let Some(node) = cursor_node {
-					// Check if we're in a string that's part of an ERROR node
 					let mut current = node;
 					while let Some(parent) = current.parent() {
+						// (dictionary (ERROR ^cursor))
 						if parent.kind() == "ERROR" {
-							// Check if the ERROR's parent is a dictionary
 							if let Some(grandparent) = parent.parent()
 								&& grandparent.kind() == "dictionary"
 							{
@@ -511,6 +510,39 @@ impl Backend {
 									})));
 								}
 							}
+						} else if current.kind() == "string"
+							&& parent.kind() == "subscript"
+							&& let Some(lhs) = parent.named_child(0)
+							&& let Some((Type::DictBag(dict), _)) =
+								self.index
+									.type_of_range(root, dbg!(lhs).byte_range().map_unit(ByteOffset), &contents)
+						{
+							let mut items = MaxVec::new(completions_limit);
+							let dict = dict.into_iter().flat_map(|(key, _)| match key {
+								DictKey::String(str) => Some(str.to_string()),
+								_ => None,
+							});
+							let range = current.byte_range().shrink(1).map_unit(ByteOffset);
+							let range = rope_conv(range, rope);
+							let to_item = |label: String| {
+								let new_text = label.clone();
+								CompletionItem {
+									label,
+									kind: Some(CompletionItemKind::CONSTANT),
+									text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
+									..Default::default()
+								}
+							};
+							if offset <= current.start_byte() + 1 {
+								items.extend(dict.map(to_item));
+							} else {
+								let needle = &contents[current.start_byte() + 1..offset];
+								items.extend(dict.filter(|label| label.starts_with(needle)).map(to_item));
+							}
+							return Ok(Some(CompletionResponse::List(CompletionList {
+								is_incomplete: !items.has_space(),
+								items: items.into_inner(),
+							})));
 						}
 						current = parent;
 					}
