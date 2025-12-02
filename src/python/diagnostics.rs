@@ -321,20 +321,11 @@ impl Backend {
 			}
 
 			let attribute = attribute.unwrap();
+			#[rustfmt::skip]
 			static MODEL_BUILTINS: phf::Set<&str> = phf::phf_set!(
-				"env",
-				"id",
-				"ids",
-				"display_name",
-				"create_date",
-				"write_date",
-				"create_uid",
-				"write_uid",
-				"pool",
-				"record",
-				"flush_model",
-				"mapped",
-				"fields_get",
+				"env", "id", "ids", "display_name", "create_date", "write_date",
+				"create_uid", "write_uid", "pool", "record", "flush_model", "mapped",
+				"grouped", "_read_group", "filtered", "sorted", "_origin", "fields_get",
 				"user_has_groups",
 			);
 			let prop = &contents[attribute.byte_range()];
