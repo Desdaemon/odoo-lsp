@@ -124,3 +124,13 @@ class Wine(models.Model):
             #^type PyBuiltin("str")
             value
             #^type PyBuiltin("float")
+
+    def test_grouped(self):
+        for name, records in self.grouped('name').items():
+            #^type PyBuiltin("str")
+            records
+            #^type Model("bakery.wine")
+        for (some, thing), _records in self.grouped(lambda mov: (mov.name, mov.value)).items():
+            #^type PyBuiltin("str")
+            thing
+            #^type PyBuiltin("float")
