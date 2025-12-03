@@ -1209,7 +1209,7 @@ impl Backend {
 			});
 		}
 
-		let rtype = rtype.as_ref().and_then(|rtype| self.index.type_display(rtype));
+		let rtype = rtype.and_then(|rtype| self.index.type_display(rtype));
 		match rtype {
 			Some(rtype) => drop(write!(&mut label, ") -> {rtype}")),
 			None => label.push_str(") -> ..."),

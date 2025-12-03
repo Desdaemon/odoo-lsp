@@ -4,6 +4,7 @@ use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticRelatedInformation, Diag
 use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 
+use crate::analyze::type_cache;
 use crate::index::{_R, Index};
 use crate::prelude::*;
 
@@ -336,6 +337,7 @@ impl Backend {
 			let Some(lhs_t) = (self.index).type_of(node.child_by_field_name("object").unwrap(), scope, contents) else {
 				return ControlFlow::Continue(entered);
 			};
+			let lhs_t = type_cache().resolve(lhs_t);
 
 			let Some(model_name) = (self.index).try_resolve_model(&lhs_t, scope) else {
 				return ControlFlow::Continue(entered);

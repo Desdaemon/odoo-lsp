@@ -13,11 +13,13 @@ use dashmap::DashMap;
 use dashmap::mapref::one::RefMut;
 use dashmap::try_result::TryResult;
 use derive_more::{Deref, DerefMut};
+use mini_moka::sync::Cache;
 use qp_trie::Trie;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use smart_default::SmartDefault;
 use ts_macros::query;
 
+use crate::analyze::TypeId;
 use crate::prelude::*;
 
 use crate::analyze::FunctionParam;
@@ -103,11 +105,13 @@ pub struct Field {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Method {
 	pub locations: Vec<TrackedMinLoc>,
 	pub docstring: Option<ImStr>,
 	pub arguments: Option<Box<[FunctionParam]>>,
 	pub pending_eval: AtomicBool,
+	pub eval_cache: Cache<Vec<TypeId>, TypeId>,
 }
 
 impl Clone for Method {
@@ -117,6 +121,7 @@ impl Clone for Method {
 			docstring: self.docstring.clone(),
 			arguments: self.arguments.clone(),
 			pending_eval: AtomicBool::new(false),
+			eval_cache: Cache::new(8),
 		}
 	}
 }
@@ -695,6 +700,7 @@ impl ModelIndex {
 							docstring: None,
 							arguments: None,
 							pending_eval: AtomicBool::new(false),
+							eval_cache: Cache::new(8),
 						}
 						.into(),
 					);
