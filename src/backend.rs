@@ -19,7 +19,7 @@ use tower_lsp_server::Client;
 use tower_lsp_server::{UriExt, lsp_types::*};
 use tree_sitter::{Parser, Tree};
 
-use crate::analyze::{Scope, Type};
+use crate::analyze::{Scope, Type, TypeId, type_cache};
 use crate::prelude::*;
 
 use crate::component::{Prop, PropDescriptor};
@@ -98,6 +98,7 @@ pub struct Capabilities {
 	pub pull_diagnostics: AtomicBool,
 	/// Whether [`workspace/workspaceFolders`][request::WorkspaceFoldersRequest] can be called.
 	pub workspace_folders: AtomicBool,
+	pub can_create_wdp: AtomicBool,
 }
 
 pub struct TextDocumentItem {
@@ -775,7 +776,7 @@ impl Index {
 		let model_key = _G(&model)?;
 		let method_name = _R(method);
 		let rtype = self.eval_method_rtype(method.into(), model_key, None);
-		let rtype = rtype.as_ref().and_then(|rtype| self.type_display(rtype));
+		let rtype = rtype.and_then(|rtype| self.type_display(rtype));
 		let entry = self.models.get(&model_key.into())?;
 		let methods = entry.methods.as_ref()?;
 		let method_entry = methods.get(&method.into())?;
@@ -838,12 +839,12 @@ impl Index {
 	pub fn hover_variable(
 		&self,
 		name: Option<&str>,
-		type_: Type,
+		type_: TypeId,
 		range: Option<Range>,
 	) -> anyhow::Result<Option<Hover>> {
-		let type_fragment = match type_ {
+		let type_fragment = match type_cache().resolve(type_) {
 			Type::Method(model, method) => return self.hover_property_name(&method, _R(model), range),
-			_ => self.type_display(&type_),
+			_ => self.type_display(type_),
 		};
 		let type_fragment = type_fragment.as_deref().unwrap_or("Unknown");
 		let value = fomat! {
@@ -932,7 +933,7 @@ impl Index {
 		{
 			drop(entry);
 			let rtype = self.eval_method_rtype(prop.into(), model_key, None);
-			let rtype = rtype.as_ref().and_then(|rtype| self.type_display(rtype));
+			let rtype = rtype.and_then(|rtype| self.type_display(rtype));
 			let model = self.models.get(&model_key.into()).unwrap();
 			let method = model.methods.as_ref().unwrap().get(&prop.into()).unwrap();
 			Ok(Some(Hover {
@@ -945,7 +946,7 @@ impl Index {
 		} else {
 			drop(entry);
 			let attr_type = some!(self.type_of_attribute(&Type::Model(ImStr::from(model)), name, &Scope::new(None)));
-			self.hover_variable(Some(name), attr_type, range)
+			self.hover_variable(Some(name), type_cache().get_or_intern(attr_type), range)
 		}
 	}
 	/// Returns a Markdown-formatted docstring for a model.

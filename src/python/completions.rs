@@ -10,7 +10,7 @@ use tree_sitter::Tree;
 
 use crate::prelude::*;
 
-use crate::analyze::{DictKey, Type};
+use crate::analyze::{DictKey, Type, type_cache};
 use crate::backend::Backend;
 use crate::index::{_G, _I, _R, symbol::Symbol};
 use crate::model::{FieldKind, ModelEntry, ModelName, PropertyKind};
@@ -90,7 +90,7 @@ impl Backend {
 									&needle,
 									range.map_unit(ByteOffset),
 									rope,
-									model_filter.map(|m| vec![ImStr::from_static(m)]).as_deref(),
+									model_filter.map(|m| vec![m.into()]).as_deref(),
 									current_module,
 									&mut items,
 								)?;
@@ -356,7 +356,7 @@ impl Backend {
 												&needle,
 												range.map_unit(ByteOffset),
 												rope,
-												Some(&[ImStr::from_static("res.groups")]),
+												Some(&["res.groups".into()]),
 												current_module,
 												&mut items,
 											)?;
@@ -513,9 +513,10 @@ impl Backend {
 						} else if current.kind() == "string"
 							&& parent.kind() == "subscript"
 							&& let Some(lhs) = parent.named_child(0)
-							&& let Some((Type::DictBag(dict), _)) =
+							&& let Some((tid, _)) =
 								self.index
 									.type_of_range(root, dbg!(lhs).byte_range().map_unit(ByteOffset), &contents)
+							&& let Type::DictBag(dict) = type_cache().resolve(tid)
 						{
 							let mut items = MaxVec::new(completions_limit);
 							let dict = dict.into_iter().flat_map(|(key, _)| match key {

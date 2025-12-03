@@ -30,8 +30,8 @@ fn init_tracing() {
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(1))]
 #[tokio::test(flavor = "multi_thread")]
+#[timeout(Duration::from_millis(800))]
 async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	std::env::set_current_dir(&root).unwrap();
 	let mut server = server::setup_lsp_server(None);
@@ -93,7 +93,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 						uri: uri.clone(),
 						language_id,
 						version: 1,
-						text: text.clone(),
+						text,
 					},
 				});
 

@@ -13,7 +13,7 @@ use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
 
 use crate::prelude::*;
 
-use crate::analyze::{Scope, Type, normalize};
+use crate::analyze::{Scope, Type, normalize, type_cache};
 use crate::component::{ComponentTemplate, PropType};
 use crate::index::Index;
 use crate::model::{Field, FieldKind, PropertyKind};
@@ -302,6 +302,7 @@ impl Backend {
 				let ast = some!(parser.parse(needle, None));
 				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), needle));
 				let model = some!(self.index.type_of(object, &scope, needle));
+				let model = type_cache().resolve(model);
 				let model = some!(self.index.try_resolve_model(&model, &Scope::default()));
 				self.index.jump_def_property_name(field, _R(model))
 			}
@@ -442,6 +443,7 @@ impl Backend {
 					}));
 				};
 				let model = some!(self.index.type_of(object, &scope, needle));
+				let model = type_cache().resolve(model);
 				let model = some!(self.index.try_resolve_model(&model, &scope));
 				let anchor = ref_range.start + relative_offset;
 				self.index.hover_property_name(
@@ -689,6 +691,7 @@ impl Index {
 				});
 				let scope = scope.unwrap_or(default_scope);
 				let model = some!(self.type_of(object, &scope, value));
+				let model = type_cache().resolve(model);
 				let model = some!(self.try_resolve_model(&model, &scope));
 				let needle_end = py_offset.saturating_sub(range.start);
 				let mut needle = field;
@@ -873,11 +876,11 @@ impl Index {
 								ref_at_cursor = Some((inner, start_offset..end_offset));
 							}
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from_static(s)).collect());
+							model_filter = Some(ACTION_MODELS.iter().map(|&s| s.into()).collect());
 						} else if button_type == Some("action") {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from_static(s)).collect());
+							model_filter = Some(ACTION_MODELS.iter().map(|&s| s.into()).collect());
 						} else {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::MethodName(vec![]));
@@ -935,12 +938,12 @@ impl Index {
 						"action" => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::Id);
-							model_filter = Some(ACTION_MODELS.iter().map(|&s| ImStr::from_static(s)).collect());
+							model_filter = Some(ACTION_MODELS.iter().map(|&s| s.into()).collect());
 						}
 						"groups" => {
 							ref_kind = Some(RefKind::Id);
 							arch_model = None;
-							model_filter = Some(vec![ImStr::from_static("res.groups")]);
+							model_filter = Some(vec!["res.groups".into()]);
 							determine_csv_xmlid_subgroup_of_xmlspan(&mut ref_at_cursor, value, offset_at_cursor);
 						}
 						_ => {}
@@ -1165,7 +1168,10 @@ impl Index {
 		contents: &str,
 	) -> anyhow::Result<()> {
 		normalize(&mut root);
-		let type_ = self.type_of(root, scope, contents).unwrap_or(Type::Value);
+		let type_ = match self.type_of(root, scope, contents) {
+			Some(tid) => type_cache().resolve(tid),
+			None => Type::Value,
+		};
 		let type_ = self
 			.try_resolve_model(&type_, scope)
 			.map(|model| Type::Model(_R(model).into()))

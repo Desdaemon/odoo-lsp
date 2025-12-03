@@ -4,6 +4,7 @@ use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticRelatedInformation, Diag
 use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 
+use crate::analyze::type_cache;
 use crate::index::{_R, Index};
 use crate::prelude::*;
 
@@ -306,11 +307,11 @@ impl Backend {
 		};
 		let mut scope = Scope::default();
 		let self_type = match self_type {
-			Some(type_) => ImStr::from(&contents[type_.byte_range().shrink(1)]),
-			None => ImStr::from_static(""),
+			Some(type_) => &contents[type_.byte_range().shrink(1)],
+			None => "",
 		};
 		scope.super_ = Some(self_param.into());
-		scope.insert(self_param.to_string(), Type::Model(self_type));
+		scope.insert(self_param.to_string(), Type::Model(self_type.into()));
 		let scope_end = fn_scope.end_byte();
 		Index::walk_scope(fn_scope, Some(scope), |scope, node| {
 			let entered = (self.index).build_scope(scope, node, scope_end, contents)?;
@@ -336,6 +337,7 @@ impl Backend {
 			let Some(lhs_t) = (self.index).type_of(node.child_by_field_name("object").unwrap(), scope, contents) else {
 				return ControlFlow::Continue(entered);
 			};
+			let lhs_t = type_cache().resolve(lhs_t);
 
 			let Some(model_name) = (self.index).try_resolve_model(&lhs_t, scope) else {
 				return ControlFlow::Continue(entered);

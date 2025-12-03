@@ -6,7 +6,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use const_format::assertcp_eq;
-use num_enum::IntoPrimitive;
 use num_enum::TryFromPrimitive;
 
 /// Immutable, [`String`]-sized clone-friendly string.
@@ -18,12 +17,11 @@ const INLINE_BYTES: usize = if cfg!(target_pointer_width = "64") { 23 } else { 1
 pub(crate) enum Repr {
 	Arc(Arc<str>),
 	Inline(u23, [u8; INLINE_BYTES]),
-	Static(&'static str),
 }
 
 #[allow(non_camel_case_types)]
 #[rustfmt::skip]
-#[derive(IntoPrimitive, TryFromPrimitive, Clone, Copy)]
+#[derive(TryFromPrimitive, Clone, Copy)]
 #[repr(u8)]
 pub(crate) enum u23 {
 	_0, _1, _2, _3, _4, _5, _6, _7, _8, _9,
@@ -37,7 +35,7 @@ impl Deref for ImStr {
 	fn deref(&self) -> &Self::Target {
 		match &self.0 {
 			Repr::Arc(inner) => inner,
-			Repr::Static(inner) => inner,
+			// Repr::Static(inner) => inner,
 			Repr::Inline(len, bytes) => {
 				let slice = &bytes[..(*len as usize)];
 				unsafe { std::str::from_utf8_unchecked(slice) }
@@ -143,10 +141,6 @@ impl ImStr {
 	#[inline]
 	pub fn as_str(&self) -> &str {
 		self.deref()
-	}
-	#[inline]
-	pub const fn from_static(inner: &'static str) -> Self {
-		Self(Repr::Static(inner))
 	}
 }
 

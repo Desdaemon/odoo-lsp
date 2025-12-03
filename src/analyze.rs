@@ -2,12 +2,12 @@
 //! [`Index::model_of_range`] and [`Index::type_of`].
 
 use std::{
-	borrow::Cow,
 	fmt::{Debug, Write},
 	ops::ControlFlow,
-	sync::{Arc, atomic::Ordering},
+	sync::{Arc, OnceLock, RwLock, atomic::Ordering},
 };
 
+use dashmap::DashMap;
 use fomat_macros::fomat;
 use lasso::Spur;
 use ropey::Rope;
@@ -25,6 +25,23 @@ use ts_macros::query;
 
 mod scope;
 pub use scope::Scope;
+
+pub fn type_cache() -> &'static TypeCache {
+	static CACHE: OnceLock<TypeCache> = OnceLock::new();
+	CACHE.get_or_init(TypeCache::default)
+}
+
+macro_rules! _T {
+	(@ $builtin:expr) => {
+		$crate::analyze::type_cache().get_or_intern(Type::PyBuiltin($builtin.into()))
+	};
+	($model:literal) => {
+		$crate::analyze::type_cache().get_or_intern(Type::Model($model.into()))
+	};
+	($expr:expr) => {
+		$crate::analyze::type_cache().get_or_intern($expr)
+	};
+}
 
 pub static MODEL_METHODS: phf::Set<&str> = phf::phf_set!(
 	"create",
@@ -51,7 +68,7 @@ pub static MODEL_METHODS: phf::Set<&str> = phf::phf_set!(
 );
 
 /// The subset of types that may resolve to a model.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
 	Env,
 	/// \*.env.ref()
@@ -64,36 +81,32 @@ pub enum Type {
 	Super,
 	Method(ModelName, ImStr),
 	/// To hardcode some methods, such as dict.items()
-	PythonMethod(Box<Type>, ImStr),
+	PythonMethod(TypeId, ImStr),
 	/// `odoo.http.request`
 	HttpRequest,
-	Dict(Box<[Type; 2]>),
+	Dict(TypeId, TypeId),
 	/// A bag of enumerated properties and their types
-	DictBag(Vec<(DictKey, Type)>),
+	DictBag(Vec<(DictKey, TypeId)>),
 	/// Equivalent to Value, but may have a better semantic name
 	PyBuiltin(ImStr),
 	List(ListElement),
-	Tuple(Vec<Type>),
-	Iterable(Option<Box<Type>>),
+	Tuple(Vec<TypeId>),
+	Iterable(Option<TypeId>),
 	/// Can never be resolved, useful for non-model bindings.
 	Value,
 }
 
 impl Type {
 	#[inline]
-	fn list_of(inner: Type) -> Self {
-		Type::List(ListElement::Occupied(Box::new(inner)))
-	}
-	#[inline]
 	fn is_dict(&self) -> bool {
-		matches!(self, Type::Dict(_))
+		matches!(self, Type::Dict(..))
 	}
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ListElement {
 	Vacant,
-	Occupied(Box<Type>),
+	Occupied(TypeId),
 }
 
 impl Debug for ListElement {
@@ -105,20 +118,20 @@ impl Debug for ListElement {
 	}
 }
 
-impl From<ListElement> for Option<Type> {
+impl From<ListElement> for Option<TypeId> {
 	#[inline]
 	fn from(value: ListElement) -> Self {
 		match value {
 			ListElement::Vacant => None,
-			ListElement::Occupied(inner) => Some(*inner),
+			ListElement::Occupied(inner) => Some(inner),
 		}
 	}
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum DictKey {
 	String(ImStr),
-	Type(Type),
+	Type(TypeId),
 }
 
 impl Debug for DictKey {
@@ -153,6 +166,54 @@ impl core::fmt::Display for FunctionParam {
 			FunctionParam::Named(param) => write!(f, "{param}=..."),
 			FunctionParam::Kwargs(param) => write!(f, "**{param}"),
 		}
+	}
+}
+
+#[derive(Default)]
+pub struct TypeCache {
+	types: RwLock<Vec<Type>>,
+	ids: DashMap<Type, TypeId>,
+}
+
+impl TypeCache {
+	#[inline]
+	pub fn get_or_intern(&self, type_: Type) -> TypeId {
+		if let Some(id) = self.ids.get(&type_) {
+			return *id;
+		}
+		self.intern(type_)
+	}
+	fn intern(&self, type_: Type) -> TypeId {
+		let mut types = self.types.write().unwrap();
+		let id = TypeId(types.len() as u32);
+		types.push(type_.clone());
+		self.ids.insert(type_, id);
+		id
+	}
+	#[inline]
+	pub fn resolve(&self, id: TypeId) -> Type {
+		self.types.read().unwrap()[id.0 as usize].clone()
+	}
+	pub fn is_dictlike(&self, id: TypeId) -> bool {
+		let types = self.types.read().unwrap();
+		matches!(
+			&unsafe { types.get_unchecked(id.0 as usize) },
+			Type::Dict(..) | Type::DictBag(..)
+		)
+	}
+	pub fn is_dict(&self, id: TypeId) -> bool {
+		let types = self.types.read().unwrap();
+		matches!(&unsafe { types.get_unchecked(id.0 as usize) }, Type::Dict(..))
+	}
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeId(u32);
+
+impl Debug for TypeId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		type_cache().resolve(*self).fmt(f)
 	}
 }
 
@@ -234,9 +295,9 @@ impl Index {
 	#[inline]
 	pub fn model_of_range(&self, node: Node<'_>, range: ByteRange, contents: &str) -> Option<ModelName> {
 		let (type_at_cursor, scope) = self.type_of_range(node, range, contents)?;
-		self.try_resolve_model(&type_at_cursor, &scope)
+		self.try_resolve_model(&type_cache().resolve(type_at_cursor), &scope)
 	}
-	pub fn type_of_range(&self, root: Node<'_>, range: ByteRange, contents: &str) -> Option<(Type, Scope)> {
+	pub fn type_of_range(&self, root: Node<'_>, range: ByteRange, contents: &str) -> Option<(TypeId, Scope)> {
 		// Phase 1: Determine the scope.
 		let (self_type, fn_scope, self_param) = determine_scope(root, contents, range.start.0)?;
 
@@ -266,7 +327,10 @@ impl Index {
 		// TODO: fields
 		if node_at_cursor.kind() == "identifier" && fn_scope.child_by_field_name("name") == Some(node_at_cursor) {
 			return Some((
-				Type::Method(_I(self_type).into(), contents[node_at_cursor.byte_range()].into()),
+				_T!(Type::Method(
+					_I(self_type).into(),
+					contents[node_at_cursor.byte_range()].into()
+				)),
 				scope,
 			));
 		}
@@ -291,10 +355,10 @@ impl Index {
 				let lhs = node.named_child(0).unwrap();
 				if lhs.kind() == "identifier"
 					&& let rhs = python_next_named_sibling(lhs).expect(format_loc!("rhs"))
-					&& let Some(type_) = self.type_of(rhs, scope, contents)
+					&& let Some(id) = self.type_of(rhs, scope, contents)
 				{
 					let lhs = &contents[lhs.byte_range()];
-					scope.insert(lhs.to_string(), type_);
+					scope.insert(lhs.to_string(), type_cache().resolve(id));
 				} else if lhs.kind() == "subscript"
 					&& let Some(map) = dig!(lhs, identifier)
 					&& let Some(key) = dig!(lhs, string(1).string_content(1))
@@ -302,7 +366,7 @@ impl Index {
 					&& let type_ = self.type_of(rhs, scope, contents)
 					&& let Some(Type::DictBag(properties)) = scope.variables.get_mut(&contents[map.byte_range()])
 				{
-					let type_ = type_.unwrap_or(Type::Value);
+					let type_ = type_.unwrap_or_else(|| _T!(Type::Value));
 					let key = &contents[key.byte_range()];
 					if let Some(idx) = properties.iter().position(|(prop, _)| match prop {
 						DictKey::String(prop) => prop.as_str() == key,
@@ -316,7 +380,7 @@ impl Index {
 					&& let Some(rhs) = python_next_named_sibling(lhs)
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 				{
-					destructure_into_patternlist_like(lhs, type_, scope, contents);
+					self.destructure_into_patternlist_like(lhs, type_, scope, contents);
 				}
 			}
 			"for_statement" => {
@@ -326,9 +390,9 @@ impl Index {
 
 				if let Some(rhs) = python_next_named_sibling(lhs)
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
-					&& let Some(inner) = Self::type_of_iterable(type_)
+					&& let Some(inner) = self.type_of_iterable(type_cache().resolve(type_))
 				{
-					destructure_into_patternlist_like(lhs, inner, scope, contents);
+					self.destructure_into_patternlist_like(lhs, inner, scope, contents);
 				}
 				return ControlFlow::Continue(true);
 			}
@@ -356,10 +420,10 @@ impl Index {
 				let for_in = node.named_child(1).unwrap();
 				if let Some(lhs) = for_in.child_by_field_name("left")
 					&& let Some(rhs) = for_in.child_by_field_name("right")
-					&& let Some(type_) = self.type_of(rhs, scope, contents)
-					&& let Some(inner) = Self::type_of_iterable(type_)
+					&& let Some(tid) = self.type_of(rhs, scope, contents)
+					&& let Some(inner) = self.type_of_iterable(type_cache().resolve(tid))
 				{
-					destructure_into_patternlist_like(lhs, inner, scope, contents);
+					self.destructure_into_patternlist_like(lhs, inner, scope, contents);
 				}
 			}
 			"call" if node.byte_range().contains_end(offset) => {
@@ -371,14 +435,14 @@ impl Index {
 					&& let callee = mapped_call
 						.nodes_for_capture_index(MappedCall::Callee as _)
 						.next()
-						.unwrap() && let Some(type_) = self.type_of(callee, scope, contents)
+						.unwrap() && let Some(tid) = self.type_of(callee, scope, contents)
 				{
 					let iter = mapped_call
 						.nodes_for_capture_index(MappedCall::Iter as _)
 						.next()
 						.unwrap();
 					let iter = &contents[iter.byte_range()];
-					scope.insert(iter.to_string(), type_);
+					scope.insert(iter.to_string(), type_cache().resolve(tid));
 				}
 			}
 			"call" => {
@@ -389,13 +453,13 @@ impl Index {
 					return ControlFlow::Continue(false);
 				};
 				if let Some(value) = call.nodes_for_capture_index(PythonBuiltinCall::AppendValue as _).next()
-					&& let Some(value) = self.type_of(value, scope, contents)
+					&& let Some(tid) = self.type_of(value, scope, contents)
 				{
 					if let Some(list) = call.nodes_for_capture_index(PythonBuiltinCall::AppendList as _).next() {
 						if let Some(Type::List(slot @ ListElement::Vacant)) =
 							scope.variables.get_mut(&contents[list.byte_range()])
 						{
-							*slot = ListElement::Occupied(Box::new(value));
+							*slot = ListElement::Occupied(tid);
 						}
 					} else if let Some(map) = call.nodes_for_capture_index(PythonBuiltinCall::AppendMap as _).next() {
 						let Some(key) = call
@@ -407,12 +471,13 @@ impl Index {
 						let key = &contents[key.byte_range()];
 
 						if let Some(Type::DictBag(properties)) = scope.variables.get_mut(&contents[map.byte_range()])
-							&& let Some((_, Type::List(slot @ ListElement::Vacant))) =
-								properties.iter_mut().find(|(prop, _)| match prop {
-									DictKey::String(prop) => prop.as_str() == key,
-									DictKey::Type(_) => false,
-								}) {
-							*slot = ListElement::Occupied(Box::new(value));
+							&& let Some((_, slot)) = properties.iter_mut().find(|(prop, id)| match prop {
+								DictKey::String(prop) => {
+									prop.as_str() == key && _T!(Type::List(ListElement::Vacant)) == *id
+								}
+								DictKey::Type(_) => false,
+							}) {
+							*slot = _T!(Type::List(ListElement::Occupied(tid)));
 						}
 					}
 				} else if let Some(map) = call.nodes_for_capture_index(PythonBuiltinCall::UpdateMap as _).next() {
@@ -427,7 +492,8 @@ impl Index {
 					let mut cursor = args.walk();
 					let mut children = args.named_children(&mut cursor);
 					if let Some(first) = children.by_ref().next()
-						&& let Some(Type::DictBag(update_props)) = self.type_of(first, scope, contents)
+						&& let Some(tid) = self.type_of(first, scope, contents)
+						&& let Type::DictBag(update_props) = type_cache().resolve(tid)
 					{
 						properties.extend(update_props);
 					}
@@ -438,7 +504,7 @@ impl Index {
 							&& let Some(value) = named_arg.child_by_field_name("value")
 						{
 							let key = &contents[name.byte_range()];
-							let type_ = self.type_of(value, scope, contents).unwrap_or(Type::Value);
+							let type_ = self.type_of(value, scope, contents).unwrap_or_else(|| _T!(Type::Value));
 							if let Some(idx) = properties.iter().position(|(prop, _)| match prop {
 								DictKey::String(prop) => prop.as_str() == key,
 								DictKey::Type(_) => false,
@@ -449,7 +515,8 @@ impl Index {
 							}
 						} else if named_arg.kind() == "dictionary_splat"
 							&& let Some(value) = named_arg.named_child(0)
-							&& let Some(Type::DictBag(update_props)) = self.type_of(value, scope, contents)
+							&& let Some(tid) = self.type_of(value, scope, contents)
+							&& let Type::DictBag(update_props) = type_cache().resolve(tid)
 						{
 							properties.extend(update_props);
 						}
@@ -482,10 +549,10 @@ impl Index {
 						&& let Some(type_) = self.type_of(first_arg, scope, contents)
 					{
 						let alias = &contents[alias.byte_range()];
-						scope.insert(alias.to_string(), type_);
+						scope.insert(alias.to_string(), type_cache().resolve(type_));
 					} else if let Some(type_) = self.type_of(value, scope, contents) {
 						let alias = &contents[alias.byte_range()];
-						scope.insert(alias.to_string(), type_);
+						scope.insert(alias.to_string(), type_cache().resolve(type_));
 					}
 				}
 			}
@@ -495,7 +562,7 @@ impl Index {
 		ControlFlow::Continue(false)
 	}
 	/// [Type::Value] is not returned by this method.
-	pub fn type_of(&self, mut node: Node, scope: &Scope, contents: &str) -> Option<Type> {
+	pub fn type_of(&self, mut node: Node, scope: &Scope, contents: &str) -> Option<TypeId> {
 		// What contributes to value types?
 		// 1. *.env['foo'] => Model('foo')
 		// 2. *.env.ref(<record-id>) => Model(<model of record-id>)
@@ -530,17 +597,16 @@ impl Index {
 				let lhs = node.child_by_field_name("value")?;
 				let rhs = node.child_by_field_name("subscript")?;
 				let obj_ty = self.type_of(lhs, scope, contents)?;
-				match obj_ty {
+				match type_cache().resolve(obj_ty) {
 					Type::Env if rhs.kind() == "string" => {
-						Some(Type::Model(contents[rhs.byte_range().shrink(1)].into()))
+						Some(_T!(Type::Model(contents[rhs.byte_range().shrink(1)].into())))
 					}
-					Type::Env => Some(Type::Model(ImStr::from_static("_unknown"))),
+					Type::Env => Some(_T!["unknown"]),
 					Type::Model(_) | Type::Record(_) => Some(obj_ty),
-					Type::Dict(dict) => {
-						let [key, value] = *dict;
+					Type::Dict(key, value) => {
 						let rhs = self.type_of(rhs, scope, contents);
 						// FIXME: We trust that the user makes the correct judgment here and returns the type requested.
-						rhs.is_none_or(|lhs| lhs == key).then_some(value)
+						rhs.is_none_or(|rhs| rhs == key).then_some(value)
 					}
 					Type::DictBag(properties) => {
 						// compare by key
@@ -569,7 +635,7 @@ impl Index {
 						None
 					}
 					// FIXME: Again, just trust that the user is doing the right thing.
-					Type::List(ListElement::Occupied(slot)) => Some(*slot),
+					Type::List(ListElement::Occupied(slot)) => Some(slot),
 					_ => None,
 				}
 			}
@@ -584,13 +650,13 @@ impl Index {
 
 				let key = &contents[node.byte_range()];
 				if key == "super" {
-					return Some(Type::Super);
+					return Some(_T!(Type::Super));
 				}
 				if let Some(type_) = scope.get(key) {
-					return Some(type_.clone());
+					return Some(_T!(type_.clone()));
 				}
 				if key == "request" {
-					return Some(Type::HttpRequest);
+					return Some(_T!(Type::HttpRequest));
 				}
 				None
 			}
@@ -617,11 +683,11 @@ impl Index {
 					&& let Some(scrutinee) = for_in_clause.child_by_field_name("left")
 					&& let Some(iteratee) = for_in_clause.child_by_field_name("right")
 					&& let Some(iter_ty) = self.type_of(iteratee, scope, contents)
-					&& let Some(iter_ty) = Self::type_of_iterable(iter_ty)
+					&& let Some(iter_ty) = self.type_of_iterable(type_cache().resolve(iter_ty))
 				{
 					// FIXME: How to prevent this clone?
 					comprehension_scope = Scope::new(Some(scope.clone()));
-					destructure_into_patternlist_like(scrutinee, iter_ty, &mut comprehension_scope, contents);
+					self.destructure_into_patternlist_like(scrutinee, iter_ty, &mut comprehension_scope, contents);
 					pair_scope = &comprehension_scope;
 				}
 				let lhs = pair
@@ -631,10 +697,8 @@ impl Index {
 					.named_child(1)
 					.and_then(|lhs| self.type_of(lhs, pair_scope, contents));
 				if lhs.is_some() || rhs.is_some() {
-					Some(Type::Dict(Box::new([
-						lhs.unwrap_or(Type::Value),
-						rhs.unwrap_or(Type::Value),
-					])))
+					let value_id = _T!(Type::Value);
+					Some(_T!(Type::Dict(lhs.unwrap_or(value_id), rhs.unwrap_or(value_id))))
 				} else {
 					None
 				}
@@ -650,51 +714,52 @@ impl Index {
 						if let Some(lhs) = dig!(lhs, string_content(1)) {
 							key = DictKey::String(ImStr::from(&contents[lhs.byte_range()]));
 						} else if matches!(lhs.kind(), "true" | "false" | "string" | "none" | "float" | "integer") {
-							key = DictKey::Type(Type::PyBuiltin(ImStr::from(&contents[lhs.byte_range()])));
+							key = DictKey::Type(_T!( @contents[lhs.byte_range()]));
 						} else if let Some(lhs) = self.type_of(lhs, scope, contents) {
 							key = DictKey::Type(lhs);
 						} else {
 							continue;
 						}
 
-						let value = self.type_of(rhs, scope, contents).unwrap_or(Type::Value);
+						let value = self.type_of(rhs, scope, contents).unwrap_or_else(|| _T!(Type::Value));
 						properties.push((key, value));
 					}
 				}
-				Some(Type::DictBag(properties))
+				Some(_T!(Type::DictBag(properties)))
 			}
 			"list" => {
 				let mut slot = ListElement::Vacant;
 				for child in node.named_children(&mut node.walk()) {
 					if let Some(child) = self.type_of(child, scope, contents) {
-						slot = ListElement::Occupied(Box::new(child));
+						slot = ListElement::Occupied(child);
 						break;
 					}
 				}
-				Some(Type::List(slot))
+				Some(_T!(Type::List(slot)))
 			}
 			"expression_list" | "tuple" => {
 				let mut cursor = node.walk();
+				let value_id = _T!(Type::Value);
 				let tuple = node.named_children(&mut cursor).filter_map(|child| {
 					if child.kind() == "comment" {
 						return None;
 					}
-					Some(self.type_of(child, scope, contents).unwrap_or(Type::Value))
+					Some(self.type_of(child, scope, contents).unwrap_or(value_id))
 				});
-				Some(Type::Tuple(tuple.collect()))
+				Some(_T!(Type::Tuple(tuple.collect())))
 			}
-			"string" => Some(Type::PyBuiltin(ImStr::from_static("str"))),
-			"integer" => Some(Type::PyBuiltin(ImStr::from_static("int"))),
-			"float" => Some(Type::PyBuiltin(ImStr::from_static("float"))),
-			"true" | "false" | "comparison_operator" => Some(Type::PyBuiltin(ImStr::from_static("bool"))),
+			"string" => Some(_T!( @ "str")),
+			"integer" => Some(_T!( @ "int")),
+			"float" => Some(_T!( @ "float")),
+			"true" | "false" | "comparison_operator" => Some(_T!( @ "bool")),
 			_ => None,
 		}
 	}
-	fn type_of_iterable(type_: Type) -> Option<Type> {
+	fn type_of_iterable(&self, type_: Type) -> Option<TypeId> {
 		match type_ {
-			Type::Model(_) => Some(type_),
+			Type::Model(_) => Some(_T!(type_)),
 			Type::List(inner) => inner.into(),
-			Type::Iterable(inner) => inner.map(|inner| *inner),
+			Type::Iterable(inner) => inner,
 			// TODO: tuple -> union
 			_ => None,
 		}
@@ -705,37 +770,39 @@ impl Index {
 			_ => producer(type_),
 		}
 	}
-	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &str) -> Option<Type> {
+	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &str) -> Option<TypeId> {
 		let func = call.named_child(0)?;
 		if func.kind() == "identifier" {
 			match &contents[func.byte_range()] {
 				"zip" => {
 					let args = call.named_child(1)?;
 					let mut cursor = args.walk();
+					let value_id = _T!(Type::Value);
 					let children = args.named_children(&mut cursor).map(|child| {
-						Self::type_of_iterable(self.type_of(child, scope, contents).unwrap_or(Type::Value))
-							.unwrap_or(Type::Value)
+						let type_ = type_cache().resolve(self.type_of(child, scope, contents).unwrap_or(value_id));
+						self.type_of_iterable(type_).unwrap_or(value_id)
 					});
-					return Some(Type::Iterable(Some(Box::new(Type::Tuple(children.collect())))));
+					let tuple = _T!(Type::Tuple(children.collect()));
+					return Some(_T!(Type::Iterable(Some(tuple))));
 				}
 				"enumerate" => {
 					let arg = call.named_child(1)?.named_child(0);
 					let arg = arg
 						.and_then(|arg| self.type_of(arg, scope, contents))
-						.unwrap_or(Type::Value);
-					return Some(Type::Iterable(Some(Box::new(Type::Tuple(vec![
-						Type::PyBuiltin(ImStr::from_static("int")),
-						arg,
-					])))));
+						.unwrap_or_else(|| _T!(Type::Value));
+					let intid = _T!(Type::PyBuiltin("int".into()));
+					let tuple = _T!(Type::Tuple(vec![intid, arg]));
+					return Some(_T!(Type::Iterable(Some(tuple))));
 				}
 				"tuple" => {
 					let args = call.named_child(1)?;
 					if args.kind() == "argument_list" {
 						let mut cursor = args.walk();
+						let value_id = _T!(Type::Value);
 						let children = args
 							.named_children(&mut cursor)
-							.map(|child| self.type_of(child, scope, contents).unwrap_or(Type::Value));
-						return Some(Type::Tuple(children.collect()));
+							.map(|child| self.type_of(child, scope, contents).unwrap_or(value_id));
+						return Some(_T!(Type::Tuple(children.collect())));
 					}
 				}
 				"super" => {}
@@ -744,18 +811,18 @@ impl Index {
 		}
 
 		let func = self.type_of(func, scope, contents)?;
-		match func {
+		match type_cache().resolve(func) {
 			Type::RefFn => {
 				// (call (_) @func (argument_list . (string) @xml_id))
 				let xml_id = call.named_child(1)?.named_child(0)?;
 				if xml_id.kind() == "string" {
-					Some(Type::Record(contents[xml_id.byte_range().shrink(1)].into()))
+					Some(_T!(Type::Record(contents[xml_id.byte_range().shrink(1)].into())))
 				} else {
 					None
 				}
 			}
-			Type::ModelFn(model) => Some(Type::Model(model)),
-			Type::Super => scope.get(scope.super_.as_deref()?).cloned(),
+			Type::ModelFn(model) => Some(_T!(Type::Model(model))),
+			Type::Super => Some(_T!(scope.get(scope.super_.as_deref()?).cloned()?)),
 			Type::Method(model, mapped) if mapped == "mapped" => {
 				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
 				let mapped = call.named_child(1)?.named_child(0)?;
@@ -764,7 +831,8 @@ impl Index {
 						let mut model: Spur = model.into();
 						let mut mapped = &contents[mapped.byte_range().shrink(1)];
 						self.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
-						self.type_of_attribute(&Type::Model(ImStr::from_static(_R(model))), mapped, scope)
+						self.type_of_attribute(&Type::Model(_R(model).into()), mapped, scope)
+							.map(|it| _T!(it))
 					}
 					"lambda" => {
 						// (lambda (lambda_parameters)? body: (_))
@@ -773,12 +841,15 @@ impl Index {
 							let first_arg = params.named_child(0)?;
 							if first_arg.kind() == "identifier" {
 								let first_arg = &contents[first_arg.byte_range()];
-								scope.insert(first_arg.to_string(), Type::Model(ImStr::from_static(_R(model))));
+								scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
 							}
 						}
 						let body = mapped.child_by_field_name(b"body")?;
-						let type_ = self.type_of(body, &scope, contents).unwrap_or(Type::Value);
-						Some(Index::wrap_in_container(type_, Type::list_of))
+						let type_ = self.type_of(body, &scope, contents).unwrap_or_else(|| _T!(Type::Value));
+						let type_ = Index::wrap_in_container(type_cache().resolve(type_), |it| {
+							Type::List(ListElement::Occupied(_T!(it)))
+						});
+						Some(_T!(type_))
 					}
 					_ => None,
 				}
@@ -791,9 +862,9 @@ impl Index {
 						let mut model: Spur = model.into();
 						let mut grouped = &contents[grouped.byte_range().shrink(1)];
 						self.models.resolve_mapped(&mut model, &mut grouped, None).ok()?;
-						let model = Type::Model(ImStr::from_static(_R(model)));
+						let model = Type::Model(_R(model).into());
 						let groupby = self.type_of_attribute(&model, grouped, scope)?;
-						Some(Type::Dict(Box::new([groupby, model])))
+						Some(_T!(Type::Dict(_T!(groupby), _T!(model))))
 					}
 					"lambda" => {
 						let mut scope = Scope::new(Some(scope.clone()));
@@ -801,13 +872,13 @@ impl Index {
 							let first_arg = params.named_child(0)?;
 							if first_arg.kind() == "identifier" {
 								let first_arg = &contents[first_arg.byte_range()];
-								scope.insert(first_arg.to_string(), Type::Model(ImStr::from_static(_R(model))));
+								scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
 							}
 						}
 						let body = grouped.child_by_field_name(b"body")?;
-						let groupby = self.type_of(body, &scope, contents).unwrap_or(Type::Value);
-						let model = Type::Model(ImStr::from_static(_R(model)));
-						Some(Type::Dict(Box::new([groupby, model])))
+						let groupby = self.type_of(body, &scope, contents).unwrap_or_else(|| _T!(Type::Value));
+						let model = Type::Model(_R(model).into());
+						Some(_T!(Type::Dict(groupby, _T!(model))))
 					}
 					_ => None,
 				}
@@ -857,21 +928,29 @@ impl Index {
 
 				groupby.extend(aggs);
 				groupby.dedup();
-				let model = Type::Model(ImStr::from_static(_R(model)));
+				let model = Type::Model(_R(model).into());
+				let value_id = _T!(Type::Value);
 				// FIXME: This is not quite correct as only recordset and numeric aggregations make sense.
 				let aggs = groupby
 					.into_iter()
-					.map(|attr| self.type_of_attribute(&model, attr, scope).unwrap_or(Type::Value));
-				Some(Type::List(ListElement::Occupied(Box::new(Type::Tuple(aggs.collect())))))
+					.map(|attr| match self.type_of_attribute(&model, attr, scope) {
+						Some(type_) => _T!(type_),
+						None => value_id,
+					});
+				let tuple = _T!(Type::Tuple(aggs.collect()));
+				Some(_T!(Type::List(ListElement::Occupied(tuple))))
 			}
 			Type::Method(model, method) => {
 				let method = _G(&method)?;
 				let args = self.prepare_call_scope(model, method.into(), call, scope, contents);
-				self.eval_method_rtype(method.into(), *model, args)
+				Some(self.eval_method_rtype(method.into(), *model, args)?)
 			}
-			Type::PythonMethod(dict, items) if dict.is_dict() && items == "items" => {
-				let Type::Dict(dict) = *dict else { unreachable!() };
-				Some(Type::Iterable(Some(Box::new(Type::Tuple(dict.to_vec())))))
+			Type::PythonMethod(dict, items) if type_cache().is_dict(dict) && items == "items" => {
+				let Type::Dict(lhs, rhs) = type_cache().resolve(dict) else {
+					unreachable!()
+				};
+				let tuple = _T!(Type::Tuple(vec![lhs, rhs]));
+				Some(_T!(Type::Iterable(Some(tuple))))
 			}
 			Type::Env
 			| Type::Record(..)
@@ -896,7 +975,7 @@ impl Index {
 		call: Node,
 		scope: &Scope,
 		contents: &str,
-	) -> Option<Scope> {
+	) -> Option<(Vec<ImStr>, Scope)> {
 		// (call
 		//   (arguments_list
 		//     (_)
@@ -911,7 +990,8 @@ impl Index {
 		}
 
 		drop(model);
-		let mut out = Scope::new(None);
+		let mut argtypes = Scope::new(None);
+		let mut args = vec![];
 		for (idx, arg) in arguments_list.named_children(&mut arguments_list.walk()).enumerate() {
 			if arg.kind() == "keyword_argument"
 				&& let Some(key) = arg.child_by_field_name("key")
@@ -924,38 +1004,41 @@ impl Index {
 				}) {
 					continue;
 				}
-				let Some(value) = self.type_of(value, scope, contents) else {
+				let Some(tid) = self.type_of(value, scope, contents) else {
 					continue;
 				};
-				out.insert(key.to_string(), value);
+				args.push(key.into());
+				argtypes.insert(key.to_string(), type_cache().resolve(tid));
 			} else if let Some(FunctionParam::Param(argname)) = arguments.get(idx)
-				&& let Some(value) = self.type_of(arg, scope, contents)
+				&& let Some(tid) = self.type_of(arg, scope, contents)
 			{
-				out.insert(argname.to_string(), value);
+				args.push(argname.clone());
+				argtypes.insert(argname.to_string(), type_cache().resolve(tid));
 			} else {
 				continue;
 			}
 		}
 
-		Some(out)
+		Some((args, argtypes))
 	}
 	#[instrument(skip_all, ret)]
-	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &str) -> Option<Type> {
+	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &str) -> Option<TypeId> {
 		let lhs = attribute.named_child(0)?;
-		let lhs = self.type_of(lhs, scope, contents)?;
+		let lhsid = self.type_of(lhs, scope, contents)?;
+		let lhs = type_cache().resolve(lhsid);
 		let rhs = attribute.named_child(1)?;
 		let attrname = &contents[rhs.byte_range()];
 		match &contents[rhs.byte_range()] {
 			"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
 			"website" if matches!(lhs, Type::HttpRequest) => Some(Type::Model("website".into())),
 			"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
-			"user" if matches!(lhs, Type::Env) => Some(Type::Model(ImStr::from_static("res.users"))),
-			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model(ImStr::from_static("res.company"))),
+			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
+			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
 			"mapped" | "grouped" | "_read_group" => {
 				let model = self.try_resolve_model(&lhs, scope)?;
 				Some(Type::Method(model, attrname.into()))
 			}
-			dict_method @ "items" if lhs.is_dict() => Some(Type::PythonMethod(Box::new(lhs), dict_method.into())),
+			dict_method @ "items" if lhs.is_dict() => Some(Type::PythonMethod(lhsid, dict_method.into())),
 			func if MODEL_METHODS.contains(func) => match lhs {
 				Type::Model(model) => Some(Type::ModelFn(model)),
 				Type::Record(xml_id) => {
@@ -968,6 +1051,7 @@ impl Index {
 			ident if rhs.kind() == "identifier" => self.type_of_attribute(&lhs, ident, scope),
 			_ => None,
 		}
+		.map(|it| _T!(it))
 	}
 	#[instrument(skip_all, fields(attr=attr), ret)]
 	pub fn type_of_attribute(&self, type_: &Type, attr: &str, scope: &Scope) -> Option<Type> {
@@ -984,11 +1068,11 @@ impl Index {
 					}
 
 					match _R(type_) {
-						"Selection" | "Char" | "Text" | "Html" => Some(Type::PyBuiltin(ImStr::from_static("str"))),
-						"Integer" => Some(Type::PyBuiltin(ImStr::from_static("int"))),
-						"Float" | "Monetary" => Some(Type::PyBuiltin(ImStr::from_static("float"))),
-						"Date" => Some(Type::PyBuiltin(ImStr::from_static("date"))),
-						"Datetime" => Some(Type::PyBuiltin(ImStr::from_static("datetime"))),
+						"Selection" | "Char" | "Text" | "Html" => Some(Type::PyBuiltin("str".into())),
+						"Integer" => Some(Type::PyBuiltin("int".into())),
+						"Float" | "Monetary" => Some(Type::PyBuiltin("float".into())),
+						"Date" => Some(Type::PyBuiltin("date".into())),
+						"Datetime" => Some(Type::PyBuiltin("datetime".into())),
 						_ => None,
 					}
 				}
@@ -996,25 +1080,22 @@ impl Index {
 			}
 		} else {
 			match attr {
-				"id" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
-					Some(Type::PyBuiltin(ImStr::from_static("int")))
+				"id" if matches!(type_, Type::Model(..) | Type::Record(..)) => Some(Type::PyBuiltin("int".into())),
+				"ids" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
+					Some(Type::List(ListElement::Occupied(_T!(Type::PyBuiltin("int".into())))))
 				}
-				"ids" if matches!(type_, Type::Model(..) | Type::Record(..)) => Some(Type::List(
-					ListElement::Occupied(Box::new(Type::PyBuiltin(ImStr::from_static("int")))),
-				)),
 				"display_name" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
-					Some(Type::PyBuiltin(ImStr::from_static("str")))
+					Some(Type::PyBuiltin("str".into()))
 				}
 				"create_date" | "write_date" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
-					Some(Type::PyBuiltin(ImStr::from_static("datetime")))
+					Some(Type::PyBuiltin("datetime".into()))
 				}
 				"create_uid" | "write_uid" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
-					Some(Type::Model(ImStr::from_static("res.users")))
+					Some(Type::Model("res.users".into()))
 				}
-				"_fields" if matches!(type_, Type::Model(..) | Type::Record(..)) => Some(Type::Dict(Box::new([
-					Type::PyBuiltin(ImStr::from_static("str")),
-					Type::Model(ImStr::from_static("ir.model.fields")),
-				]))),
+				"_fields" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
+					Some(Type::Dict(_T!(Type::PyBuiltin("str".into())), _T!["ir.model.fields"]))
+				}
 				"env" if matches!(type_, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
 				_ => None,
 			}
@@ -1044,42 +1125,39 @@ impl Index {
 		}
 	}
 	#[inline]
-	pub fn type_display<'a>(&self, type_: &'a Type) -> Option<Cow<'a, str>> {
+	pub fn type_display(&self, type_: TypeId) -> Option<String> {
 		self.type_display_indent(type_, 0)
 	}
-	fn type_display_indent<'a>(&self, type_: &'a Type, indent: usize) -> Option<Cow<'a, str>> {
-		match type_ {
-			Type::Dict(pair) => {
-				let [lhs, rhs] = &**pair;
+	fn type_display_indent(&self, type_: TypeId, indent: usize) -> Option<String> {
+		match type_cache().resolve(type_) {
+			Type::Dict(lhs, rhs) => {
 				let lhs = self.type_display_indent(lhs, indent);
 				let lhs = lhs.as_deref().unwrap_or("...");
 				let rhs = self.type_display_indent(rhs, indent);
 				let rhs = rhs.as_deref().unwrap_or("...");
-				Some(fomat! { "dict[" (lhs) ", " (rhs) "]" }.into())
+				Some(fomat! { "dict[" (lhs) ", " (rhs) "]" })
 			}
 			Type::DictBag(properties) => {
 				let preindent = " ".repeat(indent + 2);
+				let empty_properties = properties.is_empty();
 				let properties_fragment = fomat! {
 					for (key, value) in properties {
 						(preindent)
 						match key {
 							DictKey::String(key) => { "\"" (key) "\"" }
-							DictKey::Type(Type::Dict(..) | Type::DictBag(..)) => { "{...}" }
+							DictKey::Type(key) if type_cache().is_dictlike(key) => { "{...}" }
 							DictKey::Type(key) => { (self.type_display_indent(key, indent + 2).as_deref().unwrap_or("...")) }
 						} ": " (self.type_display_indent(value, indent + 2).as_deref().unwrap_or("..."))
 					} sep { ",\n" }
 				};
 				let unindent = " ".repeat(indent);
-				Some(
-					fomat! {
-						if !properties.is_empty() {
-							"{\n" (properties_fragment) "\n" (unindent) "}"
-						} else {
-							"{}"
-						}
+				Some(fomat! {
+					if !empty_properties {
+						"{\n" (properties_fragment) "\n" (unindent) "}"
+					} else {
+						"{}"
 					}
-					.into(),
-				)
+				})
 			}
 			Type::PyBuiltin(builtin) => Some(builtin.as_str().into()),
 			Type::List(slot) => {
@@ -1088,38 +1166,33 @@ impl Index {
 					ListElement::Occupied(slot) => self.type_display_indent(slot, indent),
 				};
 				Some(match slot {
-					Some(slot) => format!("list[{slot}]").into(),
+					Some(slot) => format!("list[{slot}]"),
 					None => "list".into(),
 				})
 			}
 			Type::Env => Some("Environment".into()),
-			Type::Model(model) => Some(format!(r#"Model["{model}"]"#).into()),
+			Type::Model(model) => Some(format!(r#"Model["{model}"]"#)),
 			Type::Record(xml_id) => {
 				let xml_id = _G(xml_id)?;
 				let record = self.records.get(&xml_id.into())?;
 				Some(_R(record.model?).into())
 			}
-			Type::Tuple(items) => Some(
-				fomat! {
-					"tuple["
-					for item in items {
-						(self.type_display_indent(item, indent).as_deref().unwrap_or("..."))
-					} sep { ", " }
-					"]"
-				}
-				.into(),
-			),
+			Type::Tuple(items) => Some(fomat! {
+				"tuple["
+				for item in items {
+					(self.type_display_indent(item, indent).as_deref().unwrap_or("..."))
+				} sep { ", " }
+				"]"
+			}),
 			Type::Iterable(output) => {
-				let output = output
-					.as_deref()
-					.and_then(|inner| self.type_display_indent(inner, indent));
+				let output = output.and_then(|inner| self.type_display_indent(inner, indent));
 				let output = output.as_deref().unwrap_or("...");
-				Some(format!("Iterable[{output}]").into())
+				Some(format!("Iterable[{output}]"))
 			}
 			Type::Method(..) => unreachable!("Bug: this function should not handle methods"),
 			Type::RefFn | Type::ModelFn(_) | Type::Super | Type::HttpRequest | Type::Value | Type::PythonMethod(..) => {
 				if cfg!(debug_assertions) {
-					Some(format!("{type_:?}").into())
+					Some(format!("{type_:?}"))
 				} else {
 					None
 				}
@@ -1161,11 +1234,16 @@ impl Index {
 	}
 	/// Resolves the return type of a method as well as populating its arguments and docstring.
 	///
-	/// `parameters` can be provided using [`Index::prepare_call_scope`].
+	/// `parameters` can be provided using [`Index::prepare_call_scope`].  
 	#[instrument(level = "trace", ret, skip(self, model), fields(model = _R(model)))]
-	pub fn eval_method_rtype(&self, method: Symbol<Method>, model: Spur, parameters: Option<Scope>) -> Option<Type> {
+	pub fn eval_method_rtype(
+		&self,
+		method: Symbol<Method>,
+		model: Spur,
+		parameters: Option<(Vec<ImStr>, Scope)>,
+	) -> Option<TypeId> {
 		_ = self.models.populate_properties(model.into(), &[]);
-		let mut model_entry = self.models.get_mut(&model.into())?;
+		let mut model_entry = self.models.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
 		let method_obj = model_entry.methods.as_mut()?.get_mut(&method)?;
 
 		if method_obj
@@ -1184,6 +1262,16 @@ impl Index {
 				method.pending_eval.store(false, Ordering::Relaxed);
 			}
 		}));
+
+		let (argnames, mut scope) = parameters.unwrap_or_default();
+		let cache_key = argnames
+			.into_iter()
+			.map(|arg| _T!(scope.variables.get(&*arg).cloned().unwrap_or(Type::Value)))
+			.collect::<Vec<_>>();
+		if let Some(tid) = method_obj.eval_cache.get(&cache_key) {
+			drop(model_entry);
+			return Some(tid);
+		}
 
 		let location = method_obj.locations.first().cloned()?;
 		drop(model_entry);
@@ -1236,7 +1324,6 @@ impl Index {
 		}
 
 		let (self_type, fn_scope, self_param) = determine_scope(ast.root_node(), &contents, end_offset.0)?;
-		let mut scope = parameters.unwrap_or_default();
 		let self_type = match self_type {
 			Some(type_) => &contents[type_.byte_range().shrink(1)],
 			None => "",
@@ -1255,6 +1342,7 @@ impl Index {
 					return ControlFlow::Continue(entered);
 				};
 
+				let type_ = type_cache().resolve(type_);
 				return match self.try_resolve_model(&type_, scope) {
 					Some(resolved) => ControlFlow::Break(Some(Type::Model(ImStr::from(_R(resolved))))),
 					None => ControlFlow::Break(Some(type_)),
@@ -1300,7 +1388,38 @@ impl Index {
 		}
 
 		method.pending_eval.store(false, Ordering::Release);
-		type_
+		if let Some(type_) = type_ {
+			let tid = _T!(type_);
+			method.eval_cache.insert(cache_key, tid);
+			Some(tid)
+		} else {
+			None
+		}
+	}
+	/// `pattern` is `(identifier | pattern_list | tuple_pattern)`, the `a, b` in `for a, b in ...`.
+	fn destructure_into_patternlist_like(&self, pattern: Node, tid: TypeId, scope: &mut Scope, contents: &str) {
+		if pattern.kind() == "identifier" {
+			let name = &contents[pattern.byte_range()];
+			scope.insert(name.to_string(), type_cache().resolve(tid));
+		} else if matches!(pattern.kind(), "pattern_list" | "tuple_pattern") {
+			if let Type::Tuple(mut inner) = type_cache().resolve(tid) {
+				inner.reverse();
+				for child in pattern.named_children(&mut pattern.walk()) {
+					if matches!(child.kind(), "identifier" | "tuple_pattern")
+						&& let Some(type_) = inner.pop()
+					{
+						self.destructure_into_patternlist_like(child, type_, scope, contents);
+					}
+				}
+			} else if let Some(inner) = self.type_of_iterable(type_cache().resolve(tid)) {
+				// spread this type to all params
+				for child in pattern.named_children(&mut pattern.walk()) {
+					if matches!(child.kind(), "identifier" | "tuple_pattern") {
+						self.destructure_into_patternlist_like(child, inner, scope, contents);
+					}
+				}
+			}
+		}
 	}
 	fn parse_method_docstring<'out>(fn_scope: Node, contents: &'out str) -> Option<&'out str> {
 		let block = fn_scope.child_by_field_name("body")?;
@@ -1357,32 +1476,6 @@ pub fn determine_scope<'out, 'node>(
 	Some((self_type, fn_scope, self_param))
 }
 
-/// `pattern` is `(identifier | pattern_list | tuple_pattern)`, the `a, b` in `for a, b in ...`.
-fn destructure_into_patternlist_like(pattern: Node, type_: Type, scope: &mut Scope, contents: &str) {
-	if pattern.kind() == "identifier" {
-		let name = &contents[pattern.byte_range()];
-		scope.insert(name.to_string(), type_);
-	} else if matches!(pattern.kind(), "pattern_list" | "tuple_pattern") {
-		if let Type::Tuple(mut inner) = type_ {
-			inner.reverse();
-			for child in pattern.named_children(&mut pattern.walk()) {
-				if matches!(child.kind(), "identifier" | "tuple_pattern")
-					&& let Some(type_) = inner.pop()
-				{
-					destructure_into_patternlist_like(child, type_, scope, contents);
-				}
-			}
-		} else if let Some(inner) = Index::type_of_iterable(type_) {
-			// spread this type to all params
-			for child in pattern.named_children(&mut pattern.walk()) {
-				if matches!(child.kind(), "identifier" | "tuple_pattern") {
-					destructure_into_patternlist_like(child, inner.clone(), scope, contents);
-				}
-			}
-		}
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use pretty_assertions::assert_eq;
@@ -1390,8 +1483,7 @@ mod tests {
 	use tower_lsp_server::lsp_types::Position;
 	use tree_sitter::{Parser, QueryCursor, StreamingIterator, StreamingIteratorMut};
 
-	use crate::ImStr;
-	use crate::analyze::{FieldCompletion, Type};
+	use crate::analyze::{FieldCompletion, Type, type_cache};
 	use crate::index::_I;
 	use crate::utils::{ByteOffset, acc_vec, rope_conv};
 	use crate::{index::Index, test_utils::cases::foo::prepare_foo_index};
@@ -1468,7 +1560,7 @@ class Foo(models.Model):
 
 		assert_eq!(
 			index.eval_method_rtype(_I("test").into(), _I("bar"), None),
-			Some(Type::Model(ImStr::from_static("foo")))
+			Some(type_cache().get_or_intern(Type::Model("foo".into())))
 		)
 	}
 
@@ -1481,7 +1573,7 @@ class Foo(models.Model):
 
 		assert_eq!(
 			index.eval_method_rtype(_I("test").into(), _I("quux"), None),
-			Some(Type::Model(ImStr::from_static("foo")))
+			Some(type_cache().get_or_intern(Type::Model("foo".into())))
 		)
 	}
 }

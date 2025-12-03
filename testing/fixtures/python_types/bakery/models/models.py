@@ -6,7 +6,7 @@ class Bread(models.Model):
 
     def _test(self):
         items = {item: item for item in self}
-        #^type Dict([Model("bakery.bread"), Model("bakery.bread")])
+        #^type Dict(Model("bakery.bread"), Model("bakery.bread"))
 
         foobar = {'a': self, 'b': 123}
         #^type DictBag([("a", Model("bakery.bread")), ("b", PyBuiltin("int"))])
@@ -67,7 +67,7 @@ class Bread(models.Model):
         foobar = ['what']
         #^type List(PyBuiltin("str"))
         self._fields
-             #^type Dict([PyBuiltin("str"), Model("ir.model.fields")])
+             #^type Dict(PyBuiltin("str"), Model("ir.model.fields"))
 
     def test_builtins(self):
         for aaaa, bbbb in enumerate(self):
