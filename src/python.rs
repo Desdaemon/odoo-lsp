@@ -10,7 +10,7 @@ use ts_macros::query;
 
 use crate::prelude::*;
 
-use crate::analyze::Type;
+use crate::analyze::{Type, type_cache};
 use crate::index::{_G, _I, _R, PathSymbol, index_models};
 use crate::model::{ModelName, ModelType};
 use crate::xml::determine_csv_xmlid_subgroup;
@@ -1119,7 +1119,7 @@ impl Backend {
 		let lsp_range = span_conv(needle.range());
 		let (type_, scope) =
 			some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), &contents));
-		if let Some(model) = self.index.try_resolve_model(&type_, &scope) {
+		if let Some(model) = self.index.try_resolve_model(&type_cache().resolve(type_), &scope) {
 			let model = _R(model);
 			let identifier = (needle.kind() == "identifier").then(|| &contents[needle.byte_range()]);
 			return self.index.hover_model(model, Some(lsp_range), true, identifier);
@@ -1180,9 +1180,12 @@ impl Backend {
 		};
 
 		let callee = some!(args.prev_named_sibling());
-		let Some((Type::Method(model_key, method), _)) =
+		let Some((tid, _)) =
 			(self.index).type_of_range(ast.root_node(), callee.byte_range().map_unit(ByteOffset), &contents)
 		else {
+			return Ok(None);
+		};
+		let Type::Method(model_key, method) = type_cache().resolve(tid) else {
 			return Ok(None);
 		};
 		let method_key = some!(_G(&method));
@@ -1209,7 +1212,7 @@ impl Backend {
 			});
 		}
 
-		let rtype = rtype.as_ref().and_then(|rtype| self.index.type_display(rtype));
+		let rtype = rtype.and_then(|rtype| self.index.type_display(rtype));
 		match rtype {
 			Some(rtype) => drop(write!(&mut label, ") -> {rtype}")),
 			None => label.push_str(") -> ..."),
