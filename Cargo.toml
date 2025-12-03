@@ -64,11 +64,11 @@ futures = "0.3.31"
 tree-sitter-python = "0.23.6"
 globwalk = "0.9.1"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dependencies]
 ropey = { version = "2.0.0-beta.1", features = ["metric_chars"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 dashmap = { version = "6.1.0", features = ["raw-api"] }
 xmlparser = "0.13.5"
 pin-project-lite = "0.2.16"
@@ -91,6 +91,8 @@ tree-sitter-javascript = "0.23.1"
 self_update = { version = "0.42.0", optional = true, default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }
 anyhow = { version = "1.0.97", features = ["backtrace"] }
 
+serde.workspace = true
+serde_json.workspace = true
 tree-sitter.workspace = true
 tree-sitter-python.workspace = true
 tokio.workspace = true
