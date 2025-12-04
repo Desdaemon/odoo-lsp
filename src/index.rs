@@ -1,5 +1,6 @@
 //! The main indexer for all language items, including [`Record`]s, QWeb [`Template`]s, and Owl [`Component`]s
 
+use mini_moka::sync::Cache;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -78,6 +79,13 @@ pub struct Index {
 	/// Cache for transitive dependencies to avoid recalculation
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub(crate) transitive_deps_cache: DashMap<ModuleName, HashSet<ModuleName>>,
+	#[default(_code = "Cache::new(16)")]
+	pub(crate) ast_cache: Cache<PathBuf, Arc<AstCacheItem>>,
+}
+
+pub struct AstCacheItem {
+	pub tree: tree_sitter::Tree,
+	pub rope: Rope,
 }
 
 pub type ModuleName = Symbol<ModuleEntry>;
@@ -1091,7 +1099,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 		});
 		match &contents[capture.byte_range()] {
 			b"_name" => {
-				let Some(name_decl) = capture.next_named_sibling() else {
+				let Some(name_decl) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				if name_decl.kind() == "string" {
@@ -1103,7 +1111,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 				}
 			}
 			b"_inherit" => {
-				let Some(inherit_decl) = capture.next_named_sibling() else {
+				let Some(inherit_decl) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				match inherit_decl.kind() {
@@ -1129,7 +1137,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 				}
 			}
 			b"_inherits" => {
-				let Some(inherit_dict) = capture.next_named_sibling() else {
+				let Some(inherit_dict) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				if inherit_dict.kind() != "dictionary" {
