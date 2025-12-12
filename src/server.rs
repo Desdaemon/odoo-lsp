@@ -7,6 +7,7 @@ use serde_json::Value;
 use tower_lsp_server::LanguageServer;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::lsp_types::notification::{DidChangeConfiguration, Notification};
+use tower_lsp_server::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp_server::{UriExt, lsp_types::*};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -57,6 +58,14 @@ impl LanguageServer for Backend {
 		{
 			debug!("Client supports pull diagnostics");
 			self.capabilities.pull_diagnostics.store(true, Relaxed);
+		}
+
+		if let Some(WindowClientCapabilities {
+			work_done_progress: Some(true),
+			..
+		}) = params.capabilities.window
+		{
+			self.capabilities.can_create_wdp.store(true, Relaxed);
 		}
 
 		Ok(InitializeResult {
@@ -124,7 +133,7 @@ impl LanguageServer for Backend {
 
 		self.document_map.remove(path);
 		self.record_ranges.remove(path);
-		
+
 		let file_path = params.text_document.uri.to_file_path().unwrap();
 		self.ast_map.remove(file_path.to_str().unwrap());
 
@@ -200,6 +209,23 @@ impl LanguageServer for Backend {
 			}
 		};
 
+		let mut progress = None;
+		let token = ProgressToken::String(format!("odoo_lsp_open:{file_path_str}"));
+		if self.capabilities.can_create_wdp.load(Relaxed)
+			&& self
+				.client
+				.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
+				.await
+				.is_ok()
+		{
+			progress = Some(
+				self.client
+					.progress(token, format!("Opening {file_path_str}"))
+					.begin()
+					.await,
+			);
+		}
+
 		let rope = Rope::from_str(&params.text_document.text);
 		self.document_map.insert(
 			params.text_document.uri.path().as_str().to_string(),
@@ -239,6 +265,10 @@ impl LanguageServer for Backend {
 			})
 			.await
 			.inspect_err(|err| warn!("{err}"));
+
+		if let Some(progress) = progress {
+			progress.finish().await;
+		}
 	}
 	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
@@ -279,8 +309,7 @@ impl LanguageServer for Backend {
 					document.rope = ropey::Rope::from_str(&change.text);
 				} else {
 					let range = change.range.expect("LSP change event must have a range");
-					let range: CharRange =
-						rope_conv(range, document.rope.slice(..)).expect("did_change applying delta: no range");
+					let range: CharRange = rope_conv(range, document.rope.slice(..));
 					let rope = &mut document.rope;
 					rope.remove(range.erase());
 					if !change.text.is_empty() {

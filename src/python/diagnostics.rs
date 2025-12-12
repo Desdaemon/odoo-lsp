@@ -4,6 +4,7 @@ use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticRelatedInformation, Diag
 use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 
+use crate::analyze::type_cache;
 use crate::index::{_R, Index};
 use crate::prelude::*;
 
@@ -37,10 +38,8 @@ impl Backend {
 			let before_count = diagnostics.len();
 			diagnostics.retain(|diag| {
 				// If we couldn't get a range here, rope has changed significantly so just toss the diag.
-				let Ok(range) = rope_conv::<_, ByteRange>(diag.range, rope) else {
-					return false;
-				};
-				!root.byte_range().contains(&range.start.0)
+				let ByteOffset(start) = rope_conv(diag.range.start, rope);
+				!root.byte_range().contains(&start)
 			});
 			debug!(
 				"Retained {}/{} diagnostics after damage zone check",
@@ -107,8 +106,7 @@ impl Backend {
 							}
 
 							if !id_found {
-								let range = rope_conv(range.map_unit(ByteOffset), rope)
-									.expect(format_loc!("failed to get range for xmlid diag"));
+								let range = rope_conv(range.map_unit(ByteOffset), rope);
 								diagnostics.push(Diagnostic {
 									range,
 									message: format!("No XML record with ID `{xmlid}` found"),
@@ -128,7 +126,7 @@ impl Backend {
 								let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 								if !has_model.unwrap_or(false) {
 									diagnostics.push(Diagnostic {
-										range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
+										range: rope_conv(range.map_unit(ByteOffset), rope),
 										message: format!("`{model}` is not a valid model name"),
 										severity: Some(DiagnosticSeverity::ERROR),
 										..Default::default()
@@ -151,7 +149,7 @@ impl Backend {
 							let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 							if !has_model.unwrap_or(false) {
 								diagnostics.push(Diagnostic {
-									range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
+									range: rope_conv(range.map_unit(ByteOffset), rope),
 									message: format!("`{model}` is not a valid model name"),
 									severity: Some(DiagnosticSeverity::ERROR),
 									..Default::default()
@@ -179,7 +177,7 @@ impl Backend {
 					Some(PyCompletions::FieldDescriptor) => {
 						// fields.Many2one(field_descriptor=...)
 
-						let Some(desc_value) = capture.node.next_named_sibling() else {
+						let Some(desc_value) = python_next_named_sibling(capture.node) else {
 							continue;
 						};
 
@@ -239,7 +237,7 @@ impl Backend {
 						let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
 						if !has_model.unwrap_or(false) {
 							diagnostics.push(Diagnostic {
-								range: rope_conv(range.map_unit(ByteOffset), rope).unwrap(),
+								range: rope_conv(range.map_unit(ByteOffset), rope),
 								message: format!("`{model}` is not a valid model name"),
 								severity: Some(DiagnosticSeverity::ERROR),
 								..Default::default()
@@ -309,11 +307,11 @@ impl Backend {
 		};
 		let mut scope = Scope::default();
 		let self_type = match self_type {
-			Some(type_) => ImStr::from(&contents[type_.byte_range().shrink(1)]),
-			None => ImStr::from_static(""),
+			Some(type_) => &contents[type_.byte_range().shrink(1)],
+			None => "",
 		};
 		scope.super_ = Some(self_param.into());
-		scope.insert(self_param.to_string(), Type::Model(self_type));
+		scope.insert(self_param.to_string(), Type::Model(self_type.into()));
 		let scope_end = fn_scope.end_byte();
 		Index::walk_scope(fn_scope, Some(scope), |scope, node| {
 			let entered = (self.index).build_scope(scope, node, scope_end, contents)?;
@@ -324,20 +322,11 @@ impl Backend {
 			}
 
 			let attribute = attribute.unwrap();
+			#[rustfmt::skip]
 			static MODEL_BUILTINS: phf::Set<&str> = phf::phf_set!(
-				"env",
-				"id",
-				"ids",
-				"display_name",
-				"create_date",
-				"write_date",
-				"create_uid",
-				"write_uid",
-				"pool",
-				"record",
-				"flush_model",
-				"mapped",
-				"fields_get",
+				"env", "id", "ids", "display_name", "create_date", "write_date",
+				"create_uid", "write_uid", "pool", "record", "flush_model", "mapped",
+				"grouped", "_read_group", "filtered", "sorted", "_origin", "fields_get",
 				"user_has_groups",
 			);
 			let prop = &contents[attribute.byte_range()];
@@ -348,6 +337,7 @@ impl Backend {
 			let Some(lhs_t) = (self.index).type_of(node.child_by_field_name("object").unwrap(), scope, contents) else {
 				return ControlFlow::Continue(entered);
 			};
+			let lhs_t = type_cache().resolve(lhs_t);
 
 			let Some(model_name) = (self.index).try_resolve_model(&lhs_t, scope) else {
 				return ControlFlow::Continue(entered);
@@ -484,7 +474,7 @@ impl Backend {
 			if let Some(dot) = needle.find('.') {
 				let message_range = range.start.0 + dot..range.end.0;
 				diagnostics.push(Diagnostic {
-					range: rope_conv(message_range.map_unit(ByteOffset), rope).unwrap(),
+					range: rope_conv(message_range.map_unit(ByteOffset), rope),
 					severity: Some(DiagnosticSeverity::ERROR),
 					message: "Dotted access is not supported in this context".to_string(),
 					..Default::default()
@@ -497,7 +487,7 @@ impl Backend {
 				Ok(()) => {}
 				Err(ResolveMappedError::NonRelational) => {
 					diagnostics.push(Diagnostic {
-						range: rope_conv(range, rope).unwrap(),
+						range: rope_conv(range, rope),
 						severity: Some(DiagnosticSeverity::ERROR),
 						message: format!("`{needle}` is not a relational field"),
 						..Default::default()
@@ -538,7 +528,7 @@ impl Backend {
 		}
 		if !has_property {
 			diagnostics.push(Diagnostic {
-				range: rope_conv(range, rope).unwrap(),
+				range: rope_conv(range, rope),
 				severity: Some(DiagnosticSeverity::ERROR),
 				message: format!(
 					"Model `{}` has no {} `{needle}`",
