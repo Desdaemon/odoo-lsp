@@ -1257,7 +1257,7 @@ impl Backend {
 		Ok(Some(format!("{type_:?}").replacen("Text::", "", 1)))
 	}
 	fn is_commandlist(cmdlist: Node, offset: usize) -> bool {
-		cmdlist.kind() == "list"
+		matches!(cmdlist.kind(), "list" | "list_comprehension")
 			&& cmdlist.byte_range().contains_end(offset)
 			&& cmdlist.parent().is_some_and(|parent| parent.kind() == "pair")
 	}
