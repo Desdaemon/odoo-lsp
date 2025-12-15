@@ -1,10 +1,9 @@
+use core::fmt::{Debug, Display};
+use core::future::Future;
 use core::ops::{Add, Sub};
 use std::borrow::Cow;
 use std::ffi::OsStr;
-use std::fmt::Display;
-use std::future::Future;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::try_result::TryResult;
 use futures::future::BoxFuture;
@@ -19,6 +18,9 @@ pub use visitor::PreTravel;
 
 mod catch_panic;
 pub use catch_panic::CatchPanic;
+
+mod atomic;
+use atomic::{AtomicCell, PodThreadId};
 
 use crate::index::PathSymbol;
 use crate::prelude::*;
@@ -535,37 +537,32 @@ pub fn init_for_test() {
 	});
 }
 
+#[derive(Default)]
 pub struct Semaphore {
-	should_wait: AtomicBool,
+	blocking_thread: AtomicCell<Option<PodThreadId>>,
 	notifier: tokio::sync::Notify,
-}
-
-impl Default for Semaphore {
-	fn default() -> Self {
-		Self {
-			should_wait: AtomicBool::new(true),
-			notifier: Default::default(),
-		}
-	}
 }
 
 pub struct Blocker<'a>(&'a Semaphore);
 
 impl Semaphore {
-	pub fn block(&self) -> Blocker<'_> {
-		self.should_wait.store(true, Ordering::SeqCst);
+	pub async fn block(&self) -> Blocker<'_> {
+		self.wait().await;
+		self.blocking_thread.set(Some(std::thread::current().id().into()));
 		Blocker(self)
 	}
 
-	pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+	pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 	/// Waits for a maximum of [`WAIT_LIMIT`][Self::WAIT_LIMIT] for a notification.
 	pub async fn wait(&self) {
-		if self.should_wait.load(Ordering::SeqCst) {
-			tokio::select! {
-				_ = self.notifier.notified() => {}
-				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
-					warn!("WAIT_LIMIT elapsed (thread={:?})", std::thread::current().id());
+		if self.should_wait() {
+			loop {
+				tokio::select! {
+					_ = self.notifier.notified() => return,
+					_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
+						warn!("WAIT_LIMIT elapsed (thread={:?})", std::thread::current().id());
+					}
 				}
 			}
 		}
@@ -573,13 +570,17 @@ impl Semaphore {
 
 	#[inline]
 	pub fn should_wait(&self) -> bool {
-		self.should_wait.load(Ordering::SeqCst)
+		// This is not quite correct, but allows us to prevent some simple deadlocks
+		// when the same thread tries to acquire a blocker
+		self.blocking_thread
+			.get()
+			.is_some_and(|id| id != std::thread::current().id().into())
 	}
 }
 
 impl Drop for Blocker<'_> {
 	fn drop(&mut self) {
-		self.0.should_wait.store(false, Ordering::SeqCst);
+		self.0.blocking_thread.set(None);
 		self.0.notifier.notify_waiters();
 	}
 }
