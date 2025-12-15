@@ -103,6 +103,7 @@ globwalk.workspace = true
 ts-macros.workspace = true
 tracing-subscriber.workspace = true
 mini-moka = "0.10.3"
+bytemuck = { version = "1.24.0", features = ["derive"] }
 
 [dev-dependencies]
 pretty_assertions.workspace = true
