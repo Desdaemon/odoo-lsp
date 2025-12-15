@@ -58,6 +58,11 @@ For detailed usage instructions please check the [wiki] (work in progress).
 odoo-lsp is available from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Desdaemon.odoo-lsp) and the
 [Open VSX Registry](https://open-vsx.org/extension/Desdaemon/odoo-lsp). Alternatively, you can grab the latest nightly builds from [Releases].
 
+### Zed
+
+odoo-lsp is available from the [Zed extensions registry](https://zed.dev/extensions/odoo-lsp).
+For more details read the extension-specific [README](./crates/extension-zed/README.md).
+
 ### Helix
 
 See [.helix/languages.toml](./examples/.helix/languages.toml)
