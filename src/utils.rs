@@ -552,7 +552,7 @@ impl Semaphore {
 		Blocker(self)
 	}
 
-	pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
+	pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 	/// Waits for a maximum of [`WAIT_LIMIT`][Self::WAIT_LIMIT] for a notification.
 	pub async fn wait(&self) {
