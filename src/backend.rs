@@ -288,6 +288,7 @@ impl Backend {
 		}
 
 		if eager_diagnostics {
+			let client = self.client.clone();
 			let diagnostics = {
 				self.document_map
 					.get(params.uri.path().as_str())
@@ -295,9 +296,11 @@ impl Backend {
 					.diagnostics_cache
 					.clone()
 			};
-			self.client
-				.publish_diagnostics(params.uri, diagnostics, Some(params.version))
-				.await;
+			tokio::spawn(async move {
+				client
+					.publish_diagnostics(params.uri, diagnostics, Some(params.version))
+					.await
+			});
 		}
 
 		Ok(())
