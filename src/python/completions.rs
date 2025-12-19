@@ -1,10 +1,9 @@
-use tower_lsp_server::lsp_types::{CompletionList, CompletionResponse};
 use tree_sitter::{Node, QueryMatch};
 
 use std::borrow::Cow;
 use std::sync::atomic::Ordering::Relaxed;
 
-use tower_lsp_server::{UriExt, lsp_types::*};
+use tower_lsp_server::ls_types::*;
 use tracing::debug;
 use tree_sitter::Tree;
 

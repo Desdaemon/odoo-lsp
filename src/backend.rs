@@ -16,7 +16,7 @@ use fomat_macros::fomat;
 use globwalk::FileType;
 use smart_default::SmartDefault;
 use tower_lsp_server::Client;
-use tower_lsp_server::{UriExt, lsp_types::*};
+use tower_lsp_server::ls_types::*;
 use tree_sitter::{Parser, Tree};
 
 use crate::analyze::{Scope, Type, TypeId, type_cache};
@@ -224,7 +224,7 @@ impl Backend {
 		}
 	}
 
-	#[instrument(skip_all)]
+	#[instrument(skip_all, ret)]
 	pub async fn on_change(&self, params: TextDocumentItem) -> anyhow::Result<()> {
 		let split_uri = params.uri.path().as_str().rsplit_once('.');
 		let rope;
@@ -838,7 +838,7 @@ impl Index {
 			(origin_fragment)
 		}
 	}
-	#[instrument(skip_all, fields(name, type_))]
+	#[instrument(level = "trace", skip_all, fields(name, type_))]
 	pub fn hover_variable(
 		&self,
 		name: Option<&str>,
@@ -914,7 +914,7 @@ impl Index {
 			if let Some(help) = &field.help { (help.to_string()) }
 		}
 	}
-	#[instrument(skip_all, fields(name, model))]
+	#[instrument(level = "trace", skip_all, fields(name, model))]
 	pub fn hover_property_name(&self, name: &str, model: &str, range: Option<Range>) -> anyhow::Result<Option<Hover>> {
 		let model_key = _I(model);
 		let entry = some!(self.models.populate_properties(model_key.into(), &[]));

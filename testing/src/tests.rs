@@ -34,7 +34,7 @@ fn init_tracing() {
 #[timeout(Duration::from_millis(800))]
 async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	std::env::set_current_dir(&root).unwrap();
-	let mut server = server::setup_lsp_server(None);
+	let mut server = server::setup_lsp_server(Some(2));
 	init_tracing();
 
 	_ = server

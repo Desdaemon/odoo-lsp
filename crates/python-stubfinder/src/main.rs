@@ -1,10 +1,8 @@
-use std::{
-	env::args,
-	fs::File,
-	io::{Read, Write},
-	path::{Path, PathBuf},
-	process::{Command, Stdio, exit},
-};
+use std::env::args;
+use std::fs::File;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio, exit};
 
 use serde::Deserialize;
 

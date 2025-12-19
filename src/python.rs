@@ -3,7 +3,7 @@ use std::path::Path;
 
 use lasso::Spur;
 use ropey::Rope;
-use tower_lsp_server::{UriExt, lsp_types::*};
+use tower_lsp_server::ls_types::*;
 use tracing::{debug, instrument, trace, warn};
 use tree_sitter::{Node, Parser, QueryMatch};
 use ts_macros::query;
@@ -299,7 +299,7 @@ impl Backend {
 		}))
 	}
 
-	#[tracing::instrument(skip_all, fields(uri))]
+	#[tracing::instrument(skip_all, ret, fields(uri))]
 	pub fn on_change_python(
 		&self,
 		text: &Text,

@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use fomat_macros::fomat;
 use lasso::Spur;
-use tower_lsp_server::{UriExt, lsp_types::*};
+use tower_lsp_server::ls_types::*;
 use tracing::{debug, instrument, warn};
 use tree_sitter::Parser;
 use xmlparser::{ElementEnd, Error, StrSpan, StreamError, Token, Tokenizer};
