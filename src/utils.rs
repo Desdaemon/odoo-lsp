@@ -4,6 +4,8 @@ use core::ops::{Add, Sub};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
 
 use dashmap::try_result::TryResult;
 use futures::future::BoxFuture;
@@ -18,9 +20,6 @@ pub use visitor::PreTravel;
 
 mod catch_panic;
 pub use catch_panic::CatchPanic;
-
-mod atomic;
-use atomic::{AtomicCell, PodThreadId};
 
 use crate::index::PathSymbol;
 use crate::prelude::*;
@@ -544,7 +543,7 @@ pub fn init_for_test() {
 
 #[derive(Default)]
 pub struct Semaphore {
-	blocking_thread: AtomicCell<Option<PodThreadId>>,
+	blocked: AtomicBool,
 	notifier: tokio::sync::Notify,
 }
 
@@ -555,10 +554,10 @@ impl Semaphore {
 	#[must_use]
 	#[track_caller]
 	pub fn block(&self) -> Blocker<'_> {
-		if self.should_wait() {
-			panic!("Misuse of Semaphore::block: lock is still being held!")
+		if self.blocked.compare_exchange(false, true, Relaxed, Relaxed) != Ok(false) {
+			panic!("Misuse of Semaphore::block: lock is still being held!");
 		}
-		self.blocking_thread.set(Some(std::thread::current().id().into()));
+		info!("{:?} blocking {:p}", std::thread::current().id(), self);
 		Blocker(self)
 	}
 
@@ -566,13 +565,11 @@ impl Semaphore {
 
 	/// Waits for a maximum of [`WAIT_LIMIT`][Self::WAIT_LIMIT] for a notification.
 	pub async fn wait(&self) {
-		if self.should_wait() {
-			loop {
-				tokio::select! {
-					_ = self.notifier.notified() => return,
-					_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
-						warn!("WAIT_LIMIT elapsed (thread={:?})", std::thread::current().id());
-					}
+		while self.should_wait() {
+			tokio::select! {
+				_ = self.notifier.notified() => return,
+				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
+					warn!("WAIT_LIMIT elapsed (thread={:?} blocker={:p})", std::thread::current().id(), self);
 				}
 			}
 		}
@@ -580,23 +577,16 @@ impl Semaphore {
 
 	#[inline]
 	pub fn should_wait(&self) -> bool {
-		// This is not quite correct, but allows us to prevent some simple deadlocks
-		// when the same thread tries to acquire a blocker
-		self.blocking_thread
-			.get()
-			.is_some_and(|id| id != std::thread::current().id().into())
+		self.blocked.load(Relaxed)
 	}
 }
 
 impl Drop for Blocker<'_> {
 	fn drop(&mut self) {
-		info!(
-			"{:?} (task {:?}) releasing blocker on {:p}",
-			std::thread::current().id(),
-			tokio::task::try_id(),
-			self.0
-		);
-		self.0.blocking_thread.set(None);
+		if self.0.blocked.compare_exchange(true, false, Relaxed, Relaxed) != Ok(true) {
+			panic!("Failed to release Semaphore lock for {:?}", std::thread::current().id());
+		}
+		info!("{:?} dropping {:p}", std::thread::current().id(), self.0);
 		self.0.notifier.notify_waiters();
 	}
 }
