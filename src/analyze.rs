@@ -675,6 +675,16 @@ impl Index {
 					self.type_of(node.child_by_field_name("right")?, scope, contents)
 				}
 			}
+			"conditional_expression" => {
+				// a if b else c
+				let ty = node
+					.named_child(0)
+					.and_then(|child| self.type_of(child, scope, contents));
+				ty.or_else(|| {
+					node.named_child(2)
+						.and_then(|child| self.type_of(child, scope, contents))
+				})
+			}
 			"dictionary_comprehension" => {
 				let pair = dig!(node, pair)?;
 				let mut comprehension_scope;
