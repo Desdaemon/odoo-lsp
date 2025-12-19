@@ -1,5 +1,6 @@
 //! The main indexer for all language items, including [`Record`]s, QWeb [`Template`]s, and Owl [`Component`]s
 
+use mini_moka::sync::Cache;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -13,7 +14,7 @@ use ignore::Match;
 use ignore::gitignore::Gitignore;
 use lasso::ThreadedRodeo;
 use smart_default::SmartDefault;
-use tower_lsp_server::{Client, lsp_types::*};
+use tower_lsp_server::{Client, ls_types::*};
 use xmlparser::{Token, Tokenizer};
 
 use crate::prelude::*;
@@ -78,6 +79,13 @@ pub struct Index {
 	/// Cache for transitive dependencies to avoid recalculation
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub(crate) transitive_deps_cache: DashMap<ModuleName, HashSet<ModuleName>>,
+	#[default(_code = "Cache::new(16)")]
+	pub(crate) ast_cache: Cache<PathBuf, Arc<AstCacheItem>>,
+}
+
+pub struct AstCacheItem {
+	pub tree: tree_sitter::Tree,
+	pub rope: Rope,
 }
 
 pub type ModuleName = Symbol<ModuleEntry>;
@@ -206,13 +214,37 @@ impl Index {
 		// Clear transitive dependencies cache since modules have been added/modified
 		self.transitive_deps_cache.clear();
 
-		// After adding all modules in the root, check for auto_install modules with unsatisfied dependencies		// We pass an empty set because no modules are loaded yet, this will identify all auto_install
+		// After adding all modules in the root, check for auto_install modules with unsatisfied dependencies
+		// We pass an empty set because no modules are loaded yet, this will identify all auto_install
 		// modules and track those with missing dependencies
 		debug!("Checking for auto_install modules after adding root");
 		let auto_install_check = self.find_auto_install_modules(&HashSet::new());
 		debug!("Found {} auto_install modules to check", auto_install_check.len());
 
 		Ok(())
+	}
+	#[instrument(skip(self), ret)]
+	pub async fn add_root_for_file(&self, path: &Path) {
+		if self.find_module_of(path).is_some() {
+			return;
+		}
+
+		debug!("oob: {}", path.display());
+		let mut path = Some(path);
+		while let Some(path_) = path {
+			if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
+				.await
+				.unwrap_or(false)
+				&& let Some(file_path) = path_.parent().and_then(|p| p.parent())
+			{
+				_ = self
+					.add_root(file_path, None)
+					.await
+					.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
+				return;
+			}
+			path = path_.parent();
+		}
 	}
 	#[instrument(skip_all, ret, fields(path = path.display().to_string()))]
 	pub(crate) async fn load_modules_for_document(&self, document_blocker: Arc<Semaphore>, path: &Path) -> Option<()> {
@@ -538,17 +570,17 @@ impl Index {
 
 		let mut outputs = tokio::task::JoinSet::new();
 		for (module_key, root) in modules.into_iter().zip(roots.into_iter()) {
-			info!("{} depends on {}", _R(module_name), _R(module_key));
 			let root_display = root.key().to_string_lossy();
 			let root_key = _I(&root_display);
 			let module = root
 				.get(&module_key)
 				.expect(format_loc!("module must already be present by now"));
-			let module_dir = Path::new(&*root_display).join(&module.path);
 			if module.loaded.compare_exchange(false, true, Relaxed, Relaxed) != Ok(false) {
 				continue;
 			}
 
+			info!("{} depends on {}", _R(module_name), _R(module_key));
+			let module_dir = Path::new(&*root_display).join(&module.path);
 			if let Ok(xmls) = globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
 				.file_type(FileType::FILE | FileType::SYMLINK)
 				.follow_links(true)
@@ -638,7 +670,7 @@ impl Index {
 				}
 			}
 		}
-		debug!(
+		trace!(
 			"Currently loaded modules: {:?}",
 			all_loaded_modules.iter().map(|m| _R(*m)).collect::<Vec<_>>()
 		);
@@ -651,7 +683,7 @@ impl Index {
 				auto_install_candidates.len()
 			);
 			for auto_module in auto_install_candidates {
-				info!(
+				trace!(
 					"Auto-installing module {} because all dependencies are satisfied",
 					_R(auto_module)
 				);
@@ -1091,7 +1123,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 		});
 		match &contents[capture.byte_range()] {
 			b"_name" => {
-				let Some(name_decl) = capture.next_named_sibling() else {
+				let Some(name_decl) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				if name_decl.kind() == "string" {
@@ -1103,7 +1135,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 				}
 			}
 			b"_inherit" => {
-				let Some(inherit_decl) = capture.next_named_sibling() else {
+				let Some(inherit_decl) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				match inherit_decl.kind() {
@@ -1129,7 +1161,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 				}
 			}
 			b"_inherits" => {
-				let Some(inherit_dict) = capture.next_named_sibling() else {
+				let Some(inherit_dict) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				if inherit_dict.kind() != "dictionary" {

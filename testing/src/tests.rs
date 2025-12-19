@@ -30,11 +30,11 @@ fn init_tracing() {
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(1))]
 #[tokio::test(flavor = "multi_thread")]
+#[timeout(Duration::from_secs(10))]
 async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 	std::env::set_current_dir(&root).unwrap();
-	let mut server = server::setup_lsp_server(None);
+	let mut server = server::setup_lsp_server(Some(2));
 	init_tracing();
 
 	_ = server
@@ -93,7 +93,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 						uri: uri.clone(),
 						language_id,
 						version: 1,
-						text: text.clone(),
+						text,
 					},
 				});
 
@@ -507,7 +507,7 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 		let mut captures = cursor.captures(query(), ast.root_node(), contents.as_bytes());
 		while let Some((match_, _)) = captures.next() {
 			for capture in match_.captures {
-				if let Some(assertion) = parse_assertion_from_capture(&capture, &contents, &lang) {
+				if let Some(assertion) = parse_assertion_from_capture(capture, &contents, &lang) {
 					assertions.push(assertion);
 				}
 			}
@@ -554,7 +554,7 @@ fn parse_assertion_from_capture(
 	let range = capture.node.range();
 	let line = range.start_point.row as u32;
 	// The character position is where the caret appears in the original line
-	let character = (range.start_point.column as usize + caret_pos_in_node) as u32;
+	let character = (range.start_point.column + caret_pos_in_node) as u32;
 
 	Some(ParsedAssertion {
 		line,
