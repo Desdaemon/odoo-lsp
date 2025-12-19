@@ -116,7 +116,7 @@ class Wine(models.Model):
     make = fields.Char()
     value = fields.Float()
 
-    def _test(self):
+    def _test_read_group(self):
         domain = []
         for name, make, value in self._read_group(domain, ['name', 'make'], ['value:sum']):
             #^type PyBuiltin("str")
@@ -124,6 +124,10 @@ class Wine(models.Model):
             #^type PyBuiltin("str")
             value
             #^type PyBuiltin("float")
+
+    def _test_mapped(self):
+        foo = self.mapped('make')
+        #^type List(PyBuiltin("str"))
 
     def test_grouped(self):
         for name, records in self.grouped('name').items():

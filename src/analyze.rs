@@ -841,8 +841,9 @@ impl Index {
 						let mut model: Spur = model.into();
 						let mut mapped = &contents[mapped.byte_range().shrink(1)];
 						self.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
-						self.type_of_attribute(&Type::Model(_R(model).into()), mapped, scope)
-							.map(|it| _T!(it))
+						let type_ = self.type_of_attribute(&Type::Model(_R(model).into()), mapped, scope)?;
+						let type_ = Index::wrap_in_container(type_, |it| Type::List(ListElement::Occupied(_T!(it))));
+						Some(_T!(type_))
 					}
 					"lambda" => {
 						// (lambda (lambda_parameters)? body: (_))
