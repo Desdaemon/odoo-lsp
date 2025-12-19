@@ -1,6 +1,6 @@
 //! XML [records][Record], as well as [`template`][Record::template] and [`menuitem`][Record::menuitem] shorthands.
 
-use tower_lsp_server::lsp_types::*;
+use tower_lsp_server::ls_types::*;
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
 use crate::prelude::*;

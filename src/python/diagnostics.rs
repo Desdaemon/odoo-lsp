@@ -1,6 +1,6 @@
 use std::{borrow::Cow, cmp::Ordering, ops::ControlFlow};
 
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location};
+use tower_lsp_server::ls_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location};
 use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 

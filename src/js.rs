@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::sync::atomic::Ordering::Relaxed;
 
-use tower_lsp_server::lsp_types::*;
+use tower_lsp_server::ls_types::*;
 use tree_sitter::{QueryCursor, Tree};
 
 use crate::prelude::*;

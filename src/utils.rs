@@ -9,7 +9,7 @@ use dashmap::try_result::TryResult;
 use futures::future::BoxFuture;
 use ropey::RopeSlice;
 use smart_default::SmartDefault;
-use tower_lsp_server::lsp_types::*;
+use tower_lsp_server::ls_types::*;
 use tracing::warn;
 use xmlparser::{StrSpan, TextPos, Token};
 
@@ -82,14 +82,19 @@ macro_rules! await_did_open_document {
 	($self:expr, $path:expr) => {
 		let mut blocker = None;
 		{
-			if let Some(document) = $self.document_map.get($path)
+			if let Some(document) = $self
+				.document_map
+				.try_get($path)
+				.expect($crate::format_loc!("deadlock"))
 				&& document.setup.should_wait()
 			{
-				blocker = Some(document.setup.clone());
+				blocker = Some(std::sync::Arc::clone(&document.setup));
 			}
 		}
 		if let Some(blocker) = blocker {
+			info!("[{}] waiting on {}", $crate::loc!(), $path);
 			blocker.wait().await;
+			info!("[{}] done waiting on {}", $crate::loc!(), $path);
 		}
 	};
 }
@@ -546,8 +551,13 @@ pub struct Semaphore {
 pub struct Blocker<'a>(&'a Semaphore);
 
 impl Semaphore {
-	pub async fn block(&self) -> Blocker<'_> {
-		self.wait().await;
+	/// Panics if lock is held by another thread.
+	#[must_use]
+	#[track_caller]
+	pub fn block(&self) -> Blocker<'_> {
+		if self.should_wait() {
+			panic!("Misuse of Semaphore::block: lock is still being held!")
+		}
 		self.blocking_thread.set(Some(std::thread::current().id().into()));
 		Blocker(self)
 	}
@@ -580,6 +590,12 @@ impl Semaphore {
 
 impl Drop for Blocker<'_> {
 	fn drop(&mut self) {
+		info!(
+			"{:?} (task {:?}) releasing blocker on {:p}",
+			std::thread::current().id(),
+			tokio::task::try_id(),
+			self.0
+		);
 		self.0.blocking_thread.set(None);
 		self.0.notifier.notify_waiters();
 	}

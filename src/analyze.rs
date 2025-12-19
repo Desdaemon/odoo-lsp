@@ -1480,7 +1480,7 @@ pub fn determine_scope<'out, 'node>(
 mod tests {
 	use pretty_assertions::assert_eq;
 	use ropey::Rope;
-	use tower_lsp_server::lsp_types::Position;
+	use tower_lsp_server::ls_types::Position;
 	use tree_sitter::{Parser, QueryCursor, StreamingIterator, StreamingIteratorMut};
 
 	use crate::analyze::{FieldCompletion, Type, type_cache};

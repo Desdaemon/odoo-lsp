@@ -6,12 +6,12 @@ use ropey::Rope;
 use serde_json::Value;
 use tower_lsp_server::LanguageServer;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::notification::{DidChangeConfiguration, Notification};
-use tower_lsp_server::lsp_types::request::WorkDoneProgressCreate;
-use tower_lsp_server::{UriExt, lsp_types::*};
+use tower_lsp_server::ls_types::notification::{DidChangeConfiguration, Notification};
+use tower_lsp_server::ls_types::request::WorkDoneProgressCreate;
+use tower_lsp_server::ls_types::*;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{GITVER, NAME, VERSION, await_did_open_document};
+use crate::{GITVER, NAME, VERSION, await_did_open_document, format_loc};
 
 use crate::backend::{Backend, Document, Language, Text};
 use crate::index::{_G, _R};
@@ -232,27 +232,7 @@ impl LanguageServer for Backend {
 			Document::new(rope.clone()),
 		);
 
-		if self.index.find_module_of(&file_path).is_none() {
-			// outside of root?
-			debug!("oob: {}", file_path_str);
-			let path = params.text_document.uri.to_file_path();
-			let mut path = path.as_deref();
-			while let Some(path_) = path {
-				if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
-					.await
-					.unwrap_or(false)
-					&& let Some(file_path) = path_.parent().and_then(|p| p.parent())
-				{
-					_ = self
-						.index
-						.add_root(file_path, Some(self.client.clone()))
-						.await
-						.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
-					break;
-				}
-				path = path_.parent();
-			}
-		}
+		self.index.add_root_for_file(&file_path).await;
 
 		_ = self
 			.on_change(backend::TextDocumentItem {
@@ -267,7 +247,7 @@ impl LanguageServer for Backend {
 			.inspect_err(|err| warn!("{err}"));
 
 		if let Some(progress) = progress {
-			progress.finish().await;
+			tokio::spawn(progress.finish());
 		}
 	}
 	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
@@ -347,7 +327,7 @@ impl LanguageServer for Backend {
 		};
 		await_did_open_document!(self, path);
 
-		let Some(document) = self.document_map.get(path) else {
+		let Some(document) = self.document_map.try_get(path).expect(format_loc!("deadlock")) else {
 			panic!("Bug: did not build a document for {}", uri.path().as_str());
 		};
 		if document.setup.should_wait() {
@@ -517,7 +497,7 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
-	#[instrument(skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
+	#[instrument(level = "trace", skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
 		self.root_setup.wait().await;
 
@@ -564,7 +544,7 @@ impl LanguageServer for Backend {
 		for (config, ws) in configs.into_iter().zip(workspace_paths) {
 			match serde_json::from_value(config) {
 				Ok(config) => self.on_change_config(config, Some(&ws)),
-				Err(err) => error!("Could not parse updated configuration for {}:\n{err}", ws.display()),
+				Err(err) => warn!("Ignoring config update for {}:\n  {err}", ws.display()),
 			}
 		}
 		self.ensure_nonoverlapping_roots();
@@ -589,32 +569,20 @@ impl LanguageServer for Backend {
 
 		for added in workspaces.difference(&roots) {
 			if let Err(err) = self.index.add_root(added, None).await {
-				error!("failed to add root {}:\n{err}", added.display());
+				error!("failed to add root {}:\n  {err}", added.display());
 			}
 		}
 	}
 	#[instrument(skip(self))]
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
-		self.root_setup.wait().await;
 		for added in params.event.added {
-			let Some(file_path) = added.uri.to_file_path() else {
-				error!("not a file path: {}", added.uri.as_str());
-				continue;
-			};
-			_ = self
-				.index
-				.add_root(&file_path, None)
-				.await
-				.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
+			let Some(path) = added.uri.to_file_path() else { continue };
+			self.index.add_root_for_file(&path).await;
 		}
 		for removed in params.event.removed {
-			let Some(file_path) = removed.uri.to_file_path() else {
-				error!("not a file path: {}", removed.uri.as_str());
-				continue;
-			};
-			self.index.remove_root(&file_path);
+			warn!("unimplemented removing workspace folder {}", removed.name);
 		}
-		self.index.delete_marked_entries();
+		// self.index.delete_marked_entries();
 	}
 	/// For VSCode and capable LSP clients, these events represent changes mostly to configuration files.
 	#[instrument(skip(self))]
@@ -655,16 +623,16 @@ impl LanguageServer for Backend {
 						});
 					}
 				}
-				self.client.publish_diagnostics(uri, diagnostics, None).await;
+				if !diagnostics.is_empty() {
+					let client = self.client.clone();
+					tokio::spawn(async move { client.publish_diagnostics(uri, diagnostics, None).await });
+				}
 				break;
 			}
 		}
 	}
 	#[instrument(skip_all, fields(query = params.query))]
-	async fn symbol(
-		&self,
-		params: WorkspaceSymbolParams,
-	) -> Result<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
+	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<WorkspaceSymbolResponse>> {
 		self.root_setup.wait().await;
 
 		let query = &params.query;
@@ -708,13 +676,17 @@ impl LanguageServer for Backend {
 							.and_then(|record| (record.module == module).then(|| to_symbol_information(&record)))
 					})
 				});
-			Ok(Some(OneOf::Left(models.chain(records).take(limit).collect())))
+			Ok(Some(WorkspaceSymbolResponse::Flat(
+				models.chain(records).take(limit).collect(),
+			)))
 		} else {
 			let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter()
 					.flat_map(|key| self.index.records.get(key).map(|record| to_symbol_information(&record)))
 			});
-			Ok(Some(OneOf::Left(models.chain(records).take(limit).collect())))
+			Ok(Some(WorkspaceSymbolResponse::Flat(
+				models.chain(records).take(limit).collect(),
+			)))
 		}
 	}
 	#[instrument(skip_all, fields(path))]
