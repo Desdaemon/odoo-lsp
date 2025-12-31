@@ -6,11 +6,12 @@ use ropey::Rope;
 use serde_json::Value;
 use tower_lsp_server::LanguageServer;
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::notification::{DidChangeConfiguration, Notification};
-use tower_lsp_server::{UriExt, lsp_types::*};
+use tower_lsp_server::ls_types::notification::{DidChangeConfiguration, Notification};
+use tower_lsp_server::ls_types::request::WorkDoneProgressCreate;
+use tower_lsp_server::ls_types::*;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{GITVER, NAME, VERSION, await_did_open_document};
+use crate::{GITVER, NAME, VERSION, await_did_open_document, format_loc};
 
 use crate::backend::{Backend, Document, Language, Text};
 use crate::index::{_G, _R};
@@ -57,6 +58,14 @@ impl LanguageServer for Backend {
 		{
 			debug!("Client supports pull diagnostics");
 			self.capabilities.pull_diagnostics.store(true, Relaxed);
+		}
+
+		if let Some(WindowClientCapabilities {
+			work_done_progress: Some(true),
+			..
+		}) = params.capabilities.window
+		{
+			self.capabilities.can_create_wdp.store(true, Relaxed);
 		}
 
 		Ok(InitializeResult {
@@ -124,7 +133,7 @@ impl LanguageServer for Backend {
 
 		self.document_map.remove(path);
 		self.record_ranges.remove(path);
-		
+
 		let file_path = params.text_document.uri.to_file_path().unwrap();
 		self.ast_map.remove(file_path.to_str().unwrap());
 
@@ -162,6 +171,7 @@ impl LanguageServer for Backend {
 			_ = self.client.register_capability(registrations).await;
 		}
 
+		self.root_setup.wait().await;
 		let _blocker = self.root_setup.block();
 		self.ensure_nonoverlapping_roots();
 		info!(workspaces = ?self.workspaces);
@@ -200,33 +210,30 @@ impl LanguageServer for Backend {
 			}
 		};
 
+		let mut progress = None;
+		let token = ProgressToken::String(format!("odoo_lsp_open:{file_path_str}"));
+		if self.capabilities.can_create_wdp.load(Relaxed)
+			&& self
+				.client
+				.send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
+				.await
+				.is_ok()
+		{
+			progress = Some(
+				self.client
+					.progress(token, format!("Opening {file_path_str}"))
+					.begin()
+					.await,
+			);
+		}
+
 		let rope = Rope::from_str(&params.text_document.text);
 		self.document_map.insert(
 			params.text_document.uri.path().as_str().to_string(),
 			Document::new(rope.clone()),
 		);
 
-		if self.index.find_module_of(&file_path).is_none() {
-			// outside of root?
-			debug!("oob: {}", file_path_str);
-			let path = params.text_document.uri.to_file_path();
-			let mut path = path.as_deref();
-			while let Some(path_) = path {
-				if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
-					.await
-					.unwrap_or(false)
-					&& let Some(file_path) = path_.parent().and_then(|p| p.parent())
-				{
-					_ = self
-						.index
-						.add_root(file_path, Some(self.client.clone()))
-						.await
-						.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
-					break;
-				}
-				path = path_.parent();
-			}
-		}
+		self.index.add_root_for_file(&file_path).await;
 
 		_ = self
 			.on_change(backend::TextDocumentItem {
@@ -239,6 +246,10 @@ impl LanguageServer for Backend {
 			})
 			.await
 			.inspect_err(|err| warn!("{err}"));
+
+		if let Some(progress) = progress {
+			tokio::spawn(progress.finish());
+		}
 	}
 	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
@@ -279,8 +290,7 @@ impl LanguageServer for Backend {
 					document.rope = ropey::Rope::from_str(&change.text);
 				} else {
 					let range = change.range.expect("LSP change event must have a range");
-					let range: CharRange =
-						rope_conv(range, document.rope.slice(..)).expect("did_change applying delta: no range");
+					let range: CharRange = rope_conv(range, document.rope.slice(..));
 					let rope = &mut document.rope;
 					rope.remove(range.erase());
 					if !change.text.is_empty() {
@@ -318,7 +328,7 @@ impl LanguageServer for Backend {
 		};
 		await_did_open_document!(self, path);
 
-		let Some(document) = self.document_map.get(path) else {
+		let Some(document) = self.document_map.try_get(path).expect(format_loc!("deadlock")) else {
 			panic!("Bug: did not build a document for {}", uri.path().as_str());
 		};
 		if document.setup.should_wait() {
@@ -488,7 +498,7 @@ impl LanguageServer for Backend {
 			}
 		}
 	}
-	#[instrument(skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
+	#[instrument(level = "trace", skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
 		self.root_setup.wait().await;
 
@@ -535,7 +545,7 @@ impl LanguageServer for Backend {
 		for (config, ws) in configs.into_iter().zip(workspace_paths) {
 			match serde_json::from_value(config) {
 				Ok(config) => self.on_change_config(config, Some(&ws)),
-				Err(err) => error!("Could not parse updated configuration for {}:\n{err}", ws.display()),
+				Err(err) => warn!("Ignoring config update for {}:\n  {err}", ws.display()),
 			}
 		}
 		self.ensure_nonoverlapping_roots();
@@ -560,32 +570,20 @@ impl LanguageServer for Backend {
 
 		for added in workspaces.difference(&roots) {
 			if let Err(err) = self.index.add_root(added, None).await {
-				error!("failed to add root {}:\n{err}", added.display());
+				error!("failed to add root {}:\n  {err}", added.display());
 			}
 		}
 	}
 	#[instrument(skip(self))]
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
-		self.root_setup.wait().await;
 		for added in params.event.added {
-			let Some(file_path) = added.uri.to_file_path() else {
-				error!("not a file path: {}", added.uri.as_str());
-				continue;
-			};
-			_ = self
-				.index
-				.add_root(&file_path, None)
-				.await
-				.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
+			let Some(path) = added.uri.to_file_path() else { continue };
+			self.index.add_root_for_file(&path).await;
 		}
 		for removed in params.event.removed {
-			let Some(file_path) = removed.uri.to_file_path() else {
-				error!("not a file path: {}", removed.uri.as_str());
-				continue;
-			};
-			self.index.remove_root(&file_path);
+			warn!("unimplemented removing workspace folder {}", removed.name);
 		}
-		self.index.delete_marked_entries();
+		// self.index.delete_marked_entries();
 	}
 	/// For VSCode and capable LSP clients, these events represent changes mostly to configuration files.
 	#[instrument(skip(self))]
@@ -626,16 +624,16 @@ impl LanguageServer for Backend {
 						});
 					}
 				}
-				self.client.publish_diagnostics(uri, diagnostics, None).await;
+				if !diagnostics.is_empty() {
+					let client = self.client.clone();
+					tokio::spawn(async move { client.publish_diagnostics(uri, diagnostics, None).await });
+				}
 				break;
 			}
 		}
 	}
 	#[instrument(skip_all, fields(query = params.query))]
-	async fn symbol(
-		&self,
-		params: WorkspaceSymbolParams,
-	) -> Result<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
+	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<WorkspaceSymbolResponse>> {
 		self.root_setup.wait().await;
 
 		let query = &params.query;
@@ -645,14 +643,17 @@ impl LanguageServer for Backend {
 		let records_by_prefix = some!(self.index.records.by_prefix.read().ok());
 		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
 			self.index.models.get(key).into_iter().flat_map(|entry| {
-				#[allow(deprecated)]
-				entry.base.as_ref().map(|loc| SymbolInformation {
-					name: _R(*entry.key()).to_string(),
-					kind: SymbolKind::CONSTANT,
-					tags: None,
-					deprecated: None,
-					location: loc.0.clone().into(),
-					container_name: None,
+				// Get location from the first class in the class_chain (base class)
+				entry.class_chain.first().and_then(|class_id| {
+					use crate::analyze::class_cache;
+					class_cache().get(*class_id).map(|metadata| SymbolInformation {
+						name: _R(*entry.key()).to_string(),
+						kind: SymbolKind::CONSTANT,
+						tags: None,
+						deprecated: None,
+						location: metadata.location.clone().into(),
+						container_name: None,
+					})
 				})
 			})
 		});
@@ -679,13 +680,17 @@ impl LanguageServer for Backend {
 							.and_then(|record| (record.module == module).then(|| to_symbol_information(&record)))
 					})
 				});
-			Ok(Some(OneOf::Left(models.chain(records).take(limit).collect())))
+			Ok(Some(WorkspaceSymbolResponse::Flat(
+				models.chain(records).take(limit).collect(),
+			)))
 		} else {
 			let records = records_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, keys)| {
 				keys.iter()
 					.flat_map(|key| self.index.records.get(key).map(|record| to_symbol_information(&record)))
 			});
-			Ok(Some(OneOf::Left(models.chain(records).take(limit).collect())))
+			Ok(Some(WorkspaceSymbolResponse::Flat(
+				models.chain(records).take(limit).collect(),
+			)))
 		}
 	}
 	#[instrument(skip_all, fields(path))]

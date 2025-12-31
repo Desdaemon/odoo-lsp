@@ -27,6 +27,25 @@ pub mod fs {
 		}
 		inner(path.as_ref())
 	}
+
+	/// Mocked path exists check that queries [`TEST_FS`] in test mode
+	#[cfg(test)]
+	pub fn exists<P>(path: P) -> bool
+	where
+		P: AsRef<std::path::Path>,
+	{
+		let fs = TEST_FS.read().unwrap();
+		fs.contains_key(path.as_ref())
+	}
+
+	/// Real path exists check in non-test mode
+	#[cfg(not(test))]
+	pub fn exists<P>(path: P) -> bool
+	where
+		P: AsRef<std::path::Path>,
+	{
+		path.as_ref().exists()
+	}
 }
 
 pub mod index {
@@ -56,7 +75,6 @@ pub mod index {
 		use std::sync::atomic::{AtomicU64, Ordering};
 		static TEST_ID: AtomicU64 = AtomicU64::new(0);
 		let test_id = TEST_ID.fetch_add(1, Ordering::SeqCst);
-		use crate::model::ModelEntry;
 		use crate::prelude::*;
 		use std::path::Path;
 
@@ -77,25 +95,23 @@ pub mod index {
 		} else {
 			panic!("can't modify test_utils::fs::TEST_FS");
 		}
-		// Index the model from the file
-		let py_bytes = py.expect("Python source required").as_bytes();
-		let models = crate::index::index_models(py_bytes).unwrap();
-		for model in models {
-			if let crate::model::ModelType::Base { name, .. } = &model.type_ {
-				let entry = ModelEntry {
-					base: Some(crate::model::ModelLocation(
-						crate::utils::MinLoc {
-							path: crate::index::PathSymbol::strip_root(_I(&root), Path::new(&py_path)),
-							range: Range::default(),
-						},
-						ByteOffset(0)..ByteOffset(0),
-					)),
-					..Default::default()
-				};
-				index.models.insert(_I(name.as_str()).into(), entry);
-				let _ = index.models.populate_properties(_I(name.as_str()).into(), &[]);
-			}
+		// Register the test root in the index
+		use std::path::PathBuf;
+		let root_path = PathBuf::from(root.as_str());
+		{
+			// Add root to the index's roots map so find_root_of() works in tests
+			let mut roots_map = index.roots.entry(root_path).or_default();
+			// Don't need to add any modules, just ensure the root is registered
 		}
+
+		// Index the model from the file with class_chain population
+		let py_content = py.expect("Python source required");
+		let root_spur = _I(&root);
+		let py_file = Path::new(&py_path);
+		let path_sym = PathSymbol::strip_root(root_spur, py_file);
+		index
+			.update_models_with_class_chain(path_sym, py_content)
+			.expect("failed to update models");
 		// Optionally index JS and XML if needed by your backend (add logic here)
 		// e.g. index_js, index_xml, or append to index.components, index.templates, etc.
 	}
@@ -103,8 +119,7 @@ pub mod index {
 
 #[cfg(test)]
 pub mod cases {
-	use crate::index::{PathSymbol, index_models};
-	use crate::model::ModelIndex;
+	use crate::index::PathSymbol;
 	use crate::test_utils;
 	use std::path::Path;
 
@@ -134,7 +149,7 @@ class Quux(Model):
 	def test(self):
 		return super().test()
 "#;
-		pub fn prepare_foo_index() -> ModelIndex {
+		pub fn prepare_foo_index() -> crate::index::Index {
 			const ROOT: &str = "/addons";
 			const FOO_PY_PATH: &str = "/addons/foo.py";
 			if let Ok(mut fs) = test_utils::fs::TEST_FS.write() {
@@ -143,12 +158,20 @@ class Quux(Model):
 				panic!("can't modify FS");
 			}
 
-			let index = ModelIndex::default();
-			let foo_models = index_models(FOO_PY).unwrap();
-
+			let index = crate::index::Index::default();
 			let root = _I(ROOT);
-			let path = PathSymbol::strip_root(root, Path::new(FOO_PY_PATH));
-			index.append(path, false, &foo_models[..]);
+			let py_file = Path::new(FOO_PY_PATH);
+			let path = PathSymbol::strip_root(root, py_file);
+
+			// Register the root so find_root_of() works
+			{
+				let _roots_map = index.roots.entry(py_file.parent().unwrap().to_path_buf()).or_default();
+			}
+
+			// Use the new method to properly populate class_chain and properties
+			index
+				.update_models_with_class_chain(path, std::str::from_utf8(FOO_PY).unwrap())
+				.expect("failed to update models");
 			index
 		}
 	}

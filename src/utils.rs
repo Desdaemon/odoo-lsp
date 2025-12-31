@@ -1,16 +1,17 @@
+use core::fmt::{Debug, Display};
+use core::future::Future;
 use core::ops::{Add, Sub};
 use std::borrow::Cow;
 use std::ffi::OsStr;
-use std::fmt::Display;
-use std::future::Future;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
 
 use dashmap::try_result::TryResult;
 use futures::future::BoxFuture;
 use ropey::RopeSlice;
 use smart_default::SmartDefault;
-use tower_lsp_server::lsp_types::*;
+use tower_lsp_server::ls_types::*;
 use tracing::warn;
 use xmlparser::{StrSpan, TextPos, Token};
 
@@ -44,24 +45,23 @@ macro_rules! some {
 macro_rules! dig {
 	() => { None };
 	($start:expr, $($rest:tt)+) => {
-		dig!(@inner Some($start), $($rest)+)
+		$crate::dig!(@inner Some($start), $($rest)+)
 	};
 	(@inner $node:expr, $kind:ident($idx:literal).$($rest:tt)+) => {
-		dig!(
+		$crate::dig!(
 			@inner
-			if let Some(node) = $node && let Some(child) = node.named_child($idx) && child.kind() == stringify!($kind) { Some(child) } else { None },
+			if let Some(node) = $node && let Some(child) = $crate::utils::python_nth_named_child_matching::<$idx>(node, stringify!($kind)) { Some(child) } else { None },
 			$($rest)+
 		)
 	};
-
 	(@inner $node:expr, $kind:ident.$($rest:tt)+) => {
-		dig!(@inner $node, $kind(0).$($rest)+)
+		$crate::dig!(@inner $node, $kind(0).$($rest)+)
 	};
 	(@inner $node:expr, $kind:ident($idx:literal)) => {
-		if let Some(node) = $node && let Some(child) = node.named_child($idx) && child.kind() == stringify!($kind) { Some(child) } else { None }
+		if let Some(node) = $node && let Some(child) = $crate::utils::python_nth_named_child_matching::<$idx>(node, stringify!($kind)) { Some(child) } else { None }
 	};
 	(@inner $node:expr, $kind:ident) => {
-		dig!(@inner $node, $kind(0))
+		$crate::dig!(@inner $node, $kind(0))
 	};
 }
 
@@ -81,14 +81,19 @@ macro_rules! await_did_open_document {
 	($self:expr, $path:expr) => {
 		let mut blocker = None;
 		{
-			if let Some(document) = $self.document_map.get($path)
+			if let Some(document) = $self
+				.document_map
+				.try_get($path)
+				.expect($crate::format_loc!("deadlock"))
 				&& document.setup.should_wait()
 			{
-				blocker = Some(document.setup.clone());
+				blocker = Some(std::sync::Arc::clone(&document.setup));
 			}
 		}
 		if let Some(blocker) = blocker {
+			info!("[{}] waiting on {}", $crate::loc!(), $path);
 			blocker.wait().await;
+			info!("[{}] done waiting on {}", $crate::loc!(), $path);
 		}
 	};
 }
@@ -167,70 +172,65 @@ where
 /// - [ByteOffset] <-> [Position]
 /// - [Range] -> [CharRange]
 /// - [Range] <-> [ByteRange]
-#[inline]
-pub fn rope_conv<T, U>(src: T, rope: RopeSlice<'_>) -> Result<U, <U as TryFrom<RopeAdapter<'_, T>>>::Error>
+#[track_caller]
+pub fn rope_conv<T, U>(src: T, rope: RopeSlice<'_>) -> U
 where
-	for<'a> U: TryFrom<RopeAdapter<'a, T>>,
+	for<'a> U: From<RopeAdapter<'a, T>>,
 {
-	RopeAdapter(src, rope).try_into()
+	RopeAdapter(src, rope).into()
 }
 
-impl<'a> TryFrom<RopeAdapter<'a, ByteOffset>> for Position {
-	type Error = std::convert::Infallible;
-	fn try_from(value: RopeAdapter<'a, ByteOffset>) -> Result<Self, Self::Error> {
+impl<'a> From<RopeAdapter<'a, ByteOffset>> for Position {
+	fn from(value: RopeAdapter<'a, ByteOffset>) -> Self {
 		let RopeAdapter(offset, rope) = value;
 		let line = rope.byte_to_line_idx(offset.0, LINE_TYPE);
 		let line_start_byte = rope.line_to_byte_idx(line, LINE_TYPE);
 		let line_start_char = rope.byte_to_char_idx(line_start_byte);
 		let char_offset = rope.byte_to_char_idx(offset.0);
 		let column = char_offset - line_start_char;
-		Ok(Position::new(line as u32, column as u32))
+		Position::new(line as u32, column as u32)
 	}
 }
 
-impl<'a> TryFrom<RopeAdapter<'a, Position>> for ByteOffset {
-	type Error = ropey::Error;
-	fn try_from(value: RopeAdapter<'a, Position>) -> Result<Self, Self::Error> {
+impl<'a> From<RopeAdapter<'a, Position>> for ByteOffset {
+	fn from(value: RopeAdapter<'a, Position>) -> Self {
 		let RopeAdapter(position, rope) = value;
-		let CharOffset(char_offset) = position_to_char(position, rope)?;
+		let CharOffset(char_offset) = position_to_char(position, rope);
 		let byte_offset = rope.char_to_byte_idx(char_offset);
-		Ok(ByteOffset(byte_offset))
+		ByteOffset(byte_offset)
 	}
 }
 
-impl<'a> TryFrom<RopeAdapter<'a, Range>> for CharRange {
-	type Error = ropey::Error;
-	fn try_from(value: RopeAdapter<'a, Range>) -> Result<Self, Self::Error> {
+impl<'a> From<RopeAdapter<'a, Range>> for CharRange {
+	fn from(value: RopeAdapter<'a, Range>) -> Self {
 		let RopeAdapter(range, rope) = value;
-		let start = position_to_char(range.start, rope)?;
-		let end = position_to_char(range.end, rope)?;
-		Ok(start..end)
+		let start = position_to_char(range.start, rope);
+		let end = position_to_char(range.end, rope);
+		start..end
 	}
 }
-impl<'a> TryFrom<RopeAdapter<'a, Range>> for ByteRange {
-	type Error = ropey::Error;
-	fn try_from(value: RopeAdapter<'a, Range>) -> Result<Self, Self::Error> {
+impl<'a> From<RopeAdapter<'a, Range>> for ByteRange {
+	fn from(value: RopeAdapter<'a, Range>) -> Self {
 		let RopeAdapter(range, rope) = value;
-		let start = rope_conv(range.start, rope)?;
-		let end = rope_conv(range.end, rope)?;
-		Ok(start..end)
-	}
-}
-
-impl<'a> TryFrom<RopeAdapter<'a, ByteRange>> for Range {
-	type Error = std::convert::Infallible;
-	fn try_from(value: RopeAdapter<'a, ByteRange>) -> Result<Self, Self::Error> {
-		let RopeAdapter(range, rope) = value;
-		let start = rope_conv(range.start, rope)?;
-		let end = rope_conv(range.end, rope)?;
-		Ok(Range { start, end })
+		let start = rope_conv(range.start, rope);
+		let end = rope_conv(range.end, rope);
+		start..end
 	}
 }
 
-fn position_to_char(position: Position, rope: RopeSlice<'_>) -> ropey::Result<CharOffset> {
+impl<'a> From<RopeAdapter<'a, ByteRange>> for Range {
+	fn from(value: RopeAdapter<'a, ByteRange>) -> Self {
+		let RopeAdapter(range, rope) = value;
+		let start = rope_conv(range.start, rope);
+		let end = rope_conv(range.end, rope);
+		Range { start, end }
+	}
+}
+
+fn position_to_char(position: Position, rope: RopeSlice<'_>) -> CharOffset {
 	let line_offset_in_byte = rope.line_to_byte_idx(position.line as usize, LINE_TYPE);
 	let line_offset_in_char = rope.byte_to_char_idx(line_offset_in_byte);
-	Ok(CharOffset(line_offset_in_char + position.character as usize))
+	CharOffset(line_offset_in_char + position.character as usize)
 }
 
 impl From<SpanAdapter<TextPos>> for Position {
@@ -298,6 +298,62 @@ pub fn cow_split_once<'src>(
 			rhs.replace_range(0..sep.len(), "");
 			Ok((Cow::Owned(core::mem::take(inner)), Cow::Owned(rhs)))
 		}
+	}
+}
+
+#[inline(always)]
+#[cold]
+pub const fn cold_path() {}
+
+/// Copied from https://github.com/rust-lang/hashbrown/commit/64bd7db1d1b148594edfde112cdb6d6260e2cfc3
+#[inline(always)]
+pub const fn likely(cond: bool) -> bool {
+	if cond {
+		true
+	} else {
+		cold_path();
+		false
+	}
+}
+
+#[inline(always)]
+pub const fn unlikely(cond: bool) -> bool {
+	if !cond {
+		true
+	} else {
+		cold_path();
+		false
+	}
+}
+
+/// Only useful for Python, since the default grammar does not mark comments as extra nodes.
+#[allow(clippy::disallowed_methods)]
+#[inline]
+pub fn python_next_named_sibling(mut node: Node) -> Option<Node> {
+	loop {
+		node = node.next_named_sibling()?;
+		if likely(node.kind() != "comment") {
+			return Some(node);
+		}
+	}
+}
+
+#[allow(clippy::disallowed_methods)]
+#[inline]
+pub fn python_nth_named_child_matching<'node, const NTH: usize>(
+	mut node: Node<'node>,
+	kind: &'static str,
+) -> Option<Node<'node>> {
+	let mut idx = 0;
+	node = node.named_child(0)?;
+	loop {
+		if idx == NTH && likely(node.kind() == kind) {
+			return Some(node);
+		}
+		if likely(node.kind() != "comment") {
+			idx += 1;
+		}
+		node = node.next_named_sibling()?;
 	}
 }
 
@@ -485,37 +541,35 @@ pub fn init_for_test() {
 	});
 }
 
+#[derive(Default)]
 pub struct Semaphore {
-	should_wait: AtomicBool,
+	blocked: AtomicBool,
 	notifier: tokio::sync::Notify,
-}
-
-impl Default for Semaphore {
-	fn default() -> Self {
-		Self {
-			should_wait: AtomicBool::new(true),
-			notifier: Default::default(),
-		}
-	}
 }
 
 pub struct Blocker<'a>(&'a Semaphore);
 
 impl Semaphore {
+	/// Panics if lock is held by another thread.
+	#[must_use]
+	#[track_caller]
 	pub fn block(&self) -> Blocker<'_> {
-		self.should_wait.store(true, Ordering::SeqCst);
+		if self.blocked.compare_exchange(false, true, Relaxed, Relaxed) != Ok(false) {
+			panic!("Misuse of Semaphore::block: lock is still being held!");
+		}
+		info!("{:?} blocking {:p}", std::thread::current().id(), self);
 		Blocker(self)
 	}
 
-	pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+	pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 	/// Waits for a maximum of [`WAIT_LIMIT`][Self::WAIT_LIMIT] for a notification.
 	pub async fn wait(&self) {
-		if self.should_wait.load(Ordering::SeqCst) {
+		while self.should_wait() {
 			tokio::select! {
-				_ = self.notifier.notified() => {}
+				_ = self.notifier.notified() => return,
 				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
-					warn!("WAIT_LIMIT elapsed (thread={:?})", std::thread::current().id());
+					warn!("WAIT_LIMIT elapsed (thread={:?} blocker={:p})", std::thread::current().id(), self);
 				}
 			}
 		}
@@ -523,13 +577,16 @@ impl Semaphore {
 
 	#[inline]
 	pub fn should_wait(&self) -> bool {
-		self.should_wait.load(Ordering::SeqCst)
+		self.blocked.load(Relaxed)
 	}
 }
 
 impl Drop for Blocker<'_> {
 	fn drop(&mut self) {
-		self.0.should_wait.store(false, Ordering::SeqCst);
+		if self.0.blocked.compare_exchange(true, false, Relaxed, Relaxed) != Ok(true) {
+			panic!("Failed to release Semaphore lock for {:?}", std::thread::current().id());
+		}
+		info!("{:?} dropping {:p}", std::thread::current().id(), self.0);
 		self.0.notifier.notify_waiters();
 	}
 }
@@ -622,6 +679,20 @@ pub fn to_display_path(path: impl AsRef<Path>) -> String {
 	path.as_ref().to_string_lossy().into_owned()
 }
 
+pub struct Defer<T>(pub Option<T>)
+where
+	T: FnOnce();
+
+impl<T> Drop for Defer<T>
+where
+	T: FnOnce(),
+{
+	fn drop(&mut self) {
+		let func = self.0.take().unwrap();
+		func()
+	}
+}
+
 /// On Windows, rewrites the wide path prefix `\\?\C:` to `C:`  
 /// Source: https://stackoverflow.com/a/70970317
 #[inline]
@@ -685,5 +756,29 @@ mod tests {
 		let lhs = strict_canonicalize(Path::new(".")).unwrap();
 		let rhs = strict_canonicalize(&lhs).unwrap();
 		assert_eq!(lhs, rhs);
+	}
+
+	#[test]
+	fn test_python_first_nth_child_matching() {
+		use tree_sitter::Parser;
+		use tree_sitter_python::LANGUAGE;
+
+		let contents = r#"[
+			# A comment
+			1,
+			# Another comment
+			2,
+			3,	
+			}
+		}"#;
+
+		let mut parser = Parser::new();
+		parser.set_language(&LANGUAGE.into()).unwrap();
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+		let list_node = root.named_child(0).unwrap();
+		let first_element = list_node.named_child(1).unwrap();
+		let second_element = super::python_nth_named_child_matching::<0>(list_node, "integer").unwrap();
+		pretty_assertions::assert_eq!(first_element, second_element);
 	}
 }

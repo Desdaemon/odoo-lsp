@@ -1,5 +1,5 @@
 use ropey::RopeSlice;
-use tower_lsp_server::lsp_types::{Position, Range};
+use tower_lsp_server::ls_types::{Position, Range};
 use xmlparser::{ElementEnd, Token, Tokenizer};
 
 use crate::prelude::*;
@@ -80,14 +80,8 @@ pub fn gather_templates(
 						}
 					};
 					let name = _I(name).into();
-					let start = ok!(
-						rope_conv(ByteOffset(tag_start), document),
-						"qweb_templates start <- tag_start"
-					);
-					let end = ok!(
-						rope_conv(ByteOffset(span.end()), document),
-						"qweb_templates end <- span.end()"
-					);
+					let start = rope_conv(ByteOffset(tag_start), document);
+					let end = rope_conv(ByteOffset(span.end()), document);
 					let range = Range { start, end };
 					templates.push(NewTemplate {
 						base,
@@ -122,10 +116,7 @@ pub fn gather_templates(
 				let name_candidate = if base { t_name } else { t_inherit };
 				let Some(name) = name_candidate else { break };
 				let name = _I(name).into();
-				let start = ok!(
-					rope_conv(ByteOffset(tag_start), document),
-					"qweb_templates start <- tag_start"
-				);
+				let start = rope_conv(ByteOffset(tag_start), document);
 				let end = Position {
 					line: err.pos().row,
 					character: err.pos().col,

@@ -16,15 +16,16 @@ use fomat_macros::fomat;
 use globwalk::FileType;
 use smart_default::SmartDefault;
 use tower_lsp_server::Client;
-use tower_lsp_server::{UriExt, lsp_types::*};
+use tower_lsp_server::ls_types::*;
 use tree_sitter::{Parser, Tree};
 
+use crate::analyze::{Scope, Type, TypeId, type_cache};
 use crate::prelude::*;
 
 use crate::component::{Prop, PropDescriptor};
 use crate::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig};
 use crate::index::{Component, Index, ModuleName, RecordId, Symbol, SymbolSet};
-use crate::model::{Field, FieldKind, Method, ModelEntry, ModelLocation, ModelName, PropertyKind};
+use crate::model::{Field, FieldKind, Method, ModelEntry, ModelName, PropertyKind};
 use crate::record::Record;
 use crate::utils::{MaxVec, Semaphore, strict_canonicalize, to_display_path};
 use crate::{errloc, format_loc, some};
@@ -97,6 +98,7 @@ pub struct Capabilities {
 	pub pull_diagnostics: AtomicBool,
 	/// Whether [`workspace/workspaceFolders`][request::WorkspaceFoldersRequest] can be called.
 	pub workspace_folders: AtomicBool,
+	pub can_create_wdp: AtomicBool,
 }
 
 pub struct TextDocumentItem {
@@ -163,56 +165,33 @@ impl Backend {
 	}
 
 	pub fn init_workspaces(&self, params: &InitializeParams) {
-		let mut workspaces = params
-			.workspace_folders
-			.as_ref()
-			.map(|dirs| {
-				dirs.iter()
-					.filter_map(|wsdir| {
-						let Some(path) = wsdir.uri.to_file_path() else {
-							error!("{:?} does not resolve to a proper path, ignoring", wsdir.uri);
-							return None;
-						};
-						Some(path.into_owned())
-					})
-					.collect::<Vec<_>>()
-			})
-			.unwrap_or_default();
-		if workspaces.is_empty() {
-			#[allow(deprecated)]
-			if let Some(root) = params
-				.root_uri
-				.as_ref()
-				.and_then(|uri| uri.to_file_path())
-				.or_else(|| params.root_path.as_deref().map(Path::new).map(Cow::<Path>::from))
-			{
-				workspaces.push(root.into_owned());
-			}
-		}
-		if workspaces.is_empty()
-			&& let Ok(pwd) = std::env::current_dir()
-		{
-			workspaces.push(pwd);
-		}
-		if workspaces.is_empty() {
-			warn!("No workspace folders were detected");
-		}
-
-		'outer: for dir in workspaces {
+		let candidates = std::env::current_dir()
+			.map(Cow::from)
+			.into_iter()
+			.chain(
+				params
+					.workspace_folders
+					.as_ref()
+					.into_iter()
+					.flat_map(|folders| folders.iter().filter_map(|folder| folder.uri.to_file_path())),
+			)
+			.chain(params.root_uri.as_ref().and_then(|uri| uri.to_file_path()));
+		'outer: for candidate in candidates {
 			for choice in [".odoo_lsp", ".odoo_lsp.json"] {
-				let workspace = Path::new(&dir);
-				let path = workspace.join(choice);
+				let path = candidate.join(choice);
 				let Ok(file) = std::fs::File::open(&path) else { continue };
+				info!("Attempting to load config at {}", path.display());
 				match serde_json::from_reader(file) {
 					Ok(config) => {
-						self.on_change_config(config, Some(workspace));
-						continue 'outer;
+						info!("Loaded config at {}", path.display());
+						self.workspaces.clear();
+						self.on_change_config(config, Some(&candidate));
+						break 'outer;
 					}
 					Err(err) => error!("could not parse config at {}:\n{err}", path.display()),
 				}
-				break;
 			}
-			self.workspaces.insert(dir, Workspace::default());
+			self.workspaces.insert(candidate.into_owned(), Workspace::default());
 		}
 
 		if let Some(ref config) = params.initialization_options
@@ -222,7 +201,7 @@ impl Backend {
 		}
 	}
 
-	#[instrument(skip_all)]
+	#[instrument(skip_all, ret)]
 	pub async fn on_change(&self, params: TextDocumentItem) -> anyhow::Result<()> {
 		let split_uri = params.uri.path().as_str().rsplit_once('.');
 		let rope;
@@ -253,11 +232,14 @@ impl Backend {
 				eager_diagnostics = self.eager_diagnostics(params.open, &rope);
 			}
 
-			if params.open {
+			let _blocker = if params.open {
+				// Hold the blocker while loading modules
+				let b = blocker.block();
 				self.index.load_modules_for_document(blocker.clone(), &path).await;
+				b
 			} else {
-				drop(blocker.block());
-			}
+				blocker.block()
+			};
 		};
 		let slice = rope.slice(..);
 		match (split_uri, params.language) {
@@ -286,6 +268,7 @@ impl Backend {
 		}
 
 		if eager_diagnostics {
+			let client = self.client.clone();
 			let diagnostics = {
 				self.document_map
 					.get(params.uri.path().as_str())
@@ -293,9 +276,11 @@ impl Backend {
 					.diagnostics_cache
 					.clone()
 			};
-			self.client
-				.publish_diagnostics(params.uri, diagnostics, Some(params.version))
-				.await;
+			tokio::spawn(async move {
+				client
+					.publish_diagnostics(params.uri, diagnostics, Some(params.version))
+					.await
+			});
 		}
 
 		Ok(())
@@ -341,10 +326,10 @@ impl Backend {
 				for change in delta {
 					// TODO: Handle full text changes in delta
 					let range = ok!(change.range, "delta without range");
-					let start: ByteOffset = ok!(rope_conv(range.start, rope), "delta start");
+					let start: ByteOffset = rope_conv(range.start, rope);
 					// The old rope is used to calculate the *old* range-end, because
 					// the diff may have caused it to fall out of the new rope's bounds.
-					let end: ByteOffset = ok!(rope_conv(range.end, old_rope), "delta end");
+					let end: ByteOffset = rope_conv(range.end, old_rope);
 					let len_new = change.text.len();
 					let start_position = tree_sitter::Point {
 						row: range.start.line as usize,
@@ -356,7 +341,7 @@ impl Backend {
 					};
 					// calculate new_end_position using rope
 					let new_end_offset = ByteOffset(start.0 + len_new);
-					let new_end_position: Position = ok!(rope_conv(new_end_offset, rope), "new_end_position");
+					let new_end_position: Position = rope_conv(new_end_offset, rope);
 					let new_end_position = tree_sitter::Point {
 						row: new_end_position.line as usize,
 						column: new_end_position.character as usize,
@@ -392,8 +377,14 @@ impl Backend {
 			.find_workspace_of(path, |_, ws| ws.references.limit)
 			.unwrap_or_else(|| self.project_config.references_limit.load(Relaxed));
 		if let Some(entry) = self.index.models.get(model) {
-			let inherit_locations = entry.descendants.iter().map(|loc| loc.0.clone().into());
-			Ok(Some(inherit_locations.chain(record_locations).take(limit).collect()))
+			// Get locations of all classes in this model's chain
+			let class_locations = entry.class_chain.iter().filter_map(|class_id| {
+				use crate::analyze::class_cache;
+				class_cache()
+					.get(*class_id)
+					.map(|metadata| metadata.location.clone().into())
+			});
+			Ok(Some(class_locations.chain(record_locations).take(limit).collect()))
 		} else {
 			Ok(Some(record_locations.take(limit).collect()))
 		}
@@ -491,8 +482,8 @@ impl Backend {
 	pub fn ensure_nonoverlapping_roots(&self) {
 		let mut redundant = vec![];
 		let mut roots = self.workspaces.iter().map(|r| r.key().to_owned()).collect::<Vec<_>>();
-		roots.sort_unstable_by_key(|root| root.as_os_str().len());
-		info!("{roots:?}");
+		roots.sort_by_key(|root| root.as_os_str().len());
+		info!(roots = ?roots);
 		for lhs in 1..roots.len() {
 			for rhs in 0..lhs {
 				if roots[lhs].starts_with(&roots[rhs]) {
@@ -531,8 +522,10 @@ impl Index {
 			.flat_map(|(_, key)| self.models.get(key))
 			.map(|model| {
 				let label = _R(*model.key()).to_string();
-				let module = model.base.as_ref().and_then(|base| {
-					let module = self.find_module_of(&base.0.path.to_path())?;
+				let module = model.class_chain.first().and_then(|class_id| {
+					use crate::analyze::class_cache;
+					let metadata = class_cache().get(*class_id)?;
+					let module = self.find_module_of(&metadata.location.path.to_path())?;
 					Some(_R(module).to_string())
 				});
 				CompletionItem {
@@ -561,7 +554,7 @@ impl Index {
 		if !items.has_space() {
 			return Ok(());
 		}
-		let range = ok!(rope_conv(range, rope), "(complete_xml_id) range");
+		let range = rope_conv(range, rope);
 		let Ok(by_prefix) = self.records.by_prefix.try_read() else {
 			return Ok(());
 		};
@@ -644,7 +637,7 @@ impl Index {
 			return Ok(());
 		}
 		let model_key = _I(&model);
-		let range = ok!(rope_conv(range.clone(), rope), "range={:?}", range);
+		let range = rope_conv(range.clone(), rope);
 		let Some(model_entry) = self.models.populate_properties(model_key.into(), &[]) else {
 			return Ok(());
 		};
@@ -719,7 +712,7 @@ impl Index {
 	) -> anyhow::Result<()> {
 		let component = ok!(_G(component), "(complete_component_prop) component");
 		let component = ok!(self.components.get(&component.into()), "component");
-		let range = ok!(rope_conv(range, rope), "(complete_component_prop) range");
+		let range = rope_conv(range, rope);
 		let completions = component.props.iter().map(|(prop, desc)| {
 			let prop = _R(prop);
 			CompletionItem {
@@ -773,14 +766,15 @@ impl Index {
 		let method = _G(&completion.label)?;
 		let model_key = _G(&model)?;
 		let method_name = _R(method);
-		let rtype = self.resolve_method_returntype(method.into(), model_key).map(_R);
+		let rtype = self.eval_method_rtype(method.into(), model_key, None);
+		let rtype = rtype.and_then(|rtype| self.type_display(rtype));
 		let entry = self.models.get(&model_key.into())?;
 		let methods = entry.methods.as_ref()?;
 		let method_entry = methods.get(&method.into())?;
 
 		completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 			kind: MarkupKind::Markdown,
-			value: self.method_docstring(method_name, method_entry, rtype),
+			value: self.method_docstring(method_name, method_entry, rtype.as_deref()),
 		}));
 
 		Some(())
@@ -813,10 +807,7 @@ impl Index {
 				}
 			}
 		};
-		let rtype = match rtype {
-			Some(type_) => format!("Model[\"{type_}\"]"),
-			None => "...".to_string(),
-		};
+		let rtype = rtype.unwrap_or("...");
 		let params_fragment = match method.arguments.as_deref() {
 			None => "...".to_string(),
 			Some([]) => String::new(),
@@ -831,10 +822,34 @@ impl Index {
 		fomat! {
 			"```python\n"
 			"(method) def " (name) "(" (params_fragment) ") -> " (rtype)
-			"\n"
-			"```\n"
+			"\n```\n"
 			(origin_fragment)
 		}
+	}
+	#[instrument(level = "trace", skip_all, fields(name, type_))]
+	pub fn hover_variable(
+		&self,
+		name: Option<&str>,
+		type_: TypeId,
+		range: Option<Range>,
+	) -> anyhow::Result<Option<Hover>> {
+		let type_fragment = match type_cache().resolve(type_) {
+			Type::Method(model, method) => return self.hover_property_name(&method, _R(model), range),
+			_ => self.type_display(type_),
+		};
+		let type_fragment = type_fragment.as_deref().unwrap_or("Unknown");
+		let value = fomat! {
+			"```py\n"
+			if let Some(name) = name { "(variable) " (name) ": " } (type_fragment)
+			"\n```"
+		};
+		Ok(Some(Hover {
+			range,
+			contents: HoverContents::Markup(MarkupContent {
+				kind: MarkupKind::Markdown,
+				value,
+			}),
+		}))
 	}
 	pub fn completion_resolve_field(&self, completion: &mut CompletionItem) -> Option<()> {
 		let CompletionData { model } = completion
@@ -887,11 +902,13 @@ impl Index {
 			if let Some(help) = &field.help { (help.to_string()) }
 		}
 	}
+	#[instrument(level = "trace", skip_all, fields(name, model))]
 	pub fn hover_property_name(&self, name: &str, model: &str, range: Option<Range>) -> anyhow::Result<Option<Hover>> {
 		let model_key = _I(model);
 		let entry = some!(self.models.populate_properties(model_key.into(), &[]));
-		let prop = some!(_G(name));
-		if let Some(ref fields) = entry.fields
+		let prop = _G(name);
+		if let Some(prop) = prop
+			&& let Some(ref fields) = entry.fields
 			&& let Some(field) = fields.get(&prop.into())
 		{
 			Ok(Some(Hover {
@@ -901,34 +918,42 @@ impl Index {
 					value: self.field_docstring(field, true),
 				}),
 			}))
-		} else if let Some(ref methods) = entry.methods
+		} else if let Some(prop) = prop
+			&& let Some(ref methods) = entry.methods
 			&& methods.contains_key(&prop.into())
 		{
 			drop(entry);
-			let rtype = self.resolve_method_returntype(prop.into(), model_key);
+			let rtype = self.eval_method_rtype(prop.into(), model_key, None);
+			let rtype = rtype.and_then(|rtype| self.type_display(rtype));
 			let model = self.models.get(&model_key.into()).unwrap();
 			let method = model.methods.as_ref().unwrap().get(&prop.into()).unwrap();
 			Ok(Some(Hover {
 				range,
 				contents: HoverContents::Markup(MarkupContent {
 					kind: MarkupKind::Markdown,
-					value: self.method_docstring(name, method, rtype.map(_R)),
+					value: self.method_docstring(name, method, rtype.as_deref()),
 				}),
 			}))
 		} else {
-			Ok(None)
+			drop(entry);
+			let attr_type = some!(self.type_of_attribute(&Type::Model(ImStr::from(model)), name, &Scope::new(None)));
+			self.hover_variable(Some(name), type_cache().get_or_intern(attr_type), range)
 		}
 	}
 	/// Returns a Markdown-formatted docstring for a model.
 	pub fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>, identifier: Option<&str>) -> String {
-		let module = model
-			.base
-			.as_ref()
-			.and_then(|base| self.find_module_of(&base.0.path.to_path()));
+		let module = model.class_chain.first().and_then(|class_id| {
+			use crate::analyze::class_cache;
+			let metadata = class_cache().get(*class_id)?;
+			self.find_module_of(&metadata.location.path.to_path())
+		});
 		let mut descendants = model
-			.descendants
+			.class_chain
 			.iter()
-			.map(|loc| &loc.0)
+			.filter_map(|class_id| {
+				use crate::analyze::class_cache;
+				class_cache().get(*class_id).map(|metadata| metadata.location.clone())
+			})
 			.scan(SymbolSet::default(), |mods, loc| {
 				let Some(module) = self.find_module_of(&loc.path.to_path()) else {
 					return Some(None);
@@ -943,7 +968,7 @@ impl Index {
 		fomat! {
 			if let Some(name) = model_name {
 				"```python\n"
-				if let Some(ident) = identifier { (ident) ": " } "Model[\"" (name) "\"]\n"
+				if let Some(ident) = identifier { "(variable) " (ident) ": " } "Model[\"" (name) "\"]\n"
 				"```  \n"
 			}
 			if let Some(module) = module {
@@ -1110,9 +1135,12 @@ impl Index {
 	pub fn jump_def_model(&self, model: &str) -> anyhow::Result<Option<Location>> {
 		let model = some!(_G(model));
 		if let Some(model) = self.models.get(&model.into())
-			&& let Some(ModelLocation(ref base, _)) = model.base
+			&& let Some(class_id) = model.class_chain.first()
 		{
-			return Ok(Some(base.clone().into()));
+			use crate::analyze::class_cache;
+			if let Some(metadata) = class_cache().get(*class_id) {
+				return Ok(Some(metadata.location.clone().into()));
+			}
 		}
 
 		Ok(None)
@@ -1144,7 +1172,7 @@ impl Index {
 		rope: RopeSlice<'_>,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
-		let range = ok!(rope_conv(range, rope));
+		let range = rope_conv(range, rope);
 		let completions = self.actions.iter().flat_map(|tag| {
 			let tag = tag.key().to_string();
 			Some(CompletionItem {
@@ -1186,7 +1214,7 @@ impl Index {
 		rope: RopeSlice<'_>,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
-		let range = ok!(rope_conv(range, rope));
+		let range = rope_conv(range, rope);
 		let completions = self.widgets.iter().flat_map(|widget| {
 			let widget = widget.key().to_string();
 			Some(CompletionItem {
@@ -1219,7 +1247,7 @@ impl Text {
 				out = NULL_RANGE;
 				continue;
 			};
-			let range: ByteRange = rope_conv(range, rope).ok()?;
+			let range: ByteRange = rope_conv(range, rope);
 			out = out.start.min(range.start.0)..out.end.max(range.end.0);
 		}
 		debug!("(damage_zone)\nseed={seed:?}\n out={out:?}");

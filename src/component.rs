@@ -2,7 +2,7 @@
 //!
 //! [Owl]: https://odoo.github.io/owl/
 
-use tower_lsp_server::lsp_types::Range;
+use tower_lsp_server::ls_types::Range;
 
 use crate::index::{Symbol, SymbolMap, TemplateIndex};
 use crate::template::TemplateName;

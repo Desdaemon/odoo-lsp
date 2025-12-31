@@ -104,16 +104,13 @@ fn main() {
 		}
 		_ => {}
 	}
+	let threads = threads.max(1);
 
-	let rt = if threads <= 1 {
-		tokio::runtime::Builder::new_current_thread().enable_all().build()
-	} else {
-		tokio::runtime::Builder::new_multi_thread()
-			.worker_threads(threads)
-			.enable_all()
-			.build()
-	}
-	.expect("failed to build runtime");
+	let rt = tokio::runtime::Builder::new_multi_thread()
+		.worker_threads(threads)
+		.enable_all()
+		.build()
+		.expect("failed to build runtime");
 	rt.block_on(async move {
 		if cli::run(args).await {
 			return;
@@ -139,7 +136,10 @@ fn main() {
 			.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))
 			.layer_fn(CatchPanic)
 			.service(service);
-		Server::new(stdin, stdout, socket).serve(service).await;
+		Server::new(stdin, stdout, socket)
+			.concurrency_level(2)
+			.serve(service)
+			.await;
 	})
 }
 
@@ -161,7 +161,8 @@ fn parse_args_and_init_logger(args: &[String]) -> cli::Args<'_> {
 		.with_writer(std::io::stderr)
 		.with_file(true)
 		.with_line_number(true)
-		.with_target(true);
+		.with_target(true)
+		.with_ansi(cfg!(not(debug_assertions)));
 
 	match args.log_format {
 		cli::LogFormat::Compact => {

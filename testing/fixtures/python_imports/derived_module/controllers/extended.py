@@ -5,10 +5,10 @@ from odoo.addons.base_module.controllers.main import CustomController as MyBaseC
 #                                                                        ^def
 
 from odoo.addons.nonexistent_module.controllers.main import MissingController
-#                                                           ^diag Cannot resolve import 'MissingController'
+#                                                           ^diag Cannot resolve import 'odoo.addons.nonexistent_module.controllers.main'
 
 from odoo.addons.base_module.controllers.missing import AnotherMissingController
-#                                                       ^diag Cannot resolve import 'AnotherMissingController'
+#                                                       ^diag Cannot resolve import 'odoo.addons.base_module.controllers.missing'
 
 
 class ExtendedController(CustomController):
