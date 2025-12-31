@@ -30,6 +30,11 @@ impl PathSymbol {
 		let path = _I(path.to_string_lossy());
 		PathSymbol(root, path)
 	}
+	#[cfg(test)]
+	pub fn new(path: &Path) -> Self {
+		let root = _I("");
+		PathSymbol::strip_root(root, path)
+	}
 	pub fn empty() -> Self {
 		let empty = interner().get_or_intern_static(".");
 		PathSymbol(empty, empty)

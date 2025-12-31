@@ -151,10 +151,28 @@ query! {
   name: (dotted_name) @IMPORT_NAME)
 
 (import_from_statement
+  module_name: (relative_import) @IMPORT_MODULE
+  name: (dotted_name) @IMPORT_NAME)
+
+(import_from_statement
   module_name: (dotted_name) @IMPORT_MODULE
   name: (aliased_import
     name: (dotted_name) @IMPORT_NAME
     alias: (identifier) @IMPORT_ALIAS))
+
+(import_from_statement
+  module_name: (relative_import) @IMPORT_MODULE
+  name: (aliased_import
+    name: (dotted_name) @IMPORT_NAME
+    alias: (identifier) @IMPORT_ALIAS))
+
+(import_from_statement
+  module_name: (dotted_name) @IMPORT_MODULE
+  (wildcard_import))
+
+(import_from_statement
+  module_name: (relative_import) @IMPORT_MODULE
+  (wildcard_import))
 
 (import_statement
   name: (dotted_name) @IMPORT_NAME)
@@ -172,23 +190,174 @@ fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 		.find(|child| child.byte_range().contains_end(offset))
 }
 
-/// Recursively searches for a class definition with the given name in the AST.
-fn find_class_definition<'a>(
+fn find_symbol_definition<'a>(
 	node: tree_sitter::Node<'a>,
 	contents: &str,
-	class_name: &str,
+	symbol_name: &str,
 ) -> Option<tree_sitter::Node<'a>> {
 	use crate::utils::PreTravel;
 
-	PreTravel::new(node)
-		.find(|node| {
-			node.kind() == "class_definition"
-				&& node
-					.child_by_field_name("name")
-					.map(|name_node| class_name == &contents[name_node.byte_range()])
+	// Try to find as a class definition
+	if let Some(class_node) = PreTravel::new(node)
+		.find(|n| {
+			n.kind() == "class_definition"
+				&& n.child_by_field_name("name")
+					.map(|name_node| symbol_name == &contents[name_node.byte_range()])
 					.unwrap_or(false)
 		})
-		.and_then(|node| node.child_by_field_name("name"))
+		.and_then(|n| n.child_by_field_name("name"))
+	{
+		return Some(class_node);
+	}
+
+	// Try to find as a function definition
+	if let Some(func_node) = PreTravel::new(node)
+		.find(|n| {
+			n.kind() == "function_definition"
+				&& n.child_by_field_name("name")
+					.map(|name_node| symbol_name == &contents[name_node.byte_range()])
+					.unwrap_or(false)
+		})
+		.and_then(|n| n.child_by_field_name("name"))
+	{
+		return Some(func_node);
+	}
+
+	// Try to find as a module-level assignment (for constants/variables)
+	if let Some(assign_node) = PreTravel::new(node)
+		.find(|n| {
+			if n.kind() == "assignment"
+				&& let Some(left_node) = n.child_by_field_name("left")
+			{
+				return symbol_name == &contents[left_node.byte_range()];
+			}
+			false
+		})
+		.and_then(|n| n.child_by_field_name("left"))
+	{
+		return Some(assign_node);
+	}
+
+	// Try to find in import statements (for re-exports)
+	// Only handles relative imports like "from . import fields" or "from .. import models"
+	// For absolute imports like "from odoo.models import Model", resolution happens elsewhere
+	PreTravel::new(node)
+		.find(|n| {
+			if n.kind() == "import_from" || n.kind() == "import_from_statement" {
+				// Only process relative imports (those with a relative_import node or those without a module_name)
+				let is_relative = n
+					.child_by_field_name("module_name")
+					.map(|m| m.kind() == "relative_import")
+					.unwrap_or(false);
+
+				if !is_relative {
+					return false;
+				}
+
+				// Check all name children (there can be multiple for "from . import a, b, c")
+				let mut cursor = n.walk();
+				for child in n.children(&mut cursor) {
+					// Skip the module_name field
+					if matches!(child.kind(), "relative_import" | "dotted_name")
+						&& n.child_by_field_name("module_name") == Some(child)
+					{
+						continue;
+					}
+
+					match child.kind() {
+						"import_alias" | "aliased_import" => {
+							// Wrapped in import_alias/aliased_import: "from . import y as z"
+							let mut alias_cursor = child.walk();
+							for alias_child in child.children(&mut alias_cursor) {
+								if alias_child.kind() == "identifier" || alias_child.kind() == "dotted_name" {
+									let text = &contents[alias_child.byte_range()];
+									// Check both the original name and any alias
+									if text == symbol_name {
+										return true;
+									}
+									// Also check after "as"
+									if let Some(as_name) = alias_child.next_sibling()
+										&& as_name.kind() == "as" && let Some(alias_name) = as_name.next_sibling()
+										&& alias_name.kind() == "identifier"
+										&& &contents[alias_name.byte_range()] == symbol_name
+									{
+										return true;
+									}
+								}
+								// For aliased_import, check the alias field
+								if alias_child.kind() == "identifier"
+									&& &contents[alias_child.byte_range()] == symbol_name
+								{
+									// Check if this is the alias field
+									if child.child_by_field_name("alias") == Some(alias_child) {
+										return true;
+									}
+								}
+							}
+						}
+						"identifier" | "dotted_name" => {
+							// Direct identifier: "from . import fields"
+							let text = &contents[child.byte_range()];
+							if text == symbol_name {
+								return true;
+							}
+						}
+						_ => {}
+					}
+				}
+			}
+			false
+		})
+		.and_then(|import_node| {
+			// Return the identifier/dotted_name node that matches the symbol
+			let mut cursor = import_node.walk();
+			for child in import_node.children(&mut cursor) {
+				// Skip the module_name field
+				if matches!(child.kind(), "relative_import" | "dotted_name")
+					&& import_node.child_by_field_name("module_name") == Some(child)
+				{
+					continue;
+				}
+
+				match child.kind() {
+					"import_alias" | "aliased_import" => {
+						let mut alias_cursor = child.walk();
+						for alias_child in child.children(&mut alias_cursor) {
+							if (alias_child.kind() == "identifier" || alias_child.kind() == "dotted_name")
+								&& &contents[alias_child.byte_range()] == symbol_name
+							{
+								return Some(alias_child);
+							}
+							// Check the alias name
+							if alias_child.kind() == "identifier"
+								&& let Some(as_name) = alias_child.next_sibling()
+								&& as_name.kind() == "as"
+								&& let Some(alias_name) = as_name.next_sibling()
+								&& alias_name.kind() == "identifier"
+								&& &contents[alias_name.byte_range()] == symbol_name
+							{
+								return Some(alias_name);
+							}
+							// For aliased_import with alias field, check the alias
+							if alias_child.kind() == "identifier"
+								&& &contents[alias_child.byte_range()] == symbol_name
+								&& child.child_by_field_name("alias") == Some(alias_child)
+							{
+								return Some(alias_child);
+							}
+						}
+					}
+					"identifier" | "dotted_name" => {
+						// Direct identifier: "from . import fields"
+						if &contents[child.byte_range()] == symbol_name {
+							return Some(child);
+						}
+					}
+					_ => {}
+				}
+			}
+			None
+		})
 }
 
 #[derive(Debug)]
@@ -210,10 +379,236 @@ type ImportMap = HashMap<String, ImportInfo>;
 
 /// Python extensions.
 impl Backend {
+	/// Attempt to resolve a symbol that might be an import re-export to its actual source.
+	/// If a symbol is found in a file and it's an import statement, recursively follow the chain.
+	/// This prevents goto-definition from stopping at `__init__.py` re-exports.
+	fn follow_import_chain(
+		&self,
+		file_path: &std::path::Path,
+		symbol_name: &str,
+		current_file: &str,
+		visited: &mut std::collections::HashSet<std::path::PathBuf>,
+	) -> anyhow::Result<Option<Location>> {
+		// Prevent infinite recursion
+		if visited.contains(file_path) {
+			debug!("Already visited file, stopping recursion: {}", file_path.display());
+			return Ok(None);
+		}
+		visited.insert(file_path.to_path_buf());
+
+		let target_contents = ok!(
+			test_utils::fs::read_to_string(file_path),
+			"Failed to read file {}",
+			file_path.display(),
+		);
+
+		let mut target_parser = Parser::new();
+		target_parser
+			.set_language(&tree_sitter_python::LANGUAGE.into())
+			.map_err(|e| anyhow::anyhow!("Failed to set parser language: {}", e))?;
+
+		let Some(target_ast) = target_parser.parse(&target_contents, None) else {
+			debug!("Failed to parse file");
+			return Ok(None);
+		};
+
+		if let Some(symbol_node) = find_symbol_definition(target_ast.root_node(), &target_contents, symbol_name) {
+			let range = symbol_node.range();
+
+			// Check if this symbol is part of an import statement
+			// Walk up the tree to find the import statement node
+			let mut current = Some(symbol_node);
+			while let Some(node) = current {
+				if matches!(
+					node.kind(),
+					"import_from" | "import_from_statement" | "import_statement"
+				) {
+					// This is an import - try to parse where it's importing from
+					debug!("Found import statement for '{}'", symbol_name);
+
+					// Parse imports from this file to understand what's being imported
+					if let Ok(file_imports) = self.parse_imports(&target_contents) {
+						// Look for an import entry for this symbol
+						if let Some(import_info) = file_imports
+							.get(symbol_name)
+							.or_else(|| file_imports.values().find(|info| info.imported_name == symbol_name))
+						{
+							debug!(
+								"Symbol '{}' is an import from module '{}'",
+								symbol_name, import_info.module_path
+							);
+
+							// Try to resolve the actual module file
+							if let Some(actual_file) = self
+								.index
+								.resolve_py_module_from(&import_info.module_path, Some(Path::new(current_file)))
+							{
+								debug!("Resolved import to actual module: {}", actual_file.display());
+
+								// Check if we've found the actual module file
+								if import_info.module_path.ends_with(&import_info.imported_name)
+									|| import_info
+										.module_path
+										.ends_with(&format!(".{}", import_info.imported_name))
+								{
+									// This is a module import (e.g., "from . import models")
+									// Return the module location
+									debug!("This is a module import, returning module location");
+									return Ok(Some(Location {
+										uri: Uri::from_file_path(actual_file).unwrap(),
+										range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+									}));
+								}
+
+								// Otherwise, we need to find the imported symbol in the target module
+								// Recursively follow the chain for the symbol
+								return self.follow_import_chain(
+									&actual_file,
+									&import_info.imported_name,
+									current_file,
+									visited,
+								);
+							}
+						}
+					}
+					break;
+				}
+				current = node.parent();
+			}
+
+			// Not an import, return the definition location we found
+			debug!(
+				"Found non-import definition for '{}' at line {}",
+				symbol_name, range.start_point.row
+			);
+			return Ok(Some(Location {
+				uri: Uri::from_file_path(file_path).unwrap(),
+				range: span_conv(range),
+			}));
+		}
+
+		Ok(None)
+	}
+
+	/// Resolve module.symbol attribute access to definition
+	/// Handles cases like: `os.path` -> finds path in os module
+	fn resolve_module_attribute_location(
+		&self,
+		module_name: &str,
+		attr_name: &str,
+		imports: &ImportMap,
+		current_file: &str,
+	) -> anyhow::Result<Option<Location>> {
+		use std::path::Path;
+
+		// Check if module_name is actually an imported module
+		let import_info = imports.get(module_name).or_else(|| {
+			// Also check by imported_name (handles "import module" pattern)
+			imports
+				.values()
+				.find(|info| info.imported_name == module_name && info.alias.is_none())
+		});
+
+		let Some(import_info) = import_info else {
+			debug!("'{}' is not an imported module", module_name);
+			return Ok(None);
+		};
+
+		debug!(
+			"Resolving module.attribute: {}.{} from module '{}'",
+			module_name, attr_name, import_info.module_path
+		);
+
+		// If the imported_name is the module_name we're accessing, resolve where it points to
+		// This handles "from odoo import models" -> models.Model
+		let target_file_path = if import_info.imported_name == module_name {
+			debug!("Resolving re-exported module '{}' from {}", module_name, current_file);
+
+			// Try treating it as a direct submodule (most common case)
+			let submodule_path = format!("{}.{}", import_info.module_path, import_info.imported_name);
+			debug!("Trying as submodule: {}", submodule_path);
+			match self
+				.index
+				.resolve_py_module_from(&submodule_path, Some(Path::new(current_file)))
+			{
+				Some(path) => path,
+				None => {
+					debug!("Failed to resolve submodule: {}", submodule_path);
+					return Ok(None);
+				}
+			}
+		} else {
+			// Resolve the module file normally
+			match self
+				.index
+				.resolve_py_module_from(&import_info.module_path, Some(Path::new(current_file)))
+			{
+				Some(path) => path,
+				None => {
+					debug!("Failed to resolve module: {}", import_info.module_path);
+					return Ok(None);
+				}
+			}
+		};
+
+		let file_path = target_file_path;
+
+		// Read and parse the module
+		let target_contents = ok!(
+			test_utils::fs::read_to_string(&file_path),
+			"Failed to read module file {}",
+			file_path.display(),
+		);
+
+		let mut target_parser = Parser::new();
+		target_parser
+			.set_language(&tree_sitter_python::LANGUAGE.into())
+			.map_err(|e| anyhow::anyhow!("Failed to set parser language: {}", e))?;
+
+		let Some(target_ast) = target_parser.parse(&target_contents, None) else {
+			debug!("Failed to parse target module");
+			return Ok(None);
+		};
+
+		// Find the symbol in the target module
+		if let Some(symbol_node) = find_symbol_definition(target_ast.root_node(), &target_contents, attr_name) {
+			let range = symbol_node.range();
+			debug!(
+				"Found {}.{} at line {}, col {}",
+				module_name, attr_name, range.start_point.row, range.start_point.column
+			);
+			return Ok(Some(Location {
+				uri: Uri::from_file_path(file_path).unwrap(),
+				range: span_conv(range),
+			}));
+		}
+
+		// Symbol not found as a definition - don't try fallback imports
+		// This avoids triggering parse_imports which can cause diagnostic errors
+		debug!(
+			"Symbol '{}' not found in module '{}'",
+			attr_name, import_info.module_path
+		);
+		Ok(None)
+	}
+
 	/// Helper function to resolve import-based jump-to-definition requests.
 	/// Returns the location if successful, None if not found, or an error if resolution fails.
-	fn resolve_import_location(&self, imports: &ImportMap, identifier: &str) -> anyhow::Result<Option<Location>> {
-		let Some(import_info) = imports.get(identifier) else {
+	fn resolve_import_location(
+		&self,
+		imports: &ImportMap,
+		identifier: &str,
+		current_file: &str,
+	) -> anyhow::Result<Option<Location>> {
+		// First try direct lookup by identifier (handles usage sites and direct imports)
+		let import_info = if let Some(info) = imports.get(identifier) {
+			Some(info)
+		} else {
+			// If not found, check if identifier matches any imported_name (handles import statements with aliases)
+			imports.values().find(|info| info.imported_name == identifier)
+		};
+
+		let Some(import_info) = import_info else {
 			return Ok(None);
 		};
 
@@ -230,73 +625,227 @@ impl Backend {
 			);
 		}
 
-		let Some(file_path) = self.index.resolve_py_module(&import_info.module_path) else {
+		let Some(file_path) = self
+			.index
+			.resolve_py_module_from(&import_info.module_path, Some(Path::new(current_file)))
+		else {
 			debug!("Failed to resolve module path: {}", import_info.module_path);
 			return Ok(None);
 		};
 
 		debug!("Resolved file path: {}", file_path.display());
 
-		let target_contents = ok!(
-			test_utils::fs::read_to_string(&file_path),
-			"Failed to read target file {}",
-			file_path.display(),
-		);
-
-		let class_name = &import_info.imported_name;
-		if let Some(alias) = &import_info.alias {
+		// Check if this is a module import (from . import foo)
+		// In this case, the imported_name is the module itself, not a symbol within it
+		// e.g., "from . import logging" -> module_path=".logging", imported_name="logging"
+		if import_info.module_path.ends_with(&import_info.imported_name)
+			|| import_info
+				.module_path
+				.ends_with(&format!(".{}", import_info.imported_name))
+		{
+			// This is a module import, return the module file location
 			debug!(
-				"Looking for original class '{}' (aliased as '{}') in target file",
-				class_name, alias
+				"Module import detected, returning module location: {}",
+				file_path.display()
 			);
-		} else {
-			debug!("Looking for class '{}' in target file", class_name);
-		}
-
-		let mut target_parser = Parser::new();
-		target_parser
-			.set_language(&tree_sitter_python::LANGUAGE.into())
-			.map_err(|e| anyhow::anyhow!("Failed to set parser language: {}", e))?;
-
-		let Some(target_ast) = target_parser.parse(&target_contents, None) else {
-			debug!("Failed to parse target file with tree-sitter");
 			return Ok(Some(Location {
 				uri: Uri::from_file_path(file_path).unwrap(),
 				range: Range::new(Position::new(0, 0), Position::new(0, 0)),
 			}));
-		};
+		}
 
-		if let Some(class_node) = find_class_definition(target_ast.root_node(), &target_contents, class_name) {
-			let range = class_node.range();
+		// Use follow_import_chain to resolve the symbol and follow any import chains
+		let symbol_name = &import_info.imported_name;
+		if let Some(alias) = &import_info.alias {
+			debug!(
+				"Looking for original symbol '{}' (aliased as '{}') in target file",
+				symbol_name, alias
+			);
+		} else {
+			debug!("Looking for symbol '{}' in target file", symbol_name);
+		}
+
+		let mut visited = std::collections::HashSet::new();
+		if let Some(location) = self.follow_import_chain(&file_path, symbol_name, current_file, &mut visited)? {
 			if let Some(alias) = &import_info.alias {
 				debug!(
-					"Found class '{}' (aliased as '{}') at line {}, col {}",
-					class_name, alias, range.start_point.row, range.start_point.column
+					"Successfully resolved symbol '{}' (aliased as '{}') to {:?}",
+					symbol_name, alias, location
 				);
 			} else {
-				debug!(
-					"Found class '{}' at line {}, col {}",
-					class_name, range.start_point.row, range.start_point.column
-				);
+				debug!("Successfully resolved symbol '{}' to {:?}", symbol_name, location);
 			}
+			return Ok(Some(location));
+		}
+
+		// Symbol not found directly, but it might be imported in the target file
+		// Parse imports from the target file to see if it's re-exported there
+		if let Ok(target_imports) = self.parse_imports(&ok!(
+			test_utils::fs::read_to_string(&file_path),
+			"Failed to read file {}",
+			file_path.display()
+		)) && let Some(target_import) = target_imports
+			.get(symbol_name)
+			.or_else(|| target_imports.values().find(|info| info.imported_name == *symbol_name))
+		{
+			debug!(
+				"Symbol '{}' is re-exported from module '{}' in {}",
+				symbol_name,
+				target_import.module_path,
+				file_path.display()
+			);
+
+			// Recursively resolve the symbol from its actual source
+			if let Some(actual_file) = self
+				.index
+				.resolve_py_module_from(&target_import.module_path, Some(Path::new(current_file)))
+			{
+				let mut re_visited = std::collections::HashSet::new();
+				if let Some(location) = self.follow_import_chain(
+					&actual_file,
+					&target_import.imported_name,
+					current_file,
+					&mut re_visited,
+				)? {
+					debug!("Resolved symbol '{}' through re-export to {:?}", symbol_name, location);
+					return Ok(Some(location));
+				}
+			}
+		}
+
+		// Symbol not found as a definition in the module
+		// Check if the target module has wildcard imports that might export this symbol
+		let target_file_str = ok!(file_path.to_str(), "Invalid file path");
+		let target_contents_str = ok!(test_utils::fs::read_to_string(&file_path), "Failed to read file");
+		if let Ok(target_imports) = self.parse_imports(&target_contents_str) {
+			for (key, wildcard_info) in target_imports {
+				if !key.starts_with("*from_") || wildcard_info.imported_name != "*" {
+					continue;
+				}
+
+				debug!(
+					"Checking wildcard import from '{}' for symbol '{}'",
+					wildcard_info.module_path, symbol_name
+				);
+
+				// Try to resolve the wildcard source
+				if let Some(wildcard_source_file) = self
+					.index
+					.resolve_py_module_from(&wildcard_info.module_path, Some(Path::new(target_file_str)))
+				{
+					// Try to find the symbol in the wildcard source
+					let mut wildcard_visited = std::collections::HashSet::new();
+					if let Ok(Some(location)) = self.follow_import_chain(
+						&wildcard_source_file,
+						symbol_name,
+						current_file,
+						&mut wildcard_visited,
+					) {
+						debug!(
+							"Found symbol '{}' in wildcard import from '{}' in module '{}'",
+							symbol_name,
+							wildcard_info.module_path,
+							file_path.display()
+						);
+						return Ok(Some(location));
+					}
+				}
+			}
+		}
+
+		// Try to check if it's a submodule (e.g., "from odoo import fields" where fields is a module)
+		let submodule_path = format!("{}.{}", import_info.module_path, symbol_name);
+		debug!(
+			"Symbol '{}' not found in module, trying submodule path: {}",
+			symbol_name, submodule_path
+		);
+
+		if let Some(submodule_file) = self
+			.index
+			.resolve_py_module_from(&submodule_path, Some(Path::new(current_file)))
+		{
+			debug!("Submodule resolved to: {}", submodule_file.display());
 			return Ok(Some(Location {
-				uri: Uri::from_file_path(file_path).unwrap(),
-				range: span_conv(range),
+				uri: Uri::from_file_path(submodule_file).unwrap(),
+				range: Range::new(Position::new(0, 0), Position::new(0, 0)),
 			}));
 		}
 
+		// Submodule not found either
 		if let Some(alias) = &import_info.alias {
 			debug!(
-				"Class '{}' (aliased as '{}') not found in target file using tree-sitter",
-				class_name, alias
+				"Symbol '{}' (aliased as '{}') not found in target file using tree-sitter",
+				symbol_name, alias
 			);
 		} else {
-			debug!("Class '{}' not found in target file using tree-sitter", class_name);
+			debug!("Symbol '{}' not found in target file using tree-sitter", symbol_name);
 		}
-		Ok(Some(Location {
-			uri: Uri::from_file_path(file_path).unwrap(),
-			range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-		}))
+		Ok(None)
+	}
+
+	/// Try to resolve a symbol from wildcard imports
+	/// Only called when normal resolution fails, to minimize work
+	fn resolve_from_wildcard_imports(
+		&self,
+		identifier: &str,
+		imports: &ImportMap,
+		current_file: &str,
+	) -> anyhow::Result<Option<Location>> {
+		use std::path::Path;
+
+		// Look for wildcard imports in the imports map
+		for (key, import_info) in imports {
+			// Check if this is a wildcard import (has "*" in the key)
+			if !key.starts_with("*from_") || import_info.imported_name != "*" {
+				continue;
+			}
+
+			debug!(
+				"Checking wildcard import from module '{}' for symbol '{}'",
+				import_info.module_path, identifier
+			);
+
+			// Resolve the wildcard source module
+			let Some(source_file) = self
+				.index
+				.resolve_py_module_from(&import_info.module_path, Some(Path::new(current_file)))
+			else {
+				debug!("Failed to resolve wildcard source module: {}", import_info.module_path);
+				continue;
+			};
+
+			// Parse the source module to see if it has the symbol
+			let source_contents = match test_utils::fs::read_to_string(&source_file) {
+				Ok(contents) => contents,
+				Err(_) => {
+					debug!("Failed to read wildcard source file: {}", source_file.display());
+					continue;
+				}
+			};
+
+			// Try to find the symbol in the source module
+			let mut parser = Parser::new();
+			if let Err(_) = parser.set_language(&tree_sitter_python::LANGUAGE.into()) {
+				continue;
+			}
+
+			let Some(_ast) = parser.parse(&source_contents, None) else {
+				continue;
+			};
+
+			// Use follow_import_chain to find the symbol in the source
+			let mut visited = std::collections::HashSet::new();
+			if let Ok(Some(location)) = self.follow_import_chain(&source_file, identifier, current_file, &mut visited) {
+				debug!(
+					"Found symbol '{}' in wildcard import from module '{}'",
+					identifier, import_info.module_path
+				);
+				return Ok(Some(location));
+			}
+		}
+
+		debug!("Symbol '{}' not found in any wildcard imports", identifier);
+		Ok(None)
 	}
 
 	#[tracing::instrument(skip_all, ret, fields(uri))]
@@ -311,7 +860,25 @@ impl Backend {
 		parser
 			.set_language(&tree_sitter_python::LANGUAGE.into())
 			.expect("bug: failed to init python parser");
-		self.update_ast(text, uri, rope, old_rope, parser)
+		self.update_ast(text, uri, rope, old_rope, parser)?;
+
+		// Also update models on change (not just on save), so that class_chain is populated
+		// for completions that happen before the file is saved
+		if let Some(path) = uri.to_file_path()
+			&& let Some(root_path) = self.index.find_root_of(&path)
+		{
+			let root = _I(root_path.to_string_lossy().as_ref());
+			let rope_copy = Rope::from(rope);
+			// Clone the Text enum variant
+			let text_copy = match text {
+				Text::Full(s) => Text::Full(s.clone()),
+				Text::Delta(d) => Text::Delta(d.clone()),
+			};
+			if let Err(err) = self.update_models(text_copy, &path, root, rope_copy) {
+				debug!("update_models failed: {err:?}");
+			}
+		}
+		Ok(())
 	}
 
 	/// Parse import statements from Python content and return a map of imported names to their module paths
@@ -354,9 +921,48 @@ impl Backend {
 				}
 			}
 
+			// Add the module itself to imports (so "from odoo import X" makes "odoo" clickable)
+			if let Some(module) = &module_path {
+				// Extract the top-level module name
+				let top_level_module = if module.chars().all(|c| c == '.') {
+					// Pure relative import like "." or "..", skip
+					None
+				} else {
+					module.split('.').next().map(|first_part| first_part.to_string())
+				};
+
+				if let Some(top_level) = top_level_module {
+					// Only add if not already in imports (avoid overwriting named imports)
+					if !imports.contains_key(&top_level) {
+						debug!("Adding module {} to imports (can goto-def on module name)", top_level);
+						imports.insert(
+							top_level.clone(),
+							ImportInfo {
+								module_path: top_level.clone(),
+								imported_name: top_level.clone(),
+								alias: None,
+							},
+						);
+					}
+				}
+			}
+
 			if let Some(name) = import_name {
 				let full_module_path = if let Some(module) = module_path {
-					module // For "from module import name", the module path is just the module
+					// Check if this is "from . import foo" vs "from .utils import foo"
+					// In "from . import foo", module is "." and name is "foo" (the submodule)
+					// In "from .utils import foo", module is ".utils" and name is "foo" (the symbol)
+
+					// If module is just dots (relative import with no module part),
+					// then name is actually a submodule, not a symbol
+					if module.chars().all(|c| c == '.') {
+						// This is "from . import foo" or "from .. import bar"
+						// Append the name to the module path
+						format!("{}{}", module, name)
+					} else {
+						// This is "from .utils import foo" or "from package import symbol"
+						module
+					}
 				} else {
 					name.clone() // For "import name", the module path is the name itself
 				};
@@ -369,6 +975,20 @@ impl Backend {
 						module_path: full_module_path,
 						imported_name: name,
 						alias,
+					},
+				);
+			} else if let Some(module) = &module_path {
+				// This is a wildcard import like "from module import *"
+				// Store it with a special "*" imported_name marker
+				debug!("Adding wildcard import from module {}", module);
+				// Use a special key that won't collide with normal imports
+				let wildcard_key = format!("*from_{}*", module);
+				imports.insert(
+					wildcard_key,
+					ImportInfo {
+						module_path: module.clone(),
+						imported_name: "*".to_string(),
+						alias: None,
 					},
 				);
 			}
@@ -384,8 +1004,15 @@ impl Backend {
 			Text::Delta(_) => Cow::from(rope.slice(..)),
 		};
 		let models = index_models(text.as_bytes())?;
-		let path = PathSymbol::strip_root(root, path);
-		self.index.models.append(path, true, &models);
+		let path_sym = PathSymbol::strip_root(root, path);
+		self.index.models.append(path_sym, true, &models);
+
+		// Create fragment ClassIds for each model class definition
+		let fragments = self.index.create_model_fragments_from_file(path, &text);
+
+		// Get BaseModel ClassId (if available)
+		let base_model_id = self.index.get_base_model_class_id();
+
 		for model in models {
 			match model.type_ {
 				ModelType::Base { name, ancestors } => {
@@ -396,18 +1023,92 @@ impl Backend {
 						.try_get_mut(&model_key.into())
 						.expect(format_loc!("deadlock"))
 						.unwrap();
+
+					// Populate class_chain: [BaseModel, ...fragments]
+					// Only add BaseModel once (if not already present)
+					if let Some(base_id) = base_model_id
+						&& entry.class_chain.is_empty()
+					{
+						entry.class_chain.push(base_id);
+					}
+
+					// Add fragments from this file (avoid duplicates)
+					let model_name_str = ImStr::from(name.as_str());
+					if let Some(fragment_ids) = fragments.get(&model_name_str) {
+						for &fragment_id in fragment_ids {
+							if !entry.class_chain.contains(&fragment_id) {
+								entry.class_chain.push(fragment_id);
+							}
+						}
+					}
+
 					entry
 						.ancestors
 						.extend(ancestors.into_iter().map(|sym| ModelName::from(_I(&sym))));
 					drop(entry);
-					self.index.models.populate_properties(model_key.into(), &[path]);
+					// Don't pass locations_filter - class_chain now has all fragments from module loading
+					self.index.models.populate_properties(model_key.into(), &[]);
 				}
 				ModelType::Inherit(inherits) => {
-					let Some(model) = inherits.first() else { continue };
-					let model_key = _G(model).unwrap();
-					self.index.models.populate_properties(model_key.into(), &[path]);
+					let Some(inherited_model_name) = inherits.first() else {
+						continue;
+					};
+					let model_key = _G(inherited_model_name).unwrap();
+
+					// For inherited models, populate class_chain with: [BaseModel, inherited_chain..., new_fragments]
+					// This ensures we inherit fields/methods from the parent model first, then any overrides
+					if let Some(mut entry) = self
+						.index
+						.models
+						.try_get_mut(&model_key.into())
+						.expect(format_loc!("deadlock"))
+					{
+						// Ensure BaseModel is first in the chain if not already present
+						if let Some(base_id) = base_model_id
+							&& !entry.class_chain.contains(&base_id)
+						{
+							entry.class_chain.insert(0, base_id);
+						}
+
+						// Add fragments from this file for the inherited model
+						// These come AFTER existing chain entries, representing overrides/extensions
+						if let Some(fragment_ids) = fragments.get(&ImStr::from(inherited_model_name.as_str())) {
+							for &frag_id in fragment_ids {
+								if !entry.class_chain.contains(&frag_id) {
+									entry.class_chain.push(frag_id);
+								}
+							}
+						}
+					}
+
+					// Don't pass locations_filter - class_chain now has all fragments from module loading
+					self.index.models.populate_properties(model_key.into(), &[]);
 				}
 			}
+		}
+
+		let model_class_id = crate::analyze::class_cache().get_by_name("Model");
+		for (frag_name, frag_ids) in fragments {
+			let symbol: ModelName = _I(frag_name).into();
+			{
+				let mut entry = self.index.models.entry(symbol).or_default();
+				if let Some(base_id) = base_model_id
+					&& !entry.class_chain.contains(&base_id)
+				{
+					entry.class_chain.insert(0, base_id);
+				}
+				if let Some(model_id) = model_class_id
+					&& !entry.class_chain.contains(&model_id)
+				{
+					entry.class_chain.push(model_id);
+				}
+				for frag_id in frag_ids {
+					if !entry.class_chain.contains(&frag_id) {
+						entry.class_chain.push(frag_id);
+					}
+				}
+			}
+			self.index.models.populate_properties(symbol, &[]);
 		}
 		Ok(())
 	}
@@ -571,16 +1272,142 @@ impl Backend {
 		let imports = self.parse_imports(&contents).unwrap_or_default();
 		debug!("Parsed imports: {:?}", imports);
 
-		// Check if cursor is on an imported identifier
-		if let Some(cursor_node) = ast.root_node().descendant_for_byte_range(offset, offset)
-			&& cursor_node.kind() == "identifier"
-		{
-			let identifier = &contents[cursor_node.byte_range()];
-			debug!("Checking identifier '{}' at offset {}", identifier, offset);
+		// Check for wildcard imports or module names in import statements
+		let query = PyImports::query();
+		let mut cursor = tree_sitter::QueryCursor::new();
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
+		while let Some(match_) = matches.next() {
+			for capture in match_.captures {
+				let range = capture.node.byte_range();
+				if range.contains(&offset)
+					&& let Some(PyImports::ImportModule) = PyImports::from(capture.index)
+				{
+					// Cursor is on a module_name in an import statement
+					let module_name = &contents[range];
+					debug!("Cursor on module_name '{}' in import statement", module_name);
+					if let Some(resolved_file) = self
+						.index
+						.resolve_py_module_from(module_name, Some(Path::new(file_path_str)))
+					{
+						debug!("Resolved to: {}", resolved_file.display());
+						return Ok(Some(Location {
+							uri: Uri::from_file_path(resolved_file).unwrap(),
+							range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+						}));
+					}
+				}
+			}
+		}
 
-			// Try to resolve import location
-			if let Some(location) = self.resolve_import_location(&imports, identifier /*, contents_bytes*/)? {
-				return Ok(Some(location));
+		// Check if cursor is on an imported identifier or module attribute access
+		if let Some(cursor_node) = ast.root_node().descendant_for_byte_range(offset, offset) {
+			match cursor_node.kind() {
+				"identifier" => {
+					let identifier = &contents[cursor_node.byte_range()];
+					debug!("Checking identifier '{}' at offset {}", identifier, offset);
+
+					// Check if this identifier is part of a dotted_name in an import statement
+					// e.g., cursor on "models" in "from odoo.models import X"
+					if let Some(parent) = cursor_node.parent()
+						&& parent.kind() == "dotted_name"
+					{
+						// Check if this dotted_name is a module_name in an import statement
+						if let Some(import_node) = parent.parent()
+							&& (import_node.kind() == "import_from_statement"
+								|| import_node.kind() == "import_statement")
+							&& import_node.child_by_field_name("module_name") == Some(parent)
+						{
+							// Build the module path up to and including the clicked identifier
+							let dotted_name_text = &contents[parent.byte_range()];
+							debug!(
+								"Cursor on identifier '{}' in dotted module name '{}'",
+								identifier, dotted_name_text
+							);
+
+							// Find which part of the dotted name was clicked
+							// e.g., for "odoo.models", if "models" was clicked, resolve "odoo.models"
+							let parts: Vec<&str> = dotted_name_text.split('.').collect();
+							let clicked_offset = offset - parent.start_byte();
+
+							// Find which segment contains the cursor
+							let mut cumulative_len = 0;
+							for (i, part) in parts.iter().enumerate() {
+								let part_start = cumulative_len;
+								let part_end = part_start + part.len();
+
+								if clicked_offset >= part_start && clicked_offset < part_end {
+									// The cursor is on this part - resolve up to and including it
+									let module_path = parts[..=i].join(".");
+									debug!("Resolving partial module path: {}", module_path);
+
+									if let Some(resolved_file) = self
+										.index
+										.resolve_py_module_from(&module_path, Some(Path::new(file_path_str)))
+									{
+										debug!("Resolved to: {}", resolved_file.display());
+										return Ok(Some(Location {
+											uri: Uri::from_file_path(resolved_file).unwrap(),
+											range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+										}));
+									}
+									break;
+								}
+
+								cumulative_len = part_end + 1; // +1 for the dot
+							}
+						}
+					}
+
+					// Check if this identifier is part of an attribute access (module.symbol)
+					if let Some(parent) = cursor_node.parent()
+						&& parent.kind() == "attribute"
+						&& parent.child_by_field_name("attribute") == Some(cursor_node)
+					{
+						// Cursor is on the attribute name in "module.symbol"
+						if let Some(obj_node) = parent.child_by_field_name("object") {
+							let obj_name = &contents[obj_node.byte_range()];
+							let attr_name = identifier;
+							debug!("Module attribute access: {}.{}", obj_name, attr_name);
+
+							// Try to resolve module.symbol
+							if let Some(location) =
+								self.resolve_module_attribute_location(obj_name, attr_name, &imports, file_path_str)?
+							{
+								return Ok(Some(location));
+							}
+						}
+					} else {
+						// Regular identifier - try as import
+						if let Some(location) = self.resolve_import_location(&imports, identifier, file_path_str)? {
+							return Ok(Some(location));
+						}
+
+						// If not found in direct imports, try wildcard imports (last resort)
+						if let Some(location) =
+							self.resolve_from_wildcard_imports(identifier, &imports, file_path_str)?
+						{
+							return Ok(Some(location));
+						}
+					}
+				}
+				"attribute" => {
+					// Cursor might be on the dot or object in attribute expression
+					// Try to get the attribute name (rightmost identifier)
+					if let Some(attr_node) = cursor_node.child_by_field_name("attribute") {
+						let attr_name = &contents[attr_node.byte_range()];
+						if let Some(obj_node) = cursor_node.child_by_field_name("object") {
+							let obj_name = &contents[obj_node.byte_range()];
+							debug!("Module attribute access: {}.{}", obj_name, attr_name);
+
+							if let Some(location) =
+								self.resolve_module_attribute_location(obj_name, attr_name, &imports, file_path_str)?
+							{
+								return Ok(Some(location));
+							}
+						}
+					}
+				}
+				_ => {}
 			}
 		}
 
@@ -1113,6 +1940,70 @@ impl Backend {
 			return self.index.hover_property_name(prop, model, lsp_range);
 		}
 
+		// Check if cursor is on an imported identifier
+		if let Some(cursor_node) = ast.root_node().descendant_for_byte_range(offset, offset)
+			&& cursor_node.kind() == "identifier"
+		{
+			let identifier = &contents[cursor_node.byte_range()];
+
+			// Parse imports from the current file
+			let imports = self.parse_imports(&contents).unwrap_or_default();
+
+			// Try to resolve as an import
+			if let Some(import_info) = imports.get(identifier).or_else(|| {
+				// Check if identifier matches any imported_name (handles import statements with aliases)
+				imports.values().find(|info| info.imported_name == identifier)
+			}) {
+				debug!(
+					"Hovering over imported symbol '{}' from module '{}'",
+					identifier, import_info.module_path
+				);
+
+				// Resolve the module
+				if let Some(file_path) = self
+					.index
+					.resolve_py_module_from(&import_info.module_path, Some(Path::new(file_path_str)))
+				{
+					debug!("Resolved module to: {}", file_path.display());
+
+					// Parse the module scope to get symbol information
+					if let Some(scope) = self.index.parse_module_scope(&file_path)
+					&& let symbol_name = &import_info.imported_name
+					// Try to find the symbol in the module
+					&& let Some(symbol_type) = scope.get(symbol_name.as_str())
+					{
+						let type_str = format!("{:?}", symbol_type);
+
+						// Build hover content
+						let mut contents_parts = vec![];
+
+						// Add the symbol declaration
+						if let Some(alias) = &import_info.alias {
+							contents_parts.push(format!("```python\n{} (imported as {})\n```", symbol_name, alias));
+						} else {
+							contents_parts.push(format!("```python\n{}\n```", symbol_name));
+						}
+
+						// Add type information
+						contents_parts.push(format!("Type: `{}`", type_str));
+
+						// Add source location
+						contents_parts.push(format!("From: `{}`", import_info.module_path));
+
+						let hover_contents = contents_parts.join("\n\n");
+
+						return Ok(Some(Hover {
+							contents: HoverContents::Markup(MarkupContent {
+								kind: MarkupKind::Markdown,
+								value: hover_contents,
+							}),
+							range: Some(span_conv(cursor_node.range())),
+						}));
+					}
+				}
+			}
+		}
+
 		// No matches, assume arbitrary expression.
 		let root = some!(top_level_stmt(ast.root_node(), offset));
 		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
@@ -1558,4 +2449,136 @@ fn extract_string_needle_at_offset<'a>(
 	let needle = Cow::from(slice.try_slice(1..offset - relative_offset)?);
 	let byte_range = range.shrink(1).map_unit(ByteOffset);
 	Ok((needle, byte_range))
+}
+
+#[cfg(test)]
+mod test {
+	use super::*;
+
+	#[test]
+	fn test_find_symbol_definition_basic() {
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+
+		// Test case 1: function definition
+		let contents = "def hello(): pass";
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+
+		let result = find_symbol_definition(root, contents, "hello");
+		assert!(result.is_some(), "Should find function 'hello'");
+
+		let node = result.unwrap();
+		assert_eq!(
+			&contents[node.byte_range()],
+			"hello",
+			"Should return the 'hello' function name node"
+		);
+
+		// Test case 2: class definition
+		let contents = "class MyModel: pass";
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+
+		let result = find_symbol_definition(root, contents, "MyModel");
+		assert!(result.is_some(), "Should find class 'MyModel'");
+
+		let node = result.unwrap();
+		assert_eq!(
+			&contents[node.byte_range()],
+			"MyModel",
+			"Should return the 'MyModel' class name node"
+		);
+
+		// Test case 3: variable assignment
+		let contents = "fields = 42";
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+
+		let result = find_symbol_definition(root, contents, "fields");
+		assert!(result.is_some(), "Should find variable 'fields'");
+
+		let node = result.unwrap();
+		assert_eq!(
+			&contents[node.byte_range()],
+			"fields",
+			"Should return the 'fields' variable name node"
+		);
+
+		// Test case 4: Should not find non-existent symbol
+		let contents = "def hello(): pass";
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+
+		let result = find_symbol_definition(root, contents, "nonexistent");
+		assert!(result.is_none(), "Should not find 'nonexistent'");
+	}
+
+	#[test]
+	fn test_find_symbol_definition_single_dot_reexports() {
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+
+		// Test case 1: from . import fields (single dot re-export)
+		let contents = "from . import fields";
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+
+		let result = find_symbol_definition(root, contents, "fields");
+		assert!(result.is_some(), "Should find 'fields' in 'from . import fields'");
+
+		let node = result.unwrap();
+		assert_eq!(
+			&contents[node.byte_range()],
+			"fields",
+			"Should return the 'fields' identifier node"
+		);
+
+		// Test case 2: Absolute imports should NOT be found by this function
+		// They should be resolved by other mechanisms (module resolution)
+		let contents = "from odoo import api";
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+
+		let result = find_symbol_definition(root, contents, "api");
+		assert!(
+			result.is_none(),
+			"Absolute imports should not be found by find_symbol_definition"
+		);
+
+		// Test case 3: from . import fields as f (aliased single dot re-export)
+		let contents = "from . import fields as f";
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+
+		let result = find_symbol_definition(root, contents, "f");
+		assert!(
+			result.is_some(),
+			"Should find 'f' (the alias) in 'from . import fields as f'"
+		);
+
+		let node = result.unwrap();
+		assert_eq!(
+			&contents[node.byte_range()],
+			"f",
+			"Should return the alias 'f' identifier node"
+		);
+
+		// Test case 4: Multiple imports with single dot relative import
+		let contents = "from . import fields, models, api";
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+
+		// Find fields
+		let result = find_symbol_definition(root, contents, "fields");
+		assert!(result.is_some(), "Should find 'fields' in multi-import");
+
+		// Find models
+		let result = find_symbol_definition(root, contents, "models");
+		assert!(result.is_some(), "Should find 'models' in multi-import");
+
+		// Find api
+		let result = find_symbol_definition(root, contents, "api");
+		assert!(result.is_some(), "Should find 'api' in multi-import");
+	}
 }

@@ -172,7 +172,7 @@ where
 /// - [ByteOffset] <-> [Position]
 /// - [Range] -> [CharRange]
 /// - [Range] <-> [ByteRange]
-#[inline]
+#[track_caller]
 pub fn rope_conv<T, U>(src: T, rope: RopeSlice<'_>) -> U
 where
 	for<'a> U: From<RopeAdapter<'a, T>>,

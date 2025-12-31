@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, ops::ControlFlow};
+use std::{borrow::Cow, cmp::Ordering, collections::HashMap, ops::ControlFlow, path::PathBuf};
 
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location};
 use tracing::{debug, warn};
@@ -55,7 +55,10 @@ impl Backend {
 			|range: core::ops::Range<usize>| damage_zone.as_ref().map(|zone| zone.intersects(range)).unwrap_or(true);
 
 		// Diagnose missing imports
-		self.diagnose_python_imports(diagnostics, &contents, ast.root_node());
+		self.diagnose_python_imports(diagnostics, &contents, ast.root_node(), path);
+
+		// Diagnose undefined symbols and basic type errors
+		self.diagnose_python_types(diagnostics, &contents, ast.root_node());
 
 		// Diagnose manifest dependencies if this is a __manifest__.py file
 		if path.ends_with("__manifest__.py") {
@@ -307,7 +310,13 @@ impl Backend {
 		};
 		let mut scope = Scope::default();
 		let self_type = match self_type {
-			Some(type_) => &contents[type_.byte_range().shrink(1)],
+			Some(type_) => {
+				if type_.kind() == "string" {
+					&contents[type_.byte_range().shrink(1)]
+				} else {
+					&contents[type_.byte_range()]
+				}
+			}
 			None => "",
 		};
 		scope.super_ = Some(self_param.into());
@@ -388,7 +397,16 @@ impl Backend {
 		});
 	}
 
-	fn diagnose_python_imports(&self, diagnostics: &mut Vec<Diagnostic>, contents: &str, root: Node) {
+	fn diagnose_python_imports(
+		&self,
+		diagnostics: &mut Vec<Diagnostic>,
+		contents: &str,
+		root: Node,
+		current_file: &str,
+	) {
+		// Cache file contents to avoid re-reading the same file multiple times
+		let mut file_contents_cache: HashMap<PathBuf, String> = HashMap::new();
+
 		let query = PyImports::query();
 		let mut cursor = tree_sitter::QueryCursor::new();
 
@@ -417,22 +435,92 @@ impl Backend {
 			}
 
 			if let (Some(name), Some(node)) = (import_name, import_node) {
-				let full_module_path = if let Some(module) = module_path {
-					module // For "from module import name", the module path is just the module
+				let full_module_path = if let Some(module) = module_path.as_ref() {
+					// Check if this is "from . import foo" vs "from .utils import foo"
+					// In "from . import foo", module is "." and name is "foo" (the submodule)
+					// In "from .utils import foo", module is ".utils" and name is "foo" (the symbol)
+
+					// If module is just dots (relative import with no module part),
+					// then name is actually a submodule, not a symbol
+					if module.chars().all(|c| c == '.') {
+						// This is "from . import foo" or "from .. import bar"
+						// Append the name to the module path
+						format!("{}{}", module, name)
+					} else {
+						// This is "from .utils import foo" or "from package import symbol"
+						module.clone()
+					}
 				} else {
 					name.clone() // For "import name", the module path is the name itself
 				};
 
-				// Only check imports from odoo.addons.module_name pattern
-				if !full_module_path.starts_with("odoo.addons.") {
+				// Skip checking builtin modules, common stdlib modules, and odoo itself
+				// These are always available and don't need file resolution
+				let is_stdlib_or_builtin = matches!(
+					full_module_path.as_str(),
+					"sys"
+						| "os" | "typing" | "collections"
+						| "datetime" | "json"
+						| "re" | "math" | "pathlib"
+						| "abc" | "functools"
+						| "itertools" | "subprocess"
+						| "logging" | "unittest"
+						| "pytest" | "asyncio"
+						| "contextlib" | "odoo"
+						| "dataclasses" | "enum"
+						| "io" | "tempfile"
+						| "shutil" | "string"
+						| "time" | "warnings"
+				);
+
+				if is_stdlib_or_builtin {
 					continue;
 				}
 
-				// Try to resolve the module path
-				if self.index.resolve_py_module(&full_module_path).is_none() {
+				// Try to resolve the module path (with support for relative imports)
+				let current_path = std::path::Path::new(current_file);
+				if let Some(resolved_path) = self.index.resolve_py_module_from(&full_module_path, Some(current_path)) {
+					// Module file found, now check if the specific symbol exists in "from X import Y" cases
+					// BUT: if the module path is just dots (e.g., "from . import foo"), then we're importing
+					// a submodule, not a symbol from a module, so skip the symbol check
+					let is_submodule_import = module_path.as_ref().is_some_and(|m| m.chars().all(|c| c == '.'));
+
+					if let Some(module_path) = module_path
+						&& !is_submodule_import
+					{
+						// This is "from module import name" - verify the name exists in the module
+						if let Some(module_scope) = self.index.parse_module_scope(&resolved_path) {
+							// Check if the imported name exists in the module scope
+							if module_scope.get(name.as_str()).is_none() {
+								// Before reporting error, check if the module has wildcard imports
+								// (which might export this symbol)
+								let has_wildcard_import = if let Some(cached) = file_contents_cache.get(&resolved_path)
+								{
+									cached.contains("import *")
+								} else if let Ok(contents) = std::fs::read_to_string(&resolved_path) {
+									let has_wildcard = contents.contains("import *");
+									file_contents_cache.insert(resolved_path.clone(), contents);
+									has_wildcard
+								} else {
+									false
+								};
+
+								if !has_wildcard_import {
+									diagnostics.push(Diagnostic {
+										range: span_conv(node.range()),
+										message: format!("Cannot find '{name}' in module '{module_path}'"),
+										severity: Some(DiagnosticSeverity::ERROR),
+										..Default::default()
+									});
+								}
+							}
+						}
+					}
+				} else {
+					// Module file not found
 					diagnostics.push(Diagnostic {
 						range: span_conv(node.range()),
-						message: format!("Cannot resolve import '{name}'"),
+						message: format!("Cannot resolve import '{full_module_path}'"),
 						severity: Some(DiagnosticSeverity::ERROR),
 						..Default::default()
 					});
@@ -440,6 +528,23 @@ impl Backend {
 			}
 		}
 	}
+
+	/// Diagnose undefined symbols and basic type errors in Python code
+	fn diagnose_python_types(&self, _diagnostics: &mut Vec<Diagnostic>, _contents: &str, _root: Node) {
+		// TODO: Implement comprehensive type checking diagnostics
+		// This would check for:
+		// - Undefined symbols (with proper scope analysis)
+		// - Invalid attribute access on known types (requires scope context)
+		// - Type mismatches in assignments/calls
+		//
+		// Challenges:
+		// - Need proper scope context for type resolution
+		// - Attribute access on Odoo models is dynamic
+		// - Would generate too much noise without careful filtering
+		//
+		// Currently disabled. The import diagnostics already catch the most important cases.
+	}
+
 	pub(crate) fn diagnose_mapped(
 		&self,
 		rope: RopeSlice<'_>,
