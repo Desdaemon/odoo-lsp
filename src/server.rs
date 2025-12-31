@@ -171,6 +171,7 @@ impl LanguageServer for Backend {
 			_ = self.client.register_capability(registrations).await;
 		}
 
+		self.root_setup.wait().await;
 		let _blocker = self.root_setup.block();
 		self.ensure_nonoverlapping_roots();
 		info!(workspaces = ?self.workspaces);
@@ -642,14 +643,17 @@ impl LanguageServer for Backend {
 		let records_by_prefix = some!(self.index.records.by_prefix.read().ok());
 		let models = models_by_prefix.iter_prefix(query.as_bytes()).flat_map(|(_, key)| {
 			self.index.models.get(key).into_iter().flat_map(|entry| {
-				#[allow(deprecated)]
-				entry.base.as_ref().map(|loc| SymbolInformation {
-					name: _R(*entry.key()).to_string(),
-					kind: SymbolKind::CONSTANT,
-					tags: None,
-					deprecated: None,
-					location: loc.0.clone().into(),
-					container_name: None,
+				// Get location from the first class in the class_chain (base class)
+				entry.class_chain.first().and_then(|class_id| {
+					use crate::analyze::class_cache;
+					class_cache().get(*class_id).map(|metadata| SymbolInformation {
+						name: _R(*entry.key()).to_string(),
+						kind: SymbolKind::CONSTANT,
+						tags: None,
+						deprecated: None,
+						location: metadata.location.clone().into(),
+						container_name: None,
+					})
 				})
 			})
 		});
