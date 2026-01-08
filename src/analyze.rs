@@ -368,7 +368,13 @@ impl Index {
 			"call" => self.type_of_call_node(node, scope, contents),
 			"binary_operator" | "boolean_operator" => {
 				// (_ left right)
-				self.type_of(node.child_by_field_name("left")?, scope, contents)
+				if let Some(left) = node.child_by_field_name("left")
+					&& let Some(typ) = self.type_of(left, scope, contents)
+				{
+					Some(typ)
+				} else {
+					self.type_of(node.child_by_field_name("right")?, scope, contents)
+				}
 			}
 			_ => None,
 		}
@@ -428,6 +434,7 @@ impl Index {
 		let rhs = attribute.named_child(1)?;
 		match &contents[rhs.byte_range()] {
 			"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
+			"website" if matches!(lhs, Type::HttpRequest) => Some(Type::Model("website".into())),
 			"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
 			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
 			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
