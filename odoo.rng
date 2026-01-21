@@ -1644,6 +1644,7 @@
 				<attribute name="t-field">
 					<a:documentation xml:space="preserve">
 						A field to be displayed in the output.
+						Must be in the format of `$obj.$field_name`.
 						Options can be specified with `t-options-*`.<br/><br/>
 						Not allowed on `&lt;t/>` elements.
 					</a:documentation>
@@ -1657,6 +1658,8 @@
 				<attribute name="t-options-widget">
 					<a:documentation>
 						Shorthand for specifying the `widget` option for the field specified by `t-field`.
+						References one of the `ir.qweb.field.$widget` models.<br/><br/>
+						Takes a Python expression, i.e. must be defined as `t-options-widget="'...'"`.
 					</a:documentation>
 				</attribute>
 				<attribute name="t-call">
