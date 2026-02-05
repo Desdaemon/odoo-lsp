@@ -1,11 +1,12 @@
 //! One-shot commands.
 
+use std::path::Path;
 use std::{env::current_dir, io::stdout, process::exit, sync::Arc};
 
 use anyhow::Context;
 use globwalk::FileType;
 use odoo_lsp::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, SymbolsConfig};
-use odoo_lsp::index::{_R, Index};
+use odoo_lsp::index::{_I, _R, Index};
 use odoo_lsp::utils::strict_canonicalize;
 use odoo_lsp::{GITVER, NAME, VERSION, errloc, format_loc, loc, ok};
 use serde_json::Value;
@@ -169,7 +170,38 @@ pub async fn run(args: Args<'_>) -> bool {
 	true
 }
 
+async fn confirm_yn(msg: &str) -> Option<bool> {
+	use tokio::io::{AsyncBufReadExt, BufReader};
+	let mut lines = BufReader::new(tokio::io::stdin()).lines();
+	loop {
+		eprint!("{msg} [y/N] ");
+		tokio::select! {
+			ans = lines.next_line() => {
+				let Ok(Some(ans)) = ans else {
+					return None;
+				};
+				match &ans.trim().to_ascii_lowercase()[..] {
+					"y" | "Y" => return Some(true),
+					"n" | "N" | "" => return Some(false),
+					_ => {}
+				}
+			}
+			_ = tokio::signal::ctrl_c() => {
+				return None;
+			}
+		}
+		eprint!("\x1b[A\r\x1b[K");
+	}
+}
+
 async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<()> {
+	let output = output.unwrap_or("tsconfig.json");
+	if output != "-" && Path::new(output).exists() {
+		let Some(true) = confirm_yn(&format!("{output} already exists, confirm overwrite?")).await else {
+			exit(1);
+		};
+	}
+
 	let addons_path = addons_path
 		.iter()
 		.map(|path| strict_canonicalize(path).with_context(|| format_loc!("{} could not be canonicalized", path)))
@@ -196,10 +228,16 @@ async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<
 		let root =
 			pathdiff::diff_paths(entry.key(), &pwd).ok_or_else(|| errloc!("Cannot diff {:?} to pwd", entry.key()))?;
 
-		includes.push(Value::String(root.join("**/static/src").to_string_lossy().into_owned()));
-		type_roots.push(Value::String(
-			root.join("web/tooling/types").to_string_lossy().into_owned(),
-		));
+		if entry.contains_key(&_I("base").into()) {
+			type_roots.push(root.join("addons/web/tooling/types").to_string_lossy().into_owned());
+			type_roots.push(
+				root.join("addons/mail/static/src/js/tooling/types")
+					.to_string_lossy()
+					.into_owned(),
+			);
+		}
+
+		includes.push(root.join("**/static/src").to_string_lossy().into_owned());
 		for (module, entry) in entry.value().iter() {
 			let module = _R(*module);
 			ts_paths
@@ -255,7 +293,6 @@ async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<
 	let tsconfig = serde_json::json! {{
 		"include": includes,
 		"compilerOptions": {
-			"baseUrl": ".",
 			"target": "es2019",
 			"checkJs": true,
 			"allowJs": true,
@@ -265,7 +302,6 @@ async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<
 		},
 	}};
 
-	let output = output.unwrap_or("tsconfig.json");
 	if output == "-" {
 		serde_json::to_writer_pretty(stdout(), &tsconfig)?;
 	} else {
