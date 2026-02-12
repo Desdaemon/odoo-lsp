@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering::Relaxed;
 
 use dashmap::DashMap;
@@ -12,14 +13,16 @@ use globwalk::FileType;
 use ignore::Match;
 use ignore::gitignore::Gitignore;
 use lasso::ThreadedRodeo;
+use mini_moka::sync::Cache;
 use smart_default::SmartDefault;
-use tower_lsp_server::{Client, lsp_types::*};
+use tower_lsp_server::{Client, ls_types::*};
 use xmlparser::{Token, Tokenizer};
 
-use crate::prelude::*;
+use crate::{ImStr, prelude::*};
 
+use crate::analyze::{ClassKey, Scope};
 pub use crate::component::{Component, ComponentName};
-use crate::model::{Model, ModelIndex, ModelLocation, ModelType};
+use crate::model::{Model, ModelEntry, ModelIndex, ModelType};
 use crate::record::Record;
 use crate::template::{NewTemplate, gather_templates};
 pub use crate::template::{Template, TemplateName};
@@ -60,7 +63,6 @@ impl Interner {
 
 #[derive(SmartDefault)]
 pub struct Index {
-	/// root -> module key -> module's relpath to root
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub roots: DashMap<PathBuf, HashMap<Symbol<ModuleEntry>, ModuleEntry>>,
 	pub records: record::RecordIndex,
@@ -71,19 +73,24 @@ pub struct Index {
 	pub widgets: DashMap<ImStr, MinLoc>,
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub actions: DashMap<ImStr, MinLoc>,
-	/// Tracks auto_install modules that couldn't be loaded due to missing dependencies
-	/// Maps module_name -> list of missing dependencies with their dependency chains
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub unloaded_auto_install: DashMap<ModuleName, Vec<(ModuleName, Vec<ModuleName>)>>,
-	/// Cache for transitive dependencies to avoid recalculation
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub(crate) transitive_deps_cache: DashMap<ModuleName, HashSet<ModuleName>>,
+	#[default(_code = "Cache::new(16)")]
+	pub(crate) ast_cache: Cache<PathBuf, Arc<AstCacheItem>>,
+	#[default(_code = "OnceLock::new()")]
+	pub(crate) base_model_cache: OnceLock<Option<Arc<Scope>>>,
+}
+
+pub struct AstCacheItem {
+	pub tree: tree_sitter::Tree,
+	pub rope: Rope,
 }
 
 pub type ModuleName = Symbol<ModuleEntry>;
 
 enum Output {
-	// Nothing,
 	Xml {
 		records: Vec<Record>,
 		templates: Vec<NewTemplate>,
@@ -91,6 +98,7 @@ enum Output {
 	Models {
 		path: PathSymbol,
 		models: Vec<Model>,
+		file_path: PathBuf,
 	},
 	JsItems {
 		components: HashMap<ComponentName, Component>,
@@ -200,30 +208,46 @@ impl Index {
 			}
 		}
 
-		// Add implicit base dependencies to all modules
 		self.add_implicit_base_dependencies();
 
-		// Clear transitive dependencies cache since modules have been added/modified
 		self.transitive_deps_cache.clear();
 
-		// After adding all modules in the root, check for auto_install modules with unsatisfied dependencies		// We pass an empty set because no modules are loaded yet, this will identify all auto_install
-		// modules and track those with missing dependencies
 		debug!("Checking for auto_install modules after adding root");
 		let auto_install_check = self.find_auto_install_modules(&HashSet::new());
 		debug!("Found {} auto_install modules to check", auto_install_check.len());
 
 		Ok(())
 	}
+	#[instrument(skip(self), ret)]
+	pub async fn add_root_for_file(&self, path: &Path) {
+		if self.find_module_of(path).is_some() {
+			return;
+		}
+
+		debug!("oob: {}", path.display());
+		let mut path = Some(path);
+		while let Some(path_) = path {
+			if tokio::fs::try_exists(path_.with_file_name("__manifest__.py"))
+				.await
+				.unwrap_or(false)
+				&& let Some(file_path) = path_.parent().and_then(|p| p.parent())
+			{
+				_ = self
+					.add_root(file_path, None)
+					.await
+					.inspect_err(|err| warn!("failed to add root {}:\n{err}", file_path.display()));
+				return;
+			}
+			path = path_.parent();
+		}
+	}
 	#[instrument(skip_all, ret, fields(path = path.display().to_string()))]
-	pub(crate) async fn load_modules_for_document(&self, document_blocker: Arc<Semaphore>, path: &Path) -> Option<()> {
-		let _blocker = document_blocker.block();
+	pub(crate) async fn load_modules_for_document(&self, _document_blocker: Arc<Semaphore>, path: &Path) -> Option<()> {
 		let module_name = self.find_module_of(path)?;
 
 		self.load_module(module_name).await
 	}
-	/// Resolve all transitive dependencies for a module
 	pub fn resolve_transitive_dependencies(&self, module: ModuleName) -> HashSet<ModuleName> {
-		// Check cache first
 		if let Some(cached) = self.transitive_deps_cache.get(&module) {
 			return cached.clone();
 		}
@@ -232,15 +256,12 @@ impl Index {
 		let mut stack = vec![module];
 
 		while let Some(current) = stack.pop() {
-			// If we've already processed this module, skip it (handles circular deps)
 			if !dependencies.insert(current) {
 				continue;
 			}
 
-			// Find the module in any root
 			for root in self.roots.iter() {
 				if let Some(module_entry) = root.get(&current) {
-					// Add all direct dependencies to the stack
 					for &dep in module_entry.dependencies.iter() {
 						if !dependencies.contains(&dep) {
 							stack.push(dep);
@@ -251,14 +272,11 @@ impl Index {
 			}
 		}
 
-		// Cache the result
 		self.transitive_deps_cache.insert(module, dependencies.clone());
 
 		dependencies
 	}
 
-	/// Find the dependency chain from source module to target module
-	/// Returns None if no path exists, or Some(path) where path includes both source and target
 	fn find_dependency_chain(&self, source: ModuleName, target: ModuleName) -> Option<Vec<ModuleName>> {
 		let mut visited = HashSet::new();
 		let mut stack = vec![(source, vec![source])];
@@ -272,7 +290,6 @@ impl Index {
 				continue;
 			}
 
-			// Find the module in any root
 			for root in self.roots.iter() {
 				if let Some(module_entry) = root.get(&current) {
 					for &dep in module_entry.dependencies.iter() {
@@ -289,7 +306,6 @@ impl Index {
 
 		None
 	}
-	/// Get all modules that are physically present in the filesystem
 	pub fn get_all_available_modules(&self) -> HashSet<ModuleName> {
 		let mut modules = HashSet::new();
 
@@ -302,19 +318,16 @@ impl Index {
 		modules
 	}
 
-	/// Add implicit base dependency to all modules except base itself
 	fn add_implicit_base_dependencies(&self) {
 		let base_key: ModuleName = _I("base").into();
 
 		for mut root in self.roots.iter_mut() {
 			let modules = root.value_mut();
 
-			// Only add implicit base dependencies if base module exists
 			if !modules.contains_key(&base_key) {
 				continue;
 			}
 
-			// Collect modules that need base dependency
 			let mut updates = Vec::new();
 			for (&module_key, module_entry) in modules.iter() {
 				if module_key != base_key && !module_entry.dependencies.contains(&base_key) {
@@ -324,7 +337,6 @@ impl Index {
 				}
 			}
 
-			// Apply updates
 			for (module_key, new_deps) in updates {
 				if let Some(entry) = modules.get_mut(&module_key) {
 					entry.dependencies = new_deps.into_boxed_slice();
@@ -333,11 +345,9 @@ impl Index {
 		}
 	}
 
-	/// Find all auto_install modules whose dependencies are satisfied by the given set of modules
 	fn find_auto_install_modules(&self, loaded_modules: &HashSet<ModuleName>) -> Vec<ModuleName> {
 		let mut auto_install_modules = Vec::new();
 
-		// Get all available modules (not just loaded ones)
 		let all_available_modules = self.get_all_available_modules();
 
 		for root in self.roots.iter() {
@@ -349,10 +359,8 @@ impl Index {
 					module_entry.auto_install
 				);
 				if module_entry.auto_install && !loaded_modules.contains(&module_key) {
-					// Get all transitive dependencies for this module
 					let transitive_deps = self.resolve_transitive_dependencies(module_key);
 
-					// Check if all transitive dependencies are available (not necessarily loaded)
 					let missing_deps: Vec<ModuleName> = transitive_deps
 						.iter()
 						.filter(|dep| **dep != module_key && !all_available_modules.contains(dep))
@@ -360,7 +368,6 @@ impl Index {
 						.collect();
 
 					if missing_deps.is_empty() {
-						// Now check if all transitive dependencies are loaded
 						let unloaded_deps: Vec<ModuleName> = transitive_deps
 							.iter()
 							.filter(|dep| **dep != module_key && !loaded_modules.contains(dep))
@@ -386,7 +393,6 @@ impl Index {
 							_R(module_key),
 							missing_deps
 						);
-						// Track this module as unloaded with its missing dependencies and their chains
 						let missing_with_chains: Vec<(ModuleName, Vec<ModuleName>)> = missing_deps
 							.into_iter()
 							.map(|missing_dep| {
@@ -405,17 +411,13 @@ impl Index {
 		auto_install_modules
 	}
 
-	/// Check if there are any unloaded auto_install modules that might extend a model
-	/// Returns the first unloaded auto_install module with its missing dependencies and chains
 	pub fn get_unloaded_auto_install_for_model(
 		&self,
 		model_name: &str,
 	) -> Option<(ModuleName, Vec<(ModuleName, Vec<ModuleName>)>)> {
-		// Check each unloaded auto_install module to see if it extends the given model
 		for entry in self.unloaded_auto_install.iter() {
 			let module_name = *entry.key();
 
-			// Find the module's root and path
 			let Some(root_path) = self.find_root_from_module(module_name) else {
 				continue;
 			};
@@ -428,7 +430,6 @@ impl Index {
 				continue;
 			};
 
-			// Check if this module extends the given model by scanning its Python files
 			let module_path = root_path.join(module_entry.path.as_str());
 			if self.check_module_extends_model(&module_path, model_name) {
 				return Some((module_name, entry.value().clone()));
@@ -437,15 +438,11 @@ impl Index {
 		None
 	}
 
-	/// Check if a module extends a specific model by scanning its Python files
 	fn check_module_extends_model(&self, module_path: &Path, target_model: &str) -> bool {
-		// Look for Python files in the module
 		let models_path = module_path.join("models");
 		let py_files = if models_path.exists() {
-			// Check models directory
 			std::fs::read_dir(&models_path).ok()
 		} else {
-			// Check module root
 			std::fs::read_dir(module_path).ok()
 		};
 
@@ -459,17 +456,14 @@ impl Index {
 				continue;
 			}
 
-			// Read and parse the Python file
 			let Ok(contents) = std::fs::read(&path) else {
 				continue;
 			};
 
-			// Parse models from the file
 			let Ok(models) = index_models(&contents) else {
 				continue;
 			};
 
-			// Check if any model inherits from the target model
 			for model in models {
 				match &model.type_ {
 					ModelType::Base { ancestors, .. } => {
@@ -511,10 +505,9 @@ impl Index {
 				if !visited.insert(module_key) {
 					continue;
 				}
-				// Find the module and push dependencies first
 				for root in self.roots.iter() {
 					if let Some(module) = root.get(&module_key) {
-						stack.push((module_key, true)); // revisit after deps
+						stack.push((module_key, true));
 						for dep in module.dependencies.iter().rev() {
 							if !visited.contains(dep) {
 								stack.push((*dep, false));
@@ -524,7 +517,6 @@ impl Index {
 					}
 				}
 			} else {
-				// All dependencies processed, add to result
 				for root in self.roots.iter() {
 					if root.contains_key(&module_key) {
 						key_to_idx.insert(module_key, modules.len());
@@ -538,17 +530,17 @@ impl Index {
 
 		let mut outputs = tokio::task::JoinSet::new();
 		for (module_key, root) in modules.into_iter().zip(roots.into_iter()) {
-			info!("{} depends on {}", _R(module_name), _R(module_key));
 			let root_display = root.key().to_string_lossy();
 			let root_key = _I(&root_display);
 			let module = root
 				.get(&module_key)
 				.expect(format_loc!("module must already be present by now"));
-			let module_dir = Path::new(&*root_display).join(&module.path);
 			if module.loaded.compare_exchange(false, true, Relaxed, Relaxed) != Ok(false) {
 				continue;
 			}
 
+			info!("{} depends on {}", _R(module_name), _R(module_key));
+			let module_dir = Path::new(&*root_display).join(&module.path);
 			if let Ok(xmls) = globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
 				.file_type(FileType::FILE | FileType::SYMLINK)
 				.follow_links(true)
@@ -606,8 +598,87 @@ impl Index {
 					self.records.append(None, records);
 					self.templates.append(templates);
 				}
-				Output::Models { path, models } => {
+				Output::Models {
+					path,
+					models,
+					file_path,
+				} => {
 					self.models.append(path, false, &models);
+
+					if let Ok(contents) = std::fs::read_to_string(&file_path) {
+						let fragments = self.create_model_fragments_from_file(&file_path, &contents);
+						let base_model_id = self.get_base_model_class_id();
+						let core_model_id = crate::analyze::class_cache().get_by_name("Model");
+
+						for model in &models {
+							let model_name = match &model.type_ {
+								ModelType::Base { name, .. } => name.as_str(),
+								ModelType::Inherit(inherits) => {
+									if let Some(first_inherit) = inherits.first() {
+										first_inherit.as_str()
+									} else {
+										continue;
+									}
+								}
+							};
+
+							let model_key = _G(model_name).unwrap();
+							if let Some(mut entry) = self
+								.models
+								.try_get_mut(&model_key.into())
+								.expect(format_loc!("deadlock"))
+							{
+								if model.type_.is_base() {
+									if let Some(base_id) = base_model_id
+										&& entry.class_chain.is_empty()
+									{
+										entry.class_chain.push(base_id);
+									}
+									if let Some(model_id) = core_model_id
+										&& !entry.class_chain.contains(&model_id)
+									{
+										entry.class_chain.push(model_id);
+									}
+									if let Some(fragment_ids) = fragments.get(&ImStr::from(model_name)) {
+										for &fragment_id in fragment_ids {
+											if !entry.class_chain.contains(&fragment_id) {
+												entry.class_chain.push(fragment_id);
+											}
+										}
+									}
+								} else {
+									if let Some(model_id) = core_model_id
+										&& !entry.class_chain.contains(&model_id)
+									{
+										entry.class_chain.push(model_id);
+									}
+									if let Some(fragment_ids) = fragments.get(&ImStr::from(model_name)) {
+										for &fragment_id in fragment_ids {
+											if !entry.class_chain.contains(&fragment_id) {
+												entry.class_chain.push(fragment_id);
+											}
+										}
+									}
+								}
+							}
+						}
+
+						for (class_name, fragment_ids) in fragments.iter() {
+							let Some(model_key) = _G(class_name) else { continue };
+							if self.models.contains_key(&model_key.into()) {
+								continue;
+							}
+							let mut entry = ModelEntry::default();
+							if let Some(base_id) = base_model_id {
+								entry.class_chain.push(base_id);
+							}
+							if let Some(model_id) = core_model_id {
+								entry.class_chain.push(model_id);
+							}
+							entry.class_chain.extend(fragment_ids.iter().copied());
+							self.models.insert(model_key.into(), entry);
+						}
+					}
 				}
 				Output::JsItems {
 					components,
@@ -629,7 +700,6 @@ impl Index {
 			}
 		}
 
-		// After loading all requested modules, check for auto_install modules
 		let mut all_loaded_modules = HashSet::new();
 		for root in self.roots.iter() {
 			for (&module_key, module_entry) in root.iter() {
@@ -638,12 +708,11 @@ impl Index {
 				}
 			}
 		}
-		debug!(
+		trace!(
 			"Currently loaded modules: {:?}",
 			all_loaded_modules.iter().map(|m| _R(*m)).collect::<Vec<_>>()
 		);
 
-		// Find and load auto_install modules
 		let auto_install_candidates = self.find_auto_install_modules(&all_loaded_modules);
 		if !auto_install_candidates.is_empty() {
 			info!(
@@ -651,13 +720,11 @@ impl Index {
 				auto_install_candidates.len()
 			);
 			for auto_module in auto_install_candidates {
-				info!(
+				trace!(
 					"Auto-installing module {} because all dependencies are satisfied",
 					_R(auto_module)
 				);
-				// Remove from unloaded_auto_install since it's now being loaded
 				self.unloaded_auto_install.remove(&auto_module);
-				// Recursively load auto_install modules
 				Box::pin(self.load_module(auto_module)).await;
 			}
 		}
@@ -668,7 +735,6 @@ impl Index {
 	pub(crate) fn discover_dependents_of(&self, module: ModuleName) -> Vec<ModuleName> {
 		let mut dependents = HashMap::<ModuleName, HashSet<ModuleName>>::new();
 		let mut all_modules = vec![];
-		// First, collect all modules and their direct dependencies
 		for root in self.roots.iter() {
 			for (&module_key, module_entry) in root.iter() {
 				all_modules.push(module_key);
@@ -677,11 +743,9 @@ impl Index {
 				}
 			}
 		}
-		// Compute transitive dependents for each module
 		let module_to_idx: HashMap<ModuleName, usize> = all_modules.iter().enumerate().map(|(i, m)| (*m, i)).collect();
 		let mut graph = vec![vec![]; all_modules.len()];
 
-		// Build the graph: for each module, add edges to its direct dependents
 		for (i, module) in all_modules.iter().enumerate() {
 			if let Some(deps) = dependents.get(module) {
 				for dep in deps {
@@ -694,7 +758,6 @@ impl Index {
 
 		drop(module_to_idx);
 
-		// DP/memoization for transitive dependents
 		let mut memo: Vec<Option<HashSet<usize>>> = vec![None; all_modules.len()];
 
 		fn dfs(idx: usize, graph: &Vec<Vec<usize>>, memo: &mut Vec<Option<HashSet<usize>>>) -> HashSet<usize> {
@@ -721,7 +784,6 @@ impl Index {
 			.map(|idx| all_modules[idx])
 			.collect()
 	}
-	/// Inverse of [Index::load_module], useful for requests that work in the context of the larger codebase.
 	pub(crate) async fn load_modules_dependent_on(&self, module_name: ModuleName) -> Option<()> {
 		let root = self.find_root_from_module(module_name)?;
 		{
@@ -815,14 +877,16 @@ impl Index {
 		}
 
 		for mut entry in self.models.iter_mut() {
-			if let Some(ModelLocation(ref loc, _)) = entry.base
-				&& path_contains(root, loc.path.to_path())
-			{
-				entry.deleted = true;
+			for class_id in &entry.class_chain {
+				if let Some(metadata) = crate::analyze::class_cache().get(*class_id)
+					&& path_contains(root, metadata.location.path.to_path())
+				{
+					entry.deleted = true;
+					break;
+				}
 			}
 		}
 	}
-	/// Has complexity of `O(len(self.roots))`
 	pub fn find_module_of(&self, path: &Path) -> Option<ModuleName> {
 		use std::path::Component;
 		for entry in self.roots.iter() {
@@ -861,58 +925,705 @@ impl Index {
 		None
 	}
 
-	/// Resolves a Python module path like "odoo.addons.some_module.controllers.main" to its file path
+	fn find_python_file(&self, base_path: &Path) -> Option<PathBuf> {
+		use crate::test_utils;
+		let stub_path = base_path.with_extension("pyi");
+		if test_utils::fs::exists(&stub_path) {
+			return Some(stub_path);
+		}
+
+		let py_path = base_path.with_extension("py");
+		if test_utils::fs::exists(&py_path) {
+			return Some(py_path);
+		}
+
+		let init_stub = base_path.join("__init__.pyi");
+		if test_utils::fs::exists(&init_stub) {
+			return Some(init_stub);
+		}
+
+		let init_py = base_path.join("__init__.py");
+		if test_utils::fs::exists(&init_py) {
+			return Some(init_py);
+		}
+
+		None
+	}
+
 	pub fn resolve_py_module(&self, module_path: &str) -> Option<PathBuf> {
+		self.resolve_py_module_from(module_path, None)
+	}
+
+	pub fn resolve_py_module_from(&self, module_path: &str, current_file: Option<&Path>) -> Option<PathBuf> {
 		use tracing::debug;
 
-		debug!("Resolving module path: {}", module_path);
+		debug!("Resolving module path: {} from {:?}", module_path, current_file);
+
+		if module_path.starts_with('.') {
+			let Some(current) = current_file else {
+				debug!("Relative import but no current file context");
+				return None;
+			};
+			return self.resolve_relative_import(module_path, current);
+		}
+
 		let parts: Vec<&str> = module_path.split('.').map(|s| s.trim()).collect();
 		debug!("Module parts: {:?}", parts);
 
-		// Handle odoo.addons.module_name.* pattern
-		if parts.len() >= 3 && parts[0] == "odoo" && parts[1] == "addons" {
-			let module_name = parts[2];
+		if let ["odoo", "addons", module_name, ref rest @ ..] = parts[..] {
 			let module_key = _G(module_name)?;
-			debug!("Looking for module: {}", module_name);
+			debug!("Looking for odoo.addons module: {}", module_name);
 
-			// Find the root and module entry
 			for root_entry in self.roots.iter() {
 				debug!("Checking root: {}", root_entry.key().display());
 				if let Some(module_entry) = root_entry.get(&module_key.into()) {
 					let root_path = root_entry.key();
 					let module_dir = root_path.join(&module_entry.path);
-					debug!("Found module at: {}", module_dir.display());
+					debug!("Found module '{}' at: {}", module_name, module_dir.display());
 
-					// Build the file path from remaining parts
-					if parts.len() > 3 {
+					if !rest.is_empty() {
 						let mut file_path = module_dir;
-						for part in &parts[3..] {
+						for &part in rest {
 							file_path = file_path.join(part);
 						}
-						file_path.set_extension("py");
-						debug!("Checking file path: {}", file_path.display());
-
-						if file_path.exists() {
-							debug!("Found file: {}", file_path.display());
-							return Some(file_path);
+						if let Some(found_file) = self.find_python_file(&file_path) {
+							debug!("Found file: {}", found_file.display());
+							return Some(found_file);
 						} else {
-							debug!("File does not exist: {}", file_path.display());
+							debug!("File does not exist in this root: {}", file_path.display());
+							continue;
 						}
 					} else {
-						// Just the module itself - look for __init__.py
-						let init_path = module_dir.join("__init__.py");
-						debug!("Checking init path: {}", init_path.display());
-						if init_path.exists() {
-							debug!("Found init file: {}", init_path.display());
-							return Some(init_path);
+						if let Some(init_file) = self.find_python_file(&module_dir) {
+							debug!("Found init file: {}", init_file.display());
+							return Some(init_file);
+						} else {
+							debug!("Init file does not exist in this root: {}", module_dir.display());
+							continue;
 						}
+					}
+				}
+			}
+			debug!("odoo.addons module not found: {}", module_path);
+		}
+
+		self.resolve_generic_python_module(module_path)
+	}
+
+	fn resolve_relative_import(&self, module_path: &str, current_file: &Path) -> Option<PathBuf> {
+		use tracing::debug;
+
+		let dots = module_path.chars().take_while(|&c| c == '.').count();
+		let rest = &module_path[dots..];
+
+		debug!("Resolving relative import: {} dots, rest: '{}'", dots, rest);
+
+		let mut base_dir = current_file.parent()?.to_path_buf();
+
+		for _ in 1..dots {
+			base_dir = base_dir.parent()?.to_path_buf();
+		}
+
+		debug!("Base directory after going up: {}", base_dir.display());
+
+		if !rest.is_empty() {
+			let parts: Vec<&str> = rest.split('.').collect();
+
+			let mut module_file = base_dir.clone();
+			for part in &parts {
+				module_file.push(part);
+			}
+			module_file.set_extension("py");
+
+			if module_file.exists() {
+				debug!("Found relative module at: {}", module_file.display());
+				return Some(module_file);
+			}
+
+			let mut package_dir = base_dir.clone();
+			for part in &parts {
+				package_dir.push(part);
+			}
+			let init_py = package_dir.join("__init__.py");
+
+			if init_py.exists() {
+				debug!("Found relative package at: {}", init_py.display());
+				return Some(init_py);
+			}
+
+			debug!(
+				"Relative import not found: tried {} and {}",
+				module_file.display(),
+				init_py.display()
+			);
+		} else {
+			let init_py = base_dir.join("__init__.py");
+			if init_py.exists() {
+				return Some(init_py);
+			}
+		}
+
+		None
+	}
+
+	fn find_odoo_root(&self) -> Option<PathBuf> {
+		use crate::test_utils;
+		for root_entry in self.roots.iter() {
+			let root = root_entry.key();
+			let manifest_path = root.join("addons").join("base").join("__manifest__.py");
+			if test_utils::fs::exists(&manifest_path) {
+				debug!("Found Odoo root at: {}", root.display());
+				return Some(root.clone());
+			} else {
+				debug!("Tried {}", manifest_path.display());
+			}
+		}
+		None
+	}
+
+	fn try_resolve_in_odoo_root(&self, root: &Path, parts: &[&str]) -> Option<PathBuf> {
+		use crate::test_utils;
+
+		let mut package_path = root.to_path_buf();
+		for part in parts {
+			package_path.push(part);
+		}
+		if let Some(found) = self.find_python_file(&package_path) {
+			debug!("Found Odoo package at: {}", found.display());
+			return Some(found);
+		}
+
+		if let Some(last_part) = parts.last() {
+			let mut module_path = root.to_path_buf();
+			for part in &parts[..parts.len() - 1] {
+				module_path.push(part);
+			}
+
+			let stub_file = module_path.join(format!("{}.pyi", last_part));
+			if test_utils::fs::exists(&stub_file) {
+				debug!("Found Odoo stub at: {}", stub_file.display());
+				return Some(stub_file);
+			}
+
+			let source_file = module_path.join(format!("{}.py", last_part));
+			if test_utils::fs::exists(&source_file) {
+				debug!("Found Odoo source at: {}", source_file.display());
+				return Some(source_file);
+			}
+		}
+
+		None
+	}
+
+	fn try_resolve_in_workspace_root(&self, root: &Path, parts: &[&str]) -> Option<PathBuf> {
+		use crate::test_utils;
+
+		let mut package_path = root.to_path_buf();
+		for part in parts {
+			package_path.push(part);
+		}
+		if let Some(found) = self.find_python_file(&package_path) {
+			debug!("Found workspace package at: {}", found.display());
+			return Some(found);
+		}
+
+		if let Some(last_part) = parts.last() {
+			let mut module_path = root.to_path_buf();
+			for part in &parts[..parts.len() - 1] {
+				module_path.push(part);
+			}
+
+			let stub_file = module_path.join(format!("{}.pyi", last_part));
+			if test_utils::fs::exists(&stub_file) {
+				debug!("Found workspace stub at: {}", stub_file.display());
+				return Some(stub_file);
+			}
+
+			let source_file = module_path.join(format!("{}.py", last_part));
+			if test_utils::fs::exists(&source_file) {
+				debug!("Found workspace source at: {}", source_file.display());
+				return Some(source_file);
+			}
+		}
+
+		None
+	}
+
+	fn resolve_generic_python_module(&self, module_path: &str) -> Option<PathBuf> {
+		use tracing::debug;
+
+		debug!("Resolving generic Python module: {}", module_path);
+		let parts: Vec<&str> = module_path.split('.').collect();
+		if parts.is_empty() {
+			return None;
+		}
+
+		let is_odoo_module = matches!(parts.first(), Some(&"odoo"));
+		let odoo_root = if is_odoo_module { self.find_odoo_root() } else { None };
+
+		if let Some(root) = odoo_root {
+			debug!("Searching Odoo root for module: {}", module_path);
+			if let Some(found) = self.try_resolve_in_odoo_root(&root, &parts) {
+				return Some(found);
+			}
+		}
+
+		debug!("Searching workspace roots for module: {}", module_path);
+		for root_entry in self.roots.iter() {
+			if let Some(found) = self.try_resolve_in_workspace_root(root_entry.key(), &parts) {
+				return Some(found);
+			}
+		}
+
+		if let Some(search_paths) = crate::stub_finder::get_python_search_paths() {
+			debug!("Using Python search paths");
+
+			let file_path = module_path.replace('.', "/");
+
+			let mut all_paths = vec![search_paths.stdlib.clone()];
+			all_paths.extend(search_paths.site_packages.clone());
+
+			for search_dir in all_paths {
+				let stub_file = search_dir.join(&file_path).with_extension("pyi");
+				if stub_file.exists() {
+					debug!("Found stub: {}", stub_file.display());
+					return Some(stub_file);
+				}
+
+				let init_stub = search_dir.join(&file_path).join("__init__.pyi");
+				if init_stub.exists() {
+					debug!("Found package stub: {}", init_stub.display());
+					return Some(init_stub);
+				}
+
+				let source_file = search_dir.join(&file_path).with_extension("py");
+				if source_file.exists() {
+					debug!("Found source: {}", source_file.display());
+					return Some(source_file);
+				}
+
+				let init_py = search_dir.join(&file_path).join("__init__.py");
+				if init_py.exists() {
+					debug!("Found package source: {}", init_py.display());
+					return Some(init_py);
+				}
+			}
+		}
+
+		debug!("Generic Python module not found: {}", module_path);
+		None
+	}
+
+	pub fn get_base_model(&self) -> Option<Arc<Scope>> {
+		use tracing::debug;
+
+		self.base_model_cache
+			.get_or_init(|| {
+				debug!("Searching for BaseModel in all roots...");
+
+				let candidate_paths = [
+					"odoo/models.py",
+					"odoo/models/models.py",
+					"openerp/models.py",
+					"openerp/models/models.py",
+				];
+
+				for root_entry in self.roots.iter() {
+					let root_path = root_entry.key();
+					debug!("Checking root: {}", root_path.display());
+
+					let mut bases: Vec<std::path::PathBuf> = Vec::new();
+					bases.push(root_path.clone());
+					if let Some(parent) = root_path.parent() {
+						bases.push(parent.to_path_buf());
+						if let Some(grand) = parent.parent() {
+							bases.push(grand.to_path_buf());
+						}
+					}
+					bases.sort();
+					bases.dedup();
+
+					for base in bases.iter() {
+						for candidate in &candidate_paths {
+							let models_path = base.join(candidate);
+							if test_utils::fs::exists(&models_path) {
+								debug!("Found potential BaseModel file: {}", models_path.display());
+
+								if let Some(scope) = self.parse_module_scope(&models_path) {
+									if scope.get("BaseModel").is_some() {
+										debug!("Found BaseModel in {}", models_path.display());
+										return Some(scope.clone());
+									}
+								}
+							}
+						}
+					}
+				}
+
+				debug!("BaseModel not found in any root");
+				None
+			})
+			.clone()
+	}
+
+	pub fn get_base_model_class_id(&self) -> Option<crate::analyze::ClassId> {
+		use crate::analyze::{ClassMetadata, class_cache};
+		use crate::test_utils;
+
+		use tree_sitter::Parser;
+
+		let cache = class_cache();
+		if let Some(class_id) = cache.get_by_name("BaseModel") {
+			return Some(class_id);
+		}
+
+		let _base_model_scope = self.get_base_model()?;
+
+		let candidate_paths = [
+			"odoo/models.py",
+			"odoo/models/models.py",
+			"openerp/models.py",
+			"openerp/models/models.py",
+		];
+
+		let mut models_file_path: Option<std::path::PathBuf> = None;
+		let mut root_spur: Option<Spur> = None;
+		'outer: for root_entry in self.roots.iter() {
+			let root_path = root_entry.key();
+			let mut bases: Vec<std::path::PathBuf> = Vec::new();
+			bases.push(root_path.clone());
+			if let Some(parent) = root_path.parent() {
+				bases.push(parent.to_path_buf());
+				if let Some(grand) = parent.parent() {
+					bases.push(grand.to_path_buf());
+				}
+			}
+			bases.sort();
+			bases.dedup();
+
+			for base in bases.iter() {
+				for candidate in &candidate_paths {
+					let path = base.join(candidate);
+					if test_utils::fs::read_to_string(&path).is_ok() {
+						models_file_path = Some(path);
+						root_spur = Some(_I(base.to_string_lossy()));
+						break 'outer;
 					}
 				}
 			}
 		}
 
-		debug!("Module resolution failed for: {}", module_path);
+		let models_file_path = models_file_path?;
+		let root_spur = root_spur?;
+
+		let contents = test_utils::fs::read_to_string(&models_file_path).ok()?;
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).ok()?;
+		let tree = parser.parse(contents.as_bytes(), None)?;
+		let root = tree.root_node();
+		let attributes = HashMap::new();
+
+		let mut cursor = root.walk();
+		let mut base_range = None;
+		let mut odoo_model_range = None;
+		for child in root.named_children(&mut cursor) {
+			if child.kind() == "class_definition"
+				&& let Some(name_node) = child.child_by_field_name("name")
+			{
+				let class_name = &contents[name_node.byte_range()];
+				if class_name == "BaseModel" {
+					base_range = Some(span_conv(child.range()));
+				}
+				if class_name == "Model" {
+					odoo_model_range = Some(span_conv(child.range()));
+				}
+			}
+		}
+
+		let base_range = base_range.unwrap_or_else(|| todo!("BaseModel range missing"));
+		let class_id =
+			cache.get_or_intern_with(ClassKey::from_raw(models_file_path.clone(), "BaseModel".into()), || {
+				ClassMetadata::preparsed(
+					"BaseModel".into(),
+					MinLoc {
+						path: PathSymbol::strip_root(root_spur, &models_file_path),
+						range: base_range,
+					},
+					Vec::new(),
+					attributes.clone(),
+				)
+			});
+
+		if let Some(model_range) = odoo_model_range {
+			let _model_class_id =
+				cache.get_or_intern_with(ClassKey::from_raw(models_file_path.clone(), "Model".into()), || {
+					ClassMetadata::preparsed(
+						"Model".into(),
+						MinLoc {
+							path: PathSymbol::strip_root(root_spur, &models_file_path),
+							range: model_range,
+						},
+						vec![class_id],
+						attributes,
+					)
+				});
+		}
+		// TODO: In the current design, mro_chain is immutable after construction.
+
+		Some(class_id)
+	}
+
+	pub fn create_model_class_fragment(
+		&self,
+		root: Spur,
+		file_path: PathBuf,
+		range: Range,
+		class_name: ImStr,
+		_class_node: Option<tree_sitter::Node>,
+		_contents: Option<&str>,
+	) -> Option<crate::analyze::ClassId> {
+		use crate::analyze::{ClassKey, ClassMetadata, class_cache};
+
+		let cache = class_cache();
+
+		let class_id = cache.get_or_intern_with(ClassKey::from_raw(file_path.clone(), class_name.clone()), || {
+			ClassMetadata::preparsed(
+				class_name.clone(),
+				MinLoc {
+					path: PathSymbol::strip_root(root, &file_path),
+					range,
+				},
+				Vec::new(),
+				HashMap::new(),
+			)
+		});
+
+		Some(class_id)
+	}
+
+	pub fn create_model_fragments_from_file(
+		&self,
+		file_path: &Path,
+		contents: &str,
+	) -> HashMap<ImStr, Vec<crate::analyze::ClassId>> {
+		let mut fragments = HashMap::new();
+
+		let mut parser = tree_sitter::Parser::new();
+		if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_err() {
+			return fragments;
+		}
+
+		let Some(tree) = parser.parse(contents, None) else {
+			return fragments;
+		};
+
+		let root = tree.root_node();
+		let root_path = _I(self.find_root_of(file_path).unwrap().to_string_lossy());
+
+		let mut cursor = root.walk();
+		for child in root.named_children(&mut cursor) {
+			if child.kind() != "class_definition" {
+				continue;
+			}
+
+			let Some(arg_list) = child.child_by_field_name("superclasses") else {
+				continue;
+			};
+
+			let mut is_model_class = false;
+			let super_text = &contents[arg_list.byte_range()];
+			if super_text.contains("models.Model")
+				|| super_text.contains("TransientModel")
+				|| super_text.contains("AbstractModel")
+				|| super_text.contains(" Model")
+				|| super_text.contains("(Model")
+			{
+				is_model_class = true;
+			}
+
+			if !is_model_class {
+				continue;
+			}
+
+			let Some(name_node) = child.child_by_field_name("name") else {
+				continue;
+			};
+			let class_name: ImStr = contents[name_node.byte_range()].into();
+
+			let model_name = self.extract_model_name_from_class(child, contents);
+
+			let range = span_conv(child.range());
+			if let Some(fragment_id) = self.create_model_class_fragment(
+				root_path,
+				file_path.to_path_buf(),
+				range,
+				class_name.clone(),
+				Some(child),
+				Some(contents),
+			) {
+				if let Some(model_name) = model_name {
+					debug!(
+						"create_model_fragments_from_file: stored fragment for model_name={}",
+						model_name
+					);
+					fragments.entry(model_name).or_default().push(fragment_id);
+				} else {
+					debug!(
+						"create_model_fragments_from_file: no model_name extracted for class {}",
+						class_name
+					);
+					fragments.entry(class_name.clone()).or_default().push(fragment_id);
+				}
+			}
+		}
+
+		debug!(
+			"create_model_fragments_from_file: returning {} fragments total",
+			fragments.len()
+		);
+		fragments
+	}
+
+	fn extract_model_name_from_class(&self, class_node: Node<'_>, contents: &str) -> Option<ImStr> {
+		let body = class_node.child_by_field_name("body")?;
+		let mut cursor = body.walk();
+
+		for statement in body.named_children(&mut cursor) {
+			if statement.kind() == "expression_statement"
+				&& let Some(assignment) = statement.named_child(0)
+				&& assignment.kind() == "assignment"
+				&& let Some(left) = assignment.child_by_field_name("left")
+			{
+				let var_name = &contents[left.byte_range()];
+				if (var_name == "_name" || var_name == "_inherit")
+					&& let Some(right) = assignment.child_by_field_name("right")
+				{
+					match right.kind() {
+						"string" => {
+							let text = &contents[right.byte_range()];
+							if let Some(content) = text
+								.strip_prefix('"')
+								.and_then(|s| s.strip_suffix('"'))
+								.or_else(|| text.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+							{
+								return Some(content.into());
+							}
+						}
+						"list" => {
+							let mut list_cursor = right.walk();
+							for elem in right.named_children(&mut list_cursor) {
+								if elem.kind() == "string" {
+									let text = &contents[elem.byte_range()];
+									if let Some(content) = text
+										.strip_prefix('"')
+										.and_then(|s| s.strip_suffix('"'))
+										.or_else(|| text.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+									{
+										return Some(content.into());
+									}
+								}
+							}
+						}
+						_ => {}
+					}
+				}
+			}
+		}
+
 		None
+	}
+
+	pub fn update_models_with_class_chain(&self, path: PathSymbol, py_content: &str) -> anyhow::Result<()> {
+		use crate::index::index_models;
+
+		let models = index_models(py_content.as_bytes())?;
+		self.models.append(path, true, &models);
+
+		let fragments = self.create_model_fragments_from_file(&path.to_path(), py_content);
+
+		let base_model_id = self.get_base_model_class_id();
+
+		for model in models {
+			match model.type_ {
+				crate::model::ModelType::Base { name, ancestors } => {
+					let model_key = _G(&name).ok_or_else(|| anyhow::anyhow!("invalid model name"))?;
+					let mut entry = self
+						.models
+						.try_get_mut(&model_key.into())
+						.expect("model should exist after append")
+						.unwrap();
+
+					if let Some(base_id) = base_model_id
+						&& entry.class_chain.is_empty()
+					{
+						entry.class_chain.push(base_id);
+					}
+					if let Some(fragment_ids) = fragments.get(&ImStr::from(name.as_str())) {
+						for &fragment_id in fragment_ids {
+							if !entry.class_chain.contains(&fragment_id) {
+								entry.class_chain.push(fragment_id);
+							}
+						}
+					}
+
+					entry
+						.ancestors
+						.extend(ancestors.into_iter().map(|sym| crate::model::ModelName::from(_I(&sym))));
+					drop(entry);
+					self.models.populate_properties(model_key.into(), &[path]);
+				}
+				crate::model::ModelType::Inherit(inherits) => {
+					let Some(model_name) = inherits.first() else { continue };
+					let model_key = _G(model_name).ok_or_else(|| anyhow::anyhow!("invalid model name"))?;
+
+					if let Some(mut entry) = self.models.try_get_mut(&model_key.into()).expect("deadlock") {
+						if let Some(base_id) = base_model_id
+							&& entry.class_chain.is_empty()
+						{
+							entry.class_chain.push(base_id);
+						}
+						if let Some(fragment_ids) = fragments.get(&ImStr::from(model_name.as_str())) {
+							entry.class_chain.extend(fragment_ids.iter().copied());
+						}
+
+						entry.ancestors.extend(
+							inherits
+								.iter()
+								.skip(1)
+								.map(|sym| crate::model::ModelName::from(_I(sym))),
+						);
+						drop(entry);
+					}
+					self.models.populate_properties(model_key.into(), &[path]);
+				}
+			}
+		}
+
+		let model_class_id = crate::analyze::class_cache().get_by_name("Model");
+		for (frag_name, frag_ids) in fragments {
+			let symbol: crate::model::ModelName = _I(frag_name).into();
+			{
+				let mut entry = self.models.entry(symbol).or_default();
+				if let Some(base_id) = base_model_id
+					&& !entry.class_chain.contains(&base_id)
+				{
+					entry.class_chain.insert(0, base_id);
+				}
+				if let Some(model_id) = model_class_id
+					&& !entry.class_chain.contains(&model_id)
+				{
+					entry.class_chain.push(model_id);
+				}
+				for frag_id in frag_ids {
+					if !entry.class_chain.contains(&frag_id) {
+						entry.class_chain.push(frag_id);
+					}
+				}
+			}
+			self.models.populate_properties(symbol, &[path]);
+		}
+
+		Ok(())
 	}
 }
 
@@ -1051,9 +1762,13 @@ query! {
 async fn add_root_py(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
 	let contents = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
 
-	let path = PathSymbol::strip_root(root, &path);
+	let path_sym = PathSymbol::strip_root(root, &path);
 	let models = index_models(&contents)?;
-	Ok(Output::Models { path, models })
+	Ok(Output::Models {
+		path: path_sym,
+		models,
+		file_path: path,
+	})
 }
 
 pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
@@ -1091,7 +1806,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 		});
 		match &contents[capture.byte_range()] {
 			b"_name" => {
-				let Some(name_decl) = capture.next_named_sibling() else {
+				let Some(name_decl) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				if name_decl.kind() == "string" {
@@ -1103,7 +1818,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 				}
 			}
 			b"_inherit" => {
-				let Some(inherit_decl) = capture.next_named_sibling() else {
+				let Some(inherit_decl) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				match inherit_decl.kind() {
@@ -1129,7 +1844,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 				}
 			}
 			b"_inherits" => {
-				let Some(inherit_dict) = capture.next_named_sibling() else {
+				let Some(inherit_dict) = python_next_named_sibling(capture) else {
 					continue;
 				};
 				if inherit_dict.kind() != "dictionary" {
@@ -1152,7 +1867,6 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 	let models = models.into_values().flat_map(|mut model| {
 		let mut has_primary = false;
 		if !model.inherits.is_empty() {
-			// Rearranges the primary inherit to the first index
 			if let Some(base) = &model.name
 				&& let Some(position) = model.inherits.iter().position(|inherit| inherit == base)
 			{
@@ -1171,7 +1885,6 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 			(false, None) => Some(Model {
 				range,
 				byte_range,
-				// if _name is not defined and _inherit = [A, B, C], A is considered the inherit base by default
 				type_: ModelType::Inherit(inherits),
 			}),
 			(true, None) => None,
@@ -1202,7 +1915,8 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 mod tests {
 	use crate::index::{_I, Index, Interner, ModelQuery, ModuleEntry};
 	use crate::model::ModelType;
-	use crate::utils::acc_vec;
+	use crate::test_utils::fs::TEST_FS;
+	use crate::utils::{acc_vec, span_conv};
 	use pretty_assertions::assert_eq;
 	use std::collections::HashMap;
 	use std::path::{Path, PathBuf};
@@ -1214,7 +1928,6 @@ mod tests {
 	fn test_interner_functionality() {
 		let interner = Interner::default();
 
-		// Test get_or_intern with strings
 		let spur1 = interner.get_or_intern("test_string");
 		let spur2 = interner.get_or_intern("test_string");
 		assert_eq!(spur1, spur2, "Same string should return same Spur");
@@ -1222,13 +1935,11 @@ mod tests {
 		let spur3 = interner.get_or_intern("different_string");
 		assert_ne!(spur1, spur3, "Different strings should return different Spurs");
 
-		// Test get_or_intern_path
 		let path = Path::new("/test/path");
 		let path_spur1 = interner.get_or_intern_path(path);
 		let path_spur2 = interner.get_or_intern_path(path);
 		assert_eq!(path_spur1, path_spur2, "Same path should return same Spur");
 
-		// Test that path and string with same content return same Spur
 		let string_spur = interner.get_or_intern("/test/path");
 		assert_eq!(
 			path_spur1, string_spur,
@@ -1240,7 +1951,6 @@ mod tests {
 	fn test_find_module_of() {
 		let index = Index::default();
 
-		// Setup test data
 		let root = PathBuf::from("/test/root");
 		let mut modules = HashMap::new();
 
@@ -1254,12 +1964,10 @@ mod tests {
 		modules.insert(_I("test_module").into(), module_entry);
 		index.roots.insert(root.clone(), modules);
 
-		// Test finding module
 		let test_path = Path::new("/test/root/test_module/models/test.py");
 		let found_module = index.find_module_of(test_path);
 		assert!(found_module.is_some(), "Should find module for path within module");
 
-		// Test path outside any module
 		let outside_path = Path::new("/other/path/file.py");
 		let not_found = index.find_module_of(outside_path);
 		assert!(not_found.is_none(), "Should not find module for path outside roots");
@@ -1269,18 +1977,15 @@ mod tests {
 	fn test_find_root_of() {
 		let index = Index::default();
 
-		// Setup test data
 		let root1 = PathBuf::from("/test/root1");
 		let root2 = PathBuf::from("/test/root2");
 		index.roots.insert(root1.clone(), HashMap::new());
 		index.roots.insert(root2.clone(), HashMap::new());
 
-		// Test finding root
 		let test_path = Path::new("/test/root1/some/nested/path");
 		let found_root = index.find_root_of(test_path);
 		assert_eq!(found_root, Some(root1), "Should find correct root");
 
-		// Test path not under any root
 		let outside_path = Path::new("/other/path");
 		let not_found = index.find_root_of(outside_path);
 		assert!(not_found.is_none(), "Should not find root for path outside all roots");
@@ -1290,7 +1995,6 @@ mod tests {
 	fn test_find_root_from_module() {
 		let index = Index::default();
 
-		// Setup test data
 		let root = PathBuf::from("/test/root");
 		let mut modules = HashMap::new();
 		let module_key = _I("test_module").into();
@@ -1305,11 +2009,9 @@ mod tests {
 		modules.insert(module_key, module_entry);
 		index.roots.insert(root.clone(), modules);
 
-		// Test finding root from module
 		let found_root = index.find_root_from_module(module_key);
 		assert_eq!(found_root, Some(root), "Should find root containing the module");
 
-		// Test non-existent module
 		let non_existent = _I("non_existent").into();
 		let not_found = index.find_root_from_module(non_existent);
 		assert!(not_found.is_none(), "Should not find root for non-existent module");
@@ -1319,7 +2021,6 @@ mod tests {
 	fn test_resolve_py_module() {
 		let index = Index::default();
 
-		// Setup test data
 		let root = PathBuf::from("/test/root");
 		let mut modules = HashMap::new();
 		let module_key = _I("test_module").into();
@@ -1334,19 +2035,14 @@ mod tests {
 		modules.insert(module_key, module_entry);
 		index.roots.insert(root, modules);
 
-		// Test resolving odoo.addons.module_name pattern
 		let module_path = "odoo.addons.test_module";
 		let resolved = index.resolve_py_module(module_path);
-		// Note: This will return None in test because the file doesn't actually exist
-		// In a real scenario with actual files, this would resolve to the __init__.py path
 		assert!(resolved.is_none(), "Should return None when file doesn't exist");
 
-		// Test resolving with submodule
 		let submodule_path = "odoo.addons.test_module.models.test";
 		let resolved_sub = index.resolve_py_module(submodule_path);
 		assert!(resolved_sub.is_none(), "Should return None when file doesn't exist");
 
-		// Test invalid module path
 		let invalid_path = "invalid.module.path";
 		let not_resolved = index.resolve_py_module(invalid_path);
 		assert!(not_resolved.is_none(), "Should not resolve invalid module path");
@@ -1356,7 +2052,6 @@ mod tests {
 	fn test_discover_dependents_of() {
 		let index = Index::default();
 
-		// Setup test data with dependencies: base -> module_a -> module_b
 		let root = PathBuf::from("/test/root");
 		let mut modules = HashMap::new();
 
@@ -1399,7 +2094,6 @@ mod tests {
 
 		index.roots.insert(root, modules);
 
-		// Test discovering dependents of base (should find module_a and module_b)
 		let base_dependents = index.discover_dependents_of(base_key);
 		assert!(
 			base_dependents.contains(&module_a_key),
@@ -1410,7 +2104,6 @@ mod tests {
 			"base should have module_b as transitive dependent"
 		);
 
-		// Test discovering dependents of module_a (should find module_b)
 		let module_a_dependents = index.discover_dependents_of(module_a_key);
 		assert!(
 			module_a_dependents.contains(&module_b_key),
@@ -1421,7 +2114,6 @@ mod tests {
 			"module_a should not have base as dependent"
 		);
 
-		// Test discovering dependents of module_b (should find none)
 		let module_b_dependents = index.discover_dependents_of(module_b_key);
 		assert!(module_b_dependents.is_empty(), "module_b should have no dependents");
 	}
@@ -1430,7 +2122,6 @@ mod tests {
 	fn test_discover_dependents_of_with_auto_install() {
 		let index = Index::default();
 
-		// Setup test data: sale and crm modules, plus sale_crm with auto_install
 		let root = PathBuf::from("/test/root");
 		let mut modules = HashMap::new();
 
@@ -1473,7 +2164,6 @@ mod tests {
 
 		index.roots.insert(root, modules);
 
-		// Test: sale should have sale_crm as dependent
 		let sale_dependents = index.discover_dependents_of(sale_key);
 
 		assert!(
@@ -1482,7 +2172,6 @@ mod tests {
 			sale_dependents
 		);
 
-		// Test: crm should have sale_crm as dependent
 		let crm_dependents = index.discover_dependents_of(crm_key);
 		assert!(
 			crm_dependents.contains(&sale_crm_key),
@@ -1496,7 +2185,6 @@ mod tests {
 		let index = Index::default();
 		let root = PathBuf::from("/test/root");
 
-		// Setup: A depends on B, B depends on C, C depends on base
 		let a_key = _I("module_a").into();
 		let b_key = _I("module_b").into();
 		let c_key = _I("module_c").into();
@@ -1550,7 +2238,6 @@ mod tests {
 
 		index.roots.insert(root.clone(), modules);
 
-		// Test that resolving A returns all transitive dependencies
 		let deps = index.resolve_transitive_dependencies(a_key);
 		assert!(deps.contains(&a_key), "Should include the module itself");
 		assert!(deps.contains(&b_key), "Should include direct dependency B");
@@ -1564,7 +2251,6 @@ mod tests {
 		let index = Index::default();
 		let root = PathBuf::from("/test/root");
 
-		// Setup: A depends on B, B depends on C, C depends on A (circular)
 		let a_key = _I("module_a").into();
 		let b_key = _I("module_b").into();
 		let c_key = _I("module_c").into();
@@ -1609,7 +2295,7 @@ mod tests {
 			c_key,
 			ModuleEntry {
 				path: "module_c".into(),
-				dependencies: Box::new([a_key, base_key]), // Circular dependency back to A
+				dependencies: Box::new([a_key, base_key]),
 				auto_install: false,
 				loaded: Default::default(),
 				loaded_dependents: Default::default(),
@@ -1618,7 +2304,6 @@ mod tests {
 
 		index.roots.insert(root.clone(), modules);
 
-		// Test that circular dependencies don't cause infinite loop
 		let deps = index.resolve_transitive_dependencies(a_key);
 		assert!(deps.contains(&a_key), "Should include module A");
 		assert!(deps.contains(&b_key), "Should include module B");
@@ -1676,7 +2361,6 @@ mod tests {
 		index.roots.insert(root1, modules1);
 		index.roots.insert(root2, modules2);
 
-		// Test that we get all modules from all roots
 		let all_modules = index.get_all_available_modules();
 		assert!(all_modules.contains(&base_key), "Should include base");
 		assert!(all_modules.contains(&sale_key), "Should include sale");
@@ -1689,14 +2373,12 @@ mod tests {
 		let index = Index::default();
 		let root = PathBuf::from("/test/root");
 
-		// Test that non-base modules get base as implicit dependency
 		let sale_key = _I("sale").into();
 		let product_key = _I("product").into();
 		let base_key = _I("base").into();
 
 		let mut modules = HashMap::new();
 
-		// Add base module first
 		modules.insert(
 			base_key,
 			ModuleEntry {
@@ -1708,8 +2390,6 @@ mod tests {
 			},
 		);
 
-		// Add sale module with only product as explicit dependency
-		// This should get base added implicitly
 		modules.insert(
 			sale_key,
 			ModuleEntry {
@@ -1721,8 +2401,6 @@ mod tests {
 			},
 		);
 
-		// Add product module with no dependencies
-		// This should get base added implicitly
 		modules.insert(
 			product_key,
 			ModuleEntry {
@@ -1736,7 +2414,6 @@ mod tests {
 
 		index.roots.insert(root.clone(), modules);
 
-		// Process implicit base dependencies
 		index.add_implicit_base_dependencies();
 
 		let modules = index.roots.get(&root).unwrap();
@@ -1750,14 +2427,12 @@ mod tests {
 			"sale should have base as implicit dependency"
 		);
 
-		// Test that base module doesn't get base as dependency
 		let base_entry = modules.get(&base_key).unwrap();
 		assert!(
 			!base_entry.dependencies.contains(&base_key),
 			"base should not have itself as dependency"
 		);
 
-		// Test that product gets base as implicit dependency
 		let product_entry = modules.get(&product_key).unwrap();
 		assert!(
 			product_entry.dependencies.contains(&base_key),
@@ -1769,7 +2444,6 @@ mod tests {
 	fn test_delete_marked_entries() {
 		let index = Index::default();
 
-		// Add some test models
 		let root = _I("/test");
 		let path = crate::index::PathSymbol::strip_root(root, Path::new("/test/path"));
 		let models = vec![crate::model::Model {
@@ -1782,7 +2456,6 @@ mod tests {
 		}];
 		index.models.append(path, false, &models);
 
-		// Mark an entry for deletion
 		if let Some(mut entry) = index.models.iter_mut().next() {
 			entry.deleted = true;
 		}
@@ -1798,7 +2471,6 @@ mod tests {
 	fn test_parse_manifest() {
 		use crate::test_utils;
 
-		// Setup test manifest content
 		let manifest_content = br#"
 {
     'name': 'Test Module',
@@ -1809,27 +2481,23 @@ mod tests {
 
 		let manifest_path = PathBuf::from("/test/module/__manifest__.py");
 
-		// Mock the file system
 		if let Ok(mut fs) = test_utils::fs::TEST_FS.write() {
 			fs.insert(manifest_path.clone(), manifest_content);
 		}
 
 		let manifest_info = parse_manifest_info(&manifest_path).unwrap();
 
-		// Should include 'base' (auto-added) plus the dependencies from the manifest
 		assert!(
 			manifest_info.dependencies.len() >= 3,
 			"Should have at least base, web, and mail dependencies"
 		);
 
-		// Check that base is included (it's auto-added for non-base modules)
 		let base_key = _I("base").into();
 		assert!(
 			manifest_info.dependencies.contains(&base_key),
 			"Should include base dependency"
 		);
 
-		// Check auto_install is false by default
 		assert!(!manifest_info.auto_install, "auto_install should be false by default");
 	}
 
@@ -1837,7 +2505,6 @@ mod tests {
 	fn test_parse_manifest_with_auto_install() {
 		use crate::test_utils;
 
-		// Setup test manifest content with auto_install
 		let manifest_content = br#"
 {
     'name': 'Test Auto Install Module',
@@ -1848,7 +2515,6 @@ mod tests {
 
 		let manifest_path = PathBuf::from("/test/auto_module/__manifest__.py");
 
-		// Mock the file system
 		if let Ok(mut fs) = test_utils::fs::TEST_FS.write() {
 			fs.insert(manifest_path.clone(), manifest_content);
 		}
@@ -1984,5 +2650,327 @@ class TransifexCodeTranslation(models.Model):
 				panic!("Parsing should succeed but with incomplete results, got error: {e}");
 			}
 		}
+	}
+
+	#[test]
+	fn test_find_base_model() {
+		use crate::test_utils::fs::TEST_FS;
+		use std::path::PathBuf;
+
+		let root_path = PathBuf::from("/test_odoo_root");
+		let models_path = root_path.join("odoo/models.py");
+
+		let models_content = b"
+class BaseModel:
+    \"\"\"Base class for all Odoo models.\"\"\"
+    
+    def create(self, vals):
+        \"\"\"Create a new record.\"\"\"
+        pass
+    
+    def search(self, args):
+        \"\"\"Search for records.\"\"\"
+        pass
+";
+
+		{
+			let mut fs = TEST_FS.write().unwrap();
+			fs.insert(models_path.clone(), models_content);
+		}
+
+		let index = Index::default();
+		index.roots.insert(root_path.clone(), Default::default());
+
+		let base_model = index.get_base_model();
+		assert!(base_model.is_some(), "Should find BaseModel");
+
+		let scope = base_model.unwrap();
+		assert!(scope.get("BaseModel").is_some(), "BaseModel should exist in scope");
+
+		{
+			let mut fs = TEST_FS.write().unwrap();
+			fs.remove(&models_path);
+		}
+	}
+
+	#[test]
+	fn test_base_model_class_id() {
+		use crate::analyze::class_cache;
+		use crate::test_utils::fs::TEST_FS;
+		use std::path::PathBuf;
+
+		let root_path = PathBuf::from("/test_base_model_class");
+		let models_path = root_path.join("odoo/models.py");
+
+		let models_content = b"
+class BaseModel:
+    \"\"\"Base class for all Odoo models.\"\"\"
+    
+    def create(self, vals):
+        \"\"\"Create a new record.\"\"\"
+        pass
+    
+    def search(self, args):
+        \"\"\"Search for records.\"\"\"
+        pass
+    
+    def write(self, vals):
+        \"\"\"Update records.\"\"\"
+        pass
+";
+
+		{
+			let mut fs = TEST_FS.write().unwrap();
+			fs.insert(models_path.clone(), models_content);
+		}
+
+		let index = Index::default();
+		index.roots.insert(root_path.clone(), Default::default());
+
+		let class_id = index.get_base_model_class_id();
+		assert!(class_id.is_some(), "Should create BaseModel ClassId");
+
+		let class_id = class_id.unwrap();
+
+		let cache = class_cache();
+		let metadata = cache.resolve(class_id);
+		assert_eq!(metadata.name.as_str(), "BaseModel");
+
+		println!("Attributes found: {:?}", metadata.attributes.keys().collect::<Vec<_>>());
+		println!("BaseModel created with ClassId: {:?}", class_id);
+		let class_id2 = index.get_base_model_class_id().unwrap();
+		assert_eq!(class_id, class_id2, "Should return cached ClassId");
+
+		{
+			let mut fs = TEST_FS.write().unwrap();
+			fs.remove(&models_path);
+		}
+	}
+
+	#[test]
+	fn test_create_model_class_fragment() {
+		use crate::analyze::class_cache;
+		use crate::test_utils::fs::TEST_FS;
+		use std::path::PathBuf;
+
+		let root_path = PathBuf::from("/test_model_fragment");
+		let root_spur = _I(root_path.to_str().unwrap());
+		let models_path = root_path.join("odoo/models.py");
+		let models_content = b"
+class BaseModel:
+    def create(self, vals):
+        pass
+    def search(self, args):
+        pass
+";
+
+		{
+			let mut fs = TEST_FS.write().unwrap();
+			fs.insert(models_path.clone(), models_content);
+		}
+
+		let index = Index::default();
+		index.roots.insert(root_path.clone(), Default::default());
+
+		let base_model_id = index.get_base_model_class_id();
+		assert!(base_model_id.is_some(), "BaseModel should be created");
+		let base_model_id = base_model_id.unwrap();
+
+		let fragment1_path = root_path.join("addons/my_module/models/base.py");
+		let fragment1_content = r#"
+class MyModel(models.Model):
+    _name = 'my.model'
+    
+    def method_from_base(self):
+        pass
+"#;
+
+		let mut parser = tree_sitter::Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+		let tree = parser.parse(fragment1_content.as_bytes(), None).unwrap();
+		let class_node1 = tree
+			.root_node()
+			.named_children(&mut tree.root_node().walk())
+			.find(|n| n.kind() == "class_definition")
+			.expect("Should find class");
+
+		let fragment1_id = index.create_model_class_fragment(
+			root_spur,
+			fragment1_path.clone(),
+			span_conv(class_node1.range()),
+			"MyModel".into(),
+			Some(class_node1),
+			Some(fragment1_content),
+		);
+		assert!(fragment1_id.is_some());
+		let fragment1_id = fragment1_id.unwrap();
+
+		let fragment2_path = root_path.join("addons/extension/models/extended.py");
+		let fragment2_content = r#"
+class MyModelExtension(models.Model):
+    _inherit = 'my.model'
+    
+    def method_from_extension(self):
+        pass
+    
+    def another_extension_method(self):
+        pass
+"#;
+
+		let tree2 = parser.parse(fragment2_content.as_bytes(), None).unwrap();
+		let class_node2 = tree2
+			.root_node()
+			.named_children(&mut tree2.root_node().walk())
+			.find(|n| n.kind() == "class_definition")
+			.expect("Should find class");
+
+		let fragment2_id = index.create_model_class_fragment(
+			root_spur,
+			fragment2_path.clone(),
+			span_conv(class_node2.range()),
+			"MyModelExtension".into(),
+			Some(class_node2),
+			Some(fragment2_content),
+		);
+		assert!(fragment2_id.is_some());
+		let fragment2_id = fragment2_id.unwrap();
+
+		let cache = class_cache();
+
+		let fragment1_meta = cache.resolve(fragment1_id);
+		assert_eq!(fragment1_meta.name.as_str(), "MyModel");
+		assert_eq!(fragment1_meta.parents.len(), 0, "Fragments should have no parents");
+
+		let fragment2_meta = cache.resolve(fragment2_id);
+		assert_eq!(fragment2_meta.name.as_str(), "MyModelExtension");
+		assert_eq!(fragment2_meta.parents.len(), 0, "Fragments should have no parents");
+
+		let _class_chain = vec![base_model_id, fragment1_id, fragment2_id];
+
+		println!("✓ Model fragment creation test passed");
+		println!("  Fragment1 created with class_id: {:?}", fragment1_id);
+		println!("  Fragment2 created with class_id: {:?}", fragment2_id);
+		println!(
+			"  Class chain: [BaseModel, Fragment1({}), Fragment2({})]",
+			fragment1_meta.name, fragment2_meta.name
+		);
+		println!(
+			"  Total methods available: create, search, method_from_base, method_from_extension, another_extension_method"
+		);
+
+		{
+			let mut fs = TEST_FS.write().unwrap();
+			fs.remove(&models_path);
+		}
+	}
+
+	#[test]
+	fn test_model_class_chain_population() {
+		use crate::analyze::class_cache;
+		use crate::test_utils::fs::TEST_FS;
+		use std::path::PathBuf;
+
+		let root_path = PathBuf::from("/test_class_chain");
+		let models_path = root_path.join("odoo/models.py");
+		let models_content = b"
+class BaseModel:
+    def create(self, vals):
+        pass
+    def write(self, vals):
+        pass
+";
+
+		{
+			let mut fs = TEST_FS.write().unwrap();
+			fs.insert(models_path.clone(), models_content);
+		}
+
+		let index = Index::default();
+		index.roots.insert(root_path.clone(), Default::default());
+
+		let py_file = root_path.join("addons/test_module/models/partner.py");
+		let py_content = r#"
+from odoo import models, fields
+
+class Partner(models.Model):
+    _name = 'res.partner'
+    
+    def custom_method(self):
+        pass
+
+class PartnerExtension(models.Model):
+    _inherit = 'res.partner'
+    
+    def extended_method(self):
+        pass
+"#;
+
+		let fragments = index.create_model_fragments_from_file(&py_file, py_content);
+
+		let model_name: crate::ImStr = "res.partner".into();
+		assert!(
+			fragments.contains_key(&model_name),
+			"Should have fragment for res.partner from base class"
+		);
+
+		let partner_fragments = fragments.get(&model_name).unwrap();
+		assert_eq!(partner_fragments.len(), 2, "Should have 2 fragments (base + extension)");
+
+		let cache = class_cache();
+
+		let frag1_meta = cache.resolve(partner_fragments[0]);
+		let frag2_meta = cache.resolve(partner_fragments[1]);
+
+		println!(
+			"Fragment 1 - name: {}, attributes: {:?}",
+			frag1_meta.name,
+			frag1_meta.attributes.keys().collect::<Vec<_>>()
+		);
+		println!(
+			"Fragment 2 - name: {}, attributes: {:?}",
+			frag2_meta.name,
+			frag2_meta.attributes.keys().collect::<Vec<_>>()
+		);
+
+		assert_eq!(frag1_meta.parents.len(), 0, "Fragments should have no parents");
+		assert_eq!(frag2_meta.parents.len(), 0, "Fragments should have no parents");
+
+		let base_model_id = index.get_base_model_class_id();
+		assert!(base_model_id.is_some(), "BaseModel should exist");
+
+		let class_chain = if let Some(base_id) = base_model_id {
+			let mut chain = vec![base_id];
+			chain.extend(partner_fragments.iter().copied());
+			chain
+		} else {
+			partner_fragments.clone()
+		};
+
+		println!("✓ Model class_chain population test passed");
+		println!("  Created {} fragments for res.partner", partner_fragments.len());
+		println!("  Class chain length: {}", class_chain.len());
+
+		{
+			let mut fs = TEST_FS.write().unwrap();
+			fs.remove(&models_path);
+		}
+	}
+	#[test]
+	fn test_resolve_generic_python_module() {
+		let index = Index::default();
+
+		if let Ok(mut fs) = TEST_FS.write() {
+			fs.insert(PathBuf::from("/test/root/odoo/__init__.py"), br#"from . import models"#);
+			fs.insert(PathBuf::from("/test/root/odoo/models.py"), br#"class Unicorn: pass"#);
+			fs.insert(PathBuf::from("/test/root/odoo/addons/base/__manifest__.py"), br#"{}"#);
+		} else {
+			panic!("Failed to write to test filesystem");
+		}
+
+		let root = PathBuf::from("/test/root");
+		index.roots.insert(root.clone(), Default::default());
+		let module_path = "odoo.models";
+		let resolved = index.resolve_generic_python_module(module_path);
+		assert_eq!(resolved.as_deref(), Some(Path::new("/test/root/odoo/models.py")));
 	}
 }

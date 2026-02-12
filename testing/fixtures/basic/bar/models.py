@@ -1,3 +1,6 @@
+from odoo import models
+
+
 class Bar(models.Model):
     _name = "bar"
 

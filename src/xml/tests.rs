@@ -1,5 +1,4 @@
 use super::*;
-use crate::xml::CompletionResponse;
 
 #[test]
 fn test_determine_csv_xmlid_subgroup_single() {

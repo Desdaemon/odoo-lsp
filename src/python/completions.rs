@@ -1,15 +1,15 @@
-use tower_lsp_server::lsp_types::{CompletionList, CompletionResponse};
 use tree_sitter::{Node, QueryMatch};
 
 use std::borrow::Cow;
 use std::sync::atomic::Ordering::Relaxed;
 
-use tower_lsp_server::{UriExt, lsp_types::*};
-use tracing::{debug, warn};
+use tower_lsp_server::ls_types::*;
+use tracing::debug;
 use tree_sitter::Tree;
 
 use crate::prelude::*;
 
+use crate::analyze::{DictKey, Type, type_cache};
 use crate::backend::Backend;
 use crate::index::{_G, _I, _R, symbol::Symbol};
 use crate::model::{FieldKind, ModelEntry, ModelName, PropertyKind};
@@ -28,10 +28,7 @@ impl Backend {
 		ast: Tree,
 		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<CompletionResponse>> {
-		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position.position, rope) else {
-			warn!("invalid position {:?}", params.text_document_position.position);
-			return Ok(None);
-		};
+		let ByteOffset(offset) = rope_conv(params.text_document_position.position, rope);
 		let path = some!(params.text_document_position.text_document.uri.to_file_path());
 		let Some(current_module) = self.index.find_module_of(&path) else {
 			debug!("no current module");
@@ -92,7 +89,7 @@ impl Backend {
 									&needle,
 									range.map_unit(ByteOffset),
 									rope,
-									model_filter.map(|m| vec![ImStr::from_static(m)]).as_deref(),
+									model_filter.map(|m| vec![m.into()]).as_deref(),
 									current_module,
 									&mut items,
 								)?;
@@ -106,7 +103,7 @@ impl Backend {
 						Some(PyCompletions::Model) => {
 							if range.contains_end(offset) {
 								let (needle, byte_range) = extract_string_needle_at_offset(rope, range, offset)?;
-								let range = ok!(rope_conv(byte_range, rope));
+								let range = rope_conv(byte_range, rope);
 								early_return.lift(move || async move {
 									let mut items = MaxVec::new(completions_limit);
 									self.index.complete_model(&needle, range, &mut items)?;
@@ -272,7 +269,7 @@ impl Backend {
 									Some(PropertyKind::Field),
 									rope,
 								);
-							} else if let Some(cmdlist) = capture.node.next_named_sibling()
+							} else if let Some(cmdlist) = python_next_named_sibling(capture.node)
 								&& Backend::is_commandlist(cmdlist, offset)
 								&& let Some((needle, range, model)) = self.gather_commandlist(
 									cmdlist,
@@ -303,7 +300,7 @@ impl Backend {
 							}
 						}
 						Some(PyCompletions::FieldDescriptor) => {
-							let Some(desc_value) = capture.node.next_named_sibling() else {
+							let Some(desc_value) = python_next_named_sibling(capture.node) else {
 								continue;
 							};
 
@@ -333,7 +330,7 @@ impl Backend {
 										let range = desc_value.byte_range();
 										let (needle, byte_range) =
 											extract_string_needle_at_offset(rope, range, offset)?;
-										let range = ok!(rope_conv(byte_range, rope));
+										let range = rope_conv(byte_range, rope);
 										early_return.lift(move || async move {
 											let mut items = MaxVec::new(completions_limit);
 											self.index.complete_model(&needle, range, &mut items)?;
@@ -358,7 +355,7 @@ impl Backend {
 												&needle,
 												range.map_unit(ByteOffset),
 												rope,
-												Some(&[ImStr::from_static("res.groups")]),
+												Some(&["res.groups".into()]),
 												current_module,
 												&mut items,
 											)?;
@@ -435,14 +432,12 @@ impl Backend {
 				}
 			}
 			if early_return.is_none() {
-				// Check if we're in a broken syntax situation (string without colon in dictionary)
 				let cursor_node = root.descendant_for_byte_range(offset, offset);
 				if let Some(node) = cursor_node {
-					// Check if we're in a string that's part of an ERROR node
 					let mut current = node;
 					while let Some(parent) = current.parent() {
+						// (dictionary (ERROR ^cursor))
 						if parent.kind() == "ERROR" {
-							// Check if the ERROR's parent is a dictionary
 							if let Some(grandparent) = parent.parent()
 								&& grandparent.kind() == "dictionary"
 							{
@@ -514,6 +509,40 @@ impl Backend {
 									})));
 								}
 							}
+						} else if current.kind() == "string"
+							&& parent.kind() == "subscript"
+							&& let Some(lhs) = parent.named_child(0)
+							&& let Some((tid, _)) =
+								self.index
+									.type_of_range(root, dbg!(lhs).byte_range().map_unit(ByteOffset), &contents)
+							&& let Type::DictBag(dict) = type_cache().resolve(tid)
+						{
+							let mut items = MaxVec::new(completions_limit);
+							let dict = dict.into_iter().flat_map(|(key, _)| match key {
+								DictKey::String(str) => Some(str.to_string()),
+								_ => None,
+							});
+							let range = current.byte_range().shrink(1).map_unit(ByteOffset);
+							let range = rope_conv(range, rope);
+							let to_item = |label: String| {
+								let new_text = label.clone();
+								CompletionItem {
+									label,
+									kind: Some(CompletionItemKind::CONSTANT),
+									text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
+									..Default::default()
+								}
+							};
+							if offset <= current.start_byte() + 1 {
+								items.extend(dict.map(to_item));
+							} else {
+								let needle = &contents[current.start_byte() + 1..offset];
+								items.extend(dict.filter(|label| label.starts_with(needle)).map(to_item));
+							}
+							return Ok(Some(CompletionResponse::List(CompletionList {
+								is_incomplete: !items.has_space(),
+								items: items.into_inner(),
+							})));
 						}
 						current = parent;
 					}

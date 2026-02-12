@@ -22,11 +22,18 @@ pub struct Symbol<T> {
 pub struct PathSymbol(Spur, Spur);
 
 impl PathSymbol {
-	/// Panics if `root` is not a parent of `path`.
+	/// Creates a path symbol from a path and its prefix.
+	///
+	/// Panics if `root` is not a parent/prefix of `path`.
 	pub fn strip_root(root: Spur, path: &Path) -> Self {
-		let path = path.strip_prefix(interner().resolve(&root)).unwrap();
+		let path = path.strip_prefix(_R(root)).unwrap();
 		let path = _I(path.to_string_lossy());
 		PathSymbol(root, path)
+	}
+	#[cfg(test)]
+	pub fn new(path: &Path) -> Self {
+		let root = _I("");
+		PathSymbol::strip_root(root, path)
 	}
 	pub fn empty() -> Self {
 		let empty = interner().get_or_intern_static(".");

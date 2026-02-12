@@ -2,27 +2,54 @@
 //! [`Index::model_of_range`] and [`Index::type_of`].
 
 use std::{
+	collections::HashMap,
 	fmt::{Debug, Write},
 	ops::ControlFlow,
-	sync::Arc,
+	path::{Path, PathBuf},
+	sync::{
+		Arc, OnceLock, RwLock,
+		atomic::{AtomicBool, Ordering},
+	},
 };
 
+use dashmap::DashMap;
+use fomat_macros::fomat;
 use lasso::Spur;
 use ropey::Rope;
+use tower_lsp_server::ls_types::Range;
 use tracing::instrument;
 use tree_sitter::{Node, Parser, QueryCursor, StreamingIterator};
 
 use crate::{
 	ImStr, dig, format_loc,
-	index::{_G, _I, _R, Index, Symbol},
-	model::{Method, MethodReturnType, ModelEntry, ModelName, PropertyKind},
+	index::{_G, _I, _R, Index, PathSymbol, Symbol},
+	model::{Method, ModelName, PropertyInfo},
 	test_utils,
-	utils::{ByteRange, PreTravel, RangeExt, TryResultExt, rope_conv},
+	utils::{
+		ByteOffset, ByteRange, Defer, MinLoc, PreTravel, RangeExt, TryResultExt, python_next_named_sibling, rope_conv,
+	},
 };
 use ts_macros::query;
 
 mod scope;
 pub use scope::Scope;
+
+pub fn type_cache() -> &'static TypeCache {
+	static CACHE: OnceLock<TypeCache> = OnceLock::new();
+	CACHE.get_or_init(TypeCache::default)
+}
+
+macro_rules! _T {
+	(@ $builtin:expr) => {
+		$crate::analyze::type_cache().get_or_intern(Type::PyBuiltin($builtin.into()))
+	};
+	($model:literal) => {
+		$crate::analyze::type_cache().get_or_intern(Type::Model($model.into()))
+	};
+	($expr:expr) => {
+		$crate::analyze::type_cache().get_or_intern($expr)
+	};
+}
 
 pub static MODEL_METHODS: phf::Set<&str> = phf::phf_set!(
 	"create",
@@ -42,39 +69,144 @@ pub static MODEL_METHODS: phf::Set<&str> = phf::phf_set!(
 	"with_env",
 	"sudo",
 	"exists",
-	// TODO: Limit to Forms only
 	"new",
 	"edit",
 	"save",
 );
 
-/// The subset of types that may resolve to a model.
-#[derive(Clone, Debug)]
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClassId(u32);
+
+impl Debug for ClassId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "ClassId({})", self.0)
+	}
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodInfo {
+	pub range: Range,
+	pub docstring: Option<ImStr>,
+	pub parameters: Option<Vec<FunctionParam>>,
+}
+
+#[derive(Debug)]
+pub struct ClassMetadata {
+	pub name: ImStr,
+	pub location: MinLoc,
+	pub attributes: HashMap<String, TypeId>,
+	pub parents: Vec<ClassId>,
+	pub mro_chain: Vec<ClassId>,
+	pub parsed: AtomicBool,
+}
+
+impl ClassMetadata {
+	pub fn new(name: ImStr, location: MinLoc) -> Self {
+		Self {
+			name,
+			location,
+			parents: Vec::new(),
+			attributes: Default::default(),
+			mro_chain: Vec::new(),
+			parsed: AtomicBool::new(false),
+		}
+	}
+	pub fn preparsed(
+		name: ImStr,
+		location: MinLoc,
+		parents: Vec<ClassId>,
+		attributes: HashMap<String, TypeId>,
+	) -> Self {
+		Self {
+			name,
+			location,
+			parents,
+			attributes,
+			mro_chain: Vec::new(),
+			parsed: AtomicBool::new(true),
+		}
+	}
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
 	Env,
-	/// \*.env.ref()
 	RefFn,
-	/// Functions that return another model, regardless of input.
 	ModelFn(ImStr),
 	Model(ImStr),
-	/// Unresolved model.
 	Record(ImStr),
 	Super,
 	Method(ModelName, ImStr),
-	/// `odoo.http.request`
+	PythonMethod(TypeId, ImStr),
 	HttpRequest,
-	/// Can never be resolved, useful for non-model bindings.
+	Dict(TypeId, TypeId),
+	DictBag(Vec<(DictKey, TypeId)>),
+	PyBuiltin(ImStr),
+	List(ListElement),
+	Tuple(Vec<TypeId>),
+	Iterable(Option<TypeId>),
+	Class(ClassId),
+	Instance(ClassId),
+	Unresolved(ImStr),
+	Union(Vec<TypeId>),
+	Generic(ImStr, Vec<TypeId>),
 	Value,
+}
+
+impl Type {
+	#[inline]
+	fn is_dict(&self) -> bool {
+		matches!(self, Type::Dict(..))
+	}
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum ListElement {
+	Vacant,
+	Occupied(TypeId),
+}
+
+impl Debug for ListElement {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Vacant => f.write_str("..."),
+			Self::Occupied(inner) => inner.fmt(f),
+		}
+	}
+}
+
+impl From<ListElement> for Option<TypeId> {
+	#[inline]
+	fn from(value: ListElement) -> Self {
+		match value {
+			ListElement::Vacant => None,
+			ListElement::Occupied(inner) => Some(inner),
+		}
+	}
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum DictKey {
+	String(ImStr),
+	Type(TypeId),
+}
+
+impl Debug for DictKey {
+	#[inline]
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::String(key) => key.fmt(f),
+			Self::Type(key) => key.fmt(f),
+		}
+	}
 }
 
 #[derive(Clone, Debug)]
 pub enum FunctionParam {
 	Param(ImStr),
-	/// `(positional_separator)`
 	PosEnd,
-	/// `(keyword_separator)` or `(list_splat_pattern)`
 	EitherEnd(Option<ImStr>),
-	/// `(default_parameter)`
 	Named(ImStr),
 	Kwargs(ImStr),
 }
@@ -90,6 +222,382 @@ impl core::fmt::Display for FunctionParam {
 			FunctionParam::Kwargs(param) => write!(f, "**{param}"),
 		}
 	}
+}
+
+#[derive(Default)]
+pub struct TypeCache {
+	types: RwLock<Vec<Type>>,
+	ids: DashMap<Type, TypeId>,
+}
+
+impl TypeCache {
+	#[inline]
+	pub fn get_or_intern(&self, type_: Type) -> TypeId {
+		if let Some(id) = self.ids.get(&type_) {
+			return *id;
+		}
+		self.intern(type_)
+	}
+	fn intern(&self, type_: Type) -> TypeId {
+		let mut types = self.types.write().unwrap();
+		let id = TypeId(types.len() as u32);
+		types.push(type_.clone());
+		self.ids.insert(type_, id);
+		id
+	}
+	#[inline]
+	pub fn resolve(&self, id: TypeId) -> Type {
+		self.types.read().unwrap()[id.0 as usize].clone()
+	}
+	pub fn is_dictlike(&self, id: TypeId) -> bool {
+		let types = self.types.read().unwrap();
+		matches!(
+			&unsafe { types.get_unchecked(id.0 as usize) },
+			Type::Dict(..) | Type::DictBag(..)
+		)
+	}
+	pub fn is_dict(&self, id: TypeId) -> bool {
+		let types = self.types.read().unwrap();
+		matches!(&unsafe { types.get_unchecked(id.0 as usize) }, Type::Dict(..))
+	}
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeId(u32);
+
+impl Debug for TypeId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		type_cache().resolve(*self).fmt(f)
+	}
+}
+
+pub fn class_cache() -> &'static ClassCache {
+	static CACHE: OnceLock<ClassCache> = OnceLock::new();
+	CACHE.get_or_init(ClassCache::default)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ClassKey {
+	pub file: PathBuf,
+	pub name: ImStr,
+}
+
+impl ClassKey {
+	pub fn new(file: PathBuf, name: ImStr) -> Self {
+		let file = file.canonicalize().unwrap_or(file);
+		Self { file, name }
+	}
+
+	pub fn from_raw(file: PathBuf, name: ImStr) -> Self {
+		Self { file, name }
+	}
+}
+
+#[derive(Default)]
+pub struct ClassCache {
+	classes: RwLock<Vec<Arc<ClassMetadata>>>,
+	ids: DashMap<ClassKey, ClassId>,
+	by_name: DashMap<ImStr, Vec<ClassId>>,
+}
+
+impl ClassCache {
+	#[inline]
+	pub fn get_or_intern_with<F>(&self, key: ClassKey, factory: F) -> ClassId
+	where
+		F: FnOnce() -> ClassMetadata,
+	{
+		if let Some(id) = self.ids.get(&key) {
+			return *id;
+		}
+
+		let metadata = factory();
+		self.intern(metadata)
+	}
+
+	fn intern(&self, metadata: ClassMetadata) -> ClassId {
+		let mut classes = self.classes.write().unwrap();
+		let id = ClassId(classes.len() as u32);
+		let key = ClassKey::from_raw(metadata.location.path.to_path(), metadata.name.clone());
+
+		classes.push(Arc::new(metadata));
+		self.ids.insert(key.clone(), id);
+
+		// Update secondary index
+		self.by_name.entry(key.name.clone()).or_insert_with(Vec::new).push(id);
+
+		id
+	}
+
+	#[inline]
+	pub fn resolve(&self, id: ClassId) -> Arc<ClassMetadata> {
+		let classes = self.classes.read().unwrap();
+		classes[id.0 as usize].clone()
+	}
+
+	#[inline]
+	pub fn get(&self, id: ClassId) -> Option<Arc<ClassMetadata>> {
+		let classes = self.classes.read().unwrap();
+		classes.get(id.0 as usize).cloned()
+	}
+
+	#[inline]
+	pub fn get_by_name(&self, name: &str) -> Option<ClassId> {
+		self.by_name
+			.get(&ImStr::from(name))
+			.and_then(|ids| ids.first().cloned())
+	}
+
+	#[inline]
+	pub fn get_by_file_and_name(&self, file: &Path, name: &str) -> Option<ClassId> {
+		let key = ClassKey::new(file.to_path_buf(), ImStr::from(name));
+		self.ids.get(&key).map(|r| *r)
+	}
+
+	#[inline]
+	pub fn get_all_by_name(&self, name: &str) -> Option<Vec<ClassId>> {
+		self.by_name.get(&ImStr::from(name)).map(|r| r.clone())
+	}
+}
+#[derive(Debug, Clone)]
+enum SymbolResolution {
+	Direct(TypeId),
+	Module(scope::ImportInfo),
+}
+
+fn load_class_metadata(
+	root: Spur,
+	class_node: Node,
+	file_path: &Path,
+	range: Range,
+	contents: &str,
+) -> Option<ClassMetadata> {
+	// Extract class name
+	let name_node = class_node.child_by_field_name("name")?;
+	let class_name = &contents[name_node.byte_range()];
+
+	// Extract parent classes (superclasses) - placeholder for MRO building
+	// TODO: When we have full type resolution, resolve parent class names to ClassIds
+	if let Some(args) = class_node.child_by_field_name("superclasses") {
+		let mut cursor = args.walk();
+		for _arg in args.named_children(&mut cursor) {
+			// Parent class name extraction would happen here
+		}
+	}
+
+	let mut attributes: HashMap<String, TypeId> = HashMap::new();
+
+	if let Some(body) = class_node.child_by_field_name("body") {
+		let mut cursor = body.walk();
+		for stmt in body.named_children(&mut cursor) {
+			if stmt.kind() == "assignment"
+				&& let Some(lhs) = stmt.named_child(0)
+				&& lhs.kind() == "identifier"
+			{
+				let attr_name = &contents[lhs.byte_range()];
+				attributes.insert(attr_name.to_string(), _T!(Type::Value));
+			}
+		}
+	}
+
+	Some(ClassMetadata::preparsed(
+		class_name.into(),
+		MinLoc {
+			path: PathSymbol::strip_root(root, file_path),
+			range,
+		},
+		Vec::new(), // TODO: Parse parents
+		attributes,
+	))
+}
+
+/// Compute the Method Resolution Order (MRO) for a class using C3 linearization.
+///
+/// The C3 linearization algorithm ensures a consistent and predictable order for
+/// method lookup in multiple inheritance hierarchies. For a class C with parents [B1, B2, ...]:
+/// ```text
+///   mro(C) = [C] + merge(mro(B1), mro(B2), ..., [B1, B2, ...])
+/// ```
+///
+/// The merge operation selects the first head that:
+/// 1. Doesn't appear in the tail of any other list
+/// 2. Is not already in the result
+///
+/// Returns None if there's an MRO conflict (inconsistent hierarchy).
+fn compute_c3_mro(class_id: ClassId, parents: &[ClassId]) -> Option<Vec<ClassId>> {
+	use tracing::debug;
+
+	if parents.is_empty() {
+		return Some(vec![class_id]);
+	}
+
+	let mut parent_mros: Vec<Vec<ClassId>> = Vec::new();
+	for &parent_id in parents {
+		let parent_metadata = class_cache().resolve(parent_id);
+
+		let parent_mro = if parent_metadata.mro_chain.is_empty() {
+			let parent_parents = parent_metadata.parents.clone();
+			compute_c3_mro(parent_id, &parent_parents)?
+		} else {
+			parent_metadata.mro_chain.clone()
+		};
+
+		parent_mros.push(parent_mro);
+	}
+
+	let mut sequences: Vec<Vec<ClassId>> = parent_mros;
+	sequences.push(parents.to_vec());
+
+	let mut result = vec![class_id];
+
+	'merge: loop {
+		sequences.retain(|seq| !seq.is_empty());
+
+		if sequences.is_empty() {
+			break;
+		}
+
+		for i in 0..sequences.len() {
+			let candidate = sequences[i][0];
+
+			let mut appears_in_tail = false;
+			for seq in &sequences {
+				if seq.len() > 1 && seq[1..].contains(&candidate) {
+					appears_in_tail = true;
+					break;
+				}
+			}
+
+			if !appears_in_tail {
+				result.push(candidate);
+
+				for seq in &mut sequences {
+					if seq[0] == candidate {
+						seq.remove(0);
+					}
+				}
+
+				continue 'merge;
+			}
+		}
+
+		debug!("C3 linearization conflict for ClassId({:?})", class_id);
+		return None;
+	}
+
+	Some(result)
+}
+
+fn update_class_mro(class_id: ClassId, _mro_chain: Vec<ClassId>) {
+	let cache = class_cache();
+	let classes = cache.classes.write().unwrap();
+
+	if let Some(_metadata) = classes.get(class_id.0 as usize) {
+		drop(classes);
+	}
+}
+
+fn resolve_attribute_on_class(class_id: ClassId, attr_name: &str) -> Option<TypeId> {
+	let metadata = class_cache().resolve(class_id);
+
+	if let Some(type_id) = metadata.attributes.get(attr_name) {
+		return Some(*type_id);
+	}
+
+	for parent_id in &metadata.mro_chain {
+		if let Some(type_id) = resolve_attribute_on_class(*parent_id, attr_name) {
+			return Some(type_id);
+		}
+	}
+
+	None
+}
+
+#[derive(Clone, Debug)]
+pub struct FunctionSignature {
+	pub name: ImStr,
+	pub params: HashMap<String, TypeId>,
+	pub return_type: Option<TypeId>,
+	pub is_builtin: bool,
+}
+
+pub fn sig_cache() -> &'static SignatureCache {
+	static CACHE: OnceLock<SignatureCache> = OnceLock::new();
+	CACHE.get_or_init(SignatureCache::default)
+}
+
+pub fn module_scope_cache() -> &'static ModuleScopeCache {
+	static CACHE: OnceLock<ModuleScopeCache> = OnceLock::new();
+	CACHE.get_or_init(ModuleScopeCache::default)
+}
+
+#[derive(Default)]
+pub struct ModuleScopeCache {
+	scopes: DashMap<ImStr, Arc<Scope>>,
+}
+
+impl ModuleScopeCache {
+	pub fn get(&self, file_path: &str) -> Option<Arc<Scope>> {
+		self.scopes.get(&ImStr::from(file_path)).map(|r| r.clone())
+	}
+
+	pub fn insert(&self, file_path: ImStr, scope: Scope) {
+		self.scopes.insert(file_path, Arc::new(scope));
+	}
+}
+
+#[derive(Default)]
+pub struct SignatureCache {
+	signatures: DashMap<(ImStr, ImStr), Arc<FunctionSignature>>,
+	builtins: DashMap<ImStr, Arc<FunctionSignature>>,
+}
+
+impl SignatureCache {
+	pub fn get(&self, name: &str) -> Option<Arc<FunctionSignature>> {
+		self.builtins.get(&ImStr::from(name)).map(|r| r.clone())
+	}
+
+	pub fn get_by_file_and_name(&self, file: &str, name: &str) -> Option<Arc<FunctionSignature>> {
+		let key = (ImStr::from(file), ImStr::from(name));
+		self.signatures.get(&key).map(|r| r.clone())
+	}
+
+	pub fn register(&self, file: &str, name: ImStr, sig: FunctionSignature) {
+		let key = (ImStr::from(file), name);
+		self.signatures.insert(key, Arc::new(sig));
+	}
+
+	pub fn register_builtin(&self, name: ImStr, sig: FunctionSignature) {
+		self.builtins.insert(name, Arc::new(sig));
+	}
+}
+
+pub fn extract_function_signature(fn_node: Node, _file_path: &str, contents: &str) -> Option<FunctionSignature> {
+	let name_node = fn_node.child_by_field_name("name")?;
+	let fn_name = &contents[name_node.byte_range()];
+
+	let mut params: HashMap<String, TypeId> = HashMap::new();
+	if let Some(param_list) = fn_node.child_by_field_name("parameters") {
+		let mut cursor = param_list.walk();
+		for param in param_list.named_children(&mut cursor) {
+			if param.kind() == "identifier" {
+				let param_name = &contents[param.byte_range()];
+				params.insert(param_name.to_string(), _T!(Type::Value));
+			}
+		}
+	}
+
+	let return_type = fn_node.child_by_field_name("return_type").and_then(|ret| {
+		let _return_annotation = &contents[ret.byte_range()];
+		None
+	});
+
+	Some(FunctionSignature {
+		name: fn_name.into(),
+		params,
+		return_type,
+		is_builtin: false,
+	})
 }
 
 pub fn normalize<'r, 'n>(node: &'r mut Node<'n>) -> &'r mut Node<'n> {
@@ -135,7 +643,34 @@ query! {
       (identifier) @_func
       (lambda (lambda_parameters . (identifier) @ITER)))]))
   (#match? @_func "^(func|key)$")
-  (#match? @_mapped "^(mapp|filter|sort)ed$"))
+  (#match? @_mapped "^(mapp|filter|sort|group)ed$"))
+}
+
+#[rustfmt::skip]
+query! {
+	PythonBuiltinCall(Append, AppendList, AppendMap, AppendMapKey, AppendValue, UpdateMap, UpdateArgs);
+// value.append(...) OR value['foobar'].append(...)
+(call
+  (attribute
+    (subscript (identifier) @APPEND_MAP (string (string_content) @APPEND_MAP_KEY))
+    (identifier) @_append)
+  (argument_list . (_) @APPEND_VALUE)
+  (#eq? @_append "append"))
+
+(call
+  (attribute
+    (identifier) @APPEND_LIST
+    (identifier) @APPEND)
+  (argument_list . (_) @APPEND_VALUE)
+  (#eq? @_append "append"))
+
+// value.update(...)
+(call
+  (attribute
+  	(identifier) @UPDATE_MAP
+  	(identifier) @_update)
+  (argument_list) @UPDATE_ARGS
+  (#eq? @_update "update"))
 }
 
 pub type ScopeControlFlow = ControlFlow<Option<Scope>, bool>;
@@ -143,22 +678,20 @@ impl Index {
 	#[inline]
 	pub fn model_of_range(&self, node: Node<'_>, range: ByteRange, contents: &str) -> Option<ModelName> {
 		let (type_at_cursor, scope) = self.type_of_range(node, range, contents)?;
-		self.try_resolve_model(&type_at_cursor, &scope)
+		self.try_resolve_model(&type_cache().resolve(type_at_cursor), &scope)
 	}
-	pub fn type_of_range(&self, root: Node<'_>, range: ByteRange, contents: &str) -> Option<(Type, Scope)> {
-		// Phase 1: Determine the scope.
+	pub fn type_of_range(&self, root: Node<'_>, range: ByteRange, contents: &str) -> Option<(TypeId, Scope)> {
 		let (self_type, fn_scope, self_param) = determine_scope(root, contents, range.start.0)?;
 
-		// Phase 2: Build the scope up to offset
-		// What contributes to a method scope's variables?
-		// 1. Top-level statements; completely opaque to us.
-		// 2. Class definitions; technically useless to us.
-		//    Self-type analysis only uses a small part of the class definition.
-		// 3. Parameters, e.g. self which always has a fixed type
-		// 4. Assignments (including walrus-assignment)
 		let mut scope = Scope::default();
 		let self_type = match self_type {
-			Some(type_) => &contents[type_.byte_range().shrink(1)],
+			Some(type_) => {
+				if type_.kind() == "string" {
+					&contents[type_.byte_range().shrink(1)]
+				} else {
+					&contents[type_.byte_range()]
+				}
+			}
 			None => "",
 		};
 		scope.super_ = Some(self_param.into());
@@ -175,7 +708,10 @@ impl Index {
 		// TODO: fields
 		if node_at_cursor.kind() == "identifier" && fn_scope.child_by_field_name("name") == Some(node_at_cursor) {
 			return Some((
-				Type::Method(_I(self_type).into(), contents[node_at_cursor.byte_range()].into()),
+				_T!(Type::Method(
+					_I(self_type).into(),
+					contents[node_at_cursor.byte_range()].into()
+				)),
 				scope,
 			));
 		}
@@ -183,39 +719,84 @@ impl Index {
 		let type_at_cursor = self.type_of(node_at_cursor, &scope, contents)?;
 		Some((type_at_cursor, scope))
 	}
-	/// Builds the scope up to `offset`, in bytes.
-	///
-	/// #### About [ScopeControlFlow]
-	/// This is one of the rare occasions where [ControlFlow] is used. It is similar to
-	/// [Result] in that the try-operator (?) can be used to end iteration on a
-	/// [ControlFlow::Break]. Otherwise, [ControlFlow::Continue] has a continuation value
-	/// that must be passed up the chain, since it indicates whether [Scope::enter] was called.
 	pub fn build_scope(&self, scope: &mut Scope, node: Node, offset: usize, contents: &str) -> ScopeControlFlow {
 		if node.start_byte() > offset {
 			return ControlFlow::Break(Some(core::mem::take(scope)));
 		}
 		match node.kind() {
+			"import_from_statement" => {
+				// Handle: from module import name [as alias]
+				if let Some(module_node) = node.child_by_field_name("module_name") {
+					let module_path = &contents[module_node.byte_range()];
+
+					let mut cursor = node.walk();
+					for child in node.named_children(&mut cursor) {
+						if let Some((imported_name, alias)) = self.extract_import_name_and_alias(child, contents) {
+							scope.insert_import(scope::ImportInfo {
+								module_path: module_path.into(),
+								imported_name: imported_name.into(),
+								alias: alias.map(|a| a.into()),
+							});
+						}
+					}
+				}
+			}
+			"import_statement" => {
+				// Handle: import name [as alias]
+				let mut cursor = node.walk();
+				for child in node.named_children(&mut cursor) {
+					if let Some((imported_name, alias)) = self.extract_import_name_and_alias(child, contents) {
+						scope.insert_import(scope::ImportInfo {
+							module_path: imported_name.into(),
+							imported_name: imported_name.into(),
+							alias: alias.map(|a| a.into()),
+						});
+					}
+				}
+			}
 			"assignment" | "named_expression" => {
 				// (_ left right)
 				let lhs = node.named_child(0).unwrap();
 				if lhs.kind() == "identifier"
-					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
-					&& let Some(type_) = self.type_of(rhs, scope, contents)
+					&& let rhs = python_next_named_sibling(lhs).expect(format_loc!("rhs"))
+					&& let Some(id) = self.type_of(rhs, scope, contents)
 				{
 					let lhs = &contents[lhs.byte_range()];
-					scope.insert(lhs.to_string(), type_);
+					scope.insert(lhs.to_string(), type_cache().resolve(id));
+				} else if lhs.kind() == "subscript"
+					&& let Some(map) = dig!(lhs, identifier)
+					&& let Some(key) = dig!(lhs, string(1).string_content(1))
+					&& let Some(rhs) = python_next_named_sibling(lhs)
+					&& let type_ = self.type_of(rhs, scope, contents)
+					&& let Some(Type::DictBag(properties)) = scope.variables.get_mut(&contents[map.byte_range()])
+				{
+					let type_ = type_.unwrap_or_else(|| _T!(Type::Value));
+					let key = &contents[key.byte_range()];
+					if let Some(idx) = properties.iter().position(|(prop, _)| match prop {
+						DictKey::String(prop) => prop.as_str() == key,
+						DictKey::Type(_) => false,
+					}) {
+						properties[idx].1 = type_;
+					} else {
+						properties.push((DictKey::String(ImStr::from(key)), type_));
+					}
+				} else if lhs.kind() == "pattern_list"
+					&& let Some(rhs) = python_next_named_sibling(lhs)
+					&& let Some(type_) = self.type_of(rhs, scope, contents)
+				{
+					self.destructure_into_patternlist_like(lhs, type_, scope, contents);
 				}
 			}
 			"for_statement" => {
 				// (for_statement left right body)
 				scope.enter(true);
 				let lhs = node.named_child(0).unwrap();
-				if lhs.kind() == "identifier"
-					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
+
+				if let Some(rhs) = python_next_named_sibling(lhs)
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
+					&& let Some(inner) = self.type_of_iterable(type_cache().resolve(type_))
 				{
-					let lhs = &contents[lhs.byte_range()];
-					scope.insert(lhs.to_string(), type_);
+					self.destructure_into_patternlist_like(lhs, inner, scope, contents);
 				}
 				return ControlFlow::Continue(true);
 			}
@@ -239,15 +820,14 @@ impl Index {
 			"list_comprehension" | "set_comprehension" | "dictionary_comprehension" | "generator_expression"
 				if node.byte_range().contains(&offset) =>
 			{
-				// (_ body (for_in_clause left right))
+				// (_ body: _ (for_in_clause left: _ right: _))
 				let for_in = node.named_child(1).unwrap();
-				let lhs = for_in.named_child(0).unwrap();
-				if lhs.kind() == "identifier"
-					&& let rhs = lhs.next_named_sibling().expect(format_loc!("rhs"))
-					&& let Some(type_) = self.type_of(rhs, scope, contents)
+				if let Some(lhs) = for_in.child_by_field_name("left")
+					&& let Some(rhs) = for_in.child_by_field_name("right")
+					&& let Some(tid) = self.type_of(rhs, scope, contents)
+					&& let Some(inner) = self.type_of_iterable(type_cache().resolve(tid))
 				{
-					let lhs = &contents[lhs.byte_range()];
-					scope.insert(lhs.to_string(), type_);
+					self.destructure_into_patternlist_like(lhs, inner, scope, contents);
 				}
 			}
 			"call" if node.byte_range().contains_end(offset) => {
@@ -259,14 +839,96 @@ impl Index {
 					&& let callee = mapped_call
 						.nodes_for_capture_index(MappedCall::Callee as _)
 						.next()
-						.unwrap() && let Some(type_) = self.type_of(callee, scope, contents)
+						.unwrap() && let Some(tid) = self.type_of(callee, scope, contents)
 				{
 					let iter = mapped_call
 						.nodes_for_capture_index(MappedCall::Iter as _)
 						.next()
 						.unwrap();
 					let iter = &contents[iter.byte_range()];
-					scope.insert(iter.to_string(), type_);
+					scope.insert(iter.to_string(), type_cache().resolve(tid));
+				}
+			}
+			"call" => {
+				let query = PythonBuiltinCall::query();
+				let mut cursor = QueryCursor::new();
+				let mut matches = cursor.matches(query, node, contents.as_bytes());
+				let Some(call) = matches.next() else {
+					return ControlFlow::Continue(false);
+				};
+				if let Some(value) = call.nodes_for_capture_index(PythonBuiltinCall::AppendValue as _).next()
+					&& let Some(tid) = self.type_of(value, scope, contents)
+				{
+					if let Some(list) = call.nodes_for_capture_index(PythonBuiltinCall::AppendList as _).next() {
+						if let Some(Type::List(slot @ ListElement::Vacant)) =
+							scope.variables.get_mut(&contents[list.byte_range()])
+						{
+							*slot = ListElement::Occupied(tid);
+						}
+					} else if let Some(map) = call.nodes_for_capture_index(PythonBuiltinCall::AppendMap as _).next() {
+						let Some(key) = call
+							.nodes_for_capture_index(PythonBuiltinCall::AppendMapKey as _)
+							.next()
+						else {
+							return ControlFlow::Continue(false);
+						};
+						let key = &contents[key.byte_range()];
+
+						if let Some(Type::DictBag(properties)) = scope.variables.get_mut(&contents[map.byte_range()])
+							&& let Some((_, slot)) = properties.iter_mut().find(|(prop, id)| match prop {
+								DictKey::String(prop) => {
+									prop.as_str() == key && _T!(Type::List(ListElement::Vacant)) == *id
+								}
+								DictKey::Type(_) => false,
+							}) {
+							*slot = _T!(Type::List(ListElement::Occupied(tid)));
+						}
+					}
+				} else if let Some(map) = call.nodes_for_capture_index(PythonBuiltinCall::UpdateMap as _).next() {
+					let Some(Type::DictBag(properties)) = scope.variables.get_mut(&contents[map.byte_range()]) else {
+						return ControlFlow::Continue(false);
+					};
+					let Some(args) = call.nodes_for_capture_index(PythonBuiltinCall::UpdateArgs as _).next() else {
+						return ControlFlow::Continue(false);
+					};
+
+					let mut properties = core::mem::take(properties);
+					let mut cursor = args.walk();
+					let mut children = args.named_children(&mut cursor);
+					if let Some(first) = children.by_ref().next()
+						&& let Some(tid) = self.type_of(first, scope, contents)
+						&& let Type::DictBag(update_props) = type_cache().resolve(tid)
+					{
+						properties.extend(update_props);
+					}
+
+					for named_arg in children {
+						if named_arg.kind() == "keyword_argument"
+							&& let Some(name) = named_arg.child_by_field_name("name")
+							&& let Some(value) = named_arg.child_by_field_name("value")
+						{
+							let key = &contents[name.byte_range()];
+							let type_ = self.type_of(value, scope, contents).unwrap_or_else(|| _T!(Type::Value));
+							if let Some(idx) = properties.iter().position(|(prop, _)| match prop {
+								DictKey::String(prop) => prop.as_str() == key,
+								DictKey::Type(_) => false,
+							}) {
+								properties[idx].1 = type_;
+							} else {
+								properties.push((DictKey::String(ImStr::from(key)), type_));
+							}
+						} else if named_arg.kind() == "dictionary_splat"
+							&& let Some(value) = named_arg.named_child(0)
+							&& let Some(tid) = self.type_of(value, scope, contents)
+							&& let Type::DictBag(update_props) = type_cache().resolve(tid)
+						{
+							properties.extend(update_props);
+						}
+					}
+
+					scope
+						.variables
+						.insert(contents[map.byte_range()].to_string(), Type::DictBag(properties));
 				}
 			}
 			"with_statement" => {
@@ -279,7 +941,7 @@ impl Index {
 				//         (call (identifier) ..)
 				//         (as_pattern_target (identifier))))))
 				if let Some(value) = dig!(node, with_clause.with_item.as_pattern.call)
-					&& let Some(target) = value.next_named_sibling()
+					&& let Some(target) = python_next_named_sibling(value)
 					&& target.kind() == "as_pattern_target"
 					&& let Some(alias) = dig!(target, identifier)
 					&& let Some(callee) = value.named_child(0)
@@ -291,10 +953,10 @@ impl Index {
 						&& let Some(type_) = self.type_of(first_arg, scope, contents)
 					{
 						let alias = &contents[alias.byte_range()];
-						scope.insert(alias.to_string(), type_);
+						scope.insert(alias.to_string(), type_cache().resolve(type_));
 					} else if let Some(type_) = self.type_of(value, scope, contents) {
 						let alias = &contents[alias.byte_range()];
-						scope.insert(alias.to_string(), type_);
+						scope.insert(alias.to_string(), type_cache().resolve(type_));
 					}
 				}
 			}
@@ -303,8 +965,7 @@ impl Index {
 
 		ControlFlow::Continue(false)
 	}
-	/// [Type::Value] is not returned by this method.
-	pub fn type_of(&self, mut node: Node, scope: &Scope, contents: &str) -> Option<Type> {
+	pub fn type_of(&self, mut node: Node, scope: &Scope, contents: &str) -> Option<TypeId> {
 		// What contributes to value types?
 		// 1. *.env['foo'] => Model('foo')
 		// 2. *.env.ref(<record-id>) => Model(<model of record-id>)
@@ -339,25 +1000,89 @@ impl Index {
 				let lhs = node.child_by_field_name("value")?;
 				let rhs = node.child_by_field_name("subscript")?;
 				let obj_ty = self.type_of(lhs, scope, contents)?;
-				match obj_ty {
+				match type_cache().resolve(obj_ty) {
 					Type::Env if rhs.kind() == "string" => {
-						Some(Type::Model(contents[rhs.byte_range().shrink(1)].into()))
+						Some(_T!(Type::Model(contents[rhs.byte_range().shrink(1)].into())))
 					}
+					Type::Env => Some(_T!["unknown"]),
 					Type::Model(_) | Type::Record(_) => Some(obj_ty),
+					Type::Dict(key, value) => {
+						let rhs = self.type_of(rhs, scope, contents);
+						// FIXME: We trust that the user makes the correct judgment here and returns the type requested.
+						rhs.is_none_or(|rhs| rhs == key).then_some(value)
+					}
+					Type::DictBag(properties) => {
+						// compare by key
+						if let Some(rhs) = dig!(rhs, string_content(1)) {
+							let rhs = &contents[rhs.byte_range()];
+							for (key, value) in properties {
+								match key {
+									DictKey::String(key) if key.as_str() == rhs => {
+										return Some(value);
+									}
+									DictKey::String(_) | DictKey::Type(_) => {}
+								}
+							}
+							return None;
+						}
+
+						// compare by type
+						let rhs = self.type_of(rhs, scope, contents)?;
+						for (key, value) in properties {
+							match key {
+								DictKey::Type(key) if key == rhs => return Some(value),
+								DictKey::Type(_) | DictKey::String(_) => {}
+							}
+						}
+
+						None
+					}
+					// FIXME: Again, just trust that the user is doing the right thing.
+					Type::List(ListElement::Occupied(slot)) => Some(slot),
 					_ => None,
 				}
 			}
 			"attribute" => self.type_of_attribute_node(node, scope, contents),
 			"identifier" => {
+				if let Some(parent) = node.parent()
+					&& parent.kind() == "attribute"
+					&& parent.named_child(0).unwrap() != node
+				{
+					return self.type_of_attribute_node(parent, scope, contents);
+				}
+
 				let key = &contents[node.byte_range()];
 				if key == "super" {
-					return Some(Type::Super);
+					return Some(_T!(Type::Super));
 				}
 				if let Some(type_) = scope.get(key) {
-					return Some(type_.clone());
+					return Some(_T!(type_.clone()));
+				}
+				// Check if this identifier is an imported symbol
+				if let Some(import_info) = scope.get_import(key) {
+					// Try to resolve the actual type from the imported module
+					if let Some(resolution) = self.resolve_imported_symbol(import_info, key) {
+						match resolution {
+							SymbolResolution::Direct(type_id) => return Some(type_id),
+							SymbolResolution::Module(module) => {
+								// Recursively resolve the nested import
+								if let Some(nested_resolution) = self.resolve_imported_symbol(&module, key) {
+									match nested_resolution {
+										SymbolResolution::Direct(type_id) => return Some(type_id),
+										SymbolResolution::Module(_) => {
+											// Prevent infinite recursion - fall back to PyBuiltin
+											return Some(_T!(Type::PyBuiltin(key.into())));
+										}
+									}
+								}
+							}
+						}
+					}
+					// Fall back to PyBuiltin if we can't resolve it
+					return Some(_T!(Type::PyBuiltin(key.into())));
 				}
 				if key == "request" {
-					return Some(Type::HttpRequest);
+					return Some(_T!(Type::HttpRequest));
 				}
 				None
 			}
@@ -376,24 +1101,337 @@ impl Index {
 					self.type_of(node.child_by_field_name("right")?, scope, contents)
 				}
 			}
-			_ => None,
-		}
-	}
-	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &str) -> Option<Type> {
-		let func = call.named_child(0)?;
-		let func = self.type_of(func, scope, contents)?;
-		match func {
-			Type::RefFn => {
-				// (call (_) @func (argument_list . (string) @xml_id))
-				let xml_id = call.named_child(1)?.named_child(0)?;
-				if xml_id.kind() == "string" {
-					Some(Type::Record(contents[xml_id.byte_range().shrink(1)].into()))
+			"conditional_expression" => {
+				// a if b else c
+				let ty = node
+					.named_child(0)
+					.and_then(|child| self.type_of(child, scope, contents));
+				ty.or_else(|| {
+					node.named_child(2)
+						.and_then(|child| self.type_of(child, scope, contents))
+				})
+			}
+			"dictionary_comprehension" => {
+				let pair = dig!(node, pair)?;
+				let mut comprehension_scope;
+				let mut pair_scope = scope;
+				if let Some(for_in_clause) = dig!(node, for_in_clause(1))
+					&& let Some(scrutinee) = for_in_clause.child_by_field_name("left")
+					&& let Some(iteratee) = for_in_clause.child_by_field_name("right")
+					&& let Some(iter_ty) = self.type_of(iteratee, scope, contents)
+					&& let Some(iter_ty) = self.type_of_iterable(type_cache().resolve(iter_ty))
+				{
+					// FIXME: How to prevent this clone?
+					comprehension_scope = Scope::new(Some(scope.clone()));
+					self.destructure_into_patternlist_like(scrutinee, iter_ty, &mut comprehension_scope, contents);
+					pair_scope = &comprehension_scope;
+				}
+				let lhs = pair
+					.named_child(0)
+					.and_then(|lhs| self.type_of(lhs, pair_scope, contents));
+				let rhs = pair
+					.named_child(1)
+					.and_then(|lhs| self.type_of(lhs, pair_scope, contents));
+				if lhs.is_some() || rhs.is_some() {
+					let value_id = _T!(Type::Value);
+					Some(_T!(Type::Dict(lhs.unwrap_or(value_id), rhs.unwrap_or(value_id))))
 				} else {
 					None
 				}
 			}
-			Type::ModelFn(model) => Some(Type::Model(model)),
-			Type::Super => scope.get(scope.super_.as_deref()?).cloned(),
+			"dictionary" => {
+				let mut properties = vec![];
+				for child in node.named_children(&mut node.walk()) {
+					if child.kind() == "pair"
+						&& let Some(lhs) = child.child_by_field_name("key")
+						&& let Some(rhs) = child.child_by_field_name("value")
+					{
+						let key;
+						if let Some(lhs) = dig!(lhs, string_content(1)) {
+							key = DictKey::String(ImStr::from(&contents[lhs.byte_range()]));
+						} else if matches!(lhs.kind(), "true" | "false" | "string" | "none" | "float" | "integer") {
+							key = DictKey::Type(_T!( @contents[lhs.byte_range()]));
+						} else if let Some(lhs) = self.type_of(lhs, scope, contents) {
+							key = DictKey::Type(lhs);
+						} else {
+							continue;
+						}
+
+						let value = self.type_of(rhs, scope, contents).unwrap_or_else(|| _T!(Type::Value));
+						properties.push((key, value));
+					}
+				}
+				Some(_T!(Type::DictBag(properties)))
+			}
+			"list" => {
+				let mut slot = ListElement::Vacant;
+				for child in node.named_children(&mut node.walk()) {
+					if let Some(child) = self.type_of(child, scope, contents) {
+						slot = ListElement::Occupied(child);
+						break;
+					}
+				}
+				Some(_T!(Type::List(slot)))
+			}
+			"expression_list" | "tuple" => {
+				let mut cursor = node.walk();
+				let value_id = _T!(Type::Value);
+				let tuple = node.named_children(&mut cursor).filter_map(|child| {
+					if child.kind() == "comment" {
+						return None;
+					}
+					Some(self.type_of(child, scope, contents).unwrap_or(value_id))
+				});
+				Some(_T!(Type::Tuple(tuple.collect())))
+			}
+			"string" => Some(_T!( @ "str")),
+			"integer" => Some(_T!( @ "int")),
+			"float" => Some(_T!( @ "float")),
+			"true" | "false" | "comparison_operator" => Some(_T!( @ "bool")),
+			"none" => Some(_T!( @ "None")),
+			_ => None,
+		}
+	}
+
+	pub fn parse_module_scope(&self, file_path: &Path) -> Option<Arc<Scope>> {
+		// Check cache first
+		let file_path_str = file_path.to_string_lossy();
+		if let Some(cached) = module_scope_cache().get(file_path_str.as_ref()) {
+			return Some(cached);
+		}
+
+		// Get the AST from ast_cache (or parse and cache it)
+		let cached_ast = if let Some(cached) = self.ast_cache.get(&file_path.to_path_buf()) {
+			cached
+		} else {
+			// Read file and cache it
+			let contents = test_utils::fs::read_to_string(file_path).ok()?;
+			let rope = Rope::from_str(&contents);
+			let mut parser = tree_sitter::Parser::new();
+			parser.set_language(&tree_sitter_python::LANGUAGE.into()).ok()?;
+			let tree = parser.parse(contents.as_bytes(), None)?;
+			let cache_item = Arc::new(crate::index::AstCacheItem { tree, rope });
+			self.ast_cache.insert(file_path.to_path_buf(), cache_item.clone());
+			cache_item
+		};
+
+		// Build the scope by walking the module's top-level definitions
+		let mut scope = Scope::default();
+		let contents = String::from(cached_ast.rope.clone());
+		let root = cached_ast.tree.root_node();
+
+		let mut cursor = root.walk();
+		for child in root.named_children(&mut cursor) {
+			match child.kind() {
+				"function_definition" => {
+					// Extract function name
+					if let Some(name_node) = child.child_by_field_name("name") {
+						let fn_name = contents[name_node.byte_range()].to_string();
+						// For now, register functions with PyBuiltin type
+						scope.insert(fn_name.clone(), Type::PyBuiltin(fn_name.as_str().into()));
+					}
+				}
+				"class_definition" => {
+					// Extract class name
+					if let Some(name_node) = child.child_by_field_name("name") {
+						let class_name = contents[name_node.byte_range()].to_string();
+						// For now, register classes with PyBuiltin type
+						scope.insert(class_name.clone(), Type::PyBuiltin(class_name.as_str().into()));
+					}
+				}
+				"import_statement" | "import_from_statement" => {
+					// Extract import information and add to scope
+					self.extract_imports_from_statement(child, &mut scope, &contents);
+				}
+				"expression_statement" => {
+					// Check if this expression statement contains an assignment
+					let mut child_cursor = child.walk();
+					for inner_child in child.named_children(&mut child_cursor) {
+						if inner_child.kind() == "assignment" {
+							// Extract variable name from the left side of assignment
+							if let Some(left_node) = inner_child.child_by_field_name("left") {
+								let var_name = contents[left_node.byte_range()].to_string();
+								scope.insert(var_name.clone(), Type::Value);
+							}
+						}
+					}
+				}
+				_ => {}
+			}
+		}
+
+		// Cache the scope
+		module_scope_cache().insert(ImStr::from(file_path_str.as_ref()), scope.clone());
+
+		Some(Arc::new(scope))
+	}
+
+	fn extract_import_name_and_alias<'a>(&self, child: Node, contents: &'a str) -> Option<(&'a str, Option<&'a str>)> {
+		match child.kind() {
+			"dotted_name" => {
+				let imported_name = &contents[child.byte_range()];
+				if !imported_name.is_empty() {
+					Some((imported_name, None))
+				} else {
+					None
+				}
+			}
+			"aliased_import" => {
+				let imported_name = child
+					.child_by_field_name("name")
+					.map(|n| &contents[n.byte_range()])
+					.unwrap_or("");
+				let alias = child.child_by_field_name("alias").map(|n| &contents[n.byte_range()]);
+				if !imported_name.is_empty() {
+					Some((imported_name, alias))
+				} else {
+					None
+				}
+			}
+			_ => None,
+		}
+	}
+
+	fn extract_imports_from_statement(&self, node: Node, scope: &mut Scope, contents: &str) {
+		match node.kind() {
+			"import_statement" => {
+				// Handle: import name [as alias]
+				let mut cursor = node.walk();
+				for child in node.named_children(&mut cursor) {
+					if let Some((imported_name, alias)) = self.extract_import_name_and_alias(child, contents) {
+						scope.insert_import(scope::ImportInfo {
+							module_path: imported_name.into(),
+							imported_name: imported_name.into(),
+							alias: alias.map(|a| a.into()),
+						});
+					}
+				}
+			}
+			"import_from_statement" => {
+				// Handle: from module import name [as alias]
+				if let Some(module_node) = node.child_by_field_name("module_name") {
+					let module_path = &contents[module_node.byte_range()];
+
+					let mut cursor = node.walk();
+					for child in node.named_children(&mut cursor) {
+						if let Some((imported_name, alias)) = self.extract_import_name_and_alias(child, contents) {
+							scope.insert_import(scope::ImportInfo {
+								module_path: module_path.into(),
+								imported_name: imported_name.into(),
+								alias: alias.map(|a| a.into()),
+							});
+						}
+					}
+				}
+			}
+			_ => {}
+		}
+	}
+
+	#[instrument(skip_all, fields(symbol_name), ret)]
+	fn resolve_imported_symbol(&self, import_info: &scope::ImportInfo, symbol_name: &str) -> Option<SymbolResolution> {
+		let module_path = import_info.module_path.as_str();
+		let file_path = self.resolve_py_module(module_path)?;
+		let module_scope = self.parse_module_scope(&file_path)?;
+
+		// First check if it's imported in that module
+		if let Some(imported) = module_scope.get_import(symbol_name) {
+			return Some(SymbolResolution::Module(imported.clone()));
+		}
+
+		// Otherwise check if it's directly defined
+		if let Some(type_) = module_scope.get(symbol_name) {
+			return Some(SymbolResolution::Direct(_T!(type_.clone())));
+		}
+
+		None
+	}
+
+	fn resolve_module_attribute(&self, module_path: &str, attr_name: &str) -> Option<TypeId> {
+		// Try to resolve the module file path
+		let file_path = self.resolve_py_module(module_path)?;
+
+		// Parse the module scope (cached) and look up the attribute
+		let module_scope = self.parse_module_scope(&file_path)?;
+
+		// Look up the attribute in the module scope
+		if let Some(type_) = module_scope.get(attr_name) {
+			// Convert Type to TypeId
+			return Some(type_cache().get_or_intern(type_.clone()));
+		}
+
+		// If not found, return None
+		None
+	}
+
+	fn type_of_iterable(&self, type_: Type) -> Option<TypeId> {
+		match type_ {
+			Type::Model(_) => Some(_T!(type_)),
+			Type::List(inner) => inner.into(),
+			Type::Iterable(inner) => inner,
+			// TODO: tuple -> union
+			_ => None,
+		}
+	}
+	fn wrap_in_container<F: FnOnce(Type) -> Type>(type_: Type, producer: F) -> Type {
+		match type_ {
+			Type::Model(..) => type_,
+			_ => producer(type_),
+		}
+	}
+	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &str) -> Option<TypeId> {
+		let func = call.named_child(0)?;
+		if func.kind() == "identifier" {
+			match &contents[func.byte_range()] {
+				"zip" => {
+					let args = call.named_child(1)?;
+					let mut cursor = args.walk();
+					let value_id = _T!(Type::Value);
+					let children = args.named_children(&mut cursor).map(|child| {
+						let type_ = type_cache().resolve(self.type_of(child, scope, contents).unwrap_or(value_id));
+						self.type_of_iterable(type_).unwrap_or(value_id)
+					});
+					let tuple = _T!(Type::Tuple(children.collect()));
+					return Some(_T!(Type::Iterable(Some(tuple))));
+				}
+				"enumerate" => {
+					let arg = call.named_child(1)?.named_child(0);
+					let arg = arg
+						.and_then(|arg| self.type_of(arg, scope, contents))
+						.unwrap_or_else(|| _T!(Type::Value));
+					let intid = _T!(Type::PyBuiltin("int".into()));
+					let tuple = _T!(Type::Tuple(vec![intid, arg]));
+					return Some(_T!(Type::Iterable(Some(tuple))));
+				}
+				"tuple" => {
+					let args = call.named_child(1)?;
+					if args.kind() == "argument_list" {
+						let mut cursor = args.walk();
+						let value_id = _T!(Type::Value);
+						let children = args
+							.named_children(&mut cursor)
+							.map(|child| self.type_of(child, scope, contents).unwrap_or(value_id));
+						return Some(_T!(Type::Tuple(children.collect())));
+					}
+				}
+				"super" => {}
+				_ => return None,
+			};
+		}
+
+		let func = self.type_of(func, scope, contents)?;
+		match type_cache().resolve(func) {
+			Type::RefFn => {
+				// (call (_) @func (argument_list . (string) @xml_id))
+				let xml_id = call.named_child(1)?.named_child(0)?;
+				if xml_id.kind() == "string" {
+					Some(_T!(Type::Record(contents[xml_id.byte_range().shrink(1)].into())))
+				} else {
+					None
+				}
+			}
+			Type::ModelFn(model) => Some(_T!(Type::Model(model))),
+			Type::Super => Some(_T!(scope.get(scope.super_.as_deref()?).cloned()?)),
 			Type::Method(model, mapped) if mapped == "mapped" => {
 				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
 				let mapped = call.named_child(1)?.named_child(0)?;
@@ -402,7 +1440,9 @@ impl Index {
 						let mut model: Spur = model.into();
 						let mut mapped = &contents[mapped.byte_range().shrink(1)];
 						self.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
-						self.type_of_attribute(&Type::Model(_R(model).into()), mapped, scope)
+						let type_ = self.type_of_attribute(&Type::Model(_R(model).into()), mapped, scope)?;
+						let type_ = Index::wrap_in_container(type_, |it| Type::List(ListElement::Occupied(_T!(it))));
+						Some(_T!(type_))
 					}
 					"lambda" => {
 						// (lambda (lambda_parameters)? body: (_))
@@ -415,33 +1455,215 @@ impl Index {
 							}
 						}
 						let body = mapped.child_by_field_name(b"body")?;
-						self.type_of(body, &scope, contents)
+						let type_ = self.type_of(body, &scope, contents).unwrap_or_else(|| _T!(Type::Value));
+						let type_ = Index::wrap_in_container(type_cache().resolve(type_), |it| {
+							Type::List(ListElement::Occupied(_T!(it)))
+						});
+						Some(_T!(type_))
 					}
 					_ => None,
 				}
 			}
+			Type::Method(model, grouped) if grouped == "grouped" => {
+				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
+				let grouped = call.named_child(1)?.named_child(0)?;
+				match grouped.kind() {
+					"string" => {
+						let mut model: Spur = model.into();
+						let mut grouped = &contents[grouped.byte_range().shrink(1)];
+						self.models.resolve_mapped(&mut model, &mut grouped, None).ok()?;
+						let model = Type::Model(_R(model).into());
+						let groupby = self.type_of_attribute(&model, grouped, scope)?;
+						Some(_T!(Type::Dict(_T!(groupby), _T!(model))))
+					}
+					"lambda" => {
+						let mut scope = Scope::new(Some(scope.clone()));
+						if let Some(params) = grouped.child_by_field_name(b"parameters") {
+							let first_arg = params.named_child(0)?;
+							if first_arg.kind() == "identifier" {
+								let first_arg = &contents[first_arg.byte_range()];
+								scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
+							}
+						}
+						let body = grouped.child_by_field_name(b"body")?;
+						let groupby = self.type_of(body, &scope, contents).unwrap_or_else(|| _T!(Type::Value));
+						let model = Type::Model(_R(model).into());
+						Some(_T!(Type::Dict(groupby, _T!(model))))
+					}
+					_ => None,
+				}
+			}
+			Type::Method(model, read_group) if read_group == "_read_group" => {
+				let mut groupby = vec![];
+				let mut aggs = vec![];
+				let args = call.named_child(1)?;
+
+				fn gather_attributes<'out>(contents: &'out str, arg: Node, out: &mut Vec<&'out str>) {
+					let mut cursor = arg.walk();
+					for field in arg.named_children(&mut cursor) {
+						if let Some(field) = dig!(field, string_content(1)) {
+							let mut field = &contents[field.byte_range()];
+							if let Some((inner, _)) = field.split_once(':') {
+								field = inner;
+							}
+							out.push(field);
+						}
+					}
+				}
+
+				for (idx, arg) in args.named_children(&mut args.walk()).enumerate().take(3) {
+					if arg.kind() == "keyword_argument" {
+						let out = match &contents[arg.child_by_field_name("key")?.byte_range()] {
+							"groupby" => &mut groupby,
+							"aggregates" => &mut aggs,
+							_ => continue,
+						};
+						let Some(arg) = arg.child_by_field_name("value") else {
+							continue;
+						};
+						if arg.kind() != "list" {
+							continue;
+						}
+						gather_attributes(contents, arg, out);
+						continue;
+					}
+
+					if arg.kind() != "list" || idx > 2 || idx == 0 {
+						continue;
+					}
+
+					let out = if idx == 1 { &mut groupby } else { &mut aggs };
+					gather_attributes(contents, arg, out);
+				}
+
+				groupby.extend(aggs);
+				groupby.dedup();
+				let model = Type::Model(_R(model).into());
+				let value_id = _T!(Type::Value);
+				// FIXME: This is not quite correct as only recordset and numeric aggregations make sense.
+				let aggs = groupby
+					.into_iter()
+					.map(|attr| match self.type_of_attribute(&model, attr, scope) {
+						Some(type_) => _T!(type_),
+						None => value_id,
+					});
+				let tuple = _T!(Type::Tuple(aggs.collect()));
+				Some(_T!(Type::List(ListElement::Occupied(tuple))))
+			}
 			Type::Method(model, method) => {
 				let method = _G(&method)?;
-				let ret_model = self.resolve_method_returntype(method.into(), *model)?;
-				Some(Type::Model(_R(ret_model).into()))
+				let args = self.prepare_call_scope(model, method.into(), call, scope, contents);
+				Some(self.eval_method_rtype(method.into(), *model, args)?)
 			}
-			Type::Env | Type::Record(..) | Type::Model(..) | Type::HttpRequest | Type::Value => None,
+			Type::PythonMethod(dict, items) if type_cache().is_dict(dict) && items == "items" => {
+				let Type::Dict(lhs, rhs) = type_cache().resolve(dict) else {
+					unreachable!()
+				};
+				let tuple = _T!(Type::Tuple(vec![lhs, rhs]));
+				Some(_T!(Type::Iterable(Some(tuple))))
+			}
+			Type::Class(_) | Type::Instance(_) | Type::Unresolved(_) | Type::Union(_) | Type::Generic(..) => None,
+			Type::Env
+			| Type::Record(..)
+			| Type::Model(..)
+			| Type::HttpRequest
+			| Type::Value
+			| Type::PyBuiltin(..)
+			| Type::Dict(..)
+			| Type::DictBag(..)
+			| Type::List(..)
+			| Type::Iterable(..)
+			| Type::Tuple(..)
+			| Type::PythonMethod(..) => None,
 		}
 	}
-	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &str) -> Option<Type> {
+
+	#[instrument(skip_all, fields(model, method))]
+	fn prepare_call_scope(
+		&self,
+		model: ModelName,
+		method: Symbol<Method>,
+		call: Node,
+		scope: &Scope,
+		contents: &str,
+	) -> Option<(Vec<ImStr>, Scope)> {
+		// (call
+		//   (arguments_list
+		//     (_)
+		//     (keyword_argument (identifier) (_))))
+		let arguments_list = dig!(call, argument_list(1))?;
+
+		let model = self.models.populate_properties(model, &[])?;
+		let method = model.methods.as_ref()?.get(&method)?;
+		let arguments = method.arguments.clone().unwrap_or_default();
+		if arguments.is_empty() {
+			return None;
+		}
+
+		drop(model);
+		let mut argtypes = Scope::new(None);
+		let mut args = vec![];
+		for (idx, arg) in arguments_list.named_children(&mut arguments_list.walk()).enumerate() {
+			if arg.kind() == "keyword_argument"
+				&& let Some(key) = arg.child_by_field_name("key")
+				&& let Some(value) = arg.child_by_field_name("value")
+			{
+				let key = &contents[key.byte_range()];
+				if !arguments.iter().any(|arg| match arg {
+					FunctionParam::Named(arg) => arg.as_str() == key,
+					_ => false,
+				}) {
+					continue;
+				}
+				let Some(tid) = self.type_of(value, scope, contents) else {
+					continue;
+				};
+				args.push(key.into());
+				argtypes.insert(key.to_string(), type_cache().resolve(tid));
+			} else if let Some(FunctionParam::Param(argname)) = arguments.get(idx)
+				&& let Some(tid) = self.type_of(arg, scope, contents)
+			{
+				args.push(argname.clone());
+				argtypes.insert(argname.to_string(), type_cache().resolve(tid));
+			} else {
+				continue;
+			}
+		}
+
+		Some((args, argtypes))
+	}
+	#[instrument(skip_all, ret)]
+	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &str) -> Option<TypeId> {
 		let lhs = attribute.named_child(0)?;
-		let lhs = self.type_of(lhs, scope, contents)?;
 		let rhs = attribute.named_child(1)?;
+		let attrname = &contents[rhs.byte_range()];
+
+		// Special case: if LHS is an identifier that's an imported module, resolve the attribute in that module
+		if lhs.kind() == "identifier" {
+			let module_name = &contents[lhs.byte_range()];
+			if let Some(import_info) = scope.get_import(module_name) {
+				// LHS is an imported module - try to resolve the attribute in that module
+				if let Some(resolved) = self.resolve_module_attribute(import_info.module_path.as_str(), attrname) {
+					return Some(resolved);
+				}
+			}
+		}
+
+		// Regular attribute resolution
+		let lhsid = self.type_of(lhs, scope, contents)?;
+		let lhs = type_cache().resolve(lhsid);
+
 		match &contents[rhs.byte_range()] {
 			"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
 			"website" if matches!(lhs, Type::HttpRequest) => Some(Type::Model("website".into())),
 			"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
 			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
 			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
-			"mapped" => {
+			"mapped" | "grouped" | "_read_group" => {
 				let model = self.try_resolve_model(&lhs, scope)?;
-				Some(Type::Method(model, "mapped".into()))
+				Some(Type::Method(model, attrname.into()))
 			}
+			dict_method @ "items" if lhs.is_dict() => Some(Type::PythonMethod(lhsid, dict_method.into())),
 			func if MODEL_METHODS.contains(func) => match lhs {
 				Type::Model(model) => Some(Type::ModelFn(model)),
 				Type::Record(xml_id) => {
@@ -454,19 +1676,54 @@ impl Index {
 			ident if rhs.kind() == "identifier" => self.type_of_attribute(&lhs, ident, scope),
 			_ => None,
 		}
+		.map(|it| _T!(it))
 	}
+	#[instrument(skip_all, fields(attr=attr), ret)]
 	pub fn type_of_attribute(&self, type_: &Type, attr: &str, scope: &Scope) -> Option<Type> {
 		let model = self.try_resolve_model(type_, scope)?;
 		let model_entry = self.models.populate_properties(model, &[])?;
-		let attr_key = _G(attr)?;
-		let attr_kind = model_entry.prop_kind(attr_key)?;
-		match attr_kind {
-			PropertyKind::Field => {
-				drop(model_entry);
-				let relation = self.models.resolve_related_field(attr_key.into(), model.into())?;
-				Some(Type::Model(_R(relation).into()))
+		if let Some(attr_key) = _G(attr)
+			&& let Some(attr_kind) = model_entry.prop_kind(attr_key)
+		{
+			match attr_kind {
+				PropertyInfo::Field(type_) => {
+					drop(model_entry);
+					if let Some(relation) = self.models.resolve_related_field(attr_key.into(), model.into()) {
+						return Some(Type::Model(_R(relation).into()));
+					}
+
+					match _R(type_) {
+						"Selection" | "Char" | "Text" | "Html" => Some(Type::PyBuiltin("str".into())),
+						"Integer" => Some(Type::PyBuiltin("int".into())),
+						"Float" | "Monetary" => Some(Type::PyBuiltin("float".into())),
+						"Date" => Some(Type::PyBuiltin("date".into())),
+						"Datetime" => Some(Type::PyBuiltin("datetime".into())),
+						_ => None,
+					}
+				}
+				PropertyInfo::Method => Some(Type::Method(model, attr.into())),
 			}
-			PropertyKind::Method => Some(Type::Method(model, attr.into())),
+		} else {
+			match attr {
+				"id" if matches!(type_, Type::Model(..) | Type::Record(..)) => Some(Type::PyBuiltin("int".into())),
+				"ids" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
+					Some(Type::List(ListElement::Occupied(_T!(Type::PyBuiltin("int".into())))))
+				}
+				"display_name" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
+					Some(Type::PyBuiltin("str".into()))
+				}
+				"create_date" | "write_date" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
+					Some(Type::PyBuiltin("datetime".into()))
+				}
+				"create_uid" | "write_uid" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
+					Some(Type::Model("res.users".into()))
+				}
+				"_fields" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
+					Some(Type::Dict(_T!(Type::PyBuiltin("str".into())), _T!["ir.model.fields"]))
+				}
+				"env" if matches!(type_, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
+				_ => None,
+			}
 		}
 	}
 	pub fn has_attribute(&self, type_: &Type, attr: &str, scope: &Scope) -> bool {
@@ -478,7 +1735,70 @@ impl Index {
 		})()
 		.is_some()
 	}
-	/// Call this method if it's unclear whether `type_` is a [`Type::Model`] and you just want the model's name.
+
+	pub fn resolve_attribute(&self, ty: &Type, attr_name: &str) -> Option<TypeId> {
+		match ty {
+			Type::Class(class_id) | Type::Instance(class_id) => {
+				// For classes and instances, check the class metadata
+				resolve_attribute_on_class(*class_id, attr_name)
+			}
+			// FIXME: remove hardcoded builtins
+			Type::PyBuiltin(name) => {
+				// Builtins have predefined attributes
+				match name.as_ref() {
+					"str" => match attr_name {
+						"upper" | "lower" | "strip" | "split" | "replace" | "format" => {
+							Some(_T!(Type::PyBuiltin("str".into())))
+						}
+						"startswith" | "endswith" | "isdigit" | "isalpha" => Some(_T!(Type::PyBuiltin("bool".into()))),
+						_ => None,
+					},
+					"int" | "float" => match attr_name {
+						"real" | "imag" => Some(_T!(Type::PyBuiltin(name.clone()))),
+						_ => None,
+					},
+					"list" => match attr_name {
+						"append" | "extend" | "insert" | "remove" | "pop" | "clear" | "sort" | "reverse" => {
+							Some(_T!(Type::Value))
+						}
+						_ => None,
+					},
+					"dict" => match attr_name {
+						"keys" | "values" | "items" | "get" | "pop" | "update" | "clear" => Some(_T!(Type::Value)),
+						_ => None,
+					},
+					_ => None,
+				}
+			}
+			Type::Model(_) | Type::Record(_) => {
+				// Models/records have dynamic attributes - would need scope context
+				// For now, assume they exist (Odoo models are dynamic)
+				Some(_T!(Type::Value))
+			}
+			Type::Generic(name, _) => {
+				// For generic types like List[T], Dict[K,V], check common methods
+				match name.as_ref() {
+					"list" | "List" => match attr_name {
+						"append" | "extend" | "insert" | "remove" | "pop" | "clear" | "sort" | "reverse" => {
+							Some(_T!(Type::Value))
+						}
+						_ => None,
+					},
+					"dict" | "Dict" => match attr_name {
+						"keys" | "values" | "items" | "get" | "pop" | "update" | "clear" => Some(_T!(Type::Value)),
+						_ => None,
+					},
+					_ => None,
+				}
+			}
+			Type::Value | Type::Unresolved(_) | Type::Union(_) => {
+				// Can't determine if attribute exists
+				Some(_T!(Type::Value))
+			}
+			_ => None,
+		}
+	}
+
 	pub fn try_resolve_model(&self, type_: &Type, scope: &Scope) -> Option<ModelName> {
 		match type_ {
 			Type::Model(model) => Some(_G(model)?.into()),
@@ -492,11 +1812,91 @@ impl Index {
 			_ => None,
 		}
 	}
-	/// Iterates depth-first over `node` using [`PreTravel`]. Automatically calls [`Scope::exit`] at suitable points.
-	///
-	/// [`ControlFlow::Continue`] accepts a boolean to indicate whether [`Scope::enter`] was called.
-	///
-	/// To accumulate bindings into a scope, use [`Index::build_scope`].
+	#[inline]
+	pub fn type_display(&self, type_: TypeId) -> Option<String> {
+		self.type_display_indent(type_, 0)
+	}
+	fn type_display_indent(&self, type_: TypeId, indent: usize) -> Option<String> {
+		match type_cache().resolve(type_) {
+			Type::Dict(lhs, rhs) => {
+				let lhs = self.type_display_indent(lhs, indent);
+				let lhs = lhs.as_deref().unwrap_or("...");
+				let rhs = self.type_display_indent(rhs, indent);
+				let rhs = rhs.as_deref().unwrap_or("...");
+				Some(fomat! { "dict[" (lhs) ", " (rhs) "]" })
+			}
+			Type::DictBag(properties) => {
+				let preindent = " ".repeat(indent + 2);
+				let empty_properties = properties.is_empty();
+				let properties_fragment = fomat! {
+					for (key, value) in properties {
+						(preindent)
+						match key {
+							DictKey::String(key) => { "\"" (key) "\"" }
+							DictKey::Type(key) if type_cache().is_dictlike(key) => { "{...}" }
+							DictKey::Type(key) => { (self.type_display_indent(key, indent + 2).as_deref().unwrap_or("...")) }
+						} ": " (self.type_display_indent(value, indent + 2).as_deref().unwrap_or("..."))
+					} sep { ",\n" }
+				};
+				let unindent = " ".repeat(indent);
+				Some(fomat! {
+					if !empty_properties {
+						"{\n" (properties_fragment) "\n" (unindent) "}"
+					} else {
+						"{}"
+					}
+				})
+			}
+			Type::PyBuiltin(builtin) => Some(builtin.as_str().into()),
+			Type::List(slot) => {
+				let slot = match slot {
+					ListElement::Vacant => None,
+					ListElement::Occupied(slot) => self.type_display_indent(slot, indent),
+				};
+				Some(match slot {
+					Some(slot) => format!("list[{slot}]"),
+					None => "list".into(),
+				})
+			}
+			Type::Env => Some("Environment".into()),
+			Type::Model(model) => Some(format!(r#"Model["{model}"]"#)),
+			Type::Record(xml_id) => {
+				let xml_id = _G(xml_id)?;
+				let record = self.records.get(&xml_id.into())?;
+				Some(_R(record.model?).into())
+			}
+			Type::Tuple(items) => Some(fomat! {
+				"tuple["
+				for item in items {
+					(self.type_display_indent(item, indent).as_deref().unwrap_or("..."))
+				} sep { ", " }
+				"]"
+			}),
+			Type::Iterable(output) => {
+				let output = output.and_then(|inner| self.type_display_indent(inner, indent));
+				let output = output.as_deref().unwrap_or("...");
+				Some(format!("Iterable[{output}]"))
+			}
+			Type::Method(..) => unreachable!("Bug: this function should not handle methods"),
+			Type::RefFn
+			| Type::ModelFn(_)
+			| Type::Super
+			| Type::HttpRequest
+			| Type::Value
+			| Type::PythonMethod(..)
+			| Type::Class(_)
+			| Type::Instance(_)
+			| Type::Unresolved(_)
+			| Type::Union(_)
+			| Type::Generic(..) => {
+				if cfg!(debug_assertions) {
+					Some(format!("{type_:?}"))
+				} else {
+					None
+				}
+			}
+		}
+	}
 	pub fn walk_scope<T>(
 		node: Node,
 		scope: Option<Scope>,
@@ -525,30 +1925,70 @@ impl Index {
 		}
 		(scope, None)
 	}
-	/// Resolves the return type of a method as well as populating its arguments and docstring.
 	#[instrument(level = "trace", ret, skip(self, model), fields(model = _R(model)))]
-	pub fn resolve_method_returntype(&self, method: Symbol<Method>, model: Spur) -> Option<Symbol<ModelEntry>> {
+	pub fn eval_method_rtype(
+		&self,
+		method: Symbol<Method>,
+		model: Spur,
+		parameters: Option<(Vec<ImStr>, Scope)>,
+	) -> Option<TypeId> {
 		_ = self.models.populate_properties(model.into(), &[]);
-		let mut model_entry = self.models.get_mut(&model.into())?;
+		let mut model_entry = self.models.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
 		let method_obj = model_entry.methods.as_mut()?.get_mut(&method)?;
-		match method_obj.return_type {
-			MethodReturnType::Unprocessed => {}
-			MethodReturnType::Value | MethodReturnType::Processing => return None,
-			MethodReturnType::Relational(rel) => return Some(rel),
+
+		if method_obj
+			.pending_eval
+			.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+			.is_err()
+		{
+			return None;
+		}
+
+		let _guard = Defer(Some(|| {
+			if let Some(model_entry) = self.models.get_mut(&model.into())
+				&& let Some(methods) = model_entry.methods.as_ref()
+				&& let Some(method) = methods.get(&method)
+			{
+				method.pending_eval.store(false, Ordering::Relaxed);
+			}
+		}));
+
+		let (argnames, mut scope) = parameters.unwrap_or_default();
+		let cache_key = argnames
+			.into_iter()
+			.map(|arg| _T!(scope.variables.get(&*arg).cloned().unwrap_or(Type::Value)))
+			.collect::<Vec<_>>();
+		if let Some(tid) = method_obj.eval_cache.get(&cache_key) {
+			drop(model_entry);
+			return Some(tid);
 		}
 
 		let location = method_obj.locations.first().cloned()?;
-		Arc::make_mut(method_obj).return_type = MethodReturnType::Processing;
 		drop(model_entry);
 
-		let contents = test_utils::fs::read_to_string(location.path.to_path()).unwrap();
-		let rope = Rope::from_str(&contents);
-		let rope = rope.slice(..);
-
-		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-		let range: ByteRange = rope_conv(location.range, rope).ok()?;
-		let ast = parser.parse(contents.as_bytes(), None)?;
+		let ast;
+		let contents;
+		let end_offset: ByteOffset;
+		let path = location.path.to_path();
+		if let Some(cached) = self.ast_cache.get(&path) {
+			end_offset = rope_conv(location.range.end, cached.rope.slice(..));
+			ast = cached.tree.clone();
+			contents = String::from(cached.rope.clone());
+		} else {
+			contents = test_utils::fs::read_to_string(location.path.to_path()).unwrap();
+			let rope = Rope::from_str(&contents);
+			end_offset = rope_conv(location.range.end, rope.slice(..));
+			let mut parser = Parser::new();
+			parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+			ast = parser.parse(contents.as_bytes(), None)?;
+			self.ast_cache.insert(
+				path,
+				Arc::new(crate::index::AstCacheItem {
+					tree: ast.clone(),
+					rope,
+				}),
+			);
+		}
 
 		// TODO: Improve this heuristic
 		fn is_toplevel_return(mut node: Node) -> bool {
@@ -573,10 +2013,15 @@ impl Index {
 			node.parent().is_some_and(is_block_of_class)
 		}
 
-		let (self_type, fn_scope, self_param) = determine_scope(ast.root_node(), &contents, range.end.0)?;
-		let mut scope = Scope::default();
+		let (self_type, fn_scope, self_param) = determine_scope(ast.root_node(), &contents, end_offset.0)?;
 		let self_type = match self_type {
-			Some(type_) => &contents[type_.byte_range().shrink(1)],
+			Some(type_) => {
+				if type_.kind() == "string" {
+					&contents[type_.byte_range().shrink(1)]
+				} else {
+					&contents[type_.byte_range()]
+				}
+			}
 			None => "",
 		};
 		scope.super_ = Some(self_param.into());
@@ -592,10 +2037,12 @@ impl Index {
 				let Some(type_) = self.type_of(child, scope, &contents) else {
 					return ControlFlow::Continue(entered);
 				};
-				let Some(resolved) = self.try_resolve_model(&type_, scope) else {
-					return ControlFlow::Continue(entered);
+
+				let type_ = type_cache().resolve(type_);
+				return match self.try_resolve_model(&type_, scope) {
+					Some(resolved) => ControlFlow::Break(Some(Type::Model(ImStr::from(_R(resolved))))),
+					None => ControlFlow::Break(Some(type_)),
 				};
-				return ControlFlow::Break(Some(resolved));
 			}
 
 			ControlFlow::Continue(entered)
@@ -603,10 +2050,6 @@ impl Index {
 
 		let mut model = self.models.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
 		let method = Arc::make_mut(model.methods.as_mut()?.get_mut(&method)?);
-		match type_ {
-			Some(rel) => method.return_type = MethodReturnType::Relational(rel),
-			None => method.return_type = MethodReturnType::Value,
-		}
 
 		let docstring = Self::parse_method_docstring(fn_scope, &contents)
 			.map(|doc| ImStr::from(Method::postprocess_docstring(doc)));
@@ -640,7 +2083,38 @@ impl Index {
 			method.arguments = Some(args.collect());
 		}
 
-		type_
+		method.pending_eval.store(false, Ordering::Release);
+		if let Some(type_) = type_ {
+			let tid = _T!(type_);
+			method.eval_cache.insert(cache_key, tid);
+			Some(tid)
+		} else {
+			None
+		}
+	}
+	fn destructure_into_patternlist_like(&self, pattern: Node, tid: TypeId, scope: &mut Scope, contents: &str) {
+		if pattern.kind() == "identifier" {
+			let name = &contents[pattern.byte_range()];
+			scope.insert(name.to_string(), type_cache().resolve(tid));
+		} else if matches!(pattern.kind(), "pattern_list" | "tuple_pattern") {
+			if let Type::Tuple(mut inner) = type_cache().resolve(tid) {
+				inner.reverse();
+				for child in pattern.named_children(&mut pattern.walk()) {
+					if matches!(child.kind(), "identifier" | "tuple_pattern")
+						&& let Some(type_) = inner.pop()
+					{
+						self.destructure_into_patternlist_like(child, type_, scope, contents);
+					}
+				}
+			} else if let Some(inner) = self.type_of_iterable(type_cache().resolve(tid)) {
+				// spread this type to all params
+				for child in pattern.named_children(&mut pattern.walk()) {
+					if matches!(child.kind(), "identifier" | "tuple_pattern") {
+						self.destructure_into_patternlist_like(child, inner, scope, contents);
+					}
+				}
+			}
+		}
 	}
 	fn parse_method_docstring<'out>(fn_scope: Node, contents: &'out str) -> Option<&'out str> {
 		let block = fn_scope.child_by_field_name("body")?;
@@ -648,9 +2122,6 @@ impl Index {
 	}
 }
 
-/// Returns `(self_type, fn_scope, self_param)`.
-///
-/// `fn_scope` is customarily a `function_definition` node.
 #[instrument(level = "trace", skip_all, ret)]
 pub fn determine_scope<'out, 'node>(
 	node: Node<'node>,
@@ -692,22 +2163,74 @@ pub fn determine_scope<'out, 'node>(
 			break;
 		}
 	}
+	// Fallback: if no match (e.g., bare subclasses of models.Model without _name/_inherit),
+	// derive scope from the enclosing class/function and use the class name as self type.
+	if fn_scope.is_none() {
+		let leaf = node.descendant_for_byte_range(offset, offset)?;
+		let mut current = leaf;
+		let mut fn_def: Option<Node<'_>> = None;
+		let mut class_def: Option<Node<'_>> = None;
+		while let Some(parent) = current.parent() {
+			if parent.kind() == "function_definition" && fn_def.is_none() {
+				fn_def = Some(parent);
+			}
+			if parent.kind() == "class_definition" {
+				class_def = Some(parent);
+				break;
+			}
+			current = parent;
+		}
+		let (fn_def, class_def) = (fn_def?, class_def?);
+		// Extract self parameter name from function parameters
+		let params = fn_def.child_by_field_name("parameters")?;
+		let mut param_cursor = params.walk();
+		let mut self_param_text: Option<&str> = None;
+		for child in params.named_children(&mut param_cursor) {
+			if child.kind() == "identifier" {
+				self_param_text = Some(&contents[child.byte_range()]);
+				break;
+			}
+		}
+		let self_param_text = self_param_text?;
+		// Class name node
+		let class_name_node = class_def.child_by_field_name("name")?;
+		return Some((Some(class_name_node), fn_def, self_param_text));
+	}
+
 	let fn_scope = fn_scope?;
 	let self_param = &contents[self_param?.byte_range()];
+	// Fallback: we have a function scope but couldn't capture a model name via query.
+	// Use the enclosing class's name as the self type.
+	if self_type.is_none() {
+		let mut current = fn_scope;
+		while let Some(parent) = current.parent() {
+			if parent.kind() == "class_definition" {
+				if let Some(name_node) = parent.child_by_field_name("name") {
+					return Some((Some(name_node), fn_scope, self_param));
+				}
+				break;
+			}
+			current = parent;
+		}
+	}
 	Some((self_type, fn_scope, self_param))
 }
 
 #[cfg(test)]
 mod tests {
+	use std::collections::HashMap;
+	use std::path::{Path, PathBuf};
+
 	use pretty_assertions::assert_eq;
 	use ropey::Rope;
-	use tower_lsp_server::lsp_types::Position;
+	use tower_lsp_server::ls_types::Position;
 	use tree_sitter::{Parser, QueryCursor, StreamingIterator, StreamingIteratorMut};
 
-	use crate::analyze::FieldCompletion;
-	use crate::index::{_I, _R};
-	use crate::utils::{ByteOffset, acc_vec, rope_conv};
-	use crate::{index::Index, test_utils::cases::foo::prepare_foo_index};
+	use crate::analyze::{ClassId, ClassMetadata, FieldCompletion, FunctionParam, MethodInfo, Type, type_cache};
+	use crate::index::{_I, PathSymbol};
+	use crate::test_utils::cases::foo::prepare_foo_index;
+	use crate::utils::{ByteOffset, MinLoc, RangeExt, acc_vec, rope_conv, span_conv};
+	use crate::{ImStr, dig};
 
 	#[test]
 	fn test_field_completion() {
@@ -763,7 +2286,7 @@ class Foo(models.Model):
 "#;
 		let ast = parser.parse(contents, None).unwrap();
 		let rope = Rope::from(contents);
-		let fn_start: ByteOffset = rope_conv(Position { line: 3, character: 1 }, rope.slice(..)).unwrap();
+		let fn_start: ByteOffset = rope_conv(Position { line: 3, character: 1 }, rope.slice(..));
 		let fn_scope = ast
 			.root_node()
 			.named_descendant_for_byte_range(fn_start.0, fn_start.0)
@@ -774,27 +2297,270 @@ class Foo(models.Model):
 
 	#[test]
 	fn test_resolve_method_returntype() {
-		let index = Index {
-			models: prepare_foo_index(),
-			..Default::default()
-		};
+		let index = prepare_foo_index();
 
 		assert_eq!(
-			index.resolve_method_returntype(_I("test").into(), _I("bar")).map(_R),
-			Some("foo")
+			index.eval_method_rtype(_I("test").into(), _I("bar"), None),
+			Some(type_cache().get_or_intern(Type::Model("foo".into())))
 		)
 	}
 
 	#[test]
 	fn test_super_analysis() {
-		let index = Index {
-			models: prepare_foo_index(),
-			..Default::default()
-		};
+		let index = prepare_foo_index();
 
 		assert_eq!(
-			index.resolve_method_returntype(_I("test").into(), _I("quux")).map(_R),
-			Some("foo")
+			index.eval_method_rtype(_I("test").into(), _I("quux"), None),
+			Some(type_cache().get_or_intern(Type::Model("foo".into())))
 		)
+	}
+
+	#[test]
+	fn test_module_scope_parsing() {
+		use ropey::Rope;
+		use std::sync::Arc;
+		use tree_sitter::Parser;
+
+		// Create a simple Python module with imports and definitions
+		let test_module = r#"
+from typing import List, Optional
+
+class User:
+    name: str
+    age: int
+
+def create_user(name: str, age: int) -> User:
+    user = User()
+    user.name = name
+    user.age = age
+    return user
+
+def get_users() -> List[User]:
+    return []
+"#;
+
+		// Parse the module
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+		let tree = parser.parse(test_module.as_bytes(), None).unwrap();
+		let rope = Rope::from_str(test_module);
+
+		// Create an Index with ast_cache
+		let index = prepare_foo_index();
+
+		// Add to ast_cache
+		let test_path = PathBuf::from("/test/module.py");
+		let cache_item = Arc::new(crate::index::AstCacheItem { tree, rope });
+		index.ast_cache.insert(test_path.clone(), cache_item);
+
+		// Parse module scope
+		let scope = index.parse_module_scope(&test_path).expect("Should parse module scope");
+
+		// Verify User class is in scope
+		assert!(scope.get("User").is_some(), "User class should be in scope");
+
+		// Verify functions are in scope
+		assert!(
+			scope.get("create_user").is_some(),
+			"create_user function should be in scope"
+		);
+		assert!(
+			scope.get("get_users").is_some(),
+			"get_users function should be in scope"
+		);
+
+		// Verify imports are tracked
+		assert!(scope.get_import("List").is_some(), "List import should be tracked");
+		assert!(
+			scope.get_import("Optional").is_some(),
+			"Optional import should be tracked"
+		);
+
+		println!("✓ Module scope parsing test passed");
+		println!("  - Found {} variables in scope", scope.variables.len());
+		println!("  - Found {} imports in scope", scope.imports.len());
+	}
+
+	fn parse_python_classes(source: &'static str, file_path: &Path) -> HashMap<String, ClassId> {
+		use super::{ClassKey, class_cache};
+		use crate::test_utils::fs::TEST_FS;
+
+		let rope = Rope::from_str(source);
+		let rope = rope.slice(..);
+
+		// Add file to test filesystem
+		{
+			let mut fs = TEST_FS.write().unwrap();
+			fs.insert(file_path.to_path_buf(), source.as_bytes());
+		}
+
+		// Parse the source
+		let mut parser = tree_sitter::Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+		let tree = parser.parse(source.as_bytes(), None).unwrap();
+		let root = tree.root_node();
+
+		let cache = class_cache();
+		let mut class_nodes = Vec::new();
+
+		// Collect all class nodes in order
+		let mut cursor = root.walk();
+		for child in root.named_children(&mut cursor) {
+			if child.kind() == "class_definition" {
+				class_nodes.push(child);
+			}
+		}
+
+		// Process classes in order so parents are already defined
+		let mut classes = HashMap::new();
+
+		for class_node in class_nodes {
+			let name_node = class_node.child_by_field_name("name").unwrap();
+			let class_name: crate::ImStr = source[name_node.byte_range()].into();
+
+			// Extract parent classes
+			let mut parent_ids = Vec::new();
+			if let Some(superclasses) = class_node.child_by_field_name("superclasses") {
+				let mut super_cursor = superclasses.walk();
+				for arg in superclasses.named_children(&mut super_cursor) {
+					if arg.kind() == "identifier" {
+						let parent_name = source[arg.byte_range()].to_string();
+						if let Some(&parent_id) = classes.get(&parent_name) {
+							parent_ids.push(parent_id);
+						}
+					}
+				}
+			}
+
+			// Extract methods
+			let mut methods = HashMap::new();
+			if let Some(body) = class_node.child_by_field_name("body") {
+				let mut body_cursor = body.walk();
+				for stmt in body.named_children(&mut body_cursor) {
+					if stmt.kind() == "function_definition"
+						&& let Some(fn_name_node) = stmt.child_by_field_name("name")
+					{
+						let fn_name = source[fn_name_node.byte_range()].to_string();
+						let method_range = rope_conv(stmt.byte_range().map_unit(ByteOffset), rope);
+
+						// Extract docstring
+						let docstring = dig!(stmt, block.expression_statement.string.string_content(1))
+							.map(|node| ImStr::from(&source[node.byte_range()]));
+
+						// Extract parameters
+						let parameters = stmt.child_by_field_name("parameters").map(|params| {
+							let mut cursor = params.walk();
+							params
+								.named_children(&mut cursor)
+								.skip(1)
+								.filter_map(|param| {
+									Some(match param.kind() {
+										"identifier" => FunctionParam::Param(ImStr::from(&source[param.byte_range()])),
+										"positional_separator" => FunctionParam::PosEnd,
+										"keyword_separator" => FunctionParam::EitherEnd(None),
+										"list_splat_pattern" => FunctionParam::EitherEnd(Some(ImStr::from(
+											&source[param.named_child(0)?.byte_range()],
+										))),
+										"dictionary_splat_pattern" => FunctionParam::Kwargs("kwargs".into()),
+										"default_parameter" => {
+											let name = param.named_child(0)?;
+											let name = &source[name.byte_range()];
+											FunctionParam::Named(ImStr::from(name))
+										}
+										_ => return None,
+									})
+								})
+								.collect()
+						});
+
+						methods.insert(
+							fn_name.clone(),
+							Some(MethodInfo {
+								range: method_range,
+								docstring,
+								parameters,
+							}),
+						);
+					}
+				}
+			}
+			let name: ImStr = source[name_node.byte_range()].into();
+			let class_id = cache.get_or_intern_with(ClassKey::from_raw(file_path.to_path_buf(), name.clone()), || {
+				ClassMetadata::preparsed(
+					name,
+					MinLoc {
+						path: PathSymbol::new(file_path),
+						range: span_conv(class_node.range()),
+					},
+					parent_ids,
+					HashMap::new(),
+				)
+			});
+			classes.insert(class_name.to_string(), class_id);
+		}
+
+		classes
+	}
+
+	#[test]
+	fn test_c3_linearization_simple() {
+		// Python source with simple inheritance: B(A)
+		let source = r#"
+class A:
+    def method_a(self):
+        pass
+
+class B(A):
+    def method_b(self):
+        pass
+"#;
+
+		let _classes = parse_python_classes(source, Path::new("/test_c3_simple.py"));
+	}
+
+	#[test]
+	fn test_c3_linearization_diamond() {
+		use super::{class_cache, compute_c3_mro};
+
+		// Python source with diamond inheritance: D(B,C), B(A), C(A)
+		let source = r#"
+class A:
+	pass
+
+class B(A):
+	pass
+
+class C(A):
+	pass
+
+class D(B, C):
+	pass
+"#;
+
+		let classes = parse_python_classes(source, Path::new("/test_c3_diamond.py"));
+
+		let class_a = classes["A"];
+		let class_b = classes["B"];
+		let class_c = classes["C"];
+		let class_d = classes["D"];
+
+		// Get parent info from metadata
+		let cache = class_cache();
+		let b_meta = cache.get(class_b).unwrap();
+		let c_meta = cache.get(class_c).unwrap();
+		let d_meta = cache.get(class_d).unwrap();
+
+		// Compute MROs - Expected for D: [D, B, C, A]
+		let mro_a = compute_c3_mro(class_a, &[]).unwrap();
+		let mro_b = compute_c3_mro(class_b, &b_meta.parents).unwrap();
+		let mro_c = compute_c3_mro(class_c, &c_meta.parents).unwrap();
+		let mro_d = compute_c3_mro(class_d, &d_meta.parents).unwrap();
+
+		assert_eq!(mro_a, vec![class_a]);
+		assert_eq!(mro_b, vec![class_b, class_a]);
+		assert_eq!(mro_c, vec![class_c, class_a]);
+		assert_eq!(mro_d, vec![class_d, class_b, class_c, class_a]);
+
+		println!("✓ Diamond inheritance MRO: {:?}", mro_d);
 	}
 }

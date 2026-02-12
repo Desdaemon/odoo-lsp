@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::sync::atomic::Ordering::Relaxed;
 
-use tower_lsp_server::lsp_types::*;
+use tower_lsp_server::ls_types::*;
 use tree_sitter::{QueryCursor, Tree};
 
 use crate::prelude::*;
@@ -52,9 +52,7 @@ impl Backend {
 			.ast_map
 			.get(file_path.to_str().unwrap())
 			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
-		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position_params.position, rope) else {
-			Err(errloc!("could not find offset for {}", uri.path().as_str()))?
-		};
+		let ByteOffset(offset) = rope_conv(params.text_document_position_params.position, rope);
 		let contents = Cow::from(rope);
 
 		// try templates first
@@ -123,9 +121,7 @@ impl Backend {
 			.ast_map
 			.get(file_path.to_str().unwrap())
 			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
-		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position.position, rope) else {
-			Err(errloc!("could not find offset for {}", uri.path().as_str()))?
-		};
+		let ByteOffset(offset) = rope_conv(params.text_document_position.position, rope);
 		let contents = Cow::from(rope);
 		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
@@ -157,9 +153,7 @@ impl Backend {
 			.ast_map
 			.get(file_path.to_str().unwrap())
 			.ok_or_else(|| errloc!("Did not build AST for {}", uri.path().as_str()))?;
-		let Ok(ByteOffset(offset)) = rope_conv(params.text_document_position_params.position, rope) else {
-			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
-		};
+		let ByteOffset(offset) = rope_conv(params.text_document_position_params.position, rope);
 		let contents = Cow::from(rope);
 		let query = JsQuery::query();
 		let mut cursor = QueryCursor::new();
@@ -206,9 +200,7 @@ impl Backend {
 			{
 				let range = range.shrink(1);
 				let model = &contents[range.clone()];
-				return self
-					.index
-					.hover_model(model, rope_conv(range.map_unit(ByteOffset), rope).ok(), false, None);
+				return (self.index).hover_model(model, Some(rope_conv(range.map_unit(ByteOffset), rope)), false, None);
 			}
 
 			if let Some(model_node) = model_arg_node
@@ -219,9 +211,11 @@ impl Backend {
 				let range = range.shrink(1);
 				let model = &contents[model_node.byte_range().shrink(1)];
 				let method = &contents[range.clone()];
-				return self
-					.index
-					.hover_property_name(method, model, rope_conv(range.map_unit(ByteOffset), rope).ok());
+				return self.index.hover_property_name(
+					method,
+					model,
+					Some(rope_conv(range.map_unit(ByteOffset), rope)),
+				);
 			}
 		}
 
@@ -235,12 +229,8 @@ impl Backend {
 		ast: Tree,
 		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<CompletionResponse>> {
-		let uri = &params.text_document_position.text_document.uri;
 		let position = params.text_document_position.position;
-		let Ok(ByteOffset(offset)) = rope_conv(position, rope) else {
-			return Err(errloc!("could not find offset for {}", uri.path().as_str()));
-		};
-
+		let ByteOffset(offset) = rope_conv(position, rope);
 		let path = some!(params.text_document_position.text_document.uri.to_file_path());
 		let completions_limit = self
 			.workspaces
@@ -276,10 +266,7 @@ impl Backend {
 					// Extract the current prefix (excluding quotes)
 					let inner_range = range.shrink(1);
 					let prefix = &contents[inner_range.start..offset];
-					let lsp_range = ok!(
-						rope_conv(inner_range.map_unit(ByteOffset), rope),
-						"range conversion failed"
-					);
+					let lsp_range = rope_conv(inner_range.map_unit(ByteOffset), rope);
 					let mut items = MaxVec::new(completions_limit);
 					self.index.complete_model(prefix, lsp_range, &mut items)?;
 

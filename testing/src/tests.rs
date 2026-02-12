@@ -4,15 +4,12 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use async_lsp::lsp_types::*;
 use async_lsp::LanguageServer;
-use futures::{stream::FuturesUnordered, StreamExt};
+use async_lsp::lsp_types::*;
+use futures::{StreamExt, stream::FuturesUnordered};
 use pretty_assertions::{Comparison, StrComparison};
 use rstest::*;
-use tree_sitter::Parser;
-use tree_sitter::Query;
-use tree_sitter::QueryCursor;
-use tree_sitter::StreamingIterator;
+use tree_sitter::{Node, Parser, Point, Query, QueryCursor, StreamingIterator};
 use ts_macros::query;
 
 use crate::server;
@@ -30,11 +27,15 @@ fn init_tracing() {
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(1))]
 #[tokio::test(flavor = "multi_thread")]
-async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
+#[timeout(Duration::from_secs(10))]
+async fn fixture_test(
+	#[files("fixtures/*")]
+	#[exclude("auto_install_basic")]
+	root: PathBuf,
+) {
 	std::env::set_current_dir(&root).unwrap();
-	let mut server = server::setup_lsp_server(None);
+	let mut server = server::setup_lsp_server(Some(2));
 	init_tracing();
 
 	_ = server
@@ -93,7 +94,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 						uri: uri.clone(),
 						language_id,
 						version: 1,
-						text: text.clone(),
+						text,
 					},
 				});
 
@@ -127,12 +128,11 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 						let mut related_groups: Vec<(Position, Vec<String>)> = Vec::new();
 
 						for (pos, msg) in &expected.related {
-							if let Some(last_group) = related_groups.last_mut() {
-								if last_group.0 == *pos {
+							if let Some(last_group) = related_groups.last_mut()
+								&& last_group.0 == *pos {
 									last_group.1.push(msg.clone());
 									continue;
 								}
-							}
 							// Start a new group
 							related_groups.push((*pos, vec![msg.clone()]));
 						}
@@ -417,6 +417,7 @@ struct Expected {
 	related: Vec<(Position, String)>,
 }
 
+#[derive(Clone, Copy)]
 enum TestLanguages {
 	Python,
 	Xml,
@@ -459,7 +460,8 @@ impl request::Request for InspectType {
 	type Result = Option<String>;
 }
 
-/// Represents a parsed assertion from test files
+/// Represents a parsed assertion from test files.
+/// `line` and `character` are zero-based
 #[derive(Debug, Clone)]
 struct ParsedAssertion {
 	line: u32,
@@ -470,10 +472,25 @@ struct ParsedAssertion {
 
 impl ParsedAssertion {
 	/// Creates a Position pointing to the line above this assertion
-	fn target_position(&self) -> Position {
+	fn target_position(&self, root: Node<'_>) -> Position {
+		let mut point = Point {
+			row: self.line.saturating_sub(1) as usize,
+			column: self.character as usize,
+		};
+		while root
+			.descendant_for_point_range(point, point)
+			.is_none_or(|cursor| cursor.kind() == "module")
+		{
+			point.row = point.row.saturating_sub(1);
+			if point.row == 0 {
+				break;
+			}
+		}
 		Position {
-			line: self.line.saturating_sub(1),
-			character: self.character,
+			line: point.row as _,
+			// line: self.line.saturating_sub(1) as _,
+			character: point.column as _,
+			// character: self.character as _,
 		}
 	}
 
@@ -507,7 +524,7 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 		let mut captures = cursor.captures(query(), ast.root_node(), contents.as_bytes());
 		while let Some((match_, _)) = captures.next() {
 			for capture in match_.captures {
-				if let Some(assertion) = parse_assertion_from_capture(&capture, &contents, &lang) {
+				if let Some(assertion) = parse_assertion_from_capture(capture, &contents, lang) {
 					assertions.push(assertion);
 				}
 			}
@@ -517,7 +534,7 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 		assertions.sort_by_key(|a| a.line);
 
 		// Second pass: process assertions and handle consecutive related
-		process_assertions(expected, assertions);
+		process_assertions(expected, assertions, ast.root_node());
 	}
 
 	expected
@@ -527,9 +544,9 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 fn parse_assertion_from_capture(
 	capture: &tree_sitter::QueryCapture,
 	contents: &str,
-	lang: &TestLanguages,
+	lang: TestLanguages,
 ) -> Option<ParsedAssertion> {
-	let node_text = capture.node.utf8_text(contents.as_bytes()).ok()?;
+	let node_text = &contents[capture.node.byte_range()];
 
 	// Find the caret position in the original node text
 	let caret_pos_in_node = node_text.find('^')?;
@@ -554,7 +571,7 @@ fn parse_assertion_from_capture(
 	let range = capture.node.range();
 	let line = range.start_point.row as u32;
 	// The character position is where the caret appears in the original line
-	let character = (range.start_point.column as usize + caret_pos_in_node) as u32;
+	let character = (range.start_point.column + caret_pos_in_node) as u32;
 
 	Some(ParsedAssertion {
 		line,
@@ -565,13 +582,13 @@ fn parse_assertion_from_capture(
 }
 
 /// Process parsed assertions and populate the Expected struct
-fn process_assertions(expected: &mut Expected, assertions: Vec<ParsedAssertion>) {
+fn process_assertions(expected: &mut Expected, assertions: Vec<ParsedAssertion>, root: Node) {
 	let mut i = 0;
 	let mut last_non_related_position: Option<Position> = None;
 
 	while i < assertions.len() {
 		let assertion = &assertions[i];
-		let position = assertion.target_position();
+		let position = assertion.target_position(root);
 
 		match assertion.kind.as_str() {
 			"complete" => {

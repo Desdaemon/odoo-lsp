@@ -75,7 +75,7 @@ fn handle_panic_err(err: &dyn Any) {
 }
 
 enum ServerErrors {
-	PreawaitPanic,
+	PreawaitPanic = 0x1000,
 	PostawaitPanic,
 }
 

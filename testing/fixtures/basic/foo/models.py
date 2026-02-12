@@ -1,4 +1,7 @@
-class Foo(Model):
+from odoo import models
+
+
+class Foo(models.Model):
     _name = "foo"
 
     bar = fields.Char()
@@ -40,7 +43,7 @@ class Foo(Model):
 
 
 # TODO: More diagnostics for depends and compute
-class Foob(Model):
+class Foob(models.Model):
     _name = "foob"
     _inherit = "bar"
     #           ^complete bar derived.bar foo foob
@@ -51,7 +54,6 @@ class Foob(Model):
     #                                          ^complete bar foo_m2m foo_m2o foo_o2m
     hoeh = fields.Char('Hoeh', compute="_wunderbar")
     #                                   ^diag Model `foob` has no method `_wunderbar`
-
     @api.depends("foo_id")
     #             ^complete barb foo_id hoeh
     @api.constrains("foo_id.wah")
