@@ -24,7 +24,6 @@ use crate::model::{Model, ModelIndex, ModelLocation, ModelType};
 use crate::record::Record;
 use crate::template::{NewTemplate, gather_templates};
 pub use crate::template::{Template, TemplateName};
-use crate::utils::Semaphore;
 
 mod js;
 mod module;
@@ -247,9 +246,7 @@ impl Index {
 		}
 	}
 	#[instrument(skip_all, ret, fields(path = path.display().to_string()))]
-	pub(crate) async fn load_modules_for_document(&self, document_blocker: Arc<Semaphore>, path: &Path) -> Option<()> {
-		document_blocker.wait(loc!()).await;
-		let _blocker = document_blocker.block(loc!());
+	pub(crate) async fn load_modules_for_document(&self, path: &Path) -> Option<()> {
 		let module_name = self.find_module_of(path)?;
 
 		self.load_module(module_name).await
