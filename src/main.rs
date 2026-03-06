@@ -161,8 +161,7 @@ fn parse_args_and_init_logger(args: &[String]) -> cli::Args<'_> {
 		.with_writer(std::io::stderr)
 		.with_file(true)
 		.with_line_number(true)
-		.with_target(true)
-		.with_ansi(cfg!(not(debug_assertions)));
+		.with_target(true);
 
 	match args.log_format {
 		cli::LogFormat::Compact => {

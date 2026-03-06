@@ -25,7 +25,7 @@ use crate::prelude::*;
 use crate::component::{Prop, PropDescriptor};
 use crate::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig};
 use crate::index::{Component, Index, ModuleName, RecordId, Symbol, SymbolSet};
-use crate::model::{Field, FieldKind, Method, ModelEntry, ModelName, PropertyKind};
+use crate::model::{Field, FieldKind, Method, ModelEntry, ModelLocation, ModelName, PropertyKind};
 use crate::record::Record;
 use crate::utils::{MaxVec, Semaphore, strict_canonicalize, to_display_path};
 use crate::{errloc, format_loc, some};
@@ -166,33 +166,56 @@ impl Backend {
 	}
 
 	pub fn init_workspaces(&self, params: &InitializeParams) {
-		let candidates = std::env::current_dir()
-			.map(Cow::from)
-			.into_iter()
-			.chain(
-				params
-					.workspace_folders
-					.as_ref()
-					.into_iter()
-					.flat_map(|folders| folders.iter().filter_map(|folder| folder.uri.to_file_path())),
-			)
-			.chain(params.root_uri.as_ref().and_then(|uri| uri.to_file_path()));
-		'outer: for candidate in candidates {
+		let mut workspaces = params
+			.workspace_folders
+			.as_ref()
+			.map(|dirs| {
+				dirs.iter()
+					.filter_map(|wsdir| {
+						let Some(path) = wsdir.uri.to_file_path() else {
+							error!("{:?} does not resolve to a proper path, ignoring", wsdir.uri);
+							return None;
+						};
+						Some(path.into_owned())
+					})
+					.collect::<Vec<_>>()
+			})
+			.unwrap_or_default();
+		if workspaces.is_empty() {
+			#[allow(deprecated)]
+			if let Some(root) = params
+				.root_uri
+				.as_ref()
+				.and_then(|uri| uri.to_file_path())
+				.or_else(|| params.root_path.as_deref().map(Path::new).map(Cow::<Path>::from))
+			{
+				workspaces.push(root.into_owned());
+			}
+		}
+		if workspaces.is_empty()
+			&& let Ok(pwd) = std::env::current_dir()
+		{
+			workspaces.push(pwd);
+		}
+		if workspaces.is_empty() {
+			warn!("No workspace folders were detected");
+		}
+
+		'outer: for dir in workspaces {
 			for choice in [".odoo_lsp", ".odoo_lsp.json"] {
-				let path = candidate.join(choice);
+				let workspace = Path::new(&dir);
+				let path = workspace.join(choice);
 				let Ok(file) = std::fs::File::open(&path) else { continue };
-				info!("Attempting to load config at {}", path.display());
 				match serde_json::from_reader(file) {
 					Ok(config) => {
-						info!("Loaded config at {}", path.display());
-						self.workspaces.clear();
-						self.on_change_config(config, Some(&candidate));
-						break 'outer;
+						self.on_change_config(config, Some(workspace));
+						continue 'outer;
 					}
 					Err(err) => error!("could not parse config at {}:\n{err}", path.display()),
 				}
+				break;
 			}
-			self.workspaces.insert(candidate.into_owned(), Workspace::default());
+			self.workspaces.insert(dir, Workspace::default());
 		}
 
 		if let Some(ref config) = params.initialization_options
@@ -378,14 +401,8 @@ impl Backend {
 			.find_workspace_of(path, |_, ws| ws.references.limit)
 			.unwrap_or_else(|| self.project_config.references_limit.load(Relaxed));
 		if let Some(entry) = self.index.models.get(model) {
-			// Get locations of all classes in this model's chain
-			let class_locations = entry.class_chain.iter().filter_map(|class_id| {
-				use crate::analyze::class_cache;
-				class_cache()
-					.get(*class_id)
-					.map(|metadata| metadata.location.clone().into())
-			});
-			Ok(Some(class_locations.chain(record_locations).take(limit).collect()))
+			let inherit_locations = entry.descendants.iter().map(|loc| loc.0.clone().into());
+			Ok(Some(inherit_locations.chain(record_locations).take(limit).collect()))
 		} else {
 			Ok(Some(record_locations.take(limit).collect()))
 		}
@@ -483,8 +500,8 @@ impl Backend {
 	pub fn ensure_nonoverlapping_roots(&self) {
 		let mut redundant = vec![];
 		let mut roots = self.workspaces.iter().map(|r| r.key().to_owned()).collect::<Vec<_>>();
-		roots.sort_by_key(|root| root.as_os_str().len());
-		info!(roots = ?roots);
+		roots.sort_unstable_by_key(|root| root.as_os_str().len());
+		info!("{roots:?}");
 		for lhs in 1..roots.len() {
 			for rhs in 0..lhs {
 				if roots[lhs].starts_with(&roots[rhs]) {
@@ -523,10 +540,8 @@ impl Index {
 			.flat_map(|(_, key)| self.models.get(key))
 			.map(|model| {
 				let label = _R(*model.key()).to_string();
-				let module = model.class_chain.first().and_then(|class_id| {
-					use crate::analyze::class_cache;
-					let metadata = class_cache().get(*class_id)?;
-					let module = self.find_module_of(&metadata.location.path.to_path())?;
+				let module = model.base.as_ref().and_then(|base| {
+					let module = self.find_module_of(&base.0.path.to_path())?;
 					Some(_R(module).to_string())
 				});
 				CompletionItem {
@@ -943,18 +958,14 @@ impl Index {
 	}
 	/// Returns a Markdown-formatted docstring for a model.
 	pub fn model_docstring(&self, model: &ModelEntry, model_name: Option<&str>, identifier: Option<&str>) -> String {
-		let module = model.class_chain.first().and_then(|class_id| {
-			use crate::analyze::class_cache;
-			let metadata = class_cache().get(*class_id)?;
-			self.find_module_of(&metadata.location.path.to_path())
-		});
+		let module = model
+			.base
+			.as_ref()
+			.and_then(|base| self.find_module_of(&base.0.path.to_path()));
 		let mut descendants = model
-			.class_chain
+			.descendants
 			.iter()
-			.filter_map(|class_id| {
-				use crate::analyze::class_cache;
-				class_cache().get(*class_id).map(|metadata| metadata.location.clone())
-			})
+			.map(|loc| &loc.0)
 			.scan(SymbolSet::default(), |mods, loc| {
 				let Some(module) = self.find_module_of(&loc.path.to_path()) else {
 					return Some(None);
@@ -1136,12 +1147,9 @@ impl Index {
 	pub fn jump_def_model(&self, model: &str) -> anyhow::Result<Option<Location>> {
 		let model = some!(_G(model));
 		if let Some(model) = self.models.get(&model.into())
-			&& let Some(class_id) = model.class_chain.first()
+			&& let Some(ModelLocation(ref base, _)) = model.base
 		{
-			use crate::analyze::class_cache;
-			if let Some(metadata) = class_cache().get(*class_id) {
-				return Ok(Some(metadata.location.clone().into()));
-			}
+			return Ok(Some(base.clone().into()));
 		}
 
 		Ok(None)

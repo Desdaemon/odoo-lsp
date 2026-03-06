@@ -14,7 +14,6 @@ pub mod component;
 pub mod model;
 pub mod record;
 pub mod server;
-pub mod stub_finder;
 pub mod template;
 
 mod js;

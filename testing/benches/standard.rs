@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use async_lsp::{LanguageServer, lsp_types::*};
+use async_lsp::{lsp_types::*, LanguageServer};
 use iai_callgrind::{
-	Callgrind, EntryPoint, FlamegraphConfig, LibraryBenchmarkConfig, OutputFormat, library_benchmark,
-	library_benchmark_group, main,
+	library_benchmark, library_benchmark_group, main, Callgrind, EntryPoint, FlamegraphConfig, LibraryBenchmarkConfig,
+	OutputFormat,
 };
 
 fn init_and_shutdown(max_concurrency: usize) {

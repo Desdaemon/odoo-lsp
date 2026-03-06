@@ -4,7 +4,7 @@ use core::ops::{Add, Sub};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::try_result::TryResult;
 use futures::future::BoxFuture;
@@ -169,7 +169,7 @@ where
 /// - [ByteOffset] <-> [Position]
 /// - [Range] -> [CharRange]
 /// - [Range] <-> [ByteRange]
-#[track_caller]
+#[inline]
 pub fn rope_conv<T, U>(src: T, rope: RopeSlice<'_>) -> U
 where
 	for<'a> U: From<RopeAdapter<'a, T>>,
@@ -542,15 +542,6 @@ pub fn init_for_test() {
 pub struct Semaphore {
 	should_wait: AtomicBool,
 	notifier: tokio::sync::Notify,
-}
-
-impl Default for Semaphore {
-	fn default() -> Self {
-		Self {
-			should_wait: AtomicBool::new(false),
-			notifier: Default::default(),
-		}
-	}
 }
 
 impl Semaphore {
