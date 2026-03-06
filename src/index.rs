@@ -242,7 +242,9 @@ impl Index {
 		}
 	}
 	#[instrument(skip_all, ret, fields(path = path.display().to_string()))]
-	pub(crate) async fn load_modules_for_document(&self, _document_blocker: Arc<Semaphore>, path: &Path) -> Option<()> {
+	pub(crate) async fn load_modules_for_document(&self, document_blocker: Arc<Semaphore>, path: &Path) -> Option<()> {
+		document_blocker.wait(loc!()).await;
+		let _blocker = document_blocker.block(loc!());
 		let module_name = self.find_module_of(path)?;
 
 		self.load_module(module_name).await
@@ -530,6 +532,7 @@ impl Index {
 
 		let mut outputs = tokio::task::JoinSet::new();
 		for (module_key, root) in modules.into_iter().zip(roots.into_iter()) {
+			trace!("{} depends on {}", _R(module_name), _R(module_key));
 			let root_display = root.key().to_string_lossy();
 			let root_key = _I(&root_display);
 			let module = root
@@ -715,7 +718,7 @@ impl Index {
 
 		let auto_install_candidates = self.find_auto_install_modules(&all_loaded_modules);
 		if !auto_install_candidates.is_empty() {
-			info!(
+			debug!(
 				"Found {} auto_install candidates after loading modules",
 				auto_install_candidates.len()
 			);

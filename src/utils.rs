@@ -5,7 +5,6 @@ use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::Relaxed;
 
 use dashmap::try_result::TryResult;
 use futures::future::BoxFuture;
@@ -91,9 +90,7 @@ macro_rules! await_did_open_document {
 			}
 		}
 		if let Some(blocker) = blocker {
-			info!("[{}] waiting on {}", $crate::loc!(), $path);
-			blocker.wait().await;
-			info!("[{}] done waiting on {}", $crate::loc!(), $path);
+			blocker.wait($crate::loc!()).await;
 		}
 	};
 }
@@ -543,33 +540,74 @@ pub fn init_for_test() {
 
 #[derive(Default)]
 pub struct Semaphore {
-	blocked: AtomicBool,
+	should_wait: AtomicBool,
 	notifier: tokio::sync::Notify,
+}
+
+impl Default for Semaphore {
+	fn default() -> Self {
+		Self {
+			should_wait: AtomicBool::new(false),
+			notifier: Default::default(),
+		}
+	}
+}
+
+impl Semaphore {
+	pub fn init_semaphore() -> Self {
+		Self {
+			should_wait: AtomicBool::new(true),
+			..Default::default()
+		}
+	}
 }
 
 pub struct Blocker<'a>(&'a Semaphore);
 
 impl Semaphore {
-	/// Panics if lock is held by another thread.
 	#[must_use]
 	#[track_caller]
-	pub fn block(&self) -> Blocker<'_> {
-		if self.blocked.compare_exchange(false, true, Relaxed, Relaxed) != Ok(false) {
-			panic!("Misuse of Semaphore::block: lock is still being held!");
+	pub fn block(&self, context: &'static str) -> Blocker<'_> {
+		if self
+			.should_wait
+			.compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
+			.is_err()
+		{
+			panic!(
+				"[{context}] thread={:?} attempted to lock {:p} which is already locked, it should call wait() first",
+				std::thread::current().id(),
+				self
+			);
 		}
-		info!("{:?} blocking {:p}", std::thread::current().id(), self);
+		info!(
+			"[{context}] thread={:?} acquired lock on {:p}",
+			std::thread::current().id(),
+			self
+		);
+		Blocker(self)
+	}
+
+	/// ### Safety
+	/// Should only be used by the initialization flow ONCE.
+	#[must_use]
+	pub unsafe fn block_unchecked(&self, context: &'static str) -> Blocker<'_> {
+		info!(
+			"[{context}] thread={:?} force-acquired lock on {:p}",
+			std::thread::current().id(),
+			self
+		);
 		Blocker(self)
 	}
 
 	pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 	/// Waits for a maximum of [`WAIT_LIMIT`][Self::WAIT_LIMIT] for a notification.
-	pub async fn wait(&self) {
-		while self.should_wait() {
+	pub async fn wait(&self, context: &'static str) {
+		while self.should_wait.load(Ordering::Relaxed) {
 			tokio::select! {
 				_ = self.notifier.notified() => return,
 				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
-					warn!("WAIT_LIMIT elapsed (thread={:?} blocker={:p})", std::thread::current().id(), self);
+					warn!("[{context}] WAIT_LIMIT elapsed (thread={:?}, lock={self:p})", std::thread::current().id());
 				}
 			}
 		}
@@ -577,16 +615,19 @@ impl Semaphore {
 
 	#[inline]
 	pub fn should_wait(&self) -> bool {
-		self.blocked.load(Relaxed)
+		self.should_wait.load(Ordering::Relaxed)
 	}
 }
 
 impl Drop for Blocker<'_> {
+	#[track_caller]
 	fn drop(&mut self) {
-		if self.0.blocked.compare_exchange(true, false, Relaxed, Relaxed) != Ok(true) {
-			panic!("Failed to release Semaphore lock for {:?}", std::thread::current().id());
-		}
-		info!("{:?} dropping {:p}", std::thread::current().id(), self.0);
+		info!(
+			"thread={:?} releasing lock on {:p}",
+			std::thread::current().id(),
+			self.0
+		);
+		self.0.should_wait.store(false, Ordering::Release);
 		self.0.notifier.notify_waiters();
 	}
 }

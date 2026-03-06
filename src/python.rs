@@ -1169,7 +1169,7 @@ impl Backend {
 	///      -------range
 	///      -------needle
 	/// ```
-	#[instrument(skip_all, ret, fields(range_content = &contents[range.clone()]))]
+	#[instrument(level = "trace", skip_all, ret, fields(range_content = &contents[range.clone()]))]
 	fn gather_mapped<'text>(
 		&self,
 		root: Node,

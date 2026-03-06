@@ -11,7 +11,7 @@ use tower_lsp_server::ls_types::request::WorkDoneProgressCreate;
 use tower_lsp_server::ls_types::*;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{GITVER, NAME, VERSION, await_did_open_document, format_loc};
+use crate::{GITVER, NAME, VERSION, await_did_open_document, format_loc, loc};
 
 use crate::backend::{Backend, Document, Language, Text};
 use crate::index::{_G, _R};
@@ -171,8 +171,7 @@ impl LanguageServer for Backend {
 			_ = self.client.register_capability(registrations).await;
 		}
 
-		self.root_setup.wait().await;
-		let _blocker = self.root_setup.block();
+		let _blocker = unsafe { self.root_setup.block_unchecked(loc!()) };
 		self.ensure_nonoverlapping_roots();
 		info!(workspaces = ?self.workspaces);
 
@@ -187,11 +186,11 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.as_str()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
-		self.root_setup.wait().await;
+		self.root_setup.wait(loc!()).await;
 		// NB: fixes a race condition where completions are requested even before
 		// did_open had a chance to put in a blocker for the document, leading to
 		// flaky tests and the first completion request yielding nothing (super minor issue)
-		let _blocker = self.root_setup.block();
+		let _blocker = self.root_setup.block(loc!());
 
 		let file_path = params.text_document.uri.to_file_path().unwrap();
 		let file_path_str = file_path.to_str().unwrap();
@@ -253,7 +252,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
-		self.root_setup.wait().await;
+		self.root_setup.wait(loc!()).await;
 		if let [single] = params.content_changes.as_mut_slice()
 			&& single.range.is_none()
 			&& single.range_length.is_none()
@@ -313,12 +312,12 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, ret, fields(uri = params.text_document.uri.as_str()))]
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
-		self.root_setup.wait().await;
+		self.root_setup.wait(loc!()).await;
 		_ = self.did_save_impl(params).await.inspect_err(|err| warn!("{err}"));
 	}
 	#[instrument(skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
-		self.root_setup.wait().await;
+		self.root_setup.wait(loc!()).await;
 
 		let uri = &params.text_document_position_params.text_document.uri;
 		let path = uri.path().as_str();
@@ -353,7 +352,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, ret, fields(path))]
 	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-		self.root_setup.wait().await;
+		self.root_setup.wait(loc!()).await;
 
 		let uri = &params.text_document_position.text_document.uri;
 		let path = uri.path().as_str();
@@ -382,7 +381,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, fields(uri))]
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-		self.root_setup.wait().await;
+		self.root_setup.wait(loc!()).await;
 
 		let uri = &params.text_document_position.text_document.uri;
 
@@ -500,7 +499,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(level = "trace", skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-		self.root_setup.wait().await;
+		self.root_setup.wait(loc!()).await;
 
 		let uri = &params.text_document_position_params.text_document.uri;
 		let path = uri.path().as_str();
@@ -528,7 +527,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all)]
 	async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
-		self.root_setup.wait().await;
+		self.root_setup.wait(loc!()).await;
 		let items = self
 			.workspaces
 			.iter()
@@ -576,6 +575,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip(self))]
 	async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
+		self.root_setup.wait(loc!()).await;
 		for added in params.event.added {
 			let Some(path) = added.uri.to_file_path() else { continue };
 			self.index.add_root_for_file(&path).await;
@@ -633,8 +633,11 @@ impl LanguageServer for Backend {
 		}
 	}
 	#[instrument(skip_all, fields(query = params.query))]
-	async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<WorkspaceSymbolResponse>> {
-		self.root_setup.wait().await;
+	async fn symbol(
+		&self,
+		params: WorkspaceSymbolParams,
+	) -> Result<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
+		self.root_setup.wait(loc!()).await;
 
 		let query = &params.query;
 		let limit = self.project_config.symbols_limit.load(Relaxed);
@@ -695,7 +698,7 @@ impl LanguageServer for Backend {
 	}
 	#[instrument(skip_all, fields(path))]
 	async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
-		self.root_setup.wait().await;
+		self.root_setup.wait(loc!()).await;
 
 		let path = params.text_document.uri.path().as_str();
 		await_did_open_document!(self, path);
