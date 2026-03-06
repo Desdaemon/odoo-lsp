@@ -647,7 +647,7 @@ impl Index {
 		// Find and load auto_install modules
 		let auto_install_candidates = self.find_auto_install_modules(&all_loaded_modules);
 		if !auto_install_candidates.is_empty() {
-			info!(
+			debug!(
 				"Found {} auto_install candidates after loading modules",
 				auto_install_candidates.len()
 			);

@@ -468,7 +468,7 @@ impl Backend {
 	///      -------range
 	///      -------needle
 	/// ```
-	#[instrument(skip_all, ret, fields(range_content = &contents[range.clone()]))]
+	#[instrument(level = "trace", skip_all, ret, fields(range_content = &contents[range.clone()]))]
 	fn gather_mapped<'text>(
 		&self,
 		root: Node,
@@ -1140,8 +1140,7 @@ impl Backend {
 		use std::fmt::Write;
 
 		let uri = &params.text_document_position_params.text_document.uri;
-		let document =
-			some!((self.document_map).get(uri.path().as_str()));
+		let document = some!((self.document_map).get(uri.path().as_str()));
 		let file_path = uri.to_file_path().unwrap();
 		let ast = some!((self.ast_map).get(file_path.to_str().unwrap()));
 		let contents = Cow::from(&document.rope);
