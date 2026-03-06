@@ -88,7 +88,7 @@ macro_rules! await_did_open_document {
 			}
 		}
 		if let Some(blocker) = blocker {
-			blocker.wait().await;
+			blocker.wait($crate::loc!()).await;
 		}
 	};
 }
@@ -493,8 +493,17 @@ pub struct Semaphore {
 impl Default for Semaphore {
 	fn default() -> Self {
 		Self {
-			should_wait: AtomicBool::new(true),
+			should_wait: AtomicBool::new(false),
 			notifier: Default::default(),
+		}
+	}
+}
+
+impl Semaphore {
+	pub fn init_semaphore() -> Self {
+		Self {
+			should_wait: AtomicBool::new(true),
+			..Default::default()
 		}
 	}
 }
@@ -502,20 +511,47 @@ impl Default for Semaphore {
 pub struct Blocker<'a>(&'a Semaphore);
 
 impl Semaphore {
-	pub fn block(&self) -> Blocker<'_> {
-		self.should_wait.store(true, Ordering::SeqCst);
+	#[track_caller]
+	pub fn block(&self, context: &'static str) -> Blocker<'_> {
+		if self
+			.should_wait
+			.compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
+			.is_err()
+		{
+			panic!(
+				"[{context}] thread={:?} attempted to lock {:p} which is already locked, it should call wait() first",
+				std::thread::current().id(),
+				self
+			);
+		}
+		info!(
+			"[{context}] thread={:?} acquired lock on {:p}",
+			std::thread::current().id(),
+			self
+		);
+		Blocker(self)
+	}
+
+	/// ### Safety
+	/// Should only be used by the initialization flow ONCE.
+	pub unsafe fn block_unchecked(&self, context: &'static str) -> Blocker<'_> {
+		info!(
+			"[{context}] thread={:?} force-acquired lock on {:p}",
+			std::thread::current().id(),
+			self
+		);
 		Blocker(self)
 	}
 
 	pub const WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 	/// Waits for a maximum of [`WAIT_LIMIT`][Self::WAIT_LIMIT] for a notification.
-	pub async fn wait(&self) {
-		if self.should_wait.load(Ordering::SeqCst) {
+	pub async fn wait(&self, context: &'static str) {
+		while self.should_wait.load(Ordering::Relaxed) {
 			tokio::select! {
 				_ = self.notifier.notified() => {}
 				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
-					warn!("WAIT_LIMIT elapsed (thread={:?})", std::thread::current().id());
+					warn!("[{context}] WAIT_LIMIT elapsed (thread={:?}, lock={self:p})", std::thread::current().id());
 				}
 			}
 		}
@@ -523,13 +559,19 @@ impl Semaphore {
 
 	#[inline]
 	pub fn should_wait(&self) -> bool {
-		self.should_wait.load(Ordering::SeqCst)
+		self.should_wait.load(Ordering::Relaxed)
 	}
 }
 
 impl Drop for Blocker<'_> {
+	#[track_caller]
 	fn drop(&mut self) {
-		self.0.should_wait.store(false, Ordering::SeqCst);
+		info!(
+			"thread={:?} releasing lock on {:p}",
+			std::thread::current().id(),
+			self.0
+		);
+		self.0.should_wait.store(false, Ordering::Release);
 		self.0.notifier.notify_waiters();
 	}
 }

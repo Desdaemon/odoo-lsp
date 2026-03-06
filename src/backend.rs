@@ -47,6 +47,7 @@ pub struct BackendInner {
 	pub ast_map: DashMap<String, Tree>,
 	pub index: Index,
 	pub workspaces: Workspaces,
+	#[default(_code = "Semaphore::init_semaphore()")]
 	pub root_setup: Semaphore,
 	pub capabilities: Capabilities,
 	pub project_config: BackendConfig,
@@ -256,7 +257,7 @@ impl Backend {
 			if params.open {
 				self.index.load_modules_for_document(blocker.clone(), &path).await;
 			} else {
-				drop(blocker.block());
+				drop(blocker.block(loc!()));
 			}
 		};
 		let slice = rope.slice(..);
