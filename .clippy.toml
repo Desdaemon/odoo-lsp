@@ -1,5 +1,12 @@
 cognitive-complexity-threshold = 20
 
+[[disallowed-methods]]
+path = "tree_sitter::Node::named_child"
+
+[[disallowed-methods]]
+path = "tree_sitter::Node::next_named_sibling"
+replacement = "odoo_lsp::utils::python_next_named_sibling"
+
 [[await-holding-invalid-types]]
 path = "dashmap::mapref::one::RefMut"
 reason = "Would deadlock if same thread wants to acquire a reference"
