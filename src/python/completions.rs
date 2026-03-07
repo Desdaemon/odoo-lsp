@@ -91,6 +91,7 @@ impl Backend {
 									rope,
 									model_filter.map(|m| vec![m.into()]).as_deref(),
 									current_module,
+									None,
 									&mut items,
 								)?;
 								Ok(Some(CompletionResponse::List(CompletionList {
@@ -357,6 +358,7 @@ impl Backend {
 												rope,
 												Some(&["res.groups".into()]),
 												current_module,
+												None,
 												&mut items,
 											)?;
 											Ok(Some(CompletionResponse::List(CompletionList {

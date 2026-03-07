@@ -498,6 +498,7 @@ fn test_xml_completions_field_groups() {
 			},
 		},
 		None,
+		None,
 	);
 	index.records.insert(
 		_I("base.group_system").into(),
@@ -515,6 +516,7 @@ fn test_xml_completions_field_groups() {
 				},
 			},
 		},
+		None,
 		None,
 	);
 
@@ -591,6 +593,7 @@ fn test_menuitem_action_completion_multiple_types() {
 					},
 				},
 			},
+			None,
 			None,
 		);
 	}

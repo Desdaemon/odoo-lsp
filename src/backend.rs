@@ -14,6 +14,7 @@ use dashmap::DashMap;
 use derive_more::{Deref, DerefMut};
 use fomat_macros::fomat;
 use globwalk::FileType;
+use serde_json::Value;
 use smart_default::SmartDefault;
 use tower_lsp_server::Client;
 use tower_lsp_server::ls_types::*;
@@ -558,6 +559,8 @@ impl Index {
 		items.extend(matches);
 		Ok(())
 	}
+	/// If `view_model` is set and `model_filter` is exactly `["ir.ui.view"]`,
+	/// only views targeting the provided view model will be completed.
 	pub fn complete_xml_id(
 		&self,
 		needle: &str,
@@ -565,6 +568,7 @@ impl Index {
 		rope: RopeSlice<'_>,
 		model_filter: Option<&[ImStr]>,
 		current_module: ModuleName,
+		view_model: Option<ModelName>,
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
 		if !items.has_space() {
@@ -574,6 +578,7 @@ impl Index {
 		let Ok(by_prefix) = self.records.by_prefix.try_read() else {
 			return Ok(());
 		};
+		let filters_is_view_filter = matches!(model_filter, Some([ir_ui_view]) if ir_ui_view.as_str() == "ir.ui.view");
 		let model_filters: Option<Vec<ModelName>> = model_filter.map(|models| {
 			models
 				.iter()
@@ -610,6 +615,9 @@ impl Index {
 						&& model_filters
 							.as_ref()
 							.is_none_or(|filters| record.model.as_ref().map(|m| filters.contains(m)).unwrap_or(false))
+						&& (!filters_is_view_filter
+							|| view_model
+								.is_none_or(|view_model| self.records.is_target_view_model_of(&view_model, key)))
 					{
 						Some(completion_item(&record, current_module, range, true))
 					} else {
@@ -625,6 +633,9 @@ impl Index {
 						&& model_filters
 							.as_ref()
 							.is_none_or(|filters| record.model.as_ref().map(|m| filters.contains(m)).unwrap_or(false))
+						&& (!filters_is_view_filter
+							|| view_model
+								.is_none_or(|view_model| self.records.is_target_view_model_of(&view_model, key)))
 					{
 						Some(completion_item(&record, current_module, range, false))
 					} else {
@@ -1238,6 +1249,25 @@ impl Index {
 		});
 		items.extend(completions);
 		Ok(())
+	}
+	pub fn code_action_for_model(&self, model: &str, path: &Path) -> anyhow::Result<Option<CodeActionResponse>> {
+		some!(_G(model));
+		let mut out = vec![CodeActionOrCommand::Command(Command {
+			title: "Jump to view definitions".to_string(),
+			command: "jump_view".to_string(),
+			arguments: Some(vec![Value::String(model.to_string())]),
+		})];
+		if let Some(module) = self.find_module_of(path) {
+			out.push(CodeActionOrCommand::Command(Command {
+				title: "Jump to view definition in this module".to_string(),
+				command: "jump_view".to_string(),
+				arguments: Some(vec![
+					Value::String(model.to_string()),
+					Value::String(_R(module).to_string()),
+				]),
+			}));
+		}
+		Ok(Some(out))
 	}
 }
 

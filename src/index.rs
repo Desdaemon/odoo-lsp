@@ -21,7 +21,7 @@ use crate::prelude::*;
 
 pub use crate::component::{Component, ComponentName};
 use crate::model::{Model, ModelIndex, ModelLocation, ModelType};
-use crate::record::Record;
+use crate::record::{Record, RecordMetadata};
 use crate::template::{NewTemplate, gather_templates};
 pub use crate::template::{Template, TemplateName};
 
@@ -93,6 +93,7 @@ enum Output {
 	// Nothing,
 	Xml {
 		records: Vec<Record>,
+		metadata: Vec<Option<RecordMetadata>>,
 		templates: Vec<NewTemplate>,
 	},
 	Models {
@@ -633,8 +634,12 @@ impl Index {
 				}
 			};
 			match outputs {
-				Output::Xml { records, templates } => {
-					self.records.append(None, records);
+				Output::Xml {
+					records,
+					metadata,
+					templates,
+				} => {
+					self.records.append(records.into_iter().zip(metadata.into_iter()));
 					self.templates.append(templates);
 				}
 				Output::Models { path, models } => {
@@ -1020,6 +1025,7 @@ async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> any
 	let file = String::from_utf8_lossy(&file);
 	let mut reader = Tokenizer::from(file.as_ref());
 	let mut records = vec![];
+	let mut metadata = vec![];
 	let mut templates = vec![];
 	let rope = Rope::from_str(&file);
 	let rope = rope.slice(..);
@@ -1027,23 +1033,30 @@ async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> any
 		match reader.next() {
 			Some(Ok(Token::ElementStart { local, span, .. })) => match local.as_str() {
 				"record" => {
-					let record =
-						Record::from_reader(ByteOffset(span.start()), module_name, path_uri, &mut reader, rope)?;
-					records.extend(record);
+					if let Some((record, meta)) =
+						Record::from_reader(ByteOffset(span.start()), module_name, path_uri, &mut reader, rope)?
+					{
+						records.push(record);
+						metadata.push(meta);
+					}
 				}
 				"template" => {
-					if let Some(template) =
+					if let Some((template, meta)) =
 						Record::template(ByteOffset(span.start()), module_name, path_uri, &mut reader, rope)?
 					{
 						records.push(template);
+						metadata.push(meta);
 					} else {
 						gather_templates(path_uri, &mut reader, rope, &mut templates, true)?;
 					}
 				}
 				"menuitem" => {
-					let menuitem =
-						Record::menuitem(ByteOffset(span.start()), module_name, path_uri, &mut reader, rope)?;
-					records.extend(menuitem);
+					if let Some((menuitem, meta)) =
+						Record::menuitem(ByteOffset(span.start()), module_name, path_uri, &mut reader, rope)?
+					{
+						records.push(menuitem);
+						metadata.push(meta);
+					}
 				}
 				"templates" => {
 					gather_templates(path_uri, &mut reader, rope, &mut templates, false)?;
@@ -1059,7 +1072,11 @@ async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> any
 		}
 	}
 
-	Ok(Output::Xml { records, templates })
+	Ok(Output::Xml {
+		records,
+		metadata,
+		templates,
+	})
 }
 
 #[rustfmt::skip]

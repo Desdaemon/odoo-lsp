@@ -11,6 +11,7 @@ use tower_lsp_server::ls_types::request::WorkDoneProgressCreate;
 use tower_lsp_server::ls_types::*;
 use tracing::{debug, error, info, instrument, warn};
 
+use crate::xml::add_xml_snippets;
 use crate::{GITVER, NAME, VERSION, await_did_open_document, format_loc, loc};
 
 use crate::backend::{Backend, Document, Language, Text};
@@ -83,7 +84,7 @@ impl LanguageServer for Backend {
 				// XML code actions are done in 1 pass only
 				code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
 				execute_command_provider: Some(ExecuteCommandOptions {
-					commands: vec!["goto_owl".to_string()],
+					commands: vec!["goto_owl".to_string(), "jump_view".to_string()],
 					..Default::default()
 				}),
 				text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
@@ -403,7 +404,8 @@ impl LanguageServer for Backend {
 		if ext == "xml" {
 			let completions = self.xml_completions(params, rope.slice(..));
 			match completions {
-				Ok(ret) => Ok(ret),
+				Ok(inner @ Some(_)) => Ok(inner),
+				Ok(None) => Ok(Some(add_xml_snippets(None))),
 				Err(report) => {
 					self.client
 						.show_message(MessageType::ERROR, format!("error during xml completion:\n{report}"))
@@ -727,7 +729,7 @@ impl LanguageServer for Backend {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
-		let Some((_, "xml")) = params.text_document.uri.path().as_str().rsplit_once('.') else {
+		let Some((_, ext @ ("py" | "xml"))) = params.text_document.uri.path().as_str().rsplit_once('.') else {
 			return Ok(None);
 		};
 
@@ -735,21 +737,27 @@ impl LanguageServer for Backend {
 		if document.setup.should_wait() {
 			return Ok(None);
 		}
-
-		Ok(self
-			.xml_code_actions(params, document.rope.slice(..))
-			.inspect_err(|err| {
-				error!("(code_lens) {err}");
-			})
-			.unwrap_or(None))
+		match ext {
+			"py" => Ok(self
+				.python_code_action(params, document.rope.slice(..))
+				.inspect_err(|err| error!("(code_action) {err}"))
+				.unwrap_or(None)),
+			"xml" => Ok(self
+				.xml_code_actions(params, document.rope.slice(..))
+				.inspect_err(|err| {
+					error!("(code_action) {err}");
+				})
+				.unwrap_or(None)),
+			_ => unreachable!(),
+		}
 	}
 	#[instrument(skip_all, ret)]
 	async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
 		if self.root_setup.should_wait() {
 			return Ok(None);
 		}
-		if let ("goto_owl", [Value::String(_), Value::String(subcomponent)]) =
-			(params.command.as_str(), params.arguments.as_slice())
+		if let "goto_owl" = params.command.as_str()
+			&& let [Value::String(_), Value::String(subcomponent)] = params.arguments.as_slice()
 		{
 			// FIXME: Subcomponents should not just depend on the component's name,
 			// since users can readjust subcomponents' names at will.
@@ -757,6 +765,30 @@ impl LanguageServer for Backend {
 			let location = {
 				let component = some!(self.index.components.get(&component.into()));
 				some!(component.location.clone())
+			};
+			_ = self
+				.client
+				.show_document(ShowDocumentParams {
+					uri: Uri::from_file_path(location.path.to_path()).unwrap(),
+					external: Some(false),
+					take_focus: Some(true),
+					selection: Some(location.range),
+				})
+				.await;
+		} else if let "jump_view" = params.command.as_str() {
+			let (model, module) = match &params.arguments[..] {
+				[Value::String(model)] => (model.as_str(), None),
+				[Value::String(model), Value::String(module)] => (model.as_str(), Some(module.as_str())),
+				_ => return Ok(None),
+			};
+			let model = some!(_G(model)).into();
+			let location = {
+				let mut views = self.index.records.views_by_model(&model);
+				let view = match module {
+					Some(module) => views.find(|record| _R(record.module) == module),
+					None => views.find(|record| record.inherit_id.is_none()),
+				};
+				some!(view.as_deref()).location.clone()
 			};
 			_ = self
 				.client

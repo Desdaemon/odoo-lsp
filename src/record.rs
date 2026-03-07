@@ -19,6 +19,11 @@ pub struct Record {
 	pub location: MinLoc,
 }
 
+/// Used for data not essential to the record itself, but for other bookkeeping purposes.
+pub enum RecordMetadata {
+	View(ModelName),
+}
+
 impl Record {
 	pub fn qualified_id(&self) -> String {
 		format!("{}.{}", _R(self.module), self.id)
@@ -29,7 +34,7 @@ impl Record {
 		path: PathSymbol,
 		reader: &mut Tokenizer,
 		rope: RopeSlice<'_>,
-	) -> anyhow::Result<Option<Self>> {
+	) -> anyhow::Result<Option<(Self, Option<RecordMetadata>)>> {
 		let mut id = None;
 		let mut model = None;
 		let mut inherit_id = None;
@@ -37,6 +42,7 @@ impl Record {
 		// nested records are a thing apparently
 		let mut stack = 1;
 		let mut in_record = true;
+		let mut metadata = None;
 		let start: Position = rope_conv(offset, rope);
 
 		loop {
@@ -59,13 +65,16 @@ impl Record {
 						stack += 1;
 					}
 					if local.as_str() == "field" {
-						let Some(maybe_inherit_id) = extract_inherit_id(reader, stack) else {
-							continue;
-						};
-						if maybe_inherit_id.contains('.') {
-							inherit_id = Some(_I(maybe_inherit_id).into());
-						} else {
-							inherit_id = Some(_I(format!("{}.{maybe_inherit_id}", _R(module))).into());
+						if let Some(maybe_inherit_id) = extract_inherit_id(reader, stack) {
+							if maybe_inherit_id.contains('.') {
+								inherit_id = Some(_I(maybe_inherit_id).into());
+							} else {
+								inherit_id = Some(_I(format!("{}.{maybe_inherit_id}", _R(module))).into());
+							}
+						} else if
+						// model.is_some_and(|model| _R(model) == "ir.ui.view") &&
+						let Some(viewmodel) = extract_model_text(reader) {
+							metadata = Some(RecordMetadata::View(_I(viewmodel).into()));
 						}
 					}
 				}
@@ -108,14 +117,17 @@ impl Record {
 		let end = rope_conv(end, rope);
 		let range = Range { start, end };
 
-		Ok(Some(Self {
-			deleted: false,
-			id,
-			module,
-			model,
-			inherit_id,
-			location: MinLoc { path, range },
-		}))
+		Ok(Some((
+			Self {
+				deleted: false,
+				id,
+				module,
+				model,
+				inherit_id,
+				location: MinLoc { path, range },
+			},
+			metadata,
+		)))
 	}
 	pub fn template(
 		offset: ByteOffset,
@@ -123,7 +135,7 @@ impl Record {
 		path: PathSymbol,
 		reader: &mut Tokenizer,
 		rope: RopeSlice<'_>,
-	) -> anyhow::Result<Option<Self>> {
+	) -> anyhow::Result<Option<(Self, Option<RecordMetadata>)>> {
 		let start: Position = rope_conv(offset, rope);
 		let mut id = None;
 		let mut inherit_id = None;
@@ -200,14 +212,17 @@ impl Record {
 		let end = rope_conv(end, rope);
 		let range = Range { start, end };
 
-		Ok(Some(Self {
-			id: some!(id),
-			deleted: false,
-			model: Some(_I("ir.ui.view").into()),
-			module,
-			inherit_id,
-			location: MinLoc { path, range },
-		}))
+		Ok(Some((
+			Self {
+				id: some!(id),
+				deleted: false,
+				model: Some(_I("ir.ui.view").into()),
+				module,
+				inherit_id,
+				location: MinLoc { path, range },
+			},
+			None,
+		)))
 	}
 	pub fn menuitem(
 		offset: ByteOffset,
@@ -215,7 +230,7 @@ impl Record {
 		path: PathSymbol,
 		reader: &mut Tokenizer,
 		rope: RopeSlice<'_>,
-	) -> anyhow::Result<Option<Self>> {
+	) -> anyhow::Result<Option<(Self, Option<RecordMetadata>)>> {
 		let mut id = None;
 		let mut end = None;
 		let start = rope_conv(offset, rope);
@@ -251,18 +266,22 @@ impl Record {
 		let end = rope_conv(end, rope);
 		let range = Range { start, end };
 
-		Ok(Some(Self {
-			id,
-			deleted: false,
-			model: Some(_I("ir.ui.menu").into()),
-			module,
-			inherit_id: None,
-			location: MinLoc { path, range },
-		}))
+		Ok(Some((
+			Self {
+				id,
+				deleted: false,
+				model: Some(_I("ir.ui.menu").into()),
+				module,
+				inherit_id: None,
+				location: MinLoc { path, range },
+			},
+			None,
+		)))
 	}
 }
 
-fn extract_inherit_id<'text>(reader: &mut Tokenizer<'text>, stack: i32) -> Option<&'text str> {
+fn extract_inherit_id<'text>(reader: &Tokenizer<'text>, stack: i32) -> Option<&'text str> {
+	let mut reader = reader.clone();
 	let mut is_inherit_id = false;
 	let mut maybe_inherit_id = None;
 	loop {
@@ -284,4 +303,46 @@ fn extract_inherit_id<'text>(reader: &mut Tokenizer<'text>, stack: i32) -> Optio
 		return None;
 	}
 	maybe_inherit_id
+}
+
+fn extract_model_text<'text>(reader: &Tokenizer<'text>) -> Option<&'text str> {
+	let mut reader = reader.clone();
+	let mut is_model_field = false;
+	loop {
+		match reader.next() {
+			Some(Ok(Token::Attribute { local, value, .. }))
+				if local.as_str() == "name" && value.as_str() == "model" =>
+			{
+				is_model_field = true;
+			}
+			Some(Ok(Token::Text { text })) if is_model_field => {
+				return Some(text.as_str());
+			}
+			Some(Ok(Token::ElementEnd {
+				end: ElementEnd::Close(..) | ElementEnd::Empty,
+				..
+			})) => break,
+			None | Some(Err(_)) => break,
+			_ => {}
+		}
+	}
+	None
+}
+
+#[cfg(test)]
+mod tests {
+	use pretty_assertions::assert_eq;
+	use xmlparser::Tokenizer;
+
+	use crate::record::extract_model_text;
+
+	#[test]
+	fn test_extract_model_text() {
+		let reader = Tokenizer::from(
+			r#"
+				<field name="model">blah</field>
+			"#,
+		);
+		assert_eq!(extract_model_text(&reader), Some("blah"));
+	}
 }

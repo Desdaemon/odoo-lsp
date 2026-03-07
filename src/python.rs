@@ -1236,6 +1236,43 @@ impl Backend {
 			active_parameter: None,
 		}))
 	}
+	pub(crate) fn python_code_action(
+		&self,
+		params: CodeActionParams,
+		rope: RopeSlice<'_>,
+	) -> anyhow::Result<Option<CodeActionResponse>> {
+		let uri = &params.text_document.uri;
+		let file_path = uri.to_file_path().unwrap();
+		let file_path_str = file_path.to_str().unwrap();
+		let ast = self
+			.ast_map
+			.get(file_path_str)
+			.ok_or_else(|| errloc!("Did not build AST for {}", file_path_str))?;
+		let ByteOffset(offset) = rope_conv(params.range.end, rope);
+		let contents = Cow::from(rope);
+
+		let query = PyCompletions::query();
+		let mut cursor = tree_sitter::QueryCursor::new();
+		// let mut this_model = ThisModel::default();
+
+		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
+		while let Some(match_) = matches.next() {
+			for capture in match_.captures {
+				let range = capture.node.byte_range();
+				match PyCompletions::from(capture.index) {
+					Some(PyCompletions::Model) if range.contains_end(offset) => {
+						let range = range.shrink(1);
+						let slice = ok!(rope.try_slice(range.clone()));
+						let slice = Cow::from(slice);
+						return self.index.code_action_for_model(&slice, &file_path);
+					}
+					_ => {}
+				}
+			}
+		}
+
+		Ok(None)
+	}
 
 	#[allow(clippy::unused_async)] // reason: custom method
 	pub async fn debug_inspect_type(

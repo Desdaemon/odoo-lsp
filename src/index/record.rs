@@ -8,6 +8,7 @@ use smart_default::SmartDefault;
 
 use crate::prelude::*;
 
+use crate::record::RecordMetadata;
 use crate::{ImStr, format_loc};
 use crate::{model::ModelName, record::Record};
 
@@ -22,6 +23,8 @@ pub struct RecordIndex {
 	by_model: DashMap<ModelName, HashSet<RecordId>>,
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	by_inherit_id: DashMap<RecordId, HashSet<RecordId>>,
+	#[default(_code = "DashMap::with_shard_amount(4)")]
+	views_by_model: DashMap<ModelName, HashSet<RecordId>>,
 	/// unqualified XML ID -> RecordID
 	pub by_prefix: RwLock<RecordPrefixTrie>,
 }
@@ -30,7 +33,13 @@ pub type RecordId = Symbol<Record>;
 pub type RecordPrefixTrie = qp_trie::Trie<ImStr, HashSet<RecordId>>;
 
 impl RecordIndex {
-	pub fn insert(&self, qualified_id: RecordId, record: Record, prefix: Option<&mut RecordPrefixTrie>) {
+	pub fn insert(
+		&self,
+		qualified_id: RecordId,
+		record: Record,
+		metadata: Option<RecordMetadata>,
+		prefix: Option<&mut RecordPrefixTrie>,
+	) {
 		if self.inner.contains_key(&qualified_id) {
 			return;
 		}
@@ -51,20 +60,22 @@ impl RecordIndex {
 				.or_insert_with(Default::default)
 				.insert(qualified_id);
 		}
+		match metadata {
+			Some(RecordMetadata::View(model)) => {
+				self.views_by_model
+					.entry(model)
+					.or_insert_with(Default::default)
+					.insert(qualified_id);
+			}
+			None => {}
+		}
 		self.inner.insert(qualified_id, record);
 	}
-	pub fn append(&self, prefix: Option<&mut RecordPrefixTrie>, records: impl IntoIterator<Item = Record>) {
-		if let Some(prefix) = prefix {
-			for record in records {
-				let id = _I(record.qualified_id());
-				self.insert(id.into(), record, Some(prefix));
-			}
-		} else {
-			let mut prefix = self.by_prefix.write().expect(format_loc!("can't hold write lock now"));
-			for record in records {
-				let id = _I(record.qualified_id());
-				self.insert(id.into(), record, Some(&mut prefix));
-			}
+	pub fn append(&self, records: impl IntoIterator<Item = (Record, Option<RecordMetadata>)>) {
+		let mut prefix = self.by_prefix.write().expect(format_loc!("can't hold write lock now"));
+		for (record, meta) in records {
+			let id = _I(record.qualified_id());
+			self.insert(id.into(), record, meta, Some(&mut prefix));
 		}
 	}
 	pub fn by_model(&self, model: &ModelName) -> impl Iterator<Item = Ref<'_, RecordId, Record>> {
@@ -78,6 +89,17 @@ impl RecordIndex {
 			.get(inherit_id)
 			.into_iter()
 			.flat_map(|ids| self.resolve_references(ids))
+	}
+	pub fn views_by_model(&self, model: &ModelName) -> impl Iterator<Item = Ref<'_, RecordId, Record>> {
+		self.views_by_model
+			.get(model)
+			.into_iter()
+			.flat_map(|ids| self.resolve_references(ids))
+	}
+	pub fn is_target_view_model_of(&self, view_model: &ModelName, record: &RecordId) -> bool {
+		self.views_by_model
+			.get(view_model)
+			.is_some_and(|ids| ids.contains(record))
 	}
 	fn resolve_references<K>(
 		&self,

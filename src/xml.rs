@@ -34,6 +34,17 @@ const ACTION_MODELS: &[&str] = &[
 	"ir.actions.act_url",
 ];
 
+const VIEW_INHERIT_SNIPPET: &str = r#"<record id="" model="ir.ui.view">
+    <field name="name"></field>
+    <field name="model">$1</field>
+    <field name="inherit_id" ref="$2"/>
+    <field name="arch" type="xml">
+        <${3:form}>
+        	$0
+        </$3>
+    </field>
+</record>"#;
+
 #[derive(Debug)]
 enum RefKind<'a> {
 	/// `<field name=bar ref=".."/>`
@@ -114,7 +125,7 @@ impl Backend {
 							"menuitem" => Record::menuitem(offset, current_module, path_uri, &mut reader, rope),
 							_ => unreachable!(),
 						};
-						let record = match record {
+						let (record, metadata) = match record {
 							Ok(Some(rec)) => rec,
 							Ok(None) => {
 								if local.as_str() != "template" {
@@ -144,11 +155,12 @@ impl Backend {
 						};
 						let range = rope_conv(record.location.range, rope);
 						record_ranges.push(range);
-						if let Some(prefix) = record_prefix.as_mut() {
-							self.index
-								.records
-								.insert(_I(record.qualified_id()).into(), record, Some(prefix));
-						}
+						self.index.records.insert(
+							_I(record.qualified_id()).into(),
+							record,
+							metadata,
+							record_prefix.as_deref_mut(),
+						);
 					} else if local.as_str() == "templates" {
 						let mut entries = vec![];
 						if let Err(err) = gather_templates(path_uri, &mut reader, rope, &mut entries, false) {
@@ -262,6 +274,7 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			scope,
+			arch_model: _,
 		} = self.index.gather_refs(cursor_by_char, &mut reader, slice)?;
 
 		let Some((mut needle, _)) = ref_at_cursor else {
@@ -368,6 +381,7 @@ impl Backend {
 			ref_kind,
 			model_filter,
 			scope,
+			arch_model: _,
 		} = self.index.gather_refs(offset_at_cursor, &mut reader, slice)?;
 
 		let (mut needle, ref_range) = some!(ref_at_cursor);
@@ -560,6 +574,7 @@ impl Index {
 			ref_kind,
 			model_filter,
 			scope,
+			arch_model,
 		} = self.gather_refs(offset_at_cursor, reader, rope)?;
 		let (Some((value, value_range)), Some(record_field)) = (ref_at_cursor, ref_kind) else {
 			return Ok(None);
@@ -600,6 +615,7 @@ impl Index {
 					rope,
 					Some(&[ImStr::from(_R(relation))]),
 					current_module,
+					arch_model.map(|model| _I(&model).into()),
 					&mut items,
 				)?
 			}
@@ -650,6 +666,7 @@ impl Index {
 					rope,
 					model_filter.as_deref(),
 					current_module,
+					None,
 					&mut items,
 				)?;
 			}
@@ -1157,6 +1174,7 @@ impl Index {
 			ref_kind,
 			model_filter,
 			scope,
+			arch_model: arch_model.map(|arch_model| ImStr::from(arch_model.as_str())),
 		})
 	}
 	/// [Type::Value] may be inserted by this method.
@@ -1181,6 +1199,29 @@ impl Index {
 	}
 }
 
+pub fn add_xml_snippets(res: Option<CompletionResponse>) -> CompletionResponse {
+	let mut res = res.unwrap_or_else(|| CompletionResponse::List(Default::default()));
+	let list = match &mut res {
+		CompletionResponse::List(CompletionList { items, .. }) => items,
+		CompletionResponse::Array(items) => items,
+	};
+	list.push(CompletionItem {
+		kind: Some(CompletionItemKind::SNIPPET),
+		label: "view-inherit".to_string(),
+		insert_text: Some(VIEW_INHERIT_SNIPPET.to_string()),
+		insert_text_format: Some(InsertTextFormat::SNIPPET),
+		..Default::default()
+	});
+	list.push(CompletionItem {
+		kind: Some(CompletionItemKind::SNIPPET),
+		label: "field".to_string(),
+		insert_text: Some(r#"<field name="$1"></field>"#.to_string()),
+		insert_text_format: Some(InsertTextFormat::SNIPPET),
+		..Default::default()
+	});
+	res
+}
+
 #[derive(Debug)]
 struct XmlRefs<'a> {
 	ref_at_cursor: Option<(&'a str, core::ops::Range<usize>)>,
@@ -1188,6 +1229,8 @@ struct XmlRefs<'a> {
 	model_filter: Option<Vec<ImStr>>,
 	/// used for Python inline expressions
 	scope: Scope,
+	/// in the context of an ir.ui.view record, this is the target model
+	arch_model: Option<ImStr>,
 }
 
 #[inline]
