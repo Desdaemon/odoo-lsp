@@ -402,10 +402,17 @@ impl LanguageServer for Backend {
 			document.rope.clone()
 		};
 		if ext == "xml" {
-			let completions = self.xml_completions(params, rope.slice(..));
+			let pos = params.text_document_position.position;
+			let completions = self.xml_completions(&params, rope.slice(..));
 			match completions {
 				Ok(inner @ Some(_)) => Ok(inner),
-				Ok(None) => Ok(Some(add_xml_snippets(None))),
+				Ok(None) => {
+					if self.xml_is_cursor_in_text(uri, pos, rope.slice(..)).unwrap_or(false) {
+						Ok(Some(add_xml_snippets(None)))
+					} else {
+						Ok(None)
+					}
+				}
 				Err(report) => {
 					self.client
 						.show_message(MessageType::ERROR, format!("error during xml completion:\n{report}"))

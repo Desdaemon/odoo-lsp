@@ -240,7 +240,7 @@ impl Backend {
 	}
 	pub fn xml_completions(
 		&self,
-		params: CompletionParams,
+		params: &CompletionParams,
 		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<CompletionResponse>> {
 		let position = params.text_document_position.position;
@@ -262,6 +262,19 @@ impl Backend {
 			relative_offset,
 			&mut reader,
 		)
+	}
+	pub fn xml_is_cursor_in_text(&self, uri: &Uri, position: Position, rope: RopeSlice<'_>) -> anyhow::Result<bool> {
+		let (slice, ByteOffset(offset_at_cursor), _) = self.record_slice(rope, uri, position)?;
+		let slice_str = Cow::from(slice);
+		let reader = Tokenizer::from(slice_str.as_ref());
+		for token in reader {
+			match token? {
+				Token::Text { text, .. } if text.range().contains(&offset_at_cursor) => return Ok(true),
+				other if token_span(&other).range().contains_end(offset_at_cursor) => return Ok(false),
+				_ => {}
+			}
+		}
+		Ok(false)
 	}
 	pub fn xml_jump_def(&self, params: GotoDefinitionParams, rope: RopeSlice<'_>) -> anyhow::Result<Option<Location>> {
 		let position = params.text_document_position_params.position;
@@ -1205,20 +1218,40 @@ pub fn add_xml_snippets(res: Option<CompletionResponse>) -> CompletionResponse {
 		CompletionResponse::List(CompletionList { items, .. }) => items,
 		CompletionResponse::Array(items) => items,
 	};
-	list.push(CompletionItem {
-		kind: Some(CompletionItemKind::SNIPPET),
-		label: "view-inherit".to_string(),
-		insert_text: Some(VIEW_INHERIT_SNIPPET.to_string()),
-		insert_text_format: Some(InsertTextFormat::SNIPPET),
-		..Default::default()
-	});
-	list.push(CompletionItem {
-		kind: Some(CompletionItemKind::SNIPPET),
-		label: "field".to_string(),
-		insert_text: Some(r#"<field name="$1"></field>"#.to_string()),
-		insert_text_format: Some(InsertTextFormat::SNIPPET),
-		..Default::default()
-	});
+	list.extend([
+		CompletionItem {
+			kind: Some(CompletionItemKind::SNIPPET),
+			label: "view-inherit".to_string(),
+			insert_text: Some(VIEW_INHERIT_SNIPPET.to_string()),
+			insert_text_format: Some(InsertTextFormat::SNIPPET),
+			..Default::default()
+		},
+		CompletionItem {
+			kind: Some(CompletionItemKind::SNIPPET),
+			label: "field".to_string(),
+			insert_text: Some(r#"<field name="$1"></field>"#.to_string()),
+			insert_text_format: Some(InsertTextFormat::SNIPPET),
+			..Default::default()
+		},
+		CompletionItem {
+			kind: Some(CompletionItemKind::SNIPPET),
+			label: "xpath".to_string(),
+			insert_text: Some(
+				r#"<xpath expr="${1://div[hasclass('sample')]}" position="${2:inside}">$0</xpath>"#.to_string(),
+			),
+			insert_text_format: Some(InsertTextFormat::SNIPPET),
+			..Default::default()
+		},
+		CompletionItem {
+			kind: Some(CompletionItemKind::SNIPPET),
+			label: "groupby".to_string(),
+			insert_text: Some(
+				r#"<filter name="group_$1" string="$2" domain="[]" context="{'group_by': '$1'}"/>"#.to_string(),
+			),
+			insert_text_format: Some(InsertTextFormat::SNIPPET),
+			..Default::default()
+		},
+	]);
 	res
 }
 
