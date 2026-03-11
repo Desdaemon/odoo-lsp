@@ -209,7 +209,7 @@ impl Backend {
 																&& let Some(fields) = &props.fields && let Some(
 																field_key,
 															) = _G(field_name) && let Some(field_info) =
-																fields.get(&field_key.into())
+																fields.get(&field_key)
 															{
 																// Check if this field has a relational type
 																if let FieldKind::Relational(relation) =
@@ -467,7 +467,7 @@ impl Backend {
 											// Check if this field has a relational type
 											if let Some(props) = self.index.models.populate_properties(model_key, &[])
 												&& let Some(fields) = &props.fields && let Some(field_key) =
-												_G(field_name) && let Some(field_info) = fields.get(&field_key.into())
+												_G(field_name) && let Some(field_info) = fields.get(&field_key)
 												&& let FieldKind::Relational(relation) = field_info.kind
 											{
 												field_model = Some(relation.into());
@@ -520,7 +520,7 @@ impl Backend {
 							&& let Type::DictBag(dict) = type_cache().resolve(tid)
 						{
 							let mut items = MaxVec::new(completions_limit);
-							let dict = dict.into_iter().flat_map(|(key, _)| match key {
+							let dict = dict.iter().flat_map(|(key, _)| match key {
 								DictKey::String(str) => Some(str.to_string()),
 								_ => None,
 							});

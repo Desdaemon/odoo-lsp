@@ -64,10 +64,7 @@ impl Backend {
 				let range = capture.node.byte_range();
 				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
 					let key = some!(_G(&contents[range.shrink(1)]));
-					return Ok(some!(self.index.templates.get(&key.into()))
-						.location
-						.clone()
-						.map(Into::into));
+					return Ok(some!(self.index.templates.get(&key)).location.clone().map(Into::into));
 				}
 			}
 		}
@@ -132,7 +129,7 @@ impl Backend {
 				if capture.index == JsQuery::TemplateName as u32 && range.contains(&offset) {
 					let key = &contents[range.shrink(1)];
 					let key = some!(_G(key));
-					let template = some!(self.index.templates.get(&key.into()));
+					let template = some!(self.index.templates.get(&key));
 					return Ok(Some(
 						template
 							.descendants

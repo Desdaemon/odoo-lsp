@@ -697,7 +697,7 @@ impl Index {
 					lsp_kind = CompletionItemKind::FIELD;
 					if let Some(field_key) = _G(&label)
 						&& let Some(ref fields) = model_entry.fields
-						&& let Some(field) = fields.get(&field_key.into())
+						&& let Some(field) = fields.get(&field_key)
 					{
 						let mut description = None;
 						if let FieldKind::Relational(rel) = field.kind {
@@ -738,7 +738,7 @@ impl Index {
 		items: &mut MaxVec<CompletionItem>,
 	) -> anyhow::Result<()> {
 		let component = ok!(_G(component), "(complete_component_prop) component");
-		let component = ok!(self.components.get(&component.into()), "component");
+		let component = ok!(self.components.get(&component), "component");
 		let range = rope_conv(range, rope);
 		let completions = component.props.iter().map(|(prop, desc)| {
 			let prop = _R(prop);
@@ -795,9 +795,9 @@ impl Index {
 		let method_name = _R(method);
 		let rtype = self.eval_method_rtype(method.into(), model_key, None);
 		let rtype = rtype.and_then(|rtype| self.type_display(rtype));
-		let entry = self.models.get(&model_key.into())?;
+		let entry = self.models.get(&model_key)?;
 		let methods = entry.methods.as_ref()?;
-		let method_entry = methods.get(&method.into())?;
+		let method_entry = methods.get(&method)?;
 
 		completion.documentation = Some(Documentation::MarkupContent(MarkupContent {
 			kind: MarkupKind::Markdown,
@@ -861,7 +861,7 @@ impl Index {
 		range: Option<Range>,
 	) -> anyhow::Result<Option<Hover>> {
 		let type_fragment = match type_cache().resolve(type_) {
-			Type::Method(model, method) => return self.hover_property_name(&method, _R(model), range),
+			Type::Method(model, method) => return self.hover_property_name(method, _R(model), range),
 			_ => self.type_display(type_),
 		};
 		let type_fragment = type_fragment.as_deref().unwrap_or("Unknown");
@@ -885,9 +885,9 @@ impl Index {
 			.and_then(|raw| serde_json::from_value(raw).ok())?;
 		let field = _G(&completion.label)?;
 		let model = _G(model)?;
-		let mut entry = self.models.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
+		let mut entry = self.models.try_get_mut(&model).expect(format_loc!("deadlock"))?;
 		let fields = entry.fields.as_mut()?;
-		let field_entry = fields.get(&field.into()).cloned()?;
+		let field_entry = fields.get(&field).cloned()?;
 		drop(entry);
 
 		let type_ = _R(field_entry.type_);
@@ -936,7 +936,7 @@ impl Index {
 		let prop = _G(name);
 		if let Some(prop) = prop
 			&& let Some(ref fields) = entry.fields
-			&& let Some(field) = fields.get(&prop.into())
+			&& let Some(field) = fields.get(&prop)
 		{
 			Ok(Some(Hover {
 				range,
@@ -947,13 +947,13 @@ impl Index {
 			}))
 		} else if let Some(prop) = prop
 			&& let Some(ref methods) = entry.methods
-			&& methods.contains_key(&prop.into())
+			&& methods.contains_key(&prop)
 		{
 			drop(entry);
 			let rtype = self.eval_method_rtype(prop.into(), model_key, None);
 			let rtype = rtype.and_then(|rtype| self.type_display(rtype));
-			let model = self.models.get(&model_key.into()).unwrap();
-			let method = model.methods.as_ref().unwrap().get(&prop.into()).unwrap();
+			let model = self.models.get(&model_key).unwrap();
+			let method = model.methods.as_ref().unwrap().get(&prop).unwrap();
 			Ok(Some(Hover {
 				range,
 				contents: HoverContents::Markup(MarkupContent {
@@ -1020,7 +1020,7 @@ impl Index {
 	}
 	pub fn template_references(&self, name: &str, include_definition: bool) -> anyhow::Result<Option<Vec<Location>>> {
 		let name = some!(_G(name));
-		let template = some!(self.templates.get(&name.into()));
+		let template = some!(self.templates.get(&name));
 		let definition_location = if include_definition {
 			template.value().location.clone().map(Location::from)
 		} else {
@@ -1034,8 +1034,8 @@ impl Index {
 			.chain(descendant_locations)
 			.collect::<Vec<_>>();
 
-		if let Some(component) = self.components.by_template.get(&name.into())
-			&& let Some(component) = self.components.get(&component)
+		if let Some(component) = self.components.by_template.get(&name)
+			&& let Some(component) = self.components.get(component.value())
 			&& let Some(ref location) = component.location
 		{
 			locations.push(location.clone().into());
@@ -1048,14 +1048,14 @@ impl Index {
 		let model_key = _I(model);
 		let entry = some!(self.models.populate_properties(model_key.into(), &[]));
 		let prop = some!(_G(prop));
-		let method = some!(some!(entry.methods.as_ref()).get(&prop.into()));
+		let method = some!(some!(entry.methods.as_ref()).get(&prop));
 		Ok(Some(
 			method.locations.iter().map(|loc| loc.deref().clone().into()).collect(),
 		))
 	}
 	pub fn hover_record(&self, xml_id: &str, range: Option<Range>) -> anyhow::Result<Option<Hover>> {
 		let key = some!(_G(xml_id));
-		let record = some!(self.records.get(&key.into()));
+		let record = some!(self.records.get(&key));
 		let model = match record.model.as_ref() {
 			Some(model) => _R(*model),
 			None => "<unknown>",
@@ -1089,7 +1089,7 @@ impl Index {
 	}
 	pub fn jump_def_template_name(&self, name: &str) -> anyhow::Result<Option<Location>> {
 		let name = some!(_G(name));
-		let entry = some!(self.templates.get(&name.into()));
+		let entry = some!(self.templates.get(&name));
 		let location = some!(&entry.value().location);
 		Ok(Some(location.clone().into()))
 	}
@@ -1099,7 +1099,7 @@ impl Index {
 	}
 	pub fn hover_template(&self, name: &str, range: Option<Range>) -> Option<Hover> {
 		let key = _G(name)?;
-		let template = self.templates.get(&key.into())?;
+		let template = self.templates.get(&key)?;
 		let module = template
 			.location
 			.as_ref()
@@ -1122,11 +1122,11 @@ impl Index {
 		let entry = some!(self.models.populate_properties(model_key.into(), &[]));
 		let prop = some!(_G(property));
 		if let Some(ref fields) = entry.fields
-			&& let Some(field) = fields.get(&prop.into())
+			&& let Some(field) = fields.get(&prop)
 		{
 			Ok(Some(field.location.deref().clone().into()))
 		} else if let Some(ref methods) = entry.methods
-			&& let Some(method) = methods.get(&prop.into())
+			&& let Some(method) = methods.get(&prop)
 		{
 			Ok(Some(some!(method.locations.first()).deref().clone().into()))
 		} else {
@@ -1146,7 +1146,7 @@ impl Index {
 		identifier: Option<&str>,
 	) -> anyhow::Result<Option<Hover>> {
 		let model_key = some!(_G(model_str_key));
-		let model = some!(self.models.get(&model_key.into()));
+		let model = some!(self.models.get(&model_key));
 		Ok(Some(Hover {
 			range,
 			contents: HoverContents::Markup(MarkupContent {
@@ -1157,7 +1157,7 @@ impl Index {
 	}
 	pub fn jump_def_model(&self, model: &str) -> anyhow::Result<Option<Location>> {
 		let model = some!(_G(model));
-		if let Some(model) = self.models.get(&model.into())
+		if let Some(model) = self.models.get(&model)
 			&& let Some(ModelLocation(ref base, _)) = model.base
 		{
 			return Ok(Some(base.clone().into()));
@@ -1184,7 +1184,7 @@ impl Index {
 			}
 		}
 		let record_id = some!(_G(value));
-		Ok((self.records.get(&record_id.into())).map(|record| record.location.clone().into()))
+		Ok((self.records.get(&record_id)).map(|record| record.location.clone().into()))
 	}
 	pub fn complete_action_tag(
 		&self,
@@ -1210,7 +1210,7 @@ impl Index {
 	}
 	pub fn hover_component(&self, name: &str, range: Option<Range>) -> Option<Hover> {
 		let key = _G(name)?;
-		let component = self.components.get(&key.into())?;
+		let component = self.components.get(&key)?;
 		let module = component
 			.location
 			.as_ref()

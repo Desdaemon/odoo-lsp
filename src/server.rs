@@ -474,7 +474,7 @@ impl LanguageServer for Backend {
 					let Some(model) = _G(&completion.label) else {
 						break 'resolve;
 					};
-					let Some(mut entry) = self.index.models.get_mut(&model.into()) else {
+					let Some(mut entry) = self.index.models.get_mut(&model) else {
 						break 'resolve;
 					};
 					if let Err(err) = entry.resolve_details() {
@@ -770,7 +770,7 @@ impl LanguageServer for Backend {
 			// since users can readjust subcomponents' names at will.
 			let component = some!(_G(subcomponent));
 			let location = {
-				let component = some!(self.index.components.get(&component.into()));
+				let component = some!(self.index.components.get(&component));
 				some!(component.location.clone())
 			};
 			_ = self

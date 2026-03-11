@@ -386,7 +386,7 @@ impl Index {
 					// Check if all transitive dependencies are available (not necessarily loaded)
 					let missing_deps: Vec<ModuleName> = transitive_deps
 						.iter()
-						.filter(|dep| **dep != module_key && !all_available_modules.contains(dep))
+						.filter(|&dep| *dep != module_key && !all_available_modules.contains(dep))
 						.cloned()
 						.collect();
 
@@ -394,7 +394,7 @@ impl Index {
 						// Now check if all transitive dependencies are loaded
 						let unloaded_deps: Vec<ModuleName> = transitive_deps
 							.iter()
-							.filter(|dep| **dep != module_key && !loaded_modules.contains(dep))
+							.filter(|&dep| *dep != module_key && !loaded_modules.contains(dep))
 							.cloned()
 							.collect();
 
@@ -866,7 +866,7 @@ impl Index {
 				for component in path.components() {
 					if let Component::Normal(norm) = component
 						&& let Some(module) = _G(norm.to_string_lossy())
-						&& entry.value().contains_key(&module.into())
+						&& entry.value().contains_key(&module)
 					{
 						return Some(module.into());
 					}
@@ -914,7 +914,7 @@ impl Index {
 			// Find the root and module entry
 			for root_entry in self.roots.iter() {
 				debug!("Checking root: {}", root_entry.key().display());
-				if let Some(module_entry) = root_entry.get(&module_key.into()) {
+				if let Some(module_entry) = root_entry.get(&module_key) {
 					let root_path = root_entry.key();
 					let module_dir = root_path.join(&module_entry.path);
 					debug!("Found module at: {}", module_dir.display());

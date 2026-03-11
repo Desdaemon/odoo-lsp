@@ -54,6 +54,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "append-only-vec"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2114736faba96bcd79595c700d03183f61357b9fbce14852515e59f3bee4ed4a"
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1480,6 +1486,7 @@ name = "odoo-lsp"
 version = "0.6.1"
 dependencies = [
  "anyhow",
+ "append-only-vec",
  "bitflags 2.10.0",
  "const_format",
  "dashmap 6.1.0",

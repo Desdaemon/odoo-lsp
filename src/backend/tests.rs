@@ -12,9 +12,9 @@ class Foo(models.Model):
 "#;
 	let mut index = Index::default();
 	index_models_with_properties(&mut index, Some(py), None, None);
-	let entry = index.models.get(&_I("test.model").into()).unwrap();
+	let entry = index.models.get(&_I("test.model")).unwrap();
 	let methods = entry.methods.as_ref().unwrap();
-	let method = methods.get(&_I("test_method").into()).unwrap();
+	let method = methods.get(&_I("test_method")).unwrap();
 	let doc = index.method_docstring("test_method", method, Some("str"));
 	println!("method doc: {doc}");
 	// Only require the method name to appear
@@ -55,9 +55,9 @@ class Foo(models.Model):
 "#;
 	let mut index = Index::default();
 	index_models_with_properties(&mut index, Some(py), None, None);
-	let entry = index.models.get(&_I("foo.model").into()).unwrap();
+	let entry = index.models.get(&_I("foo.model")).unwrap();
 	let fields = entry.fields.as_ref().unwrap();
-	let field = fields.get(&_I("foo_field").into()).unwrap();
+	let field = fields.get(&_I("foo_field")).unwrap();
 	let doc = index.field_docstring(field, true);
 	assert!(doc.contains("(field) Char("));
 }
@@ -125,7 +125,7 @@ class Foo(models.Model):
 "#;
 	let mut index = Index::default();
 	index_models_with_properties(&mut index, Some(py), None, None);
-	let entry = index.models.get(&_I("foo.model").into()).unwrap();
+	let entry = index.models.get(&_I("foo.model")).unwrap();
 	let doc = index.model_docstring(&entry, Some("foo.model"), Some("Foo"));
 	println!("model doc: {doc}");
 	assert!(doc.contains("foo.model"));

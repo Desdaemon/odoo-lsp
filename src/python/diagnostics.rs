@@ -102,7 +102,7 @@ impl Backend {
 						for (xmlid, range) in xmlids {
 							let mut id_found = false;
 							if let Some(id) = _G(xmlid) {
-								id_found = self.index.records.contains_key(&id.into());
+								id_found = self.index.records.contains_key(&id);
 							}
 
 							if !id_found {
@@ -123,7 +123,7 @@ impl Backend {
 								let range = capture.node.byte_range().shrink(1);
 								let model = &contents[range.clone()];
 								let model_key = _G(model);
-								let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
+								let has_model = model_key.map(|model| self.index.models.contains_key(&model));
 								if !has_model.unwrap_or(false) {
 									diagnostics.push(Diagnostic {
 										range: rope_conv(range.map_unit(ByteOffset), rope),
@@ -146,7 +146,7 @@ impl Backend {
 							let range = capture.node.byte_range().shrink(1);
 							let model = &contents[range.clone()];
 							let model_key = _G(model);
-							let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
+							let has_model = model_key.map(|model| self.index.models.contains_key(&model));
 							if !has_model.unwrap_or(false) {
 								diagnostics.push(Diagnostic {
 									range: rope_conv(range.map_unit(ByteOffset), rope),
@@ -234,7 +234,7 @@ impl Backend {
 						let range = node.byte_range().shrink(1);
 						let model = &contents[range.clone()];
 						let model_key = _G(model);
-						let has_model = model_key.map(|model| self.index.models.contains_key(&model.into()));
+						let has_model = model_key.map(|model| self.index.models.contains_key(&model));
 						if !has_model.unwrap_or(false) {
 							diagnostics.push(Diagnostic {
 								range: rope_conv(range.map_unit(ByteOffset), rope),
@@ -339,11 +339,11 @@ impl Backend {
 			};
 			let lhs_t = type_cache().resolve(lhs_t);
 
-			let Some(model_name) = (self.index).try_resolve_model(&lhs_t, scope) else {
+			let Some(model_name) = (self.index).try_resolve_model(lhs_t, scope) else {
 				return ControlFlow::Continue(entered);
 			};
 
-			if (self.index).has_attribute(&lhs_t, &contents[attribute.byte_range()], scope) {
+			if (self.index).has_attribute(lhs_t, &contents[attribute.byte_range()], scope) {
 				return ControlFlow::Continue(entered);
 			}
 
@@ -501,7 +501,7 @@ impl Backend {
 			return;
 		}
 		let mut has_property = false;
-		if self.index.models.contains_key(&model.into()) {
+		if self.index.models.contains_key(&model) {
 			let Some(entry) = self.index.models.populate_properties(model.into(), &[]) else {
 				return;
 			};
@@ -519,10 +519,10 @@ impl Backend {
 			if let Some(key) = _G(needle) {
 				if expect_field {
 					let Some(fields) = entry.fields.as_ref() else { return };
-					has_property = fields.contains_key(&key.into())
+					has_property = fields.contains_key(&key)
 				} else {
 					let Some(methods) = entry.methods.as_ref() else { return };
-					has_property = methods.contains_key(&key.into());
+					has_property = methods.contains_key(&key);
 				}
 			}
 		}
@@ -578,7 +578,7 @@ impl Backend {
 
 					// Extract the dependency name without quotes
 					let dep_name = &contents[dep_range.shrink(1)];
-					let dep_symbol = _I(dep_name).into();
+					let dep_symbol = _I(dep_name);
 
 					// Check if the dependency is available
 					if !all_available_modules.contains(&dep_symbol) {
@@ -617,7 +617,7 @@ impl Backend {
 		if let Some(model_entry) = self.index.models.get(&model_name) {
 			// Check fields
 			if let Some(fields) = model_entry.fields.as_ref()
-				&& let Some(field) = fields.get(&_I(attr_name).into())
+				&& let Some(field) = fields.get(&_I(attr_name))
 				&& let Some(field_module) = self.index.find_module_of(&field.location.path.to_path())
 				&& field_module == module_name
 				&& let Some(uri) = Uri::from_file_path(field.location.path.to_path())
@@ -635,7 +635,7 @@ impl Backend {
 			// Check methods if field not found
 			if !property_found
 				&& let Some(methods) = model_entry.methods.as_ref()
-				&& let Some(method) = methods.get(&_I(attr_name).into())
+				&& let Some(method) = methods.get(&_I(attr_name))
 				&& let Some(loc) = method.locations.first()
 				&& let Some(method_module) = self.index.find_module_of(&loc.path.to_path())
 				&& method_module == module_name

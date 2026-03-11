@@ -329,12 +329,12 @@ impl Backend {
 				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), needle));
 				let model = some!(self.index.type_of(object, &scope, needle));
 				let model = type_cache().resolve(model);
-				let model = some!(self.index.try_resolve_model(&model, &Scope::default()));
+				let model = some!(self.index.try_resolve_model(model, &Scope::default()));
 				self.index.jump_def_property_name(field, _R(model))
 			}
 			Some(RefKind::Component) => {
 				let component = some!(_G(needle));
-				let component = some!(self.index.components.get(&component.into()));
+				let component = some!(self.index.components.get(&component));
 				let Some(ComponentTemplate::Name(template)) = component.template.as_ref() else {
 					return Ok(None);
 				};
@@ -471,7 +471,7 @@ impl Backend {
 				};
 				let model = some!(self.index.type_of(object, &scope, needle));
 				let model = type_cache().resolve(model);
-				let model = some!(self.index.try_resolve_model(&model, &scope));
+				let model = some!(self.index.try_resolve_model(model, &scope));
 				let anchor = ref_range.start + relative_offset;
 				self.index.hover_property_name(
 					field,
@@ -493,7 +493,7 @@ impl Backend {
 				}
 				let prop = some!(_G(needle));
 				let component = some!(_G(component_key));
-				let component = some!(self.index.components.get(&component.into()));
+				let component = some!(self.index.components.get(&component));
 				let field = some!(component.props.get(&prop.into()));
 				let type_descriptor = field.type_ & !(PropType::Optional | PropType::Array);
 				let needs_paren = field.type_.contains(PropType::Array) && type_descriptor.iter().count() > 1;
@@ -616,7 +616,7 @@ impl Index {
 					let Some(Field {
 						kind: FieldKind::Relational(relation),
 						..
-					}) = fields.get(&relation.into()).map(Arc::as_ref)
+					}) = fields.get(&relation).map(Arc::as_ref)
 					else {
 						return Ok(None);
 					};
@@ -722,7 +722,7 @@ impl Index {
 				let scope = scope.unwrap_or(default_scope);
 				let model = some!(self.type_of(object, &scope, value));
 				let model = type_cache().resolve(model);
-				let model = some!(self.try_resolve_model(&model, &scope));
+				let model = some!(self.try_resolve_model(model, &scope));
 				let needle_end = py_offset.saturating_sub(range.start);
 				let mut needle = field;
 				if !needle.is_empty() && needle_end < needle.len() {
@@ -1201,12 +1201,12 @@ impl Index {
 		normalize(&mut root);
 		let type_ = match self.type_of(root, scope, contents) {
 			Some(tid) => type_cache().resolve(tid),
-			None => Type::Value,
+			None => &Type::Value,
 		};
 		let type_ = self
-			.try_resolve_model(&type_, scope)
+			.try_resolve_model(type_, scope)
 			.map(|model| Type::Model(_R(model).into()))
-			.unwrap_or(type_);
+			.unwrap_or_else(|| type_.clone());
 		scope.insert(identifier.to_string(), type_);
 		Ok(())
 	}
