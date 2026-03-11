@@ -228,7 +228,7 @@ async fn tsconfig(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<
 		let root =
 			pathdiff::diff_paths(entry.key(), &pwd).ok_or_else(|| errloc!("Cannot diff {:?} to pwd", entry.key()))?;
 
-		if entry.contains_key(&_I("base").into()) {
+		if entry.contains_key(&_I("base")) {
 			type_roots.push(root.join("addons/web/tooling/types").to_string_lossy().into_owned());
 			type_roots.push(
 				root.join("addons/mail/static/src/js/tooling/types")

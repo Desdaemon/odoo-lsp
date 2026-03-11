@@ -2,7 +2,6 @@ use std::any::type_name;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -12,7 +11,9 @@ use super::Interner;
 
 /// Type-safe wrapper around [Spur].
 #[repr(transparent)]
+#[derive(derive_more::Deref)]
 pub struct Symbol<T> {
+	#[deref]
 	inner: Spur,
 	_kind: PhantomData<T>,
 }
@@ -26,7 +27,7 @@ impl PathSymbol {
 	///
 	/// Panics if `root` is not a parent/prefix of `path`.
 	pub fn strip_root(root: Spur, path: &Path) -> Self {
-		let path = path.strip_prefix(_R(root)).unwrap();
+		let path = path.strip_prefix(interner().resolve(&root)).unwrap();
 		let path = _I(path.to_string_lossy());
 		PathSymbol(root, path)
 	}
@@ -133,9 +134,16 @@ impl<T> Hash for Symbol<T> {
 	}
 }
 
-impl<T> Deref for Symbol<T> {
-	type Target = Spur;
-	fn deref(&self) -> &Self::Target {
+impl<T> core::borrow::Borrow<Spur> for Symbol<T> {
+	#[inline]
+	fn borrow(&self) -> &Spur {
+		&self.inner
+	}
+}
+
+impl<T> core::borrow::Borrow<Spur> for &'_ Symbol<T> {
+	#[inline]
+	fn borrow(&self) -> &Spur {
 		&self.inner
 	}
 }
@@ -165,8 +173,8 @@ pub fn _I<T: AsRef<str>>(string: T) -> Spur {
 #[inline]
 #[allow(non_snake_case)]
 #[doc(alias = "intern_resolve")]
-pub fn _R<T: Into<Spur>>(token: T) -> &'static str {
-	interner().resolve(&token.into())
+pub fn _R<T: core::borrow::Borrow<Spur>>(token: T) -> &'static str {
+	interner().resolve(token.borrow())
 }
 
 #[inline]

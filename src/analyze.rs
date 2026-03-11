@@ -1,10 +1,11 @@
 //! Methods related to type analysis. The two most important methods are
 //! [`Index::model_of_range`] and [`Index::type_of`].
 
+use core::borrow::Borrow;
 use std::{
 	fmt::{Debug, Write},
 	ops::ControlFlow,
-	sync::{Arc, OnceLock, RwLock, atomic::Ordering},
+	sync::{Arc, OnceLock, atomic::Ordering},
 };
 
 use dashmap::DashMap;
@@ -40,6 +41,12 @@ macro_rules! _T {
 	};
 	($expr:expr) => {
 		$crate::analyze::type_cache().get_or_intern($expr)
+	};
+}
+
+macro_rules! _TR {
+	($expr:expr) => {
+		$crate::analyze::type_cache().resolve($expr)
 	};
 }
 
@@ -171,7 +178,7 @@ impl core::fmt::Display for FunctionParam {
 
 #[derive(Default)]
 pub struct TypeCache {
-	types: RwLock<Vec<Type>>,
+	types: boxcar::Vec<Type>,
 	ids: DashMap<Type, TypeId>,
 }
 
@@ -184,26 +191,19 @@ impl TypeCache {
 		self.intern(type_)
 	}
 	fn intern(&self, type_: Type) -> TypeId {
-		let mut types = self.types.write().unwrap();
-		let id = TypeId(types.len() as u32);
-		types.push(type_.clone());
+		let id = TypeId(self.types.push(type_.clone()).try_into().unwrap());
 		self.ids.insert(type_, id);
 		id
 	}
 	#[inline]
-	pub fn resolve(&self, id: TypeId) -> Type {
-		self.types.read().unwrap()[id.0 as usize].clone()
+	pub fn resolve<T: Borrow<TypeId>>(&self, id: T) -> &Type {
+		unsafe { self.types.get_unchecked(id.borrow().0 as usize) }
 	}
-	pub fn is_dictlike(&self, id: TypeId) -> bool {
-		let types = self.types.read().unwrap();
-		matches!(
-			&unsafe { types.get_unchecked(id.0 as usize) },
-			Type::Dict(..) | Type::DictBag(..)
-		)
+	pub fn is_dictlike(&self, id: &TypeId) -> bool {
+		matches!(self.types[id.0 as usize], Type::Dict(..) | Type::DictBag(..))
 	}
-	pub fn is_dict(&self, id: TypeId) -> bool {
-		let types = self.types.read().unwrap();
-		matches!(&unsafe { types.get_unchecked(id.0 as usize) }, Type::Dict(..))
+	pub fn is_dict(&self, id: &TypeId) -> bool {
+		matches!(self.types[id.0 as usize], Type::Dict(..))
 	}
 }
 
@@ -213,7 +213,7 @@ pub struct TypeId(u32);
 
 impl Debug for TypeId {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		type_cache().resolve(*self).fmt(f)
+		_TR!(*self).fmt(f)
 	}
 }
 
@@ -295,7 +295,7 @@ impl Index {
 	#[inline]
 	pub fn model_of_range(&self, node: Node<'_>, range: ByteRange, contents: &str) -> Option<ModelName> {
 		let (type_at_cursor, scope) = self.type_of_range(node, range, contents)?;
-		self.try_resolve_model(&type_cache().resolve(type_at_cursor), &scope)
+		self.try_resolve_model(_TR!(type_at_cursor), &scope)
 	}
 	pub fn type_of_range(&self, root: Node<'_>, range: ByteRange, contents: &str) -> Option<(TypeId, Scope)> {
 		// Phase 1: Determine the scope.
@@ -358,7 +358,7 @@ impl Index {
 					&& let Some(id) = self.type_of(rhs, scope, contents)
 				{
 					let lhs = &contents[lhs.byte_range()];
-					scope.insert(lhs.to_string(), type_cache().resolve(id));
+					scope.insert(lhs.to_string(), _TR!(id).clone());
 				} else if lhs.kind() == "subscript"
 					&& let Some(map) = dig!(lhs, identifier)
 					&& let Some(key) = dig!(lhs, string(1).string_content(1))
@@ -390,7 +390,7 @@ impl Index {
 
 				if let Some(rhs) = python_next_named_sibling(lhs)
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
-					&& let Some(inner) = self.type_of_iterable(type_cache().resolve(type_))
+					&& let Some(inner) = self.type_of_iterable(type_, _TR!(type_))
 				{
 					self.destructure_into_patternlist_like(lhs, inner, scope, contents);
 				}
@@ -421,7 +421,7 @@ impl Index {
 				if let Some(lhs) = for_in.child_by_field_name("left")
 					&& let Some(rhs) = for_in.child_by_field_name("right")
 					&& let Some(tid) = self.type_of(rhs, scope, contents)
-					&& let Some(inner) = self.type_of_iterable(type_cache().resolve(tid))
+					&& let Some(inner) = self.type_of_iterable(tid, _TR!(tid))
 				{
 					self.destructure_into_patternlist_like(lhs, inner, scope, contents);
 				}
@@ -442,7 +442,7 @@ impl Index {
 						.next()
 						.unwrap();
 					let iter = &contents[iter.byte_range()];
-					scope.insert(iter.to_string(), type_cache().resolve(tid));
+					scope.insert(iter.to_string(), _TR!(tid).clone());
 				}
 			}
 			"call" => {
@@ -493,9 +493,9 @@ impl Index {
 					let mut children = args.named_children(&mut cursor);
 					if let Some(first) = children.by_ref().next()
 						&& let Some(tid) = self.type_of(first, scope, contents)
-						&& let Type::DictBag(update_props) = type_cache().resolve(tid)
+						&& let Type::DictBag(update_props) = _TR!(tid)
 					{
-						properties.extend(update_props);
+						properties.extend(update_props.clone());
 					}
 
 					for named_arg in children {
@@ -516,9 +516,9 @@ impl Index {
 						} else if named_arg.kind() == "dictionary_splat"
 							&& let Some(value) = named_arg.named_child(0)
 							&& let Some(tid) = self.type_of(value, scope, contents)
-							&& let Type::DictBag(update_props) = type_cache().resolve(tid)
+							&& let Type::DictBag(update_props) = _TR!(tid)
 						{
-							properties.extend(update_props);
+							properties.extend(update_props.clone());
 						}
 					}
 
@@ -549,10 +549,10 @@ impl Index {
 						&& let Some(type_) = self.type_of(first_arg, scope, contents)
 					{
 						let alias = &contents[alias.byte_range()];
-						scope.insert(alias.to_string(), type_cache().resolve(type_));
+						scope.insert(alias.to_string(), _TR!(type_).clone());
 					} else if let Some(type_) = self.type_of(value, scope, contents) {
 						let alias = &contents[alias.byte_range()];
-						scope.insert(alias.to_string(), type_cache().resolve(type_));
+						scope.insert(alias.to_string(), _TR!(type_).clone());
 					}
 				}
 			}
@@ -597,7 +597,7 @@ impl Index {
 				let lhs = node.child_by_field_name("value")?;
 				let rhs = node.child_by_field_name("subscript")?;
 				let obj_ty = self.type_of(lhs, scope, contents)?;
-				match type_cache().resolve(obj_ty) {
+				match _TR!(obj_ty) {
 					Type::Env if rhs.kind() == "string" => {
 						Some(_T!(Type::Model(contents[rhs.byte_range().shrink(1)].into())))
 					}
@@ -606,7 +606,7 @@ impl Index {
 					Type::Dict(key, value) => {
 						let rhs = self.type_of(rhs, scope, contents);
 						// FIXME: We trust that the user makes the correct judgment here and returns the type requested.
-						rhs.is_none_or(|rhs| rhs == key).then_some(value)
+						rhs.is_none_or(|rhs| rhs == *key).then_some(*value)
 					}
 					Type::DictBag(properties) => {
 						// compare by key
@@ -615,7 +615,7 @@ impl Index {
 							for (key, value) in properties {
 								match key {
 									DictKey::String(key) if key.as_str() == rhs => {
-										return Some(value);
+										return Some(*value);
 									}
 									DictKey::String(_) | DictKey::Type(_) => {}
 								}
@@ -627,7 +627,7 @@ impl Index {
 						let rhs = self.type_of(rhs, scope, contents)?;
 						for (key, value) in properties {
 							match key {
-								DictKey::Type(key) if key == rhs => return Some(value),
+								DictKey::Type(key) if *key == rhs => return Some(*value),
 								DictKey::Type(_) | DictKey::String(_) => {}
 							}
 						}
@@ -635,7 +635,7 @@ impl Index {
 						None
 					}
 					// FIXME: Again, just trust that the user is doing the right thing.
-					Type::List(ListElement::Occupied(slot)) => Some(slot),
+					Type::List(ListElement::Occupied(slot)) => Some(*slot),
 					_ => None,
 				}
 			}
@@ -693,7 +693,7 @@ impl Index {
 					&& let Some(scrutinee) = for_in_clause.child_by_field_name("left")
 					&& let Some(iteratee) = for_in_clause.child_by_field_name("right")
 					&& let Some(iter_ty) = self.type_of(iteratee, scope, contents)
-					&& let Some(iter_ty) = self.type_of_iterable(type_cache().resolve(iter_ty))
+					&& let Some(iter_ty) = self.type_of_iterable(iter_ty, _TR!(iter_ty))
 				{
 					// FIXME: How to prevent this clone?
 					comprehension_scope = Scope::new(Some(scope.clone()));
@@ -765,11 +765,11 @@ impl Index {
 			_ => None,
 		}
 	}
-	fn type_of_iterable(&self, type_: Type) -> Option<TypeId> {
+	fn type_of_iterable(&self, tid: TypeId, type_: &Type) -> Option<TypeId> {
 		match type_ {
-			Type::Model(_) => Some(_T!(type_)),
-			Type::List(inner) => inner.into(),
-			Type::Iterable(inner) => inner,
+			Type::Model(_) => Some(tid),
+			Type::List(inner) => inner.clone().into(),
+			Type::Iterable(inner) => *inner,
 			// TODO: tuple -> union
 			_ => None,
 		}
@@ -789,8 +789,8 @@ impl Index {
 					let mut cursor = args.walk();
 					let value_id = _T!(Type::Value);
 					let children = args.named_children(&mut cursor).map(|child| {
-						let type_ = type_cache().resolve(self.type_of(child, scope, contents).unwrap_or(value_id));
-						self.type_of_iterable(type_).unwrap_or(value_id)
+						let tid = self.type_of(child, scope, contents).unwrap_or(value_id);
+						self.type_of_iterable(tid, _TR!(tid)).unwrap_or(value_id)
 					});
 					let tuple = _T!(Type::Tuple(children.collect()));
 					return Some(_T!(Type::Iterable(Some(tuple))));
@@ -821,7 +821,7 @@ impl Index {
 		}
 
 		let func = self.type_of(func, scope, contents)?;
-		match type_cache().resolve(func) {
+		match _TR!(func) {
 			Type::RefFn => {
 				// (call (_) @func (argument_list . (string) @xml_id))
 				let xml_id = call.named_child(1)?.named_child(0)?;
@@ -831,14 +831,14 @@ impl Index {
 					None
 				}
 			}
-			Type::ModelFn(model) => Some(_T!(Type::Model(model))),
+			Type::ModelFn(model) => Some(_T!(Type::Model(model.clone()))),
 			Type::Super => Some(_T!(scope.get(scope.super_.as_deref()?).cloned()?)),
-			Type::Method(model, mapped) if mapped == "mapped" => {
+			Type::Method(model, mapped) if mapped.as_str() == "mapped" => {
 				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
 				let mapped = call.named_child(1)?.named_child(0)?;
 				match mapped.kind() {
 					"string" => {
-						let mut model: Spur = model.into();
+						let mut model: Spur = (*model).into();
 						let mut mapped = &contents[mapped.byte_range().shrink(1)];
 						self.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
 						let type_ = self.type_of_attribute(&Type::Model(_R(model).into()), mapped, scope)?;
@@ -857,7 +857,7 @@ impl Index {
 						}
 						let body = mapped.child_by_field_name(b"body")?;
 						let type_ = self.type_of(body, &scope, contents).unwrap_or_else(|| _T!(Type::Value));
-						let type_ = Index::wrap_in_container(type_cache().resolve(type_), |it| {
+						let type_ = Index::wrap_in_container(_TR!(type_).clone(), |it| {
 							Type::List(ListElement::Occupied(_T!(it)))
 						});
 						Some(_T!(type_))
@@ -865,12 +865,12 @@ impl Index {
 					_ => None,
 				}
 			}
-			Type::Method(model, grouped) if grouped == "grouped" => {
+			Type::Method(model, grouped) if grouped.as_str() == "grouped" => {
 				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
 				let grouped = call.named_child(1)?.named_child(0)?;
 				match grouped.kind() {
 					"string" => {
-						let mut model: Spur = model.into();
+						let mut model: Spur = (*model).into();
 						let mut grouped = &contents[grouped.byte_range().shrink(1)];
 						self.models.resolve_mapped(&mut model, &mut grouped, None).ok()?;
 						let model = Type::Model(_R(model).into());
@@ -894,7 +894,7 @@ impl Index {
 					_ => None,
 				}
 			}
-			Type::Method(model, read_group) if read_group == "_read_group" => {
+			Type::Method(model, read_group) if read_group.as_str() == "_read_group" => {
 				let mut groupby = vec![];
 				let mut aggs = vec![];
 				let args = call.named_child(1)?;
@@ -939,7 +939,7 @@ impl Index {
 
 				groupby.extend(aggs);
 				groupby.dedup();
-				let model = Type::Model(_R(model).into());
+				let model = Type::Model(_R(*model).into());
 				let value_id = _T!(Type::Value);
 				// FIXME: This is not quite correct as only recordset and numeric aggregations make sense.
 				let aggs = groupby
@@ -952,15 +952,15 @@ impl Index {
 				Some(_T!(Type::List(ListElement::Occupied(tuple))))
 			}
 			Type::Method(model, method) => {
-				let method = _G(&method)?;
-				let args = self.prepare_call_scope(model, method.into(), call, scope, contents);
-				Some(self.eval_method_rtype(method.into(), *model, args)?)
+				let method = _G(method)?;
+				let args = self.prepare_call_scope(*model, method.into(), call, scope, contents);
+				Some(self.eval_method_rtype(method.into(), **model, args)?)
 			}
-			Type::PythonMethod(dict, items) if type_cache().is_dict(dict) && items == "items" => {
-				let Type::Dict(lhs, rhs) = type_cache().resolve(dict) else {
+			Type::PythonMethod(dict, items) if type_cache().is_dict(dict) && *items == "items" => {
+				let Type::Dict(lhs, rhs) = _TR!(dict) else {
 					unreachable!()
 				};
-				let tuple = _T!(Type::Tuple(vec![lhs, rhs]));
+				let tuple = _T!(Type::Tuple(vec![*lhs, *rhs]));
 				Some(_T!(Type::Iterable(Some(tuple))))
 			}
 			Type::Env
@@ -1019,12 +1019,12 @@ impl Index {
 					continue;
 				};
 				args.push(key.into());
-				argtypes.insert(key.to_string(), type_cache().resolve(tid));
+				argtypes.insert(key.to_string(), _TR!(tid).clone());
 			} else if let Some(FunctionParam::Param(argname)) = arguments.get(idx)
 				&& let Some(tid) = self.type_of(arg, scope, contents)
 			{
 				args.push(argname.clone());
-				argtypes.insert(argname.to_string(), type_cache().resolve(tid));
+				argtypes.insert(argname.to_string(), _TR!(tid).clone());
 			} else {
 				continue;
 			}
@@ -1036,7 +1036,7 @@ impl Index {
 	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &str) -> Option<TypeId> {
 		let lhs = attribute.named_child(0)?;
 		let lhsid = self.type_of(lhs, scope, contents)?;
-		let lhs = type_cache().resolve(lhsid);
+		let lhs = _TR!(lhsid);
 		let rhs = attribute.named_child(1)?;
 		let attrname = &contents[rhs.byte_range()];
 		match &contents[rhs.byte_range()] {
@@ -1046,20 +1046,20 @@ impl Index {
 			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
 			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
 			"mapped" | "grouped" | "_read_group" => {
-				let model = self.try_resolve_model(&lhs, scope)?;
+				let model = self.try_resolve_model(lhs, scope)?;
 				Some(Type::Method(model, attrname.into()))
 			}
 			dict_method @ "items" if lhs.is_dict() => Some(Type::PythonMethod(lhsid, dict_method.into())),
 			func if MODEL_METHODS.contains(func) => match lhs {
-				Type::Model(model) => Some(Type::ModelFn(model)),
+				Type::Model(model) => Some(Type::ModelFn(model.clone())),
 				Type::Record(xml_id) => {
 					let xml_id = _G(xml_id)?;
-					let record = self.records.get(&xml_id.into())?;
+					let record = self.records.get(&xml_id)?;
 					Some(Type::ModelFn(_R(*record.model.as_deref()?).into()))
 				}
 				_ => None,
 			},
-			ident if rhs.kind() == "identifier" => self.type_of_attribute(&lhs, ident, scope),
+			ident if rhs.kind() == "identifier" => self.type_of_attribute(lhs, ident, scope),
 			_ => None,
 		}
 		.map(|it| _T!(it))
@@ -1128,7 +1128,7 @@ impl Index {
 			Type::Record(xml_id) => {
 				// TODO: Refactor into method
 				let xml_id = _G(xml_id)?;
-				let record = self.records.get(&xml_id.into())?;
+				let record = self.records.get(&xml_id)?;
 				record.model
 			}
 			Type::Super => self.try_resolve_model(scope.get(scope.super_.as_deref()?)?, scope),
@@ -1140,11 +1140,11 @@ impl Index {
 		self.type_display_indent(type_, 0)
 	}
 	fn type_display_indent(&self, type_: TypeId, indent: usize) -> Option<String> {
-		match type_cache().resolve(type_) {
+		match _TR!(type_) {
 			Type::Dict(lhs, rhs) => {
-				let lhs = self.type_display_indent(lhs, indent);
+				let lhs = self.type_display_indent(*lhs, indent);
 				let lhs = lhs.as_deref().unwrap_or("...");
-				let rhs = self.type_display_indent(rhs, indent);
+				let rhs = self.type_display_indent(*rhs, indent);
 				let rhs = rhs.as_deref().unwrap_or("...");
 				Some(fomat! { "dict[" (lhs) ", " (rhs) "]" })
 			}
@@ -1157,8 +1157,8 @@ impl Index {
 						match key {
 							DictKey::String(key) => { "\"" (key) "\"" }
 							DictKey::Type(key) if type_cache().is_dictlike(key) => { "{...}" }
-							DictKey::Type(key) => { (self.type_display_indent(key, indent + 2).as_deref().unwrap_or("...")) }
-						} ": " (self.type_display_indent(value, indent + 2).as_deref().unwrap_or("..."))
+							DictKey::Type(key) => { (self.type_display_indent(*key, indent + 2).as_deref().unwrap_or("...")) }
+						} ": " (self.type_display_indent(*value, indent + 2).as_deref().unwrap_or("..."))
 					} sep { ",\n" }
 				};
 				let unindent = " ".repeat(indent);
@@ -1174,7 +1174,7 @@ impl Index {
 			Type::List(slot) => {
 				let slot = match slot {
 					ListElement::Vacant => None,
-					ListElement::Occupied(slot) => self.type_display_indent(slot, indent),
+					ListElement::Occupied(slot) => self.type_display_indent(*slot, indent),
 				};
 				Some(match slot {
 					Some(slot) => format!("list[{slot}]"),
@@ -1185,13 +1185,13 @@ impl Index {
 			Type::Model(model) => Some(format!(r#"Model["{model}"]"#)),
 			Type::Record(xml_id) => {
 				let xml_id = _G(xml_id)?;
-				let record = self.records.get(&xml_id.into())?;
+				let record = self.records.get(&xml_id)?;
 				Some(_R(record.model?).into())
 			}
 			Type::Tuple(items) => Some(fomat! {
 				"tuple["
 				for item in items {
-					(self.type_display_indent(item, indent).as_deref().unwrap_or("..."))
+					(self.type_display_indent(*item, indent).as_deref().unwrap_or("..."))
 				} sep { ", " }
 				"]"
 			}),
@@ -1254,7 +1254,7 @@ impl Index {
 		parameters: Option<(Vec<ImStr>, Scope)>,
 	) -> Option<TypeId> {
 		_ = self.models.populate_properties(model.into(), &[]);
-		let mut model_entry = self.models.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
+		let mut model_entry = self.models.try_get_mut(&model).expect(format_loc!("deadlock"))?;
 		let method_obj = model_entry.methods.as_mut()?.get_mut(&method)?;
 
 		if method_obj
@@ -1266,7 +1266,7 @@ impl Index {
 		}
 
 		let _guard = Defer(Some(|| {
-			if let Some(model_entry) = self.models.get_mut(&model.into())
+			if let Some(model_entry) = self.models.get_mut(&model)
 				&& let Some(methods) = model_entry.methods.as_ref()
 				&& let Some(method) = methods.get(&method)
 			{
@@ -1353,17 +1353,17 @@ impl Index {
 					return ControlFlow::Continue(entered);
 				};
 
-				let type_ = type_cache().resolve(type_);
-				return match self.try_resolve_model(&type_, scope) {
+				let type_ = _TR!(type_);
+				return match self.try_resolve_model(type_, scope) {
 					Some(resolved) => ControlFlow::Break(Some(Type::Model(ImStr::from(_R(resolved))))),
-					None => ControlFlow::Break(Some(type_)),
+					None => ControlFlow::Break(Some(type_.clone())),
 				};
 			}
 
 			ControlFlow::Continue(entered)
 		});
 
-		let mut model = self.models.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
+		let mut model = self.models.try_get_mut(&model).expect(format_loc!("deadlock"))?;
 		let method = Arc::make_mut(model.methods.as_mut()?.get_mut(&method)?);
 
 		let docstring = Self::parse_method_docstring(fn_scope, &contents)
@@ -1411,18 +1411,18 @@ impl Index {
 	fn destructure_into_patternlist_like(&self, pattern: Node, tid: TypeId, scope: &mut Scope, contents: &str) {
 		if pattern.kind() == "identifier" {
 			let name = &contents[pattern.byte_range()];
-			scope.insert(name.to_string(), type_cache().resolve(tid));
+			scope.insert(name.to_string(), _TR!(tid).clone());
 		} else if matches!(pattern.kind(), "pattern_list" | "tuple_pattern") {
-			if let Type::Tuple(mut inner) = type_cache().resolve(tid) {
-				inner.reverse();
+			if let Type::Tuple(inner) = _TR!(tid) {
+				let mut inner = inner.iter();
 				for child in pattern.named_children(&mut pattern.walk()) {
 					if matches!(child.kind(), "identifier" | "tuple_pattern")
-						&& let Some(type_) = inner.pop()
+						&& let Some(type_) = inner.next()
 					{
-						self.destructure_into_patternlist_like(child, type_, scope, contents);
+						self.destructure_into_patternlist_like(child, *type_, scope, contents);
 					}
 				}
-			} else if let Some(inner) = self.type_of_iterable(type_cache().resolve(tid)) {
+			} else if let Some(inner) = self.type_of_iterable(tid, _TR!(tid)) {
 				// spread this type to all params
 				for child in pattern.named_children(&mut pattern.walk()) {
 					if matches!(child.kind(), "identifier" | "tuple_pattern") {

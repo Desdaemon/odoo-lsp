@@ -103,6 +103,7 @@ globwalk.workspace = true
 ts-macros.workspace = true
 tracing-subscriber.workspace = true
 mini-moka = "0.10.3"
+boxcar = "0.2.14"
 
 [dev-dependencies]
 pretty_assertions.workspace = true

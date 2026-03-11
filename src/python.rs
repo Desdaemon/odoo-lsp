@@ -393,7 +393,7 @@ impl Backend {
 					let mut entry = self
 						.index
 						.models
-						.try_get_mut(&model_key.into())
+						.try_get_mut(&model_key)
 						.expect(format_loc!("deadlock"))
 						.unwrap();
 					entry
@@ -1119,7 +1119,7 @@ impl Backend {
 		let lsp_range = span_conv(needle.range());
 		let (type_, scope) =
 			some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), &contents));
-		if let Some(model) = self.index.try_resolve_model(&type_cache().resolve(type_), &scope) {
+		if let Some(model) = self.index.try_resolve_model(type_cache().resolve(type_), &scope) {
 			let model = _R(model);
 			let identifier = (needle.kind() == "identifier").then(|| &contents[needle.byte_range()]);
 			return self.index.hover_model(model, Some(lsp_range), true, identifier);
@@ -1188,10 +1188,10 @@ impl Backend {
 		let Type::Method(model_key, method) = type_cache().resolve(tid) else {
 			return Ok(None);
 		};
-		let method_key = some!(_G(&method));
-		let rtype = (self.index).eval_method_rtype(method_key.into(), model_key.into(), None);
-		let model = some!((self.index).models.get(&model_key));
-		let method_obj = some!(some!(model.methods.as_ref()).get(&method_key.into()));
+		let method_key = some!(_G(method));
+		let rtype = (self.index).eval_method_rtype(method_key.into(), **model_key, None);
+		let model = some!((self.index).models.get(model_key));
+		let method_obj = some!(some!(model.methods.as_ref()).get(&method_key));
 
 		let mut label = format!("{method}(");
 		let mut parameters = vec![];

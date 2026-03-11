@@ -384,11 +384,10 @@ impl ModelIndex {
 						entry
 							.ancestors
 							.extend(ancestors.iter().map(|sym| ModelName::from(_I(sym))));
-					} else {
+					} else if let Some(base) = entry.base.as_ref() {
 						warn!(
-							"Conflicting bases for {}:\nfirst={}\n  new={}",
+							"Conflicting bases for {}:\nfirst={base}\n  new={}",
 							_R(name),
-							entry.base.as_ref().unwrap(),
 							ModelLocation(
 								MinLoc {
 									path,
@@ -403,7 +402,7 @@ impl ModelIndex {
 					if replace {
 						for inherit in inherits {
 							let Some(inherit) = _G(inherit) else { continue };
-							if let Some(mut entry) = self.get_mut(&inherit.into()) {
+							if let Some(mut entry) = self.get_mut(&inherit) {
 								entry.descendants.retain(|loc| loc.0.path != path)
 							}
 						}
@@ -757,7 +756,7 @@ impl ModelIndex {
 					return Ok(());
 				};
 				let field = _G(lhs);
-				let field = field.and_then(|field| model_entry.fields.as_ref()?.get(&field.into()));
+				let field = field.and_then(|field| model_entry.fields.as_ref()?.get(&field));
 				match field.as_ref().map(|f| &f.kind) {
 					Some(FieldKind::Relational(rel)) => resolved = Some(*rel),
 					None | Some(FieldKind::Value) => return Err(ResolveMappedError::NonRelational),
@@ -817,7 +816,7 @@ impl ModelIndex {
 				let field_model = self.resolve_related_field(related_key.into(), field_model)?;
 
 				kind = FieldKind::Relational(field_model);
-				let mut model_entry = self.try_get_mut(&model.into()).expect(format_loc!("deadlock"))?;
+				let mut model_entry = self.try_get_mut(&model).expect(format_loc!("deadlock"))?;
 				let Some(field) = Arc::get_mut(model_entry.fields.as_mut()?.get_mut(&field)?) else {
 					// Field is already used elsewhere, don't modify it.
 					return Some(field_model);
@@ -873,13 +872,9 @@ impl ModelEntry {
 		Ok(())
 	}
 	pub fn prop_kind(&self, prop: Spur) -> Option<PropertyInfo> {
-		if let Some(field) = self.fields.as_ref().and_then(|fields| fields.get(&prop.into())) {
+		if let Some(field) = self.fields.as_ref().and_then(|fields| fields.get(&prop)) {
 			Some(PropertyInfo::Field(field.type_))
-		} else if self
-			.methods
-			.as_ref()
-			.is_some_and(|methods| methods.contains_key(&prop.into()))
-		{
+		} else if self.methods.as_ref().is_some_and(|methods| methods.contains_key(&prop)) {
 			Some(PropertyInfo::Method)
 		} else {
 			None
