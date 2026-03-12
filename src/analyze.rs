@@ -99,6 +99,10 @@ pub enum Type {
 	List(ListElement),
 	Tuple(Vec<TypeId>),
 	Iterable(Option<TypeId>),
+	/// A special object which acts as a freely assignable Python object
+	/// In testing classes it's always the first parameter
+	/// Its properties are stored on the [Scope] itself, as a singleton.
+	TestEnv,
 	/// Can never be resolved, useful for non-model bindings.
 	Value,
 }
@@ -234,7 +238,7 @@ pub fn normalize<'r, 'n>(node: &'r mut Node<'n>) -> &'r mut Node<'n> {
 #[rustfmt::skip]
 query! {
 	#[derive(Debug)]
-	FieldCompletion(Name, SelfParam, Scope);
+	FieldCompletion(Name, SelfParam, Scope, ScopeName);
 ((class_definition
   (block
     (expression_statement [
@@ -243,8 +247,11 @@ query! {
     [
       (decorated_definition
         (function_definition
+          name: (identifier) @SCOPE_NAME
           (parameters . (identifier) @SELF_PARAM)) @SCOPE)
-      (function_definition (parameters . (identifier) @SELF_PARAM)) @SCOPE])) @class
+      (function_definition
+      	name: (identifier) @SCOPE_NAME
+        (parameters . (identifier) @SELF_PARAM)) @SCOPE])) @class
   (#eq? @_inherit "_inherit")
   (#match? @_name "^_(name|inherit)$"))
 }
@@ -299,7 +306,12 @@ impl Index {
 	}
 	pub fn type_of_range(&self, root: Node<'_>, range: ByteRange, contents: &str) -> Option<(TypeId, Scope)> {
 		// Phase 1: Determine the scope.
-		let (self_type, fn_scope, self_param) = determine_scope(root, contents, range.start.0)?;
+		let ArbitraryFnScope {
+			self_type,
+			fn_scope,
+			self_param,
+			test_setup_scope,
+		} = determine_scope(root, contents, range.start.0)?;
 
 		// Phase 2: Build the scope up to offset
 		// What contributes to a method scope's variables?
@@ -308,13 +320,26 @@ impl Index {
 		//    Self-type analysis only uses a small part of the class definition.
 		// 3. Parameters, e.g. self which always has a fixed type
 		// 4. Assignments (including walrus-assignment)
-		let mut scope = Scope::default();
+		let mut scope;
+		if let Some(test_setup_scope) = test_setup_scope
+			&& let Some(mut testenv) = self.prepare_test_env(root, test_setup_scope, contents)
+		{
+			testenv.variables.clear();
+			scope = testenv
+		} else {
+			scope = Scope::default();
+		}
 		let self_type = match self_type {
 			Some(type_) => &contents[type_.byte_range().shrink(1)],
 			None => "",
 		};
 		scope.super_ = Some(self_param.into());
-		scope.insert(self_param.to_string(), Type::Model(self_type.into()));
+		tracing::trace!("{:?}", scope.testenv);
+		if scope.testenv.is_empty() {
+			scope.insert(self_param.to_string(), Type::Model(self_type.into()));
+		} else {
+			scope.insert(self_param.to_string(), Type::TestEnv);
+		}
 		let (orig_scope, scope) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
 			self.build_scope(scope, node, range.end.0, contents)
 		});
@@ -381,6 +406,13 @@ impl Index {
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 				{
 					self.destructure_into_patternlist_like(lhs, type_, scope, contents);
+				} else if let Some(testenv) = dig!(node, attribute.identifier)
+					&& let Some(Type::TestEnv) = scope.get(&contents[testenv.byte_range()])
+					&& let Some(attribute) = dig!(node, attribute.identifier(1))
+					&& let Some(rhs) = python_next_named_sibling(lhs)
+					&& let Some(rhs) = self.type_of(rhs, scope, contents)
+				{
+					scope.testenv_insert(contents[attribute.byte_range()].to_string(), _TR!(rhs).clone());
 				}
 			}
 			"for_statement" => {
@@ -841,7 +873,7 @@ impl Index {
 						let mut model: Spur = (*model).into();
 						let mut mapped = &contents[mapped.byte_range().shrink(1)];
 						self.models.resolve_mapped(&mut model, &mut mapped, None).ok()?;
-						let type_ = self.type_of_attribute(&Type::Model(_R(model).into()), mapped, scope)?;
+						let type_ = self.type_of_model_attrib(&Type::Model(_R(model).into()), mapped, scope)?;
 						let type_ = Index::wrap_in_container(type_, |it| Type::List(ListElement::Occupied(_T!(it))));
 						Some(_T!(type_))
 					}
@@ -874,7 +906,7 @@ impl Index {
 						let mut grouped = &contents[grouped.byte_range().shrink(1)];
 						self.models.resolve_mapped(&mut model, &mut grouped, None).ok()?;
 						let model = Type::Model(_R(model).into());
-						let groupby = self.type_of_attribute(&model, grouped, scope)?;
+						let groupby = self.type_of_model_attrib(&model, grouped, scope)?;
 						Some(_T!(Type::Dict(_T!(groupby), _T!(model))))
 					}
 					"lambda" => {
@@ -944,7 +976,7 @@ impl Index {
 				// FIXME: This is not quite correct as only recordset and numeric aggregations make sense.
 				let aggs = groupby
 					.into_iter()
-					.map(|attr| match self.type_of_attribute(&model, attr, scope) {
+					.map(|attr| match self.type_of_model_attrib(&model, attr, scope) {
 						Some(type_) => _T!(type_),
 						None => value_id,
 					});
@@ -974,7 +1006,8 @@ impl Index {
 			| Type::List(..)
 			| Type::Iterable(..)
 			| Type::Tuple(..)
-			| Type::PythonMethod(..) => None,
+			| Type::PythonMethod(..)
+			| Type::TestEnv => None,
 		}
 	}
 
@@ -1038,16 +1071,29 @@ impl Index {
 		let lhsid = self.type_of(lhs, scope, contents)?;
 		let lhs = _TR!(lhsid);
 		let rhs = attribute.named_child(1)?;
-		let attrname = &contents[rhs.byte_range()];
+
+		if let Type::TestEnv = lhs
+			&& let Some(type_) = scope.testenv_get(&contents[rhs.byte_range()])
+		{
+			return Some(_T!(type_.clone()));
+		}
+
 		match &contents[rhs.byte_range()] {
-			"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
+			"env"
+				if matches!(
+					lhs,
+					Type::Model(..) | Type::Record(..) | Type::HttpRequest | Type::TestEnv
+				) =>
+			{
+				Some(Type::Env)
+			}
 			"website" if matches!(lhs, Type::HttpRequest) => Some(Type::Model("website".into())),
 			"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
 			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
 			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
-			"mapped" | "grouped" | "_read_group" => {
+			mapped @ ("mapped" | "grouped" | "_read_group") => {
 				let model = self.try_resolve_model(lhs, scope)?;
-				Some(Type::Method(model, attrname.into()))
+				Some(Type::Method(model, mapped.into()))
 			}
 			dict_method @ "items" if lhs.is_dict() => Some(Type::PythonMethod(lhsid, dict_method.into())),
 			func if MODEL_METHODS.contains(func) => match lhs {
@@ -1059,13 +1105,13 @@ impl Index {
 				}
 				_ => None,
 			},
-			ident if rhs.kind() == "identifier" => self.type_of_attribute(lhs, ident, scope),
+			ident if rhs.kind() == "identifier" => self.type_of_model_attrib(lhs, ident, scope),
 			_ => None,
 		}
 		.map(|it| _T!(it))
 	}
 	#[instrument(skip_all, fields(attr=attr), ret)]
-	pub fn type_of_attribute(&self, type_: &Type, attr: &str, scope: &Scope) -> Option<Type> {
+	pub fn type_of_model_attrib(&self, type_: &Type, attr: &str, scope: &Scope) -> Option<Type> {
 		let model = self.try_resolve_model(type_, scope)?;
 		let model_entry = self.models.populate_properties(model, &[])?;
 		if let Some(attr_key) = _G(attr)
@@ -1208,6 +1254,7 @@ impl Index {
 					None
 				}
 			}
+			Type::TestEnv => Some("TestEnv".to_string()),
 		}
 	}
 	/// Iterates depth-first over `node` using [`PreTravel`]. Automatically calls [`Scope::exit`] at suitable points.
@@ -1334,7 +1381,12 @@ impl Index {
 			node.parent().is_some_and(is_block_of_class)
 		}
 
-		let (self_type, fn_scope, self_param) = determine_scope(ast.root_node(), &contents, end_offset.0)?;
+		let ArbitraryFnScope {
+			self_type,
+			fn_scope,
+			self_param,
+			test_setup_scope: _,
+		} = determine_scope(ast.root_node(), &contents, end_offset.0)?;
 		let self_type = match self_type {
 			Some(type_) => &contents[type_.byte_range().shrink(1)],
 			None => "",
@@ -1436,6 +1488,31 @@ impl Index {
 		let block = fn_scope.child_by_field_name("body")?;
 		dig!(block, expression_statement.string.string_content(1)).map(|node| &contents[node.byte_range()])
 	}
+	fn prepare_test_env(&self, root: Node<'_>, scope: Node<'_>, contents: &str) -> Option<Scope> {
+		let ArbitraryFnScope {
+			self_type: _,
+			fn_scope,
+			test_setup_scope: _,
+			self_param,
+		} = determine_scope(root, contents, scope.end_byte())?;
+
+		let mut scope = Scope::default();
+		scope.insert(self_param.to_string(), Type::TestEnv);
+		let (orig_scope, scope) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
+			self.build_scope(scope, node, usize::MAX, contents)
+		});
+		let scope = scope.unwrap_or(orig_scope);
+		tracing::trace!(?self_param, "{:?}", scope.testenv);
+		Some(scope)
+	}
+}
+
+#[derive(Debug)]
+pub struct ArbitraryFnScope<'node, 'text> {
+	pub self_type: Option<Node<'node>>,
+	pub fn_scope: Node<'node>,
+	pub test_setup_scope: Option<Node<'node>>,
+	pub self_param: &'text str,
 }
 
 /// Returns `(self_type, fn_scope, self_param)`.
@@ -1446,11 +1523,12 @@ pub fn determine_scope<'out, 'node>(
 	node: Node<'node>,
 	contents: &'out str,
 	offset: usize,
-) -> Option<(Option<Node<'node>>, Node<'node>, &'out str)> {
+) -> Option<ArbitraryFnScope<'node, 'out>> {
 	let query = FieldCompletion::query();
 	let mut self_type = None;
 	let mut self_param = None;
 	let mut fn_scope = None;
+	let mut test_setup_scope = None;
 	let mut cursor = QueryCursor::new();
 	let mut matches = cursor.matches(query, node, contents.as_bytes());
 	'scoping: while let Some(match_) = matches.next() {
@@ -1475,6 +1553,11 @@ pub fn determine_scope<'out, 'node>(
 					}
 					fn_scope = Some(capture.node);
 				}
+				Some(FieldCompletion::ScopeName) => {
+					if matches!(&contents[capture.node.byte_range()], "setUp" | "setUpClass") {
+						test_setup_scope = Some(capture.node.parent().unwrap());
+					}
+				}
 				None => {}
 			}
 		}
@@ -1484,7 +1567,12 @@ pub fn determine_scope<'out, 'node>(
 	}
 	let fn_scope = fn_scope?;
 	let self_param = &contents[self_param?.byte_range()];
-	Some((self_type, fn_scope, self_param))
+	Some(ArbitraryFnScope {
+		self_type,
+		fn_scope,
+		self_param,
+		test_setup_scope,
+	})
 }
 
 #[cfg(test)]

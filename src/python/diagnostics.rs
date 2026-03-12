@@ -4,7 +4,7 @@ use tower_lsp_server::ls_types::{Diagnostic, DiagnosticRelatedInformation, Diagn
 use tracing::{debug, warn};
 use tree_sitter::{Node, QueryCursor, QueryMatch};
 
-use crate::analyze::type_cache;
+use crate::analyze::{ArbitraryFnScope, type_cache};
 use crate::index::{_R, Index};
 use crate::prelude::*;
 
@@ -302,7 +302,13 @@ impl Backend {
 	) {
 		// Most of these steps are similar to what is done inside model_of_range.
 		let offset = node.start_byte();
-		let Some((self_type, fn_scope, self_param)) = determine_scope(root, contents, offset) else {
+		let Some(ArbitraryFnScope {
+			self_type,
+			fn_scope,
+			self_param,
+			test_setup_scope,
+		}) = determine_scope(root, contents, offset)
+		else {
 			return;
 		};
 		let mut scope = Scope::default();

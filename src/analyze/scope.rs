@@ -12,6 +12,7 @@ pub struct Scope {
 	pub parent: Option<Box<Scope>>,
 	/// TODO: Allow super(_, \<self>)
 	pub super_: Option<ImStr>,
+	pub testenv: HashMap<String, Type>,
 }
 
 impl Debug for Scope {
@@ -59,6 +60,14 @@ impl Scope {
 			variables: self.variables.iter(),
 			parent: self.parent.as_deref(),
 		}
+	}
+	#[instrument(level = "trace", ret, skip(self))]
+	pub fn testenv_insert(&mut self, key: String, value: Type) {
+		self.testenv.insert(key, value);
+	}
+	#[inline]
+	pub fn testenv_get(&self, key: &str) -> Option<&Type> {
+		self.testenv.get(key)
 	}
 }
 

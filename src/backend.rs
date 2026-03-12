@@ -963,7 +963,7 @@ impl Index {
 			}))
 		} else {
 			drop(entry);
-			let attr_type = some!(self.type_of_attribute(&Type::Model(ImStr::from(model)), name, &Scope::new(None)));
+			let attr_type = some!(self.type_of_model_attrib(&Type::Model(ImStr::from(model)), name, &Scope::new(None)));
 			self.hover_variable(Some(name), type_cache().get_or_intern(attr_type), range)
 		}
 	}

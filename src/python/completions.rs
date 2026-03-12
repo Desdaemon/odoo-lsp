@@ -141,7 +141,7 @@ impl Backend {
 						Some(PyCompletions::Mapped) => {
 							if range.contains_end(offset) {
 								// Check if this is an ERROR node with broken syntax
-								tracing::debug!(
+								debug!(
 									"Mapped capture node kind: {}, range: {:?}, offset: {}",
 									capture.node.kind(),
 									range,
@@ -179,64 +179,20 @@ impl Backend {
 										// If we didn't find it from MappedTarget, look for the commandlist pattern in the parent nodes
 										if field_model.is_none() {
 											let mut current = capture.node;
-											while let Some(parent) = current.parent() {
-												// Check if we're in a list that's part of a mapped/commandlist
-												if parent.kind() == "list" {
-													// Try to find the full expression this list is part of
-													if let Some(expr_parent) = parent.parent()
-														&& (expr_parent.kind() == "call"
-															|| expr_parent.kind() == "attribute")
-													{
-														break;
-													}
-												}
-
-												if parent.kind() == "dictionary" {
-													// Found the dictionary, now look for the field assignment
-													if let Some(list_parent) = parent.parent()
-														&& list_parent.kind() == "list" && let Some(pair_parent) =
-														list_parent.parent() && pair_parent.kind() == "pair"
-														&& let Some(key) = pair_parent.child_by_field_name("key")
-														&& key.kind() == "string"
-													{
-														let field_name = &contents[key.byte_range().shrink(1)];
-
-														if let Some(model_str) = this_model.inner {
-															let model_key = ModelName::from(_I(model_str));
-
-															if let Some(props) =
-																self.index.models.populate_properties(model_key, &[])
-																&& let Some(fields) = &props.fields && let Some(
-																field_key,
-															) = _G(field_name) && let Some(field_info) =
-																fields.get(&field_key)
-															{
-																// Check if this field has a relational type
-																if let FieldKind::Relational(relation) =
-																	&field_info.kind
-																{
-																	field_model = Some((*relation).into());
-																}
-															}
-														}
-													}
-													break;
-												}
-												current = parent;
-											}
+											self.find_commandlist_list_parent(
+												&contents,
+												&this_model,
+												&mut field_model,
+												&mut current,
+											);
 										}
 
 										if let Some(model) = field_model {
+											let range = capture.node.byte_range();
 											let range = if let Some(end) = end_quote {
-												ByteRange {
-													start: ByteOffset(capture.node.start_byte() + 1),
-													end: ByteOffset(capture.node.start_byte() + end),
-												}
+												ByteOffset(range.start + 1)..ByteOffset(range.end + end)
 											} else {
-												ByteRange {
-													start: ByteOffset(capture.node.start_byte() + 1),
-													end: ByteOffset(offset),
-												}
+												ByteOffset(range.start + 1)..ByteOffset(offset)
 											};
 
 											let mut items = MaxVec::new(completions_limit);
@@ -571,6 +527,48 @@ impl Backend {
 		}
 		let result = some!(early_return.call());
 		result.await
+	}
+
+	fn find_commandlist_list_parent(
+		&self,
+		contents: &str,
+		this_model: &ThisModel<'_>,
+		field_model: &mut Option<Symbol<ModelEntry>>,
+		current: &mut Node<'_>,
+	) {
+		while let Some(parent) = current.parent() {
+			if parent.kind() == "list"
+				&& let Some(expr_parent) = parent.parent()
+				&& matches!(expr_parent.kind(), "call" | "attribute")
+			{
+				break;
+			}
+
+			if parent.kind() == "dictionary" {
+				if let Some(list_parent) = parent.parent()
+					&& list_parent.kind() == "list"
+					&& let Some(pair_parent) = list_parent.parent()
+					&& pair_parent.kind() == "pair"
+					&& let Some(key) = pair_parent.child_by_field_name("key")
+					&& key.kind() == "string"
+					&& let Some(model_str) = this_model.inner
+				{
+					let field_name = &contents[key.byte_range().shrink(1)];
+					let model_key = ModelName::from(_I(model_str));
+
+					if let Some(props) = self.index.models.populate_properties(model_key, &[])
+						&& let Some(fields) = &props.fields
+						&& let Some(field_key) = _G(field_name)
+						&& let Some(field_info) = fields.get(&field_key)
+						&& let &FieldKind::Relational(relation) = &field_info.kind
+					{
+						*field_model = Some(relation.into());
+					}
+				}
+				break;
+			}
+			*current = parent;
+		}
 	}
 	/// `range` is the entire range of the mapped **string**, quotes included.
 	fn python_completions_for_prop(
