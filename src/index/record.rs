@@ -43,8 +43,10 @@ impl RecordIndex {
 		if self.inner.contains_key(&qualified_id) {
 			return;
 		}
+		let mut model_is_view = false;
 		if let Some(model) = &record.model {
 			self.by_model.entry(*model).or_default().insert(qualified_id);
+			model_is_view = _R(model) == "ir.ui.view";
 		}
 		if let Some(inherit_id) = &record.inherit_id {
 			self.by_inherit_id.entry(*inherit_id).or_default().insert(qualified_id);
@@ -61,13 +63,13 @@ impl RecordIndex {
 				.insert(qualified_id);
 		}
 		match metadata {
-			Some(RecordMetadata::View(model)) => {
+			Some(RecordMetadata::View(model)) if model_is_view => {
 				self.views_by_model
 					.entry(model)
 					.or_insert_with(Default::default)
 					.insert(qualified_id);
 			}
-			None => {}
+			Some(RecordMetadata::View(_)) | None => {}
 		}
 		self.inner.insert(qualified_id, record);
 	}
