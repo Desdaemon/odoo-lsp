@@ -157,13 +157,9 @@ Please include these logs when opening an issue.
 
 Don't know where to start? Run `cargo doc --bin odoo-lsp` for a quick overview of the codebase. All contributions welcome!
 
-1. `pnpm i`
-2. `cargo build`
-3. In VSCode, press <kbd>F5</kbd> or change to the Debug panel and click `Launch Client`
+### VSCode extension
 
-> **Note**
-> If encountered errors like `Cannot find module '/xxx/xxx/dist/extension.js'`
-> please try run command `tsc -b` manually, you could refer https://github.com/IWANABETHATGUY/tower-lsp-boilerplate/issues/6 for more details
+Once you have made your changes, run `pnpm install-for-vscode` to build and install the extension locally.
 
 [wiki]: https://github.com/Desdaemon/odoo-lsp/wiki
 [Releases]: https://github.com/Desdaemon/odoo-lsp/releases
