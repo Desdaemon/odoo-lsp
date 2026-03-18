@@ -67,4 +67,17 @@
 		</field>
 	</record>
 
+	<template>
+		<!-- @type obj foo -->
+		<t t-set="foo" t-value="obj.filtered(lambda o: o.bar).grouped(lambda o: o.bar)">
+		<!--                                           ^type Model("foo") -->
+		<t t-out="foo"/>
+		<!--      ^type Dict(PyBuiltin("str"), Model("foo")) -->
+		<t t-set="bob" t-value="{'what': 123 for _ in ()}"/>
+		<t t-set="bobb" t-value="bob.get('what')">
+		<!--                     ^type Dict(PyBuiltin("str"), PyBuiltin("int")) -->
+		<t t-out="bobb"/>
+		<!--      ^type PyBuiltin("int") -->
+	</template>
+
 </odoo>

@@ -4,8 +4,8 @@ test *args="--no-fail-fast": (ensure_cargo "cargo-nextest")
 bench: (ensure_cargo "iai-callgrind-runner")
     cargo bench -p odoo-lsp-tests
 
-install *args="--debug":
-		cargo install --path . {{args}} 
+install profile="dev":
+		cargo install --path . --profile={{profile}}
 
 [private]
 ensure_cargo command:

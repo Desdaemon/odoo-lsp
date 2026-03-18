@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -32,7 +33,7 @@ fn init_tracing() {
 #[rstest]
 #[tokio::test(flavor = "multi_thread")]
 #[timeout(Duration::from_secs(10))]
-async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
+async fn fixture_test(#[files("fixtures/*")] root: PathBuf) -> ExitCode {
 	std::env::set_current_dir(&root).unwrap();
 	let mut server = server::setup_lsp_server(Some(2));
 	init_tracing();
@@ -255,7 +256,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 								let actual = actual.as_deref().unwrap_or("None");
 								if expected != actual {
 									format!(
-										"[type] in {path}:{}:{}\\n{}",
+										"[type] in {path}:{}:{}  {}",
 										position.line + 1,
 										position.character + 1,
 										StrComparison::new(expected, actual),
@@ -265,7 +266,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 								}
 							} else {
 								format!(
-									"[type] failed to get type: {type:?}\\n\\tat {path}:{}:{}",
+									"[type] failed to get type: {type:?}\n\tat {path}:{}:{}",
 									position.line + 1,
 									position.character + 1
 								)
@@ -359,7 +360,12 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) {
 
 	let message = messages.join("\n");
 	let message = message.trim_ascii();
-	assert!(message.is_empty(), "{message}");
+	if !message.is_empty() {
+		eprintln!("tests failed:\n{message}");
+		ExitCode::FAILURE
+	} else {
+		ExitCode::SUCCESS
+	}
 }
 
 query! {
@@ -389,6 +395,9 @@ fn xml_query() -> &'static Query {
 
 		((Comment) @complete
 		(#match? @complete "\\^complete "))
+
+		((Comment) @type
+		(#match? @type "\\^type "))
 	"#;
 	QUERY.get_or_init(|| Query::new(&tree_sitter_xml::LANGUAGE_XML.into(), XML_QUERY).unwrap())
 }

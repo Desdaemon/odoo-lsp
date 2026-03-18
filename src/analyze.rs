@@ -68,6 +68,7 @@ pub static MODEL_METHODS: phf::Set<&str> = phf::phf_set!(
 	"with_env",
 	"sudo",
 	"exists",
+	"concat",
 	// TODO: Limit to Forms only
 	"new",
 	"edit",
@@ -105,8 +106,8 @@ pub enum Type {
 
 impl Type {
 	#[inline]
-	fn is_dict(&self) -> bool {
-		matches!(self, Type::Dict(..))
+	fn is_dictlike(&self) -> bool {
+		matches!(self, Type::Dict(..) | Type::DictBag(..))
 	}
 }
 
@@ -199,17 +200,26 @@ impl TypeCache {
 	pub fn resolve<T: Borrow<TypeId>>(&self, id: T) -> &Type {
 		unsafe { self.types.get_unchecked(id.borrow().0 as usize) }
 	}
-	pub fn is_dictlike(&self, id: &TypeId) -> bool {
-		matches!(self.types[id.0 as usize], Type::Dict(..) | Type::DictBag(..))
-	}
-	pub fn is_dict(&self, id: &TypeId) -> bool {
-		matches!(self.types[id.0 as usize], Type::Dict(..))
-	}
 }
 
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeId(u32);
+
+impl TypeId {
+	#[inline]
+	pub fn is_dictlike(&self) -> bool {
+		type_cache().resolve(self).is_dictlike()
+	}
+	#[inline]
+	pub fn is_dict(&self) -> bool {
+		matches!(type_cache().resolve(self), Type::Dict(..))
+	}
+	#[inline]
+	pub fn is_dictbag(&self) -> bool {
+		matches!(type_cache().resolve(self), Type::DictBag(..))
+	}
+}
 
 impl Debug for TypeId {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -313,18 +323,12 @@ impl Index {
 			Some(type_) => &contents[type_.byte_range().shrink(1)],
 			None => "",
 		};
-		scope.super_ = Some(self_param.into());
 		scope.insert(self_param.to_string(), Type::Model(self_type.into()));
-		let (orig_scope, scope) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
-			self.build_scope(scope, node, range.end.0, contents)
-		});
-		let scope = scope.unwrap_or(orig_scope);
-
-		// Phase 3: With the proper context available, determine the type of the node.
-		let node_at_cursor = fn_scope.descendant_for_byte_range(range.start.0, range.end.0)?;
+		scope.super_ = Some(self_param.into());
 
 		// special case: is this a property?
 		// TODO: fields
+		let node_at_cursor = fn_scope.descendant_for_byte_range(range.start.0, range.end.0)?;
 		if node_at_cursor.kind() == "identifier" && fn_scope.child_by_field_name("name") == Some(node_at_cursor) {
 			return Some((
 				_T!(Type::Method(
@@ -335,6 +339,22 @@ impl Index {
 			));
 		}
 
+		// Phase 3: With the proper context available, determine the type of the node.
+		self.type_of_node(Some(scope), fn_scope, range, contents)
+	}
+	pub fn type_of_node(
+		&self,
+		scope: Option<Scope>,
+		node: Node<'_>,
+		range: ByteRange,
+		contents: &str,
+	) -> Option<(TypeId, Scope)> {
+		let scope = scope.unwrap_or_default();
+		let (orig_scope, scope) = Self::walk_scope(node, Some(scope), |scope, node| {
+			self.build_scope(scope, node, range.end.0, contents)
+		});
+		let scope = scope.unwrap_or(orig_scope);
+		let node_at_cursor = node.descendant_for_byte_range(range.start.0, range.end.0)?;
 		let type_at_cursor = self.type_of(node_at_cursor, &scope, contents)?;
 		Some((type_at_cursor, scope))
 	}
@@ -956,12 +976,41 @@ impl Index {
 				let args = self.prepare_call_scope(*model, method.into(), call, scope, contents);
 				Some(self.eval_method_rtype(method.into(), **model, args)?)
 			}
-			Type::PythonMethod(dict, items) if type_cache().is_dict(dict) && *items == "items" => {
+			Type::PythonMethod(dict, method) if dict.is_dict() => {
 				let Type::Dict(lhs, rhs) = _TR!(dict) else {
 					unreachable!()
 				};
-				let tuple = _T!(Type::Tuple(vec![*lhs, *rhs]));
-				Some(_T!(Type::Iterable(Some(tuple))))
+				match method.as_str() {
+					"items" => {
+						let tuple = _T!(Type::Tuple(vec![*lhs, *rhs]));
+						Some(_T!(Type::Iterable(Some(tuple))))
+					}
+					"get" => Some(*rhs),
+					_ => None,
+				}
+			}
+			Type::PythonMethod(dictbag, method) if dictbag.is_dictbag() => {
+				let Type::DictBag(items) = _TR!(dictbag) else {
+					unreachable!()
+				};
+				match method.as_str() {
+					"get" => {
+						let args = call.named_child(1)?;
+						let arg_as_string = dig!(args, string.string_content(1));
+						let argtype = args
+							.named_child(0)
+							.and_then(|node| self.type_of(node, scope, contents))
+							.unwrap_or_else(|| _T!(Type::Value));
+						items.iter().find_map(|(key, val)| match key {
+							DictKey::String(key) => match arg_as_string {
+								None => None,
+								Some(arg) => (key.as_str() == &contents[arg.byte_range()]).then_some(*val),
+							},
+							DictKey::Type(key) => (*key == argtype).then_some(*val),
+						})
+					}
+					_ => None,
+				}
 			}
 			Type::Env
 			| Type::Record(..)
@@ -1049,7 +1098,7 @@ impl Index {
 				let model = self.try_resolve_model(lhs, scope)?;
 				Some(Type::Method(model, attrname.into()))
 			}
-			dict_method @ "items" if lhs.is_dict() => Some(Type::PythonMethod(lhsid, dict_method.into())),
+			dict_method @ ("items" | "get") if lhs.is_dictlike() => Some(Type::PythonMethod(lhsid, dict_method.into())),
 			func if MODEL_METHODS.contains(func) => match lhs {
 				Type::Model(model) => Some(Type::ModelFn(model.clone())),
 				Type::Record(xml_id) => {
@@ -1156,7 +1205,7 @@ impl Index {
 						(preindent)
 						match key {
 							DictKey::String(key) => { "\"" (key) "\"" }
-							DictKey::Type(key) if type_cache().is_dictlike(key) => { "{...}" }
+							DictKey::Type(key) if key.is_dictlike() => { "{...}" }
 							DictKey::Type(key) => { (self.type_display_indent(*key, indent + 2).as_deref().unwrap_or("...")) }
 						} ": " (self.type_display_indent(*value, indent + 2).as_deref().unwrap_or("..."))
 					} sep { ",\n" }

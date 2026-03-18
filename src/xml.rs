@@ -190,7 +190,7 @@ impl Backend {
 	/// - `slice` spans the record range that contains the cursor.
 	/// - `offset_at_cursor` is `position` relative to the start of the slice.
 	/// - `relative_offset` is the offset of the entire slice relative to the start of the rope.
-	fn record_slice<'rope>(
+	pub(crate) fn record_slice<'rope>(
 		&self,
 		rope: RopeSlice<'rope>,
 		uri: &Uri,
@@ -323,9 +323,15 @@ impl Backend {
 			}
 			Some(RefKind::Id) => self.index.jump_def_xml_id(needle, uri),
 			Some(RefKind::PyExpr(py_offset)) => {
+				// TODO: More general Python jumpdefs like mapped properties
 				let mut parser = Parser::new();
 				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 				let ast = some!(parser.parse(needle, None));
+				let root = ast.root_node();
+				let (orig_scope, scope) = Index::walk_scope(root, Some(scope), |scope, node| {
+					self.index.build_scope(scope, node, py_offset, needle)
+				});
+				let scope = scope.unwrap_or(orig_scope);
 				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), needle));
 				let model = some!(self.index.type_of(object, &scope, needle));
 				let model = type_cache().resolve(model);
@@ -446,41 +452,37 @@ impl Backend {
 				let mut parser = Parser::new();
 				parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 				let ast = some!(parser.parse(needle, None));
-				let Some((object, field, range)) = Self::attribute_node_at_offset(py_offset, ast.root_node(), needle)
-				else {
-					let cursor_node = some!(ast.root_node().named_descendant_for_byte_range(py_offset, py_offset));
-					let needle = &needle[cursor_node.byte_range()];
-					let scope_type = some!(scope.get(needle));
-					let lsp_range = Some(rope_conv(
-						cursor_node
-							.byte_range()
-							.clone()
-							.map_unit(|unit| ByteOffset(unit + ref_range.start + relative_offset)),
-						rope,
-					));
-					if let Some(model) = (self.index).try_resolve_model(scope_type, &scope) {
-						return self.index.hover_model(_R(model), lsp_range, true, Some(needle));
-					}
-					return Ok(Some(Hover {
-						range: lsp_range,
-						contents: HoverContents::Scalar(MarkedString::from_language_code(
-							"python".to_string(),
-							format!("(local) {needle}: Any"),
-						)),
-					}));
-				};
-				let model = some!(self.index.type_of(object, &scope, needle));
-				let model = type_cache().resolve(model);
-				let model = some!(self.index.try_resolve_model(model, &scope));
-				let anchor = ref_range.start + relative_offset;
-				self.index.hover_property_name(
-					field,
-					_R(model),
-					Some(rope_conv(
-						range.map_unit(|rel_unit| ByteOffset(rel_unit + anchor)),
-						rope,
+				let root = ast.root_node();
+				let (tid, scope) = some!(self.index.type_of_node(
+					Some(scope),
+					root,
+					ByteOffset(py_offset)..ByteOffset(py_offset),
+					needle
+				));
+				let mut display = needle;
+				if let Some(ident) = root.descendant_for_byte_range(py_offset, py_offset)
+					&& ident.kind() == "identifier"
+				{
+					display = &slice_str[ident.byte_range().map_unit(|it| it + ref_range.start)];
+				}
+				if let Some(model) = (self.index).try_resolve_model(type_cache().resolve(tid), &scope) {
+					return self.index.hover_model(_R(model), lsp_range, true, Some(display));
+				} else if let Some((object, field, _range)) = Self::attribute_node_at_offset(py_offset, root, needle) {
+					let model = some!(self.index.type_of(object, &scope, needle));
+					let model = type_cache().resolve(model);
+					let model = some!(self.index.try_resolve_model(model, &scope));
+					return self.index.hover_property_name(field, _R(model), None);
+				}
+
+				let type_ = self.index.type_display(tid);
+				let type_ = type_.as_deref().unwrap_or("Any");
+				Ok(Some(Hover {
+					range: lsp_range,
+					contents: HoverContents::Scalar(MarkedString::from_language_code(
+						"python".to_string(),
+						format!("(local) {display}: {type_}"),
 					)),
-				)
+				}))
 			}
 			Some(RefKind::Component) => Ok(self.index.hover_component(needle, lsp_range)),
 			Some(RefKind::PropOf(component_key)) => {
@@ -566,6 +568,33 @@ impl Backend {
 			command: "goto_owl".to_string(),
 			arguments: Some(vec![String::new().into(), value.into()]),
 		})]))
+	}
+	pub(crate) fn xml_debug_inspect_type(
+		&self,
+		params: TextDocumentPositionParams,
+		rope: RopeSlice<'_>,
+	) -> anyhow::Result<Option<String>> {
+		let position = params.position;
+		let uri = &params.text_document.uri;
+		let (slice, offset_at_cursor, _) = some!(self.record_slice(rope.slice(..), uri, position).ok());
+		let slice_str = Cow::from(slice);
+		let mut reader = Tokenizer::from(slice_str.as_ref());
+		let XmlRefs {
+			ref_at_cursor,
+			ref_kind,
+			scope,
+			..
+		} = self.index.gather_refs(offset_at_cursor, &mut reader, slice)?;
+		let (Some((needle, _)), Some(RefKind::PyExpr(py_offset))) = (ref_at_cursor, ref_kind) else {
+			return Ok(None);
+		};
+		let mut parser = Parser::new();
+		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+		let ast = some!(parser.parse(needle, None));
+		let root = ast.root_node();
+		let (type_, _) =
+			some!((self.index).type_of_node(Some(scope), root, ByteOffset(py_offset)..ByteOffset(py_offset), needle));
+		Ok(Some(format!("{type_:?}").replacen("Text::", "", 1)))
 	}
 }
 
@@ -1007,7 +1036,8 @@ impl Index {
 						// TODO: Limit cases of Python expressions
 						t_attr if t_attr.starts_with("t-") => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
-							ref_kind = Some(RefKind::PyExpr(offset_at_cursor.saturating_sub(value.start())))
+							let py_offset = offset_at_cursor.saturating_sub(value.start());
+							ref_kind = Some(RefKind::PyExpr(py_offset));
 						}
 						"groups" => {
 							ref_kind = Some(RefKind::Id);
@@ -1030,11 +1060,12 @@ impl Index {
 					});
 					(set_value.accept(local.as_str(), value)).and_then(|((set, _), (value, _))| {
 						let ast = parser.parse(&*value, None)?;
-						self.insert_in_scope(&mut scope, &set, ast.root_node(), &value)
+						_ = self
+							.insert_in_scope(&mut scope, &set, ast.root_node(), &value)
 							.inspect_err(|err| {
 								debug!("(gather_refs) set_value failed: {err}");
-							})
-							.ok()
+							});
+						Some(())
 					});
 					if local.as_str() == "t-name" && !template_mode {
 						template_mode = true;

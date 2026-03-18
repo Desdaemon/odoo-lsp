@@ -166,7 +166,7 @@ query! {
 }
 
 /// (module (_)*)
-fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
+pub(crate) fn top_level_stmt(module: Node, offset: usize) -> Option<Node> {
 	module
 		.named_children(&mut module.walk())
 		.find(|child| child.byte_range().contains_end(offset))
@@ -1274,23 +1274,6 @@ impl Backend {
 		Ok(None)
 	}
 
-	#[allow(clippy::unused_async)] // reason: custom method
-	pub async fn debug_inspect_type(
-		&self,
-		params: TextDocumentPositionParams,
-	) -> tower_lsp_server::jsonrpc::Result<Option<String>> {
-		let uri = &params.text_document.uri;
-		let document = some!(self.document_map.get(uri.path().as_str()));
-		let file_path = uri.to_file_path().unwrap();
-		let ast = some!(self.ast_map.get(file_path.to_str().unwrap()));
-		let rope = &document.rope;
-		let contents = Cow::from(rope);
-		let ByteOffset(offset) = rope_conv(params.position, rope.slice(..));
-		let root = some!(top_level_stmt(ast.root_node(), offset));
-		let needle = some!(root.named_descendant_for_byte_range(offset, offset));
-		let (type_, _) = some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), &contents));
-		Ok(Some(format!("{type_:?}").replacen("Text::", "", 1)))
-	}
 	fn is_commandlist(cmdlist: Node, offset: usize) -> bool {
 		matches!(cmdlist.kind(), "list" | "list_comprehension")
 			&& cmdlist.byte_range().contains_end(offset)

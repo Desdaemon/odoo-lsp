@@ -27,6 +27,7 @@ use crate::component::{Prop, PropDescriptor};
 use crate::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig};
 use crate::index::{Component, Index, ModuleName, RecordId, Symbol, SymbolSet};
 use crate::model::{Field, FieldKind, Method, ModelEntry, ModelLocation, ModelName, PropertyKind};
+use crate::python::top_level_stmt;
 use crate::record::Record;
 use crate::utils::{MaxVec, Semaphore, strict_canonicalize, to_display_path};
 use crate::{errloc, format_loc, some};
@@ -523,6 +524,36 @@ impl Backend {
 		}
 		for root in redundant {
 			self.workspaces.remove(Path::new(root));
+		}
+	}
+
+	#[allow(clippy::unused_async)] // reason: custom method
+	pub async fn debug_inspect_type(
+		&self,
+		params: TextDocumentPositionParams,
+	) -> tower_lsp_server::jsonrpc::Result<Option<String>> {
+		let uri = &params.text_document.uri;
+		let rope = {
+			let document = some!(self.document_map.get(uri.path().as_str()));
+			document.rope.clone()
+		};
+		let file_path = uri.to_file_path().unwrap();
+		match file_path.extension().and_then(|ext| ext.to_str()) {
+			Some("py") => {
+				let ast = some!(self.ast_map.get(file_path.to_str().unwrap()));
+				let ByteOffset(offset) = rope_conv(params.position, rope.slice(..));
+				let contents = Cow::from(&rope);
+				let root = some!(top_level_stmt(ast.root_node(), offset));
+				let needle = some!(root.named_descendant_for_byte_range(offset, offset));
+				let (type_, _) =
+					some!((self.index).type_of_range(root, needle.byte_range().map_unit(ByteOffset), &contents));
+				Ok(Some(format!("{type_:?}").replacen("Text::", "", 1)))
+			}
+			Some("xml") => {
+				let res = some!(self.xml_debug_inspect_type(params, rope.slice(..)).ok().flatten());
+				Ok(Some(res))
+			}
+			_ => Ok(None),
 		}
 	}
 }
