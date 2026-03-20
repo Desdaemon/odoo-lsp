@@ -36,6 +36,7 @@ split-debuginfo = "packed"
 
 [profile.bench]
 strip = false
+debug = true
 
 [profile.release-lto]
 inherits = "release"

@@ -1,11 +1,14 @@
+set quiet
+
 test *args="--no-fail-fast": (ensure_cargo "cargo-nextest")
     cargo nextest run -p odoo-lsp -p odoo-lsp-tests {{args}}
 
-bench: (ensure_cargo "iai-callgrind-runner")
+bench: (ensure_cargo "gungraun-runner")
+    gungraun-runner -V
     cargo bench -p odoo-lsp-tests
 
 install profile="dev":
-		cargo install --path . --profile={{profile}}
+	cargo install --path . --profile={{profile}}
 
 [private]
 ensure_cargo command:

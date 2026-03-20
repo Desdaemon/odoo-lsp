@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_lsp::{lsp_types::*, LanguageServer};
-use iai_callgrind::{
+use gungraun::{
 	library_benchmark, library_benchmark_group, main, Callgrind, EntryPoint, FlamegraphConfig, LibraryBenchmarkConfig,
 	OutputFormat,
 };
@@ -14,7 +14,7 @@ fn init_and_shutdown(max_concurrency: usize) {
 	let rt = builder.worker_threads(max_concurrency).enable_all().build().unwrap();
 	rt.block_on(async move {
 		#[cfg(target_os = "linux")]
-		iai_callgrind::client_requests::callgrind::start_instrumentation();
+		gungraun::client_requests::callgrind::start_instrumentation();
 
 		let mut server = odoo_lsp_tests::server::setup_lsp_server(Some(max_concurrency));
 
@@ -80,7 +80,7 @@ fn init_and_shutdown(max_concurrency: usize) {
 		server.exit(()).expect("[exit] failed");
 
 		#[cfg(target_os = "linux")]
-		iai_callgrind::client_requests::callgrind::stop_instrumentation();
+		gungraun::client_requests::callgrind::stop_instrumentation();
 	});
 }
 
@@ -89,7 +89,7 @@ fn init_and_shutdown(max_concurrency: usize) {
 #[bench::serial(1)]
 fn bench_standard(concurrency: usize) {
 	#[cfg(target_os = "linux")]
-	iai_callgrind::client_requests::callgrind::stop_instrumentation();
+	gungraun::client_requests::callgrind::stop_instrumentation();
 	init_and_shutdown(concurrency)
 }
 
