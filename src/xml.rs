@@ -1281,7 +1281,7 @@ pub fn add_xml_snippets(res: Option<CompletionResponse>) -> CompletionResponse {
 			kind: Some(CompletionItemKind::SNIPPET),
 			label: "groupby".to_string(),
 			insert_text: Some(
-				r#"<filter name="group_$1" string="$2" domain="[]" context="{'group_by': '$1'}"/>"#.to_string(),
+				r#"<filter name="group_by_$1" string="$2" domain="[]" context="{'group_by': '$1'}"/>"#.to_string(),
 			),
 			insert_text_format: Some(InsertTextFormat::SNIPPET),
 			..Default::default()
