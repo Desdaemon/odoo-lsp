@@ -315,10 +315,10 @@ pub const fn likely(cond: bool) -> bool {
 
 #[inline(always)]
 pub const fn unlikely(cond: bool) -> bool {
-	if !cond {
+	if cond {
+		cold_path();
 		true
 	} else {
-		cold_path();
 		false
 	}
 }
