@@ -8,7 +8,7 @@ use crate::ImStr;
 /// The current environment, populated from the AST statement by statement.
 #[derive(Default, Clone)]
 pub struct Scope {
-	pub variables: HashMap<String, Type>,
+	variables: HashMap<String, Type>,
 	pub parent: Option<Box<Scope>>,
 	/// TODO: Allow super(_, \<self>)
 	pub super_: Option<ImStr>,
@@ -27,12 +27,20 @@ impl Scope {
 			..Default::default()
 		}
 	}
+	#[inline]
 	pub fn get(&self, key: impl Borrow<str>) -> Option<&Type> {
 		fn impl_<'me>(self_: &'me Scope, key: &str) -> Option<&'me Type> {
+			self_.variables.get(key).or_else(|| self_.parent.as_ref()?.get(key))
+		}
+		impl_(self, key.borrow())
+	}
+	#[inline]
+	pub fn get_mut(&mut self, key: impl Borrow<str>) -> Option<&mut Type> {
+		fn impl_<'me>(self_: &'me mut Scope, key: &str) -> Option<&'me mut Type> {
 			self_
 				.variables
-				.get(key)
-				.or_else(|| self_.parent.as_ref().and_then(|parent| parent.get(key)))
+				.get_mut(key)
+				.or_else(|| self_.parent.as_mut()?.get_mut(key))
 		}
 		impl_(self, key.borrow())
 	}

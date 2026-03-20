@@ -1052,7 +1052,7 @@ impl Index {
 				Ok(Token::Attribute { local, value, .. }) => {
 					(foreach_as.accept(local.as_str(), value)).and_then(|((foreach, _), (as_, _))| {
 						let ast = parser.parse(&*foreach, None)?;
-						self.insert_in_scope(&mut scope, &as_, ast.root_node(), &foreach)
+						self.insert_in_scope(&mut scope, &as_, ast.root_node(), &foreach, true)
 							.inspect_err(|err| {
 								debug!("(gather_refs) foreach_as failed: {err}");
 							})
@@ -1061,7 +1061,7 @@ impl Index {
 					(set_value.accept(local.as_str(), value)).and_then(|((set, _), (value, _))| {
 						let ast = parser.parse(&*value, None)?;
 						_ = self
-							.insert_in_scope(&mut scope, &set, ast.root_node(), &value)
+							.insert_in_scope(&mut scope, &set, ast.root_node(), &value, false)
 							.inspect_err(|err| {
 								debug!("(gather_refs) set_value failed: {err}");
 							});
@@ -1228,17 +1228,21 @@ impl Index {
 		identifier: &str,
 		mut root: tree_sitter::Node,
 		contents: &str,
+		as_iteratee: bool,
 	) -> anyhow::Result<()> {
 		normalize(&mut root);
-		let type_ = match self.type_of(root, scope, contents) {
-			Some(tid) => type_cache().resolve(tid),
-			None => &Type::Value,
+		let (type_, tid) = match self.type_of(root, scope, contents) {
+			Some(tid) => (type_cache().resolve(tid), tid),
+			None => (&Type::Value, type_cache().get_or_intern(Type::Value)),
 		};
-		let type_ = self
+		let mut tid = self
 			.try_resolve_model(type_, scope)
-			.map(|model| Type::Model(_R(model).into()))
-			.unwrap_or_else(|| type_.clone());
-		scope.insert(identifier.to_string(), type_);
+			.map(|model| type_cache().get_or_intern(Type::Model(_R(model).into())))
+			.unwrap_or(tid);
+		if as_iteratee && let Some(iter_tid) = self.type_of_iterable(tid) {
+			tid = iter_tid;
+		}
+		scope.insert(identifier.to_string(), type_cache().resolve(tid).clone());
 		Ok(())
 	}
 }

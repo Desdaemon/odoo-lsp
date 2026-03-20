@@ -384,7 +384,7 @@ impl Index {
 					&& let Some(key) = dig!(lhs, string(1).string_content(1))
 					&& let Some(rhs) = python_next_named_sibling(lhs)
 					&& let type_ = self.type_of(rhs, scope, contents)
-					&& let Some(Type::DictBag(properties)) = scope.variables.get_mut(&contents[map.byte_range()])
+					&& let Some(Type::DictBag(properties)) = scope.get_mut(&contents[map.byte_range()])
 				{
 					let type_ = type_.unwrap_or_else(|| _T!(Type::Value));
 					let key = &contents[key.byte_range()];
@@ -410,7 +410,7 @@ impl Index {
 
 				if let Some(rhs) = python_next_named_sibling(lhs)
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
-					&& let Some(inner) = self.type_of_iterable(type_, _TR!(type_))
+					&& let Some(inner) = self.type_of_iterable(type_)
 				{
 					self.destructure_into_patternlist_like(lhs, inner, scope, contents);
 				}
@@ -441,7 +441,7 @@ impl Index {
 				if let Some(lhs) = for_in.child_by_field_name("left")
 					&& let Some(rhs) = for_in.child_by_field_name("right")
 					&& let Some(tid) = self.type_of(rhs, scope, contents)
-					&& let Some(inner) = self.type_of_iterable(tid, _TR!(tid))
+					&& let Some(inner) = self.type_of_iterable(tid)
 				{
 					self.destructure_into_patternlist_like(lhs, inner, scope, contents);
 				}
@@ -477,7 +477,7 @@ impl Index {
 				{
 					if let Some(list) = call.nodes_for_capture_index(PythonBuiltinCall::AppendList as _).next() {
 						if let Some(Type::List(slot @ ListElement::Vacant)) =
-							scope.variables.get_mut(&contents[list.byte_range()])
+							scope.get_mut(&contents[list.byte_range()])
 						{
 							*slot = ListElement::Occupied(tid);
 						}
@@ -490,7 +490,7 @@ impl Index {
 						};
 						let key = &contents[key.byte_range()];
 
-						if let Some(Type::DictBag(properties)) = scope.variables.get_mut(&contents[map.byte_range()])
+						if let Some(Type::DictBag(properties)) = scope.get_mut(&contents[map.byte_range()])
 							&& let Some((_, slot)) = properties.iter_mut().find(|(prop, id)| match prop {
 								DictKey::String(prop) => {
 									prop.as_str() == key && _T!(Type::List(ListElement::Vacant)) == *id
@@ -501,7 +501,7 @@ impl Index {
 						}
 					}
 				} else if let Some(map) = call.nodes_for_capture_index(PythonBuiltinCall::UpdateMap as _).next() {
-					let Some(Type::DictBag(properties)) = scope.variables.get_mut(&contents[map.byte_range()]) else {
+					let Some(Type::DictBag(properties)) = scope.get_mut(&contents[map.byte_range()]) else {
 						return ControlFlow::Continue(false);
 					};
 					let Some(args) = call.nodes_for_capture_index(PythonBuiltinCall::UpdateArgs as _).next() else {
@@ -542,9 +542,7 @@ impl Index {
 						}
 					}
 
-					scope
-						.variables
-						.insert(contents[map.byte_range()].to_string(), Type::DictBag(properties));
+					scope.insert(contents[map.byte_range()].to_string(), Type::DictBag(properties));
 				}
 			}
 			"with_statement" => {
@@ -713,7 +711,7 @@ impl Index {
 					&& let Some(scrutinee) = for_in_clause.child_by_field_name("left")
 					&& let Some(iteratee) = for_in_clause.child_by_field_name("right")
 					&& let Some(iter_ty) = self.type_of(iteratee, scope, contents)
-					&& let Some(iter_ty) = self.type_of_iterable(iter_ty, _TR!(iter_ty))
+					&& let Some(iter_ty) = self.type_of_iterable(iter_ty)
 				{
 					// FIXME: How to prevent this clone?
 					comprehension_scope = Scope::new(Some(scope.clone()));
@@ -785,8 +783,8 @@ impl Index {
 			_ => None,
 		}
 	}
-	fn type_of_iterable(&self, tid: TypeId, type_: &Type) -> Option<TypeId> {
-		match type_ {
+	pub(crate) fn type_of_iterable(&self, tid: TypeId) -> Option<TypeId> {
+		match _TR!(tid) {
 			Type::Model(_) => Some(tid),
 			Type::List(inner) => inner.clone().into(),
 			Type::Iterable(inner) => *inner,
@@ -810,7 +808,7 @@ impl Index {
 					let value_id = _T!(Type::Value);
 					let children = args.named_children(&mut cursor).map(|child| {
 						let tid = self.type_of(child, scope, contents).unwrap_or(value_id);
-						self.type_of_iterable(tid, _TR!(tid)).unwrap_or(value_id)
+						self.type_of_iterable(tid).unwrap_or(value_id)
 					});
 					let tuple = _T!(Type::Tuple(children.collect()));
 					return Some(_T!(Type::Iterable(Some(tuple))));
@@ -1326,7 +1324,7 @@ impl Index {
 		let (argnames, mut scope) = parameters.unwrap_or_default();
 		let cache_key = argnames
 			.into_iter()
-			.map(|arg| _T!(scope.variables.get(&*arg).cloned().unwrap_or(Type::Value)))
+			.map(|arg| _T!(scope.get(&*arg).cloned().unwrap_or(Type::Value)))
 			.collect::<Vec<_>>();
 		if let Some(tid) = method_obj.eval_cache.get(&cache_key) {
 			drop(model_entry);
@@ -1471,7 +1469,7 @@ impl Index {
 						self.destructure_into_patternlist_like(child, *type_, scope, contents);
 					}
 				}
-			} else if let Some(inner) = self.type_of_iterable(tid, _TR!(tid)) {
+			} else if let Some(inner) = self.type_of_iterable(tid) {
 				// spread this type to all params
 				for child in pattern.named_children(&mut pattern.walk()) {
 					if matches!(child.kind(), "identifier" | "tuple_pattern") {

@@ -36,7 +36,8 @@ class Bread(models.Model):
     def test_variable_append(self):
         foo = []
         #^type List(...)
-        foo.append(self)
+        for _ in range(123):
+            foo.append(self)
         foo
         #^type List(Model("bakery.bread"))
 
