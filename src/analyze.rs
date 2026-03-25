@@ -833,6 +833,17 @@ impl Index {
 						return Some(_T!(Type::Tuple(children.collect())));
 					}
 				}
+				"dict" => {
+					let arg = call.named_child(1)?.named_child(0)?;
+					let arg = self.type_of(arg, scope, contents)?;
+					let arg = self.type_of_iterable(arg)?;
+					if let Type::Tuple(tuple) = _TR!(arg)
+						&& let [lhs, rhs] = &tuple[..]
+					{
+						return Some(_T!(Type::Dict(*lhs, *rhs)));
+					}
+					return Some(_T!(Type::Dict(_T!(Type::Value), _T!(Type::Value))));
+				}
 				"super" => {}
 				_ => return None,
 			};
