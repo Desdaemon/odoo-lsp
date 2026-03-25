@@ -917,15 +917,30 @@ impl Index {
 				let mut aggs = vec![];
 				let args = call.named_child(1)?;
 
-				fn gather_attributes<'out>(contents: &'out str, arg: Node, out: &mut Vec<&'out str>) {
+				#[derive(PartialEq, Eq)]
+				enum Aggregation<'a> {
+					Recordset,
+					Raw(&'a str),
+				}
+
+				fn gather_attributes<'out>(
+					contents: &'out str,
+					arg: Node,
+					out: &mut Vec<(&'out str, Option<Aggregation<'out>>)>,
+				) {
 					let mut cursor = arg.walk();
 					for field in arg.named_children(&mut cursor) {
 						if let Some(field) = dig!(field, string_content(1)) {
 							let mut field = &contents[field.byte_range()];
-							if let Some((inner, _)) = field.split_once(':') {
+							let mut agg = None;
+							if let Some((inner, raw_agg)) = field.split_once(':') {
 								field = inner;
+								match raw_agg {
+									"recordset" => agg = Some(Aggregation::Recordset),
+									_ => agg = Some(Aggregation::Raw(raw_agg)),
+								}
 							}
-							out.push(field);
+							out.push((field, agg));
 						}
 					}
 				}
@@ -958,14 +973,20 @@ impl Index {
 				groupby.extend(aggs);
 				groupby.dedup();
 				let model = Type::Model(_R(*model).into());
+				let model_tid = _T!(model.clone());
 				let value_id = _T!(Type::Value);
 				// FIXME: This is not quite correct as only recordset and numeric aggregations make sense.
-				let aggs = groupby
-					.into_iter()
-					.map(|attr| match self.type_of_attribute(&model, attr, scope) {
+				let aggs = groupby.into_iter().map(|(attr, agg)| {
+					if attr == "id"
+						&& let Some(Aggregation::Recordset) = agg
+					{
+						return model_tid;
+					}
+					match self.type_of_attribute(&model, attr, scope) {
 						Some(type_) => _T!(type_),
 						None => value_id,
-					});
+					}
+				});
 				let tuple = _T!(Type::Tuple(aggs.collect()));
 				Some(_T!(Type::List(ListElement::Occupied(tuple))))
 			}
