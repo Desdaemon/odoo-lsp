@@ -1286,6 +1286,22 @@ pub fn add_xml_snippets(res: Option<CompletionResponse>) -> CompletionResponse {
 			insert_text_format: Some(InsertTextFormat::SNIPPET),
 			..Default::default()
 		},
+		CompletionItem {
+			kind: Some(CompletionItemKind::SNIPPET),
+			label: "res_groups".to_string(),
+			insert_text_format: Some(InsertTextFormat::SNIPPET),
+			insert_text: Some(
+				r#"
+<record id="group_$1" model="res.groups">
+	<field name="name">$1</field>
+	<field name="privilege_id" ref="$2"/>
+	<field name="implied_ids" eval="[$3]"/>
+	<field name="comment">$4</field>
+</record>"#
+					.to_string(),
+			),
+			..Default::default()
+		},
 	]);
 	res
 }
