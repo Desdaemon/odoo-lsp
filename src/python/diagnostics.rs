@@ -327,7 +327,7 @@ impl Backend {
 				"env", "id", "ids", "display_name", "create_date", "write_date",
 				"create_uid", "write_uid", "pool", "record", "flush_model", "mapped",
 				"grouped", "_read_group", "filtered", "sorted", "_origin", "fields_get",
-				"user_has_groups",
+				"user_has_groups", "read",
 			);
 			let prop = &contents[attribute.byte_range()];
 			if prop.starts_with('_') || MODEL_BUILTINS.contains(prop) || MODEL_METHODS.contains(prop) {

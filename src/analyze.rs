@@ -1001,6 +1001,22 @@ impl Index {
 				let tuple = _T!(Type::Tuple(aggs.collect()));
 				Some(_T!(Type::List(ListElement::Occupied(tuple))))
 			}
+			Type::Method(model, read) if read.as_str() == "read" => {
+				let model = Type::Model(_R(model).into());
+				let args = call.named_child(1)?;
+				let fields = dig!(args, list)?;
+				let mut dict: Vec<(DictKey, TypeId)> = vec![];
+				for field in fields.named_children(&mut fields.walk()) {
+					let Some(field) = dig!(field, string_content(1)) else {
+						continue;
+					};
+					let key = &contents[field.byte_range()];
+					if let Some(field_ty) = self.type_of_attribute(&model, key, scope) {
+						dict.push((DictKey::String(key.into()), _T!(field_ty)));
+					}
+				}
+				Some(_T!(Type::List(ListElement::Occupied(_T!(Type::DictBag(dict))))))
+			}
 			Type::Method(model, method) => {
 				let method = _G(method)?;
 				let args = self.prepare_call_scope(*model, method.into(), call, scope, contents);
@@ -1124,7 +1140,7 @@ impl Index {
 			"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
 			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
 			"company" | "companies" if matches!(lhs, Type::Env) => Some(Type::Model("res.company".into())),
-			"mapped" | "grouped" | "_read_group" => {
+			"mapped" | "grouped" | "_read_group" | "read" => {
 				let model = self.try_resolve_model(lhs, scope)?;
 				Some(Type::Method(model, attrname.into()))
 			}
@@ -1170,9 +1186,9 @@ impl Index {
 			}
 		} else {
 			match attr {
-				"id" if matches!(type_, Type::Model(..) | Type::Record(..)) => Some(Type::PyBuiltin("int".into())),
+				"id" if matches!(type_, Type::Model(..) | Type::Record(..)) => Some(Type::PyBuiltin("Id".into())),
 				"ids" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
-					Some(Type::List(ListElement::Occupied(_T!(Type::PyBuiltin("int".into())))))
+					Some(Type::List(ListElement::Occupied(_T!(Type::PyBuiltin("Id".into())))))
 				}
 				"display_name" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
 					Some(Type::PyBuiltin("str".into()))
