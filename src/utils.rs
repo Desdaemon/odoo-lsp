@@ -302,7 +302,7 @@ pub fn cow_split_once<'src>(
 #[cold]
 pub const fn cold_path() {}
 
-/// Copied from https://github.com/rust-lang/hashbrown/commit/64bd7db1d1b148594edfde112cdb6d6260e2cfc3
+/// Copied from <https://github.com/rust-lang/hashbrown/commit/64bd7db1d1b148594edfde112cdb6d6260e2cfc3>
 #[inline(always)]
 pub const fn likely(cond: bool) -> bool {
 	if cond {

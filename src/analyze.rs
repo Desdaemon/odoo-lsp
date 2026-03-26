@@ -1074,7 +1074,7 @@ impl Index {
 	}
 
 	#[instrument(skip_all, fields(model, method))]
-	fn prepare_call_scope(
+	pub fn prepare_call_scope(
 		&self,
 		model: ModelName,
 		method: Symbol<Method>,
