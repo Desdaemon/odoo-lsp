@@ -680,6 +680,8 @@ impl Index {
 	}
 	/// `for_only_prop` should be specified if a particular kind of [property][PropertyKind] should be included,
 	/// defaults to any if not specified.
+	///
+	/// If set, `field_model_filter` will remove relational (and non-Many2one) fields that do not match the specified model.
 	pub fn complete_property_name(
 		&self,
 		needle: &str,
@@ -687,6 +689,7 @@ impl Index {
 		model: ImStr,
 		rope: RopeSlice<'_>,
 		for_only_prop: Option<PropertyKind>,
+		field_model_filter: Option<&str>,
 		in_string: bool,
 		public_only: bool,
 		items: &mut MaxVec<CompletionItem>,
@@ -732,7 +735,14 @@ impl Index {
 					{
 						let mut description = None;
 						if let FieldKind::Relational(rel) = field.kind {
+							if field_model_filter
+								.is_some_and(|filter| _R(field.type_) != "Many2one" || _R(rel) != filter)
+							{
+								return None;
+							}
 							description = Some(_R(rel).to_string());
+						} else if field_model_filter.is_some() {
+							return None;
 						}
 						let field_type = _R(field.type_);
 						label_details = Some(CompletionItemLabelDetails {

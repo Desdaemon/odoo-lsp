@@ -1,11 +1,12 @@
 use std::borrow::Cow;
 use std::path::Path;
+use std::str::FromStr;
 
 use lasso::Spur;
 use ropey::Rope;
 use tower_lsp_server::ls_types::*;
 use tracing::{debug, instrument, trace, warn};
-use tree_sitter::{Node, Parser, QueryMatch};
+use tree_sitter::{Node, Parser, QueryCapture, QueryMatch};
 use ts_macros::query;
 
 use crate::prelude::*;
@@ -163,6 +164,20 @@ query! {
   name: (aliased_import
     name: (dotted_name) @IMPORT_NAME
     alias: (identifier) @IMPORT_ALIAS))
+}
+
+/// Field descriptors that we are interested in providing support.
+#[derive(derive_more::FromStr, Clone, Copy)]
+#[from_str(rename_all = "snake_case")]
+enum FieldDescriptors {
+	ComodelName,
+	Domain,
+	Compute,
+	Inverse,
+	Search,
+	InverseName,
+	Related,
+	Groups,
 }
 
 /// (module (_)*)
@@ -667,48 +682,61 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
+						use FieldDescriptors as FD;
 						let Some(desc_value) = python_next_named_sibling(capture.node) else {
 							continue;
 						};
-
-						let descriptor = &contents[capture.node.byte_range()];
 						if !desc_value.byte_range().contains_end(offset) {
 							continue;
 						}
-						if matches!(descriptor, "comodel_name") {
-							let range = desc_value.byte_range().shrink(1);
-							let slice = ok!(rope.try_slice(range.clone()));
-							let slice = Cow::from(slice);
-							return self.index.jump_def_model(&slice);
-						} else if matches!(descriptor, "compute" | "search" | "inverse" | "related") {
-							let single_field = descriptor != "related";
-							// same as PyCompletions::Mapped
-							let Some(mapped) = self.gather_mapped(
-								root,
-								match_,
-								Some(offset),
-								desc_value.byte_range(),
-								this_model.inner,
-								&contents,
-								false,
-								Some(single_field),
-							) else {
-								break;
-							};
-							let mut needle = mapped.needle;
-							let mut model = _I(mapped.model);
-							if !mapped.single_field {
-								some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+
+						match FD::from_str(&contents[range]) {
+							Ok(FD::ComodelName) => {
+								let range = desc_value.byte_range().shrink(1);
+								let slice = ok!(rope.try_slice(range.clone()));
+								let slice = Cow::from(slice);
+								return self.index.jump_def_model(&slice);
 							}
-							let model = _R(model);
-							return self.index.jump_def_property_name(needle, model);
-						} else if matches!(descriptor, "groups") {
-							let range = desc_value.byte_range().shrink(1);
-							let value = Cow::from(ok!(rope.try_slice(range.clone())));
-							let mut ref_ = None;
-							determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
-							let (needle, _) = some!(ref_);
-							return self.index.jump_def_xml_id(needle, uri);
+							Ok(
+								descriptor @ (FD::Compute | FD::Search | FD::Inverse | FD::Related | FD::InverseName),
+							) => {
+								let single_field = matches!(descriptor, FD::Related | FD::InverseName);
+								let mapped_model = if matches!(descriptor, FD::InverseName) {
+									extract_comodel_name(match_.captures, &contents)
+										.map(|comodel_name| &contents[comodel_name.byte_range().shrink(1)])
+								} else {
+									this_model.inner
+								};
+								// same as PyCompletions::Mapped
+								let Some(mapped) = self.gather_mapped(
+									root,
+									match_,
+									Some(offset),
+									desc_value.byte_range(),
+									mapped_model,
+									&contents,
+									false,
+									Some(single_field),
+								) else {
+									break;
+								};
+								let mut needle = mapped.needle;
+								let mut model = _I(mapped.model);
+								if !mapped.single_field {
+									some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+								}
+								let model = _R(model);
+								return self.index.jump_def_property_name(needle, model);
+							}
+							Ok(FD::Groups) => {
+								let range = desc_value.byte_range().shrink(1);
+								let value = Cow::from(ok!(rope.try_slice(range.clone())));
+								let mut ref_ = None;
+								determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
+								let (needle, _) = some!(ref_);
+								return self.index.jump_def_xml_id(needle, uri);
+							}
+							Ok(FD::Domain) | Err(_) => {}
 						}
 
 						return Ok(None);
@@ -894,26 +922,30 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::FieldDescriptor) => {
+						use FieldDescriptors as FD;
 						let Some(desc_value) = python_next_named_sibling(capture.node) else {
 							continue;
 						};
-						let descriptor = &contents[range];
-						// TODO: related, when field inheritance is implemented
 						if !desc_value.byte_range().contains_end(offset) {
 							continue;
 						};
 
-						if matches!(descriptor, "comodel_name") {
-							let range = desc_value.byte_range().shrink(1);
-							let slice = ok!(rope.try_slice(range.clone()));
-							let slice = Cow::from(slice);
-							let slice = some!(_G(slice));
-							return self.model_references(&path, &slice.into());
-						} else if matches!(descriptor, "compute" | "search" | "inverse") {
-							let range = desc_value.byte_range().shrink(1);
-							let model = some!(this_model.inner.as_ref());
-							let prop = &contents[range];
-							return self.index.method_references(prop, model);
+						match FD::from_str(&contents[range]) {
+							Ok(FD::ComodelName) => {
+								let range = desc_value.byte_range().shrink(1);
+								let slice = ok!(rope.try_slice(range.clone()));
+								let slice = Cow::from(slice);
+								let slice = some!(_G(slice));
+								return self.model_references(&path, &slice.into());
+							}
+							Ok(FD::Compute | FD::Search | FD::Inverse) => {
+								let range = desc_value.byte_range().shrink(1);
+								let model = some!(this_model.inner.as_ref());
+								let prop = &contents[range];
+								return self.index.method_references(prop, model);
+							}
+							Ok(FD::InverseName) => return Ok(None),
+							Ok(FD::Domain | FD::Related | FD::Groups) | Err(_) => {}
 						}
 
 						return Ok(None);
@@ -1042,54 +1074,67 @@ impl Backend {
 						return self.index.hover_property_name(name, model, Some(range));
 					}
 					Some(PyCompletions::FieldDescriptor) => {
+						use FieldDescriptors as FD;
 						let Some(desc_value) = python_next_named_sibling(capture.node) else {
 							continue;
 						};
-						let descriptor = &contents[range];
 						if !desc_value.byte_range().contains_end(offset) {
 							continue;
 						}
 
-						if matches!(descriptor, "comodel_name") {
-							let range = desc_value.byte_range().shrink(1);
-							let lsp_range = span_conv(desc_value.range());
-							let slice = ok!(rope.try_slice(range.clone()));
-							let slice = Cow::from(slice);
-							return self.index.hover_model(&slice, Some(lsp_range), false, None);
-						} else if matches!(descriptor, "compute" | "search" | "inverse" | "related") {
-							let single_field = descriptor != "related";
-							let mapped = some!(self.gather_mapped(
-								root,
-								match_,
-								Some(offset),
-								desc_value.byte_range(),
-								this_model.inner,
-								&contents,
-								false,
-								Some(single_field)
-							));
-							let mut needle = mapped.needle;
-							let mut model = _I(mapped.model);
-							let mut range = mapped.range;
-							if !mapped.single_field {
-								some!(
-									self.index
-										.models
-										.resolve_mapped(&mut model, &mut needle, Some(&mut range))
-										.ok()
-								);
+						match FD::from_str(&contents[range]) {
+							Ok(FD::ComodelName) => {
+								let range = desc_value.byte_range().shrink(1);
+								let lsp_range = span_conv(desc_value.range());
+								let slice = ok!(rope.try_slice(range.clone()));
+								let slice = Cow::from(slice);
+								return self.index.hover_model(&slice, Some(lsp_range), false, None);
 							}
-							let model = _R(model);
-							return (self.index).hover_property_name(needle, model, Some(rope_conv(range, rope)));
-						} else if matches!(descriptor, "groups") {
-							let range = desc_value.byte_range().shrink(1);
-							let value = Cow::from(ok!(rope.try_slice(range.clone())));
-							let mut ref_ = None;
-							determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
-							let (needle, byte_range) = some!(ref_);
-							return self
-								.index
-								.hover_record(needle, Some(rope_conv(byte_range.map_unit(ByteOffset), rope)));
+							Ok(
+								descriptor @ (FD::Compute | FD::Search | FD::Inverse | FD::Related | FD::InverseName),
+							) => {
+								let single_field = matches!(descriptor, FD::Related | FD::InverseName);
+								let mapped_model = if matches!(descriptor, FD::InverseName) {
+									extract_comodel_name(match_.captures, &contents)
+										.map(|comodel_name| &contents[comodel_name.byte_range().shrink(1)])
+								} else {
+									this_model.inner
+								};
+								let mapped = some!(self.gather_mapped(
+									root,
+									match_,
+									Some(offset),
+									desc_value.byte_range(),
+									mapped_model,
+									&contents,
+									false,
+									Some(single_field)
+								));
+								let mut needle = mapped.needle;
+								let mut model = _I(mapped.model);
+								let mut range = mapped.range;
+								if !mapped.single_field {
+									some!(
+										self.index
+											.models
+											.resolve_mapped(&mut model, &mut needle, Some(&mut range))
+											.ok()
+									);
+								}
+								let model = _R(model);
+								return (self.index).hover_property_name(needle, model, Some(rope_conv(range, rope)));
+							}
+							Ok(FD::Groups) => {
+								let range = desc_value.byte_range().shrink(1);
+								let value = Cow::from(ok!(rope.try_slice(range.clone())));
+								let mut ref_ = None;
+								determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
+								let (needle, byte_range) = some!(ref_);
+								return self
+									.index
+									.hover_record(needle, Some(rope_conv(byte_range.map_unit(ByteOffset), rope)));
+							}
+							Ok(FD::Domain) | Err(_) => {}
 						}
 
 						return Ok(None);
@@ -1578,4 +1623,28 @@ fn extract_string_needle_at_offset<'a>(
 	let needle = Cow::from(slice.try_slice(1..offset - relative_offset)?);
 	let byte_range = range.shrink(1).map_unit(ByteOffset);
 	Ok((needle, byte_range))
+}
+
+fn extract_comodel_name<'tree>(captures: &[QueryCapture<'tree>], contents: &str) -> Option<Node<'tree>> {
+	for cap in captures {
+		match PyCompletions::from(cap.index) {
+			Some(PyCompletions::Model) => {
+				if let Some(parent) = cap.node.parent()
+					&& parent.kind() == "argument_list"
+				{
+					return Some(cap.node);
+				}
+			}
+			Some(PyCompletions::FieldDescriptor) => {
+				let Ok(FieldDescriptors::ComodelName) = FieldDescriptors::from_str(&contents[cap.node.byte_range()])
+				else {
+					continue;
+				};
+				return cap.node.next_named_sibling();
+			}
+			_ => {}
+		}
+	}
+
+	None
 }

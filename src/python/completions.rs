@@ -7,8 +7,6 @@ use tower_lsp_server::ls_types::*;
 use tracing::debug;
 use tree_sitter::Tree;
 
-use crate::prelude::*;
-
 use crate::analyze::{DictKey, Type, type_cache};
 use crate::backend::Backend;
 use crate::index::{_G, _I, _R, symbol::Symbol};
@@ -18,7 +16,7 @@ use crate::utils::MaxVec;
 use crate::utils::*;
 use crate::xml::determine_csv_xmlid_subgroup;
 
-use super::{Mapped, PyCompletions, ThisModel, extract_string_needle_at_offset, top_level_stmt};
+use super::*;
 
 /// Python extensions for item completions.
 impl Backend {
@@ -246,6 +244,7 @@ impl Backend {
 												_R(model).into(),
 												rope,
 												Some(PropertyKind::Field),
+												None,
 												true,
 												false,
 												&mut items,
@@ -268,6 +267,7 @@ impl Backend {
 									&contents,
 									completions_limit,
 									Some(PropertyKind::Field),
+									None,
 									rope,
 								);
 							} else if let Some(cmdlist) = python_next_named_sibling(capture.node)
@@ -289,6 +289,7 @@ impl Backend {
 									ImStr::from(_R(model)),
 									rope,
 									Some(PropertyKind::Field),
+									None,
 									true,
 									false,
 									&mut items,
@@ -301,32 +302,51 @@ impl Backend {
 							}
 						}
 						Some(PyCompletions::FieldDescriptor) => {
+							use FieldDescriptors as FD;
 							let Some(desc_value) = python_next_named_sibling(capture.node) else {
 								continue;
 							};
 
-							let descriptor = &contents[capture.node.byte_range()];
+							let descriptor = FD::from_str(&contents[range]);
 							if desc_value.byte_range().contains_end(offset) {
 								match descriptor {
-									"compute" | "search" | "inverse" | "related" => {
-										let prop_kind = if descriptor == "related" {
+									Ok(
+										descriptor @ (FD::Compute
+										| FD::Search
+										| FD::Inverse
+										| FD::Related
+										| FD::InverseName),
+									) => {
+										let prop_kind = if matches!(descriptor, FD::Related | FD::InverseName) {
 											PropertyKind::Field
 										} else {
 											PropertyKind::Method
 										};
+										let (mapped_model, field_model_filter) =
+											if matches!(descriptor, FD::InverseName) {
+												(
+													super::extract_comodel_name(match_.captures, &contents).map(
+														|comodel_name| &contents[comodel_name.byte_range().shrink(1)],
+													),
+													this_model.inner,
+												)
+											} else {
+												(this_model.inner, None)
+											};
 										return self.python_completions_for_prop(
 											root,
 											match_,
 											offset,
 											desc_value,
-											this_model.inner,
+											mapped_model,
 											&contents,
 											completions_limit,
 											Some(prop_kind),
+											field_model_filter,
 											rope,
 										);
 									}
-									"comodel_name" => {
+									Ok(FD::ComodelName) => {
 										// same as model
 										let range = desc_value.byte_range();
 										let (needle, byte_range) =
@@ -342,7 +362,7 @@ impl Backend {
 										});
 										break 'match_;
 									}
-									"groups" => {
+									Ok(FD::Groups) => {
 										// complete res.groups records
 										let range = desc_value.byte_range().shrink(1);
 										let value = Cow::from(ok!(rope.try_slice(range.clone())));
@@ -368,15 +388,15 @@ impl Backend {
 										});
 										break 'match_;
 									}
-									_ => {}
+									Ok(FD::Domain) | Err(_) => {}
 								}
 							}
 
-							if matches!(descriptor, "comodel_name" | "domain" | "groups") {
+							if let Ok(descriptor) = descriptor {
 								field_descriptors.push((descriptor, desc_value));
-							}
-							if desc_value.byte_range().contains_end(offset) {
-								field_descriptor_in_offset = Some((descriptor, desc_value));
+								if desc_value.byte_range().contains_end(offset) {
+									field_descriptor_in_offset = Some((descriptor, desc_value));
+								}
 							}
 						}
 						Some(PyCompletions::Depends)
@@ -389,7 +409,7 @@ impl Backend {
 						| None => {}
 					}
 				}
-				if let Some(("domain", value)) = field_descriptor_in_offset {
+				if let Some((super::FieldDescriptors::Domain, value)) = field_descriptor_in_offset {
 					let mut domain_node = value;
 					if domain_node.kind() == "lambda" {
 						let Some(body) = domain_node.child_by_field_name("body") else {
@@ -403,7 +423,8 @@ impl Backend {
 					let comodel_name = field_descriptors
 						.iter()
 						.find_map(|&(desc, node)| {
-							(desc == "comodel_name").then(|| &contents[node.byte_range().shrink(1)])
+							matches!(desc, FieldDescriptors::ComodelName)
+								.then(|| &contents[node.byte_range().shrink(1)])
 						})
 						.or(field_model);
 
@@ -429,6 +450,7 @@ impl Backend {
 						&contents,
 						completions_limit,
 						Some(PropertyKind::Field),
+						None,
 						rope,
 					);
 				}
@@ -501,6 +523,7 @@ impl Backend {
 										_R(model).into(),
 										rope,
 										Some(PropertyKind::Field),
+										None,
 										true,
 										false,
 										&mut items,
@@ -559,6 +582,7 @@ impl Backend {
 					ImStr::from(model),
 					rope,
 					None,
+					None,
 					false,
 					false,
 					&mut items,
@@ -583,6 +607,7 @@ impl Backend {
 		contents: &str,
 		completions_limit: usize,
 		prop_type: Option<PropertyKind>,
+		field_model_filter: Option<&str>,
 		rope: RopeSlice<'_>,
 	) -> anyhow::Result<Option<CompletionResponse>> {
 		let Mapped {
@@ -621,6 +646,7 @@ impl Backend {
 			ImStr::from(model_name),
 			rope,
 			prop_type,
+			field_model_filter,
 			node.kind() == "string",
 			false,
 			&mut items,

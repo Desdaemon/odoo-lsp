@@ -80,6 +80,7 @@ pub struct ModelEntry {
 #[derive(Clone, Debug)]
 pub enum FieldKind {
 	Value,
+	/// x2many, many2one model
 	Relational(Spur),
 	Related(ImStr),
 }

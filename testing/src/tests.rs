@@ -5,9 +5,9 @@ use std::process::ExitCode;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use async_lsp::lsp_types::*;
 use async_lsp::LanguageServer;
-use futures::{stream::FuturesUnordered, StreamExt};
+use async_lsp::lsp_types::*;
+use futures::{StreamExt, stream::FuturesUnordered};
 use pretty_assertions::{Comparison, StrComparison};
 use rstest::*;
 use tree_sitter::Parser;
@@ -128,12 +128,11 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) -> ExitCode {
 						let mut related_groups: Vec<(Position, Vec<String>)> = Vec::new();
 
 						for (pos, msg) in &expected.related {
-							if let Some(last_group) = related_groups.last_mut() {
-								if last_group.0 == *pos {
+							if let Some(last_group) = related_groups.last_mut()
+								&& last_group.0 == *pos {
 									last_group.1.push(msg.clone());
 									continue;
 								}
-							}
 							// Start a new group
 							related_groups.push((*pos, vec![msg.clone()]));
 						}
@@ -561,7 +560,7 @@ fn parse_assertion_from_capture(
 
 	// Calculate position
 	let range = capture.node.range();
-	let line = range.start_point.row as u32;
+	let line = range.start_point.row as _;
 	// The character position is where the caret appears in the original line
 	let character = (range.start_point.column + caret_pos_in_node) as u32;
 

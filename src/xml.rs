@@ -679,16 +679,18 @@ impl Index {
 					some!(self.models.resolve_mapped(&mut model, &mut needle, None).ok());
 					model_filter = ImStr::from(_R(model));
 				}
+				let for_only_prop = Some(if matches!(ref_kind, RefKind::MethodName(_)) {
+					PropertyKind::Method
+				} else {
+					PropertyKind::Field
+				});
 				self.complete_property_name(
 					needle,
 					replace_range,
 					model_filter,
 					rope,
-					Some(if matches!(ref_kind, RefKind::MethodName(_)) {
-						PropertyKind::Method
-					} else {
-						PropertyKind::Field
-					}),
+					for_only_prop,
+					None,
 					true,
 					false,
 					&mut items,
@@ -764,6 +766,7 @@ impl Index {
 					ImStr::from(_R(model)),
 					rope,
 					None, // Field would be better, but leave this here at least until @property is implemented
+					None,
 					false,
 					false,
 					&mut items,

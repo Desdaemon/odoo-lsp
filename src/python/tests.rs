@@ -478,3 +478,41 @@ class TestModel(models.Model):
 		"Should detect broken syntax through ERROR nodes or tree errors"
 	);
 }
+
+#[test]
+fn test_extract_comodel_name() {
+	let mut parser = Parser::new();
+	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+
+	let contents = r#"
+		class What(models.Model):
+			foo = fields.One2many('foob')
+			bar = fields.One2many(comodel_name='foob')
+	"#;
+	let ast = parser.parse(contents.as_bytes(), None).unwrap();
+	let query = PyCompletions::query();
+	let mut cursor = QueryCursor::new();
+	let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
+	let mut matched = 0;
+	while let Some(match_) = matches.next() {
+		for cap in match_.captures {
+			let Some(PyCompletions::Prop) = PyCompletions::from(cap.index) else {
+				continue;
+			};
+			match &contents[cap.node.byte_range()] {
+				"foo" => {
+					let comodel = extract_comodel_name(match_.captures, contents).unwrap();
+					assert_eq!(&contents[comodel.byte_range()], "'foob'");
+					matched += 1;
+				}
+				"bar" => {
+					let comodel = extract_comodel_name(match_.captures, contents).unwrap();
+					assert_eq!(&contents[comodel.byte_range()], "'foob'");
+					matched += 1;
+				}
+				_ => unreachable!(),
+			}
+		}
+	}
+	assert_eq!(matched, 2);
+}

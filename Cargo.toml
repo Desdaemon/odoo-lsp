@@ -80,7 +80,7 @@ phf = { version = "0.12.1", features = ["macros"] }
 bitflags = "2.6.0"
 pathdiff = "0.2.3"
 rayon = "1.8.0"
-derive_more = { version = "2.0.1", features = ["deref", "deref_mut"] }
+derive_more = { version = "2.0.1", features = ["deref", "deref_mut", "from_str"] }
 ignore = "0.4.22"
 fomat-macros = "0.3.2"
 num_enum = "0.7.2"
