@@ -20,7 +20,7 @@ use super::*;
 
 /// Python extensions for item completions.
 impl Backend {
-	pub(crate) async fn python_completions(
+	pub(crate) fn python_completions(
 		&self,
 		params: CompletionParams,
 		ast: Tree,
@@ -32,500 +32,332 @@ impl Backend {
 			debug!("no current module");
 			return Ok(None);
 		};
-		let mut cursor = tree_sitter::QueryCursor::new();
 		let contents = Cow::from(rope);
 		let query = PyCompletions::query();
 		let completions_limit = self
 			.workspaces
 			.find_workspace_of(&path, |_, ws| ws.completions.limit)
 			.unwrap_or_else(|| self.project_config.completions_limit.load(Relaxed));
+		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut this_model = ThisModel::default();
-		// FIXME: This hack is necessary to drop !Send locals before await points.
-		let mut early_return = EarlyReturn::<anyhow::Result<_>>::default();
-		{
-			let root = some!(top_level_stmt(ast.root_node(), offset));
-			let mut matches = cursor.matches(query, root, contents.as_bytes());
-			'match_: while let Some(match_) = matches.next() {
-				let mut model_filter = None;
-				let mut field_descriptors = vec![];
-				let mut field_descriptor_in_offset = None;
-				let mut field_model = None;
 
-				for capture in match_.captures {
-					let range = capture.node.byte_range();
-					match PyCompletions::from(capture.index) {
-						Some(PyCompletions::Request) => model_filter = Some("ir.ui.view"),
-						Some(PyCompletions::HasGroups) => model_filter = Some("res.groups"),
-						Some(PyCompletions::ForXmlId) => {
-							let model = || {
-								let model = capture.node.prev_named_sibling()?;
-								let model = self.index.model_of_range(
-									root,
-									model.byte_range().map_unit(ByteOffset),
-									&contents,
-								)?;
-								Some(_R(model))
-							};
-							model_filter = model()
+		let root = some!(top_level_stmt(ast.root_node(), offset));
+		let mut matches = cursor.matches(query, root, contents.as_bytes());
+		while let Some(match_) = matches.next() {
+			let mut model_filter = None;
+			let mut field_descriptors = vec![];
+			let mut field_descriptor_in_offset = None;
+			let mut field_model = None;
+
+			for capture in match_.captures {
+				let range = capture.node.byte_range();
+				match PyCompletions::from(capture.index) {
+					Some(PyCompletions::Request) => model_filter = Some("ir.ui.view"),
+					Some(PyCompletions::HasGroups) => model_filter = Some("res.groups"),
+					Some(PyCompletions::ForXmlId) => {
+						let model = || {
+							let model = capture.node.prev_named_sibling()?;
+							let model =
+								self.index
+									.model_of_range(root, model.byte_range().map_unit(ByteOffset), &contents)?;
+							Some(_R(model))
+						};
+						model_filter = model()
+					}
+					Some(PyCompletions::XmlId) if range.contains_end(offset) => {
+						let mut range = range.shrink(1);
+						let mut needle = &contents[range.clone()];
+						if match_
+							.nodes_for_capture_index(PyCompletions::HasGroups as _)
+							.next()
+							.is_some()
+						{
+							let mut ref_ = None;
+							determine_csv_xmlid_subgroup(&mut ref_, (needle, range), offset);
+							(needle, range) = some!(ref_);
 						}
-						Some(PyCompletions::XmlId) if range.contains_end(offset) => {
-							let mut range = range.shrink(1);
-							let mut needle = &contents[range.clone()];
-							if match_
-								.nodes_for_capture_index(PyCompletions::HasGroups as _)
-								.next()
-								.is_some()
-							{
-								let mut ref_ = None;
-								determine_csv_xmlid_subgroup(&mut ref_, (needle, range), offset);
-								(needle, range) = some!(ref_);
-							}
-							let needle = needle[..offset - range.start].to_string();
-							early_return.lift(move || async move {
-								let mut items = MaxVec::new(completions_limit);
-								self.index.complete_xml_id(
-									&needle,
-									range.map_unit(ByteOffset),
-									rope,
-									model_filter.map(|m| vec![m.into()]).as_deref(),
-									current_module,
-									None,
-									&mut items,
-								)?;
-								Ok(Some(CompletionResponse::List(CompletionList {
-									is_incomplete: !items.has_space(),
-									items: items.into_inner(),
-								})))
-							});
-							break 'match_;
+						let needle = needle[..offset - range.start].to_string();
+						let mut items = MaxVec::new(completions_limit);
+						self.index.complete_xml_id(
+							&needle,
+							range.map_unit(ByteOffset),
+							rope,
+							model_filter.map(|m| vec![m.into()]).as_deref(),
+							current_module,
+							None,
+							&mut items,
+						)?;
+						return Ok(Some(CompletionResponse::List(CompletionList {
+							is_incomplete: !items.has_space(),
+							items: items.into_inner(),
+						})));
+					}
+					Some(PyCompletions::Model) => {
+						if range.contains_end(offset) {
+							let (needle, byte_range) = extract_string_needle_at_offset(rope, range, offset)?;
+							let range = rope_conv(byte_range, rope);
+							let mut items = MaxVec::new(completions_limit);
+							self.index.complete_model(&needle, range, &mut items)?;
+							return Ok(Some(CompletionResponse::List(CompletionList {
+								is_incomplete: !items.has_space(),
+								items: items.into_inner(),
+							})));
 						}
-						Some(PyCompletions::Model) => {
-							if range.contains_end(offset) {
-								let (needle, byte_range) = extract_string_needle_at_offset(rope, range, offset)?;
-								let range = rope_conv(byte_range, rope);
-								early_return.lift(move || async move {
-									let mut items = MaxVec::new(completions_limit);
-									self.index.complete_model(&needle, range, &mut items)?;
-									Ok(Some(CompletionResponse::List(CompletionList {
-										is_incomplete: !items.has_space(),
-										items: items.into_inner(),
-									})))
-								});
-								break 'match_;
-							}
 
-							// capture a model for later use
-							if match_
-								.nodes_for_capture_index(PyCompletions::Prop as _)
-								.next()
-								.is_none()
-							{
-								continue;
-							}
-
-							if range.end < offset
-								&& let Some(field) =
-									match_.nodes_for_capture_index(PyCompletions::FieldType as _).next()
-							{
-								if field_model.is_none()
-									&& matches!(&contents[field.byte_range()], "Many2one" | "One2many" | "Many2many")
-								{
-									field_model = Some(&contents[capture.node.byte_range().shrink(1)]);
-								}
-							} else {
-								this_model.tag_model(capture.node, match_, root.byte_range(), &contents);
-							}
+						// capture a model for later use
+						if match_
+							.nodes_for_capture_index(PyCompletions::Prop as _)
+							.next()
+							.is_none()
+						{
+							continue;
 						}
-						Some(PyCompletions::Mapped) => {
-							if range.contains_end(offset) {
-								// Check if this is an ERROR node with broken syntax
-								tracing::debug!(
-									"Mapped capture node kind: {}, range: {:?}, offset: {}",
-									capture.node.kind(),
-									range,
-									offset
-								);
-								if capture.node.kind() == "ERROR" {
-									// This might be a string without a colon in a dictionary
-									let error_text = &contents[capture.node.byte_range()];
-									if error_text.starts_with("'") || error_text.starts_with("\"") {
-										// Extract the partial text
-										let quote_char = error_text.as_bytes()[0];
-										let end_quote = error_text.bytes().rposition(|b| b == quote_char);
-										let needle = if let Some(end) = end_quote {
-											&error_text[1..end]
-										} else if offset > capture.node.start_byte() + 1 {
-											&error_text[1..offset - capture.node.start_byte()]
-										} else {
-											""
-										};
 
-										// Try to determine the model from context
-										// First check if we have a MappedTarget in the match
-										let mut field_model: Option<Symbol<ModelEntry>> = None;
-										// Try to get the model from MappedTarget
-										if let Some(target_node) =
-											match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next()
-											&& let Some(model_) = self.index.model_of_range(
-												root,
-												target_node.byte_range().map_unit(ByteOffset),
-												&contents,
-											) {
-											field_model = Some(model_);
-										}
+						if range.end < offset
+							&& let Some(field) = match_.nodes_for_capture_index(PyCompletions::FieldType as _).next()
+						{
+							if field_model.is_none()
+								&& matches!(&contents[field.byte_range()], "Many2one" | "One2many" | "Many2many")
+							{
+								field_model = Some(&contents[capture.node.byte_range().shrink(1)]);
+							}
+						} else {
+							this_model.tag_model(capture.node, match_, root.byte_range(), &contents);
+						}
+					}
+					Some(PyCompletions::Mapped) => {
+						if range.contains_end(offset) {
+							// Check if this is an ERROR node with broken syntax
+							tracing::debug!(
+								"Mapped capture node kind: {}, range: {:?}, offset: {}",
+								capture.node.kind(),
+								range,
+								offset
+							);
+							if capture.node.kind() == "ERROR" {
+								// This might be a string without a colon in a dictionary
+								let error_text = &contents[capture.node.byte_range()];
+								if error_text.starts_with("'") || error_text.starts_with("\"") {
+									// Extract the partial text
+									let quote_char = error_text.as_bytes()[0];
+									let end_quote = error_text.bytes().rposition(|b| b == quote_char);
+									let needle = if let Some(end) = end_quote {
+										&error_text[1..end]
+									} else if offset > capture.node.start_byte() + 1 {
+										&error_text[1..offset - capture.node.start_byte()]
+									} else {
+										""
+									};
 
-										// If we didn't find it from MappedTarget, look for the commandlist pattern in the parent nodes
-										if field_model.is_none() {
-											let mut current = capture.node;
-											while let Some(parent) = current.parent() {
-												// Check if we're in a list that's part of a mapped/commandlist
-												if parent.kind() == "list" {
-													// Try to find the full expression this list is part of
-													if let Some(expr_parent) = parent.parent()
-														&& (expr_parent.kind() == "call"
-															|| expr_parent.kind() == "attribute")
-													{
-														break;
-													}
+									// Try to determine the model from context
+									// First check if we have a MappedTarget in the match
+									let mut field_model: Option<Symbol<ModelEntry>> = None;
+									// Try to get the model from MappedTarget
+									if let Some(target_node) =
+										match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next()
+										&& let Some(model_) = self.index.model_of_range(
+											root,
+											target_node.byte_range().map_unit(ByteOffset),
+											&contents,
+										) {
+										field_model = Some(model_);
+									}
+
+									// If we didn't find it from MappedTarget, look for the commandlist pattern in the parent nodes
+									if field_model.is_none() {
+										let mut current = capture.node;
+										while let Some(parent) = current.parent() {
+											// Check if we're in a list that's part of a mapped/commandlist
+											if parent.kind() == "list" {
+												// Try to find the full expression this list is part of
+												if let Some(expr_parent) = parent.parent()
+													&& (expr_parent.kind() == "call"
+														|| expr_parent.kind() == "attribute")
+												{
+													break;
 												}
+											}
 
-												if parent.kind() == "dictionary" {
-													// Found the dictionary, now look for the field assignment
-													if let Some(list_parent) = parent.parent()
-														&& list_parent.kind() == "list" && let Some(pair_parent) =
-														list_parent.parent() && pair_parent.kind() == "pair"
-														&& let Some(key) = pair_parent.child_by_field_name("key")
-														&& key.kind() == "string"
-													{
-														let field_name = &contents[key.byte_range().shrink(1)];
+											if parent.kind() == "dictionary" {
+												// Found the dictionary, now look for the field assignment
+												if let Some(list_parent) = parent.parent()
+													&& list_parent.kind() == "list" && let Some(pair_parent) =
+													list_parent.parent() && pair_parent.kind() == "pair"
+													&& let Some(key) = pair_parent.child_by_field_name("key")
+													&& key.kind() == "string"
+												{
+													let field_name = &contents[key.byte_range().shrink(1)];
 
-														if let Some(model_str) = this_model.inner {
-															let model_key = ModelName::from(_I(model_str));
+													if let Some(model_str) = this_model.inner {
+														let model_key = ModelName::from(_I(model_str));
 
-															if let Some(props) =
-																self.index.models.populate_properties(model_key, &[])
-																&& let Some(fields) = &props.fields && let Some(
-																field_key,
-															) = _G(field_name) && let Some(field_info) =
-																fields.get(&field_key)
-															{
-																// Check if this field has a relational type
-																if let FieldKind::Relational(relation) =
-																	&field_info.kind
-																{
-																	field_model = Some((*relation).into());
-																}
+														if let Some(props) =
+															self.index.models.populate_properties(model_key, &[])
+															&& let Some(fields) = &props.fields && let Some(field_key) =
+															_G(field_name) && let Some(field_info) =
+															fields.get(&field_key)
+														{
+															// Check if this field has a relational type
+															if let FieldKind::Relational(relation) = &field_info.kind {
+																field_model = Some((*relation).into());
 															}
 														}
 													}
-													break;
 												}
-												current = parent;
+												break;
 											}
-										}
-
-										if let Some(model) = field_model {
-											let range = if let Some(end) = end_quote {
-												ByteRange {
-													start: ByteOffset(capture.node.start_byte() + 1),
-													end: ByteOffset(capture.node.start_byte() + end),
-												}
-											} else {
-												ByteRange {
-													start: ByteOffset(capture.node.start_byte() + 1),
-													end: ByteOffset(offset),
-												}
-											};
-
-											let mut items = MaxVec::new(completions_limit);
-											self.index.complete_property_name(
-												needle,
-												range,
-												_R(model).into(),
-												rope,
-												Some(PropertyKind::Field),
-												None,
-												true,
-												false,
-												&mut items,
-											)?;
-											return Ok(Some(CompletionResponse::List(CompletionList {
-												is_incomplete: !items.has_space(),
-												items: items.into_inner(),
-											})));
+											current = parent;
 										}
 									}
-								}
 
-								// Normal case - not an ERROR node
-								return self.python_completions_for_prop(
-									root,
-									match_,
-									offset,
-									capture.node,
-									this_model.inner,
-									&contents,
-									completions_limit,
-									Some(PropertyKind::Field),
-									None,
-									rope,
-								);
-							} else if let Some(cmdlist) = python_next_named_sibling(capture.node)
-								&& Backend::is_commandlist(cmdlist, offset)
-								&& let Some((needle, range, model)) = self.gather_commandlist(
-									cmdlist,
-									root,
-									match_,
-									offset,
-									range,
-									this_model.inner,
-									&contents,
-									true,
-								) {
-								let mut items = MaxVec::new(completions_limit);
-								self.index.complete_property_name(
-									needle,
-									range,
-									ImStr::from(_R(model)),
-									rope,
-									Some(PropertyKind::Field),
-									None,
-									true,
-									false,
-									&mut items,
-								)?;
-								return Ok(Some(CompletionResponse::List(CompletionList {
-									is_incomplete: !items.has_space(),
-									items: items.into_inner(),
-								})));
-								// If gather_commandlist returns None, continue to next match
-							}
-						}
-						Some(PyCompletions::FieldDescriptor) => {
-							use FieldDescriptors as FD;
-							let Some(desc_value) = python_next_named_sibling(capture.node) else {
-								continue;
-							};
-
-							let descriptor = FD::from_str(&contents[range]);
-							if desc_value.byte_range().contains_end(offset) {
-								match descriptor {
-									Ok(
-										descriptor @ (FD::Compute
-										| FD::Search
-										| FD::Inverse
-										| FD::Related
-										| FD::InverseName),
-									) => {
-										let prop_kind = if matches!(descriptor, FD::Related | FD::InverseName) {
-											PropertyKind::Field
+									if let Some(model) = field_model {
+										let range = if let Some(end) = end_quote {
+											ByteRange {
+												start: ByteOffset(capture.node.start_byte() + 1),
+												end: ByteOffset(capture.node.start_byte() + end),
+											}
 										} else {
-											PropertyKind::Method
+											ByteRange {
+												start: ByteOffset(capture.node.start_byte() + 1),
+												end: ByteOffset(offset),
+											}
 										};
-										let (mapped_model, field_model_filter) =
-											if matches!(descriptor, FD::InverseName) {
-												(
-													super::extract_comodel_name(match_.captures, &contents).map(
-														|comodel_name| &contents[comodel_name.byte_range().shrink(1)],
-													),
-													this_model.inner,
-												)
-											} else {
-												(this_model.inner, None)
-											};
-										return self.python_completions_for_prop(
-											root,
-											match_,
-											offset,
-											desc_value,
-											mapped_model,
-											&contents,
-											completions_limit,
-											Some(prop_kind),
-											field_model_filter,
+
+										let mut items = MaxVec::new(completions_limit);
+										self.index.complete_property_name(
+											needle,
+											range,
+											_R(model).into(),
 											rope,
-										);
+											Some(PropertyKind::Field),
+											None,
+											true,
+											false,
+											&mut items,
+										)?;
+										return Ok(Some(CompletionResponse::List(CompletionList {
+											is_incomplete: !items.has_space(),
+											items: items.into_inner(),
+										})));
 									}
-									Ok(FD::ComodelName) => {
-										// same as model
-										let range = desc_value.byte_range();
-										let (needle, byte_range) =
-											extract_string_needle_at_offset(rope, range, offset)?;
-										let range = rope_conv(byte_range, rope);
-										early_return.lift(move || async move {
-											let mut items = MaxVec::new(completions_limit);
-											self.index.complete_model(&needle, range, &mut items)?;
-											Ok(Some(CompletionResponse::List(CompletionList {
-												is_incomplete: !items.has_space(),
-												items: items.into_inner(),
-											})))
-										});
-										break 'match_;
-									}
-									Ok(FD::Groups) => {
-										// complete res.groups records
-										let range = desc_value.byte_range().shrink(1);
-										let value = Cow::from(ok!(rope.try_slice(range.clone())));
-										let mut ref_ = None;
-										determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
-										let (needle, range) = some!(ref_);
-										let needle = needle[..offset - range.start - 1].to_string();
-										early_return.lift(move || async move {
-											let mut items = MaxVec::new(completions_limit);
-											self.index.complete_xml_id(
-												&needle,
-												range.map_unit(ByteOffset),
-												rope,
-												Some(&["res.groups".into()]),
-												current_module,
-												None,
-												&mut items,
-											)?;
-											Ok(Some(CompletionResponse::List(CompletionList {
-												is_incomplete: !items.has_space(),
-												items: items.into_inner(),
-											})))
-										});
-										break 'match_;
-									}
-									Ok(FD::Domain) | Err(_) => {}
 								}
 							}
 
-							if let Ok(descriptor) = descriptor {
-								field_descriptors.push((descriptor, desc_value));
-								if desc_value.byte_range().contains_end(offset) {
-									field_descriptor_in_offset = Some((descriptor, desc_value));
-								}
-							}
+							// Normal case - not an ERROR node
+							return self.python_completions_for_prop(
+								root,
+								match_,
+								offset,
+								capture.node,
+								this_model.inner,
+								&contents,
+								completions_limit,
+								Some(PropertyKind::Field),
+								None,
+								rope,
+							);
+						} else if let Some(cmdlist) = python_next_named_sibling(capture.node)
+							&& Backend::is_commandlist(cmdlist, offset)
+							&& let Some((needle, range, model)) = self.gather_commandlist(
+								cmdlist,
+								root,
+								match_,
+								offset,
+								range,
+								this_model.inner,
+								&contents,
+								true,
+							) {
+							let mut items = MaxVec::new(completions_limit);
+							self.index.complete_property_name(
+								needle,
+								range,
+								ImStr::from(_R(model)),
+								rope,
+								Some(PropertyKind::Field),
+								None,
+								true,
+								false,
+								&mut items,
+							)?;
+							return Ok(Some(CompletionResponse::List(CompletionList {
+								is_incomplete: !items.has_space(),
+								items: items.into_inner(),
+							})));
+							// If gather_commandlist returns None, continue to next match
 						}
-						Some(PyCompletions::Depends)
-						| Some(PyCompletions::MappedTarget)
-						| Some(PyCompletions::XmlId)
-						| Some(PyCompletions::Prop)
-						| Some(PyCompletions::Scope)
-						| Some(PyCompletions::ReadFn)
-						| Some(PyCompletions::FieldType)
-						| None => {}
 					}
-				}
-				if let Some((super::FieldDescriptors::Domain, value)) = field_descriptor_in_offset {
-					let mut domain_node = value;
-					if domain_node.kind() == "lambda" {
-						let Some(body) = domain_node.child_by_field_name("body") else {
+					Some(PyCompletions::FieldDescriptor) => {
+						use FieldDescriptors as FD;
+						let Some(desc_value) = python_next_named_sibling(capture.node) else {
 							continue;
 						};
-						domain_node = body;
-					}
-					if domain_node.kind() != "list" {
-						continue;
-					}
-					let comodel_name = field_descriptors
-						.iter()
-						.find_map(|&(desc, node)| {
-							matches!(desc, FieldDescriptors::ComodelName)
-								.then(|| &contents[node.byte_range().shrink(1)])
-						})
-						.or(field_model);
 
-					let Some(mapped) = domain_node.named_children(&mut domain_node.walk()).find_map(|domain| {
-						// find the mapped domain element that contains the offset
-						// [("id", "=", 123)]
-						//    ^ this one
-						if domain.kind() != "tuple" {
-							return None;
-						}
-						let mapped = domain.named_child(0)?;
-						mapped.byte_range().contains(&offset).then_some(mapped)
-					}) else {
-						continue;
-					};
-
-					return self.python_completions_for_prop(
-						root,
-						match_,
-						offset,
-						mapped,
-						comodel_name,
-						&contents,
-						completions_limit,
-						Some(PropertyKind::Field),
-						None,
-						rope,
-					);
-				}
-			}
-			if early_return.is_none() {
-				let cursor_node = root.descendant_for_byte_range(offset, offset);
-				if let Some(node) = cursor_node {
-					let mut current = node;
-					while let Some(parent) = current.parent() {
-						// (dictionary (ERROR ^cursor))
-						if parent.kind() == "ERROR" {
-							if let Some(grandparent) = parent.parent()
-								&& grandparent.kind() == "dictionary"
-							{
-								// For broken syntax (string without colon), we want to show all fields
-								// So we use an empty needle
-								let needle = Cow::Borrowed("");
-
-								// Try to determine the model from the context
-								// Look for the field assignment this dictionary belongs to
-								let mut field_model: Option<Symbol<ModelEntry>> = None;
-								let mut dict_parent = grandparent;
-
-								while let Some(parent) = dict_parent.parent() {
-									if parent.kind() == "list"
-										&& let Some(list_parent) = parent.parent()
-										&& list_parent.kind() == "pair"
-									{
-										if let Some(key) = list_parent.child_by_field_name("key")
-											&& key.kind() == "string" && let Some(model_str) = &this_model.inner
-										{
-											let field_name = &contents[key.byte_range().shrink(1)];
-
-											let model_key = ModelName::from(_I(model_str));
-
-											// Check if this field has a relational type
-											if let Some(props) = self.index.models.populate_properties(model_key, &[])
-												&& let Some(fields) = &props.fields && let Some(field_key) =
-												_G(field_name) && let Some(field_info) = fields.get(&field_key)
-												&& let FieldKind::Relational(relation) = field_info.kind
-											{
-												field_model = Some(relation.into());
-											}
-										}
-										break;
-									}
-									dict_parent = parent;
-								}
-
-								if let Some(model) = field_model {
-									// For broken syntax, we want to replace the whole string
-									let range = if node.kind() == "string_content" {
-										// Find the parent string node to get the full range
-										if let Some(string_parent) = node.parent() {
-											if string_parent.kind() == "string" {
-												string_parent.byte_range().shrink(1).map_unit(ByteOffset)
-											} else {
-												node.byte_range().map_unit(ByteOffset)
-											}
-										} else {
-											node.byte_range().map_unit(ByteOffset)
-										}
+						let descriptor = FD::from_str(&contents[range]);
+						if desc_value.byte_range().contains_end(offset) {
+							match descriptor {
+								Ok(
+									descriptor @ (FD::Compute
+									| FD::Search
+									| FD::Inverse
+									| FD::Related
+									| FD::InverseName),
+								) => {
+									let prop_kind = if matches!(descriptor, FD::Related | FD::InverseName) {
+										PropertyKind::Field
 									} else {
-										node.byte_range().shrink(1).map_unit(ByteOffset)
+										PropertyKind::Method
 									};
-									let mut items = MaxVec::new(completions_limit);
-									self.index.complete_property_name(
-										&needle,
-										range,
-										_R(model).into(),
+									let (mapped_model, field_model_filter) = if matches!(descriptor, FD::InverseName) {
+										(
+											extract_comodel_name(match_.captures, &contents)
+												.map(|comodel_name| &contents[comodel_name.byte_range().shrink(1)]),
+											this_model.inner,
+										)
+									} else {
+										(this_model.inner, None)
+									};
+									return self.python_completions_for_prop(
+										root,
+										match_,
+										offset,
+										desc_value,
+										mapped_model,
+										&contents,
+										completions_limit,
+										Some(prop_kind),
+										field_model_filter,
 										rope,
-										Some(PropertyKind::Field),
+									);
+								}
+								Ok(FD::ComodelName) => {
+									// same as model
+									let range = desc_value.byte_range();
+									let (needle, byte_range) = extract_string_needle_at_offset(rope, range, offset)?;
+									let range = rope_conv(byte_range, rope);
+									let mut items = MaxVec::new(completions_limit);
+									self.index.complete_model(&needle, range, &mut items)?;
+									return Ok(Some(CompletionResponse::List(CompletionList {
+										is_incomplete: !items.has_space(),
+										items: items.into_inner(),
+									})));
+								}
+								Ok(FD::Groups) => {
+									// complete res.groups records
+									let range = desc_value.byte_range().shrink(1);
+									let value = Cow::from(ok!(rope.try_slice(range.clone())));
+									let mut ref_ = None;
+									determine_csv_xmlid_subgroup(&mut ref_, (&value, range), offset);
+									let (needle, range) = some!(ref_);
+									let needle = needle[..offset - range.start - 1].to_string();
+									let mut items = MaxVec::new(completions_limit);
+									self.index.complete_xml_id(
+										&needle,
+										range.map_unit(ByteOffset),
+										rope,
+										Some(&["res.groups".into()]),
+										current_module,
 										None,
-										true,
-										false,
 										&mut items,
 									)?;
 									return Ok(Some(CompletionResponse::List(CompletionList {
@@ -533,70 +365,212 @@ impl Backend {
 										items: items.into_inner(),
 									})));
 								}
+								Ok(FD::Domain) | Err(_) => {}
 							}
-						} else if current.kind() == "string"
-							&& parent.kind() == "subscript"
-							&& let Some(lhs) = parent.named_child(0)
-							&& let Some((tid, _)) =
-								self.index
-									.type_of_range(root, dbg!(lhs).byte_range().map_unit(ByteOffset), &contents)
-							&& let Type::DictBag(dict) = type_cache().resolve(tid)
-						{
-							let mut items = MaxVec::new(completions_limit);
-							let dict = dict.iter().flat_map(|(key, _)| match key {
-								DictKey::String(str) => Some(str.to_string()),
-								_ => None,
-							});
-							let range = current.byte_range().shrink(1).map_unit(ByteOffset);
-							let range = rope_conv(range, rope);
-							let to_item = |label: String| {
-								let new_text = label.clone();
-								CompletionItem {
-									label,
-									kind: Some(CompletionItemKind::CONSTANT),
-									text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
-									..Default::default()
+						}
+
+						if let Ok(descriptor) = descriptor {
+							field_descriptors.push((descriptor, desc_value));
+							if desc_value.byte_range().contains_end(offset) {
+								field_descriptor_in_offset = Some((descriptor, desc_value));
+							}
+						}
+					}
+					Some(PyCompletions::Depends)
+					| Some(PyCompletions::MappedTarget)
+					| Some(PyCompletions::XmlId)
+					| Some(PyCompletions::Prop)
+					| Some(PyCompletions::Scope)
+					| Some(PyCompletions::ReadFn)
+					| Some(PyCompletions::FieldType)
+					| None => {}
+				}
+			}
+			if let Some((FieldDescriptors::Domain, value)) = field_descriptor_in_offset {
+				let mut domain_node = value;
+				if domain_node.kind() == "lambda" {
+					let Some(body) = domain_node.child_by_field_name("body") else {
+						continue;
+					};
+					domain_node = body;
+				}
+				if domain_node.kind() != "list" {
+					continue;
+				}
+				let comodel_name = field_descriptors
+					.iter()
+					.find_map(|&(desc, node)| {
+						matches!(desc, FieldDescriptors::ComodelName).then(|| &contents[node.byte_range().shrink(1)])
+					})
+					.or(field_model);
+
+				let Some(mapped) = domain_node.named_children(&mut domain_node.walk()).find_map(|domain| {
+					// find the mapped domain element that contains the offset
+					// [("id", "=", 123)]
+					//    ^ this one
+					if domain.kind() != "tuple" {
+						return None;
+					}
+					let mapped = domain.named_child(0)?;
+					mapped.byte_range().contains(&offset).then_some(mapped)
+				}) else {
+					continue;
+				};
+
+				return self.python_completions_for_prop(
+					root,
+					match_,
+					offset,
+					mapped,
+					comodel_name,
+					&contents,
+					completions_limit,
+					Some(PropertyKind::Field),
+					None,
+					rope,
+				);
+			}
+		}
+		let cursor_node = root.descendant_for_byte_range(offset, offset);
+		if let Some(node) = cursor_node {
+			let mut current = node;
+			while let Some(parent) = current.parent() {
+				// (dictionary (ERROR ^cursor))
+				if parent.kind() == "ERROR" {
+					if let Some(grandparent) = parent.parent()
+						&& grandparent.kind() == "dictionary"
+					{
+						// For broken syntax (string without colon), we want to show all fields
+						// So we use an empty needle
+						let needle = Cow::Borrowed("");
+
+						// Try to determine the model from the context
+						// Look for the field assignment this dictionary belongs to
+						let mut field_model: Option<Symbol<ModelEntry>> = None;
+						let mut dict_parent = grandparent;
+
+						while let Some(parent) = dict_parent.parent() {
+							if parent.kind() == "list"
+								&& let Some(list_parent) = parent.parent()
+								&& list_parent.kind() == "pair"
+							{
+								if let Some(key) = list_parent.child_by_field_name("key")
+									&& key.kind() == "string" && let Some(model_str) = &this_model.inner
+								{
+									let field_name = &contents[key.byte_range().shrink(1)];
+
+									let model_key = ModelName::from(_I(model_str));
+
+									// Check if this field has a relational type
+									if let Some(props) = self.index.models.populate_properties(model_key, &[])
+										&& let Some(fields) = &props.fields
+										&& let Some(field_key) = _G(field_name)
+										&& let Some(field_info) = fields.get(&field_key)
+										&& let FieldKind::Relational(relation) = field_info.kind
+									{
+										field_model = Some(relation.into());
+									}
 								}
-							};
-							if offset <= current.start_byte() + 1 {
-								items.extend(dict.map(to_item));
-							} else {
-								let needle = &contents[current.start_byte() + 1..offset];
-								items.extend(dict.filter(|label| label.starts_with(needle)).map(to_item));
+								break;
 							}
+							dict_parent = parent;
+						}
+
+						if let Some(model) = field_model {
+							// For broken syntax, we want to replace the whole string
+							let range = if node.kind() == "string_content" {
+								// Find the parent string node to get the full range
+								if let Some(string_parent) = node.parent() {
+									if string_parent.kind() == "string" {
+										string_parent.byte_range().shrink(1).map_unit(ByteOffset)
+									} else {
+										node.byte_range().map_unit(ByteOffset)
+									}
+								} else {
+									node.byte_range().map_unit(ByteOffset)
+								}
+							} else {
+								node.byte_range().shrink(1).map_unit(ByteOffset)
+							};
+							let mut items = MaxVec::new(completions_limit);
+							self.index.complete_property_name(
+								&needle,
+								range,
+								_R(model).into(),
+								rope,
+								Some(PropertyKind::Field),
+								None,
+								true,
+								false,
+								&mut items,
+							)?;
 							return Ok(Some(CompletionResponse::List(CompletionList {
 								is_incomplete: !items.has_space(),
 								items: items.into_inner(),
 							})));
 						}
-						current = parent;
 					}
+				} else if current.kind() == "string"
+					&& parent.kind() == "subscript"
+					&& let Some(lhs) = parent.named_child(0)
+					&& let Some((tid, _)) =
+						self.index
+							.type_of_range(root, dbg!(lhs).byte_range().map_unit(ByteOffset), &contents)
+					&& let Type::DictBag(dict) = type_cache().resolve(tid)
+				{
+					let mut items = MaxVec::new(completions_limit);
+					let dict = dict.iter().flat_map(|(key, _)| match key {
+						DictKey::String(str) => Some(str.to_string()),
+						_ => None,
+					});
+					let range = current.byte_range().shrink(1).map_unit(ByteOffset);
+					let range = rope_conv(range, rope);
+					let to_item = |label: String| {
+						let new_text = label.clone();
+						CompletionItem {
+							label,
+							kind: Some(CompletionItemKind::CONSTANT),
+							text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text })),
+							..Default::default()
+						}
+					};
+					if offset <= current.start_byte() + 1 {
+						items.extend(dict.map(to_item));
+					} else {
+						let needle = &contents[current.start_byte() + 1..offset];
+						items.extend(dict.filter(|label| label.starts_with(needle)).map(to_item));
+					}
+					return Ok(Some(CompletionResponse::List(CompletionList {
+						is_incomplete: !items.has_space(),
+						items: items.into_inner(),
+					})));
 				}
-
-				// Fallback to regular attribute completion
-				let (model, needle, range) = some!(self.attribute_at_offset(offset, root, &contents));
-				let mut items = MaxVec::new(completions_limit);
-				self.index.complete_property_name(
-					needle,
-					range.map_unit(ByteOffset),
-					ImStr::from(model),
-					rope,
-					None,
-					None,
-					false,
-					false,
-					&mut items,
-				)?;
-				return Ok(Some(CompletionResponse::List(CompletionList {
-					is_incomplete: !items.has_space(),
-					items: items.into_inner(),
-				})));
+				current = parent;
 			}
 		}
-		let result = some!(early_return.call());
-		result.await
+
+		// Fallback to regular attribute completion
+		let (model, needle, range) = some!(self.attribute_at_offset(offset, root, &contents));
+		let mut items = MaxVec::new(completions_limit);
+		self.index.complete_property_name(
+			needle,
+			range.map_unit(ByteOffset),
+			ImStr::from(model),
+			rope,
+			None,
+			None,
+			false,
+			false,
+			&mut items,
+		)?;
+		Ok(Some(CompletionResponse::List(CompletionList {
+			is_incomplete: !items.has_space(),
+			items: items.into_inner(),
+		})))
 	}
 	/// `range` is the entire range of the mapped **string**, quotes included.
+	///
+	/// For other arguments see [`complete_property_name`][crate::index::Index::complete_property_name].
 	fn python_completions_for_prop(
 		&self,
 		root: Node,

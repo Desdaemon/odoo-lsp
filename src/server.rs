@@ -429,7 +429,7 @@ impl LanguageServer for Backend {
 				};
 				ast.value().clone()
 			};
-			let completions = self.python_completions(params, ast, rope.slice(..)).await;
+			let completions = self.python_completions(params, ast, rope.slice(..));
 			match completions {
 				Ok(ret) => Ok(ret),
 				Err(err) => {

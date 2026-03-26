@@ -1,5 +1,4 @@
 use core::fmt::{Debug, Display};
-use core::future::Future;
 use core::ops::{Add, Sub};
 use std::borrow::Cow;
 use std::ffi::OsStr;
@@ -7,9 +6,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::try_result::TryResult;
-use futures::future::BoxFuture;
 use ropey::RopeSlice;
-use smart_default::SmartDefault;
 use tower_lsp_server::ls_types::*;
 use tracing::warn;
 use xmlparser::{StrSpan, TextPos, Token};
@@ -95,15 +92,18 @@ macro_rules! await_did_open_document {
 	};
 }
 
+/// FIXME: This hack is necessary to drop !Send locals before await points.
 #[repr(transparent)]
 #[derive(SmartDefault)]
-pub struct EarlyReturn<'a, T>(
+#[cfg(false)]
+struct EarlyReturn<'a, T>(
 	// By default, trait objects are bound to a 'static lifetime.
 	// This allows closures to capture references instead.
-	// However, any values must still be Send.
+	// However, any referenced value must still be Send.
 	#[default(None)] Option<Box<dyn FnOnce() -> BoxFuture<'a, T> + 'a + Send>>,
 );
 
+#[cfg(false)]
 impl<'a, T> EarlyReturn<'a, T> {
 	/// Lifts a certain async computation out of the current scope to be executed later.
 	pub fn lift<F, Fut>(&mut self, closure: F)
