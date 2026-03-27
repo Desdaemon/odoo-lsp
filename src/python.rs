@@ -700,7 +700,7 @@ impl Backend {
 							Ok(
 								descriptor @ (FD::Compute | FD::Search | FD::Inverse | FD::Related | FD::InverseName),
 							) => {
-								let single_field = matches!(descriptor, FD::Related | FD::InverseName);
+								let single_field = !matches!(descriptor, FD::Related);
 								let mapped_model = if matches!(descriptor, FD::InverseName) {
 									extract_comodel_name(match_.captures, &contents)
 										.map(|comodel_name| &contents[comodel_name.byte_range().shrink(1)])
@@ -1093,7 +1093,7 @@ impl Backend {
 							Ok(
 								descriptor @ (FD::Compute | FD::Search | FD::Inverse | FD::Related | FD::InverseName),
 							) => {
-								let single_field = matches!(descriptor, FD::Related | FD::InverseName);
+								let single_field = !matches!(descriptor, FD::Related);
 								let mapped_model = if matches!(descriptor, FD::InverseName) {
 									extract_comodel_name(match_.captures, &contents)
 										.map(|comodel_name| &contents[comodel_name.byte_range().shrink(1)])
