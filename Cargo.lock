@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "odoo-lsp"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "bitflags 2.10.0",

@@ -13,6 +13,7 @@ then select `Install Dev Extension` in Zed and point to this directory.
 
 > [!NOTE]
 > In the latest version as of writing (Zed 0.216.1) it might be required to add odoo-lsp explicitly as a language server in your `settings.json` as follows:
+>
 > ```json
 > {
 >   // ...

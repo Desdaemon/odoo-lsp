@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.6.2](https://github.com/Desdaemon/odoo-lsp/releases/tag/v0.6.2) - 2026-03-27
+
+Compare: [`v0.6.1...v0.6.2`](https://github.com/Desdaemon/odoo-lsp/compare/v0.6.1...v0.6.2)
+
+### Added
+
+- Allow commands in list comprehension [`a8b9cf5`](https://github.com/Desdaemon/odoo-lsp/commit/a8b9cf5f28e6245b12000c0b9c218d80b8f58210)
+- Type request.website [`acfa11a`](https://github.com/Desdaemon/odoo-lsp/commit/acfa11ab532a08e2611feca6452faa0d5e036dec)
+- Python types (#98) [`07679b3`](https://github.com/Desdaemon/odoo-lsp/commit/07679b3c1bf42168172fc76460f4f1069cf044ad)
+- **xml:** Filtering views with same viewmodel, view inheritance snippet [`563f6a4`](https://github.com/Desdaemon/odoo-lsp/commit/563f6a43eb616c2e1646a39dadd847a1bc98d582)
+- **xml:** Add more snippets [`501caaf`](https://github.com/Desdaemon/odoo-lsp/commit/501caaf86e35c0699ab53fbadaec924ed1ac2ea9)
+- **xml:** Improved support for Python expressions [`da68079`](https://github.com/Desdaemon/odoo-lsp/commit/da680790516be1a3ef70991979fce260051170c9)
+- **xml:** Add snippet for access group [`fa38093`](https://github.com/Desdaemon/odoo-lsp/commit/fa3809312c03ef73facb3119d459ae3f7ea2f675)
+- Analyze `id:recordset` [`57be4aa`](https://github.com/Desdaemon/odoo-lsp/commit/57be4aaaff18bd070d9aab97b919eb8b6c68dc17)
+- **analyze:** Deduce type of dict from ctor [`e150b11`](https://github.com/Desdaemon/odoo-lsp/commit/e150b11f4ea7f2a147722a1d59f1348f43d107b6)
+- Support `Model.read` [`4cc36f5`](https://github.com/Desdaemon/odoo-lsp/commit/4cc36f535a23d62058eac332cd6f0c24b8a8d99b)
+- Support inverse names [`7f1764f`](https://github.com/Desdaemon/odoo-lsp/commit/7f1764fe6d485f13db65d709aff85987ee05b0a0)
+- **analyze:** Deduce type of defaultdict [`7ee14a0`](https://github.com/Desdaemon/odoo-lsp/commit/7ee14a0a3866aa0cfdfde742b5901777bfaf75af)
+
+### Documentation
+
+- Update zed extension readme [`85db039`](https://github.com/Desdaemon/odoo-lsp/commit/85db0399a4447032929bf56721f3f34705d4926a)
+- **rng:** Add reference to ir.qweb.field.\* [`8660c19`](https://github.com/Desdaemon/odoo-lsp/commit/8660c196acb0b85cca161098b1790dec13135a1e)
+
+### Fixed
+
+- **python:** Include bridge modules in module reachability analysis (#93) [`4920ea5`](https://github.com/Desdaemon/odoo-lsp/commit/4920ea5a1a33691fbb8cd868673a8d03977cfe62), closes #92
+
+* fix(python): extra diagnostics, closes #92
+
+* ref(lsp): implement DiagnosticRelatedInformation, closes #92
+
+* test: DiagnosticRelatedInformation messages
+
+* fix: path working on windows
+
+* fix: stay consistent everywhere
+
+* rename messages
+
+- **tsconfig:** Prevent accidental overwrite, changes from tsgo [`67bc616`](https://github.com/Desdaemon/odoo-lsp/commit/67bc6163d6a07203abcf138eb16deaf4131ed9df)
+- Deadlock on file open, add deadlock debugging [`c1b6606`](https://github.com/Desdaemon/odoo-lsp/commit/c1b6606731dd42d4df6ae838c6e6a6e617b28a40)
+- **rng:** Add `position=` to list view [`5bbb515`](https://github.com/Desdaemon/odoo-lsp/commit/5bbb515231048acf3f46a6228d517adabf9110a7)
+- **python:** Code action should not jump to non-view record [`9ae652a`](https://github.com/Desdaemon/odoo-lsp/commit/9ae652a7c71db7583bc989ebe46f883b5a3e3ad9)
+- `list.append` should be recognized in scope [`a52737c`](https://github.com/Desdaemon/odoo-lsp/commit/a52737c243bae3fadfaf7cabe10b61d704dbe0a0)
+- **doc:** Enable builds on docs.rs [`326eb5a`](https://github.com/Desdaemon/odoo-lsp/commit/326eb5a21c382c5271bf852259e554cf7d7e823c)
+- **python:** Related fields not resolving [`3c86a48`](https://github.com/Desdaemon/odoo-lsp/commit/3c86a485c780d11ab36e74efb8f13ed58ffb5177)
+
+### Refactor
+
+- Stop using byte strings [`9a90539`](https://github.com/Desdaemon/odoo-lsp/commit/9a905394263393eb0008ba4ed06c4084ae488888)
+- Make self-update optional [`0095527`](https://github.com/Desdaemon/odoo-lsp/commit/0095527aeda99e4405490ebdde75fd39c55f2c17)
+
 ## [0.6.1](https://github.com/Desdaemon/odoo-lsp/releases/tag/v0.6.1) - 2025-07-26
 
 Compare: [`v0.6.0...v0.6.1`](https://github.com/Desdaemon/odoo-lsp/compare/v0.6.0...v0.6.1)
