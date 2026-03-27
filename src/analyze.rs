@@ -844,6 +844,23 @@ impl Index {
 					}
 					return Some(_T!(Type::Dict(_T!(Type::Value), _T!(Type::Value))));
 				}
+				"defaultdict" => {
+					let arg = call.named_child(1)?.named_child(0)?;
+					if matches!(&contents[arg.byte_range()], "list" | "dict" | "float" | "int") {
+						// TODO: consider more general functions and type ctors
+						return Some(_T!(Type::Dict(
+							_T!(Type::Value),
+							_T!(Type::PyBuiltin(contents[arg.byte_range()].into()))
+						)));
+					}
+					if arg.kind() != "lambda" {
+						return Some(_T!(Type::Dict(_T!(Type::Value), _T!(Type::Value))));
+					}
+					// (lambda body: (_))
+					let body = arg.child_by_field_name("body")?;
+					let body_ty = self.type_of(body, scope, contents).unwrap_or_else(|| _T!(Type::Value));
+					return Some(_T!(Type::Dict(_T!(Type::Value), body_ty)));
+				}
 				"super" => {}
 				_ => return None,
 			};
