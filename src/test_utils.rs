@@ -78,8 +78,8 @@ pub mod index {
 			panic!("can't modify test_utils::fs::TEST_FS");
 		}
 		// Index the model from the file
-		let py_bytes = py.expect("Python source required").as_bytes();
-		let models = crate::index::index_models(py_bytes).unwrap();
+		let py = py.expect("Python source required");
+		let models = crate::index::index_models(py).unwrap();
 		for model in models {
 			if let crate::model::ModelType::Base { name, .. } = &model.type_ {
 				let entry = ModelEntry {
@@ -112,7 +112,7 @@ pub mod cases {
 		use crate::index::_I;
 
 		use super::*;
-		pub const FOO_PY: &[u8] = br#"
+		pub const FOO_PY: &str = r#"
 class Foo(Model):
 	_name = 'foo'
 
@@ -138,7 +138,7 @@ class Quux(Model):
 			const ROOT: &str = "/addons";
 			const FOO_PY_PATH: &str = "/addons/foo.py";
 			if let Ok(mut fs) = test_utils::fs::TEST_FS.write() {
-				fs.insert(FOO_PY_PATH.into(), FOO_PY);
+				fs.insert(FOO_PY_PATH.into(), FOO_PY.as_bytes());
 			} else {
 				panic!("can't modify FS");
 			}

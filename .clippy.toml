@@ -2,10 +2,13 @@ cognitive-complexity-threshold = 20
 
 [[disallowed-methods]]
 path = "tree_sitter::Node::named_child"
+reason = "tree-sitter-python does not add comments to extras, replace with"
+replacement = "python_nth_named_child::<NTH>"
 
 [[disallowed-methods]]
 path = "tree_sitter::Node::next_named_sibling"
-replacement = "odoo_lsp::utils::python_next_named_sibling"
+reason = "tree-sitter-python does not add comments to extras, replace with"
+replacement = "python_next_named_sibling"
 
 [[await-holding-invalid-types]]
 path = "dashmap::mapref::one::RefMut"

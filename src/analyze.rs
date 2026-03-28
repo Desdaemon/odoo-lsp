@@ -15,13 +15,11 @@ use ropey::Rope;
 use tracing::instrument;
 use tree_sitter::{Node, Parser, QueryCursor, StreamingIterator};
 
-use crate::{
-	ImStr, dig, format_loc,
-	index::{_G, _I, _R, Index, Symbol},
-	model::{Method, ModelName, PropertyInfo},
-	test_utils,
-	utils::{ByteOffset, ByteRange, Defer, PreTravel, RangeExt, TryResultExt, python_next_named_sibling, rope_conv},
-};
+use crate::index::{_G, _I, _R, Index, Symbol};
+use crate::model::{Method, ModelName, PropertyInfo};
+use crate::prelude::*;
+use crate::test_utils;
+use crate::{ImStr, dig, format_loc};
 use ts_macros::query;
 
 mod scope;
@@ -372,17 +370,17 @@ impl Index {
 		match node.kind() {
 			"assignment" | "named_expression" => {
 				// (_ left right)
-				let lhs = node.named_child(0).unwrap();
+				let lhs = node.python_nth_named_child::<0>().unwrap();
 				if lhs.kind() == "identifier"
-					&& let rhs = python_next_named_sibling(lhs).expect(format_loc!("rhs"))
+					&& let rhs = lhs.python_next_named_sibling().expect(format_loc!("rhs"))
 					&& let Some(id) = self.type_of(rhs, scope, contents)
 				{
 					let lhs = &contents[lhs.byte_range()];
 					scope.insert(lhs.to_string(), _TR!(id).clone());
 				} else if lhs.kind() == "subscript"
 					&& let Some(map) = dig!(lhs, identifier)
-					&& let Some(key) = dig!(lhs, string(1).string_content(1))
-					&& let Some(rhs) = python_next_named_sibling(lhs)
+					&& let Some(key) = dig!(lhs, string[1].string_content[1])
+					&& let Some(rhs) = lhs.python_next_named_sibling()
 					&& let type_ = self.type_of(rhs, scope, contents)
 					&& let Some(Type::DictBag(properties)) = scope.get_mut(&contents[map.byte_range()])
 				{
@@ -397,7 +395,7 @@ impl Index {
 						properties.push((DictKey::String(ImStr::from(key)), type_));
 					}
 				} else if lhs.kind() == "pattern_list"
-					&& let Some(rhs) = python_next_named_sibling(lhs)
+					&& let Some(rhs) = lhs.python_next_named_sibling()
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 				{
 					self.destructure_into_patternlist_like(lhs, type_, scope, contents);
@@ -406,9 +404,9 @@ impl Index {
 			"for_statement" => {
 				// (for_statement left right body)
 				scope.enter(true);
-				let lhs = node.named_child(0).unwrap();
+				let lhs = node.python_nth_named_child::<0>().unwrap();
 
-				if let Some(rhs) = python_next_named_sibling(lhs)
+				if let Some(rhs) = lhs.python_next_named_sibling()
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 					&& let Some(inner) = self.type_of_iterable(type_)
 				{
@@ -437,7 +435,7 @@ impl Index {
 				if node.byte_range().contains(&offset) =>
 			{
 				// (_ body: _ (for_in_clause left: _ right: _))
-				let for_in = node.named_child(1).unwrap();
+				let for_in = node.python_nth_named_child::<1>().unwrap();
 				if let Some(lhs) = for_in.child_by_field_name("left")
 					&& let Some(rhs) = for_in.child_by_field_name("right")
 					&& let Some(tid) = self.type_of(rhs, scope, contents)
@@ -534,7 +532,7 @@ impl Index {
 								properties.push((DictKey::String(ImStr::from(key)), type_));
 							}
 						} else if named_arg.kind() == "dictionary_splat"
-							&& let Some(value) = named_arg.named_child(0)
+							&& let Some(value) = named_arg.python_nth_named_child::<0>()
 							&& let Some(tid) = self.type_of(value, scope, contents)
 							&& let Type::DictBag(update_props) = _TR!(tid)
 						{
@@ -555,15 +553,15 @@ impl Index {
 				//         (call (identifier) ..)
 				//         (as_pattern_target (identifier))))))
 				if let Some(value) = dig!(node, with_clause.with_item.as_pattern.call)
-					&& let Some(target) = python_next_named_sibling(value)
+					&& let Some(target) = value.python_next_named_sibling()
 					&& target.kind() == "as_pattern_target"
 					&& let Some(alias) = dig!(target, identifier)
-					&& let Some(callee) = value.named_child(0)
+					&& let Some(callee) = value.python_nth_named_child::<0>()
 				{
 					// TODO: Remove this hardcoded case
 					if callee.kind() == "identifier"
 						&& "Form" == &contents[callee.byte_range()]
-						&& let Some(first_arg) = value.named_child(1).expect("call args").named_child(0)
+						&& let Some(first_arg) = dig!(value, [1].[0])
 						&& let Some(type_) = self.type_of(first_arg, scope, contents)
 					{
 						let alias = &contents[alias.byte_range()];
@@ -628,7 +626,7 @@ impl Index {
 					}
 					Type::DictBag(properties) => {
 						// compare by key
-						if let Some(rhs) = dig!(rhs, string_content(1)) {
+						if let Some(rhs) = dig!(rhs, string_content[1]) {
 							let rhs = &contents[rhs.byte_range()];
 							for (key, value) in properties {
 								match key {
@@ -661,7 +659,7 @@ impl Index {
 			"identifier" => {
 				if let Some(parent) = node.parent()
 					&& parent.kind() == "attribute"
-					&& parent.named_child(0).unwrap() != node
+					&& parent.python_nth_named_child::<0>().unwrap() != node
 				{
 					return self.type_of_attribute_node(parent, scope, contents);
 				}
@@ -679,7 +677,7 @@ impl Index {
 				None
 			}
 			"assignment" => {
-				let rhs = node.named_child(1)?;
+				let rhs = node.python_nth_named_child::<1>()?;
 				self.type_of(rhs, scope, contents)
 			}
 			"call" => self.type_of_call_node(node, scope, contents),
@@ -696,10 +694,10 @@ impl Index {
 			"conditional_expression" => {
 				// a if b else c
 				let ty = node
-					.named_child(0)
+					.python_nth_named_child::<0>()
 					.and_then(|child| self.type_of(child, scope, contents));
 				ty.or_else(|| {
-					node.named_child(2)
+					node.python_nth_named_child::<2>()
 						.and_then(|child| self.type_of(child, scope, contents))
 				})
 			}
@@ -707,7 +705,7 @@ impl Index {
 				let pair = dig!(node, pair)?;
 				let mut comprehension_scope;
 				let mut pair_scope = scope;
-				if let Some(for_in_clause) = dig!(node, for_in_clause(1))
+				if let Some(for_in_clause) = dig!(node, for_in_clause[1])
 					&& let Some(scrutinee) = for_in_clause.child_by_field_name("left")
 					&& let Some(iteratee) = for_in_clause.child_by_field_name("right")
 					&& let Some(iter_ty) = self.type_of(iteratee, scope, contents)
@@ -719,10 +717,10 @@ impl Index {
 					pair_scope = &comprehension_scope;
 				}
 				let lhs = pair
-					.named_child(0)
+					.python_nth_named_child::<0>()
 					.and_then(|lhs| self.type_of(lhs, pair_scope, contents));
 				let rhs = pair
-					.named_child(1)
+					.python_nth_named_child::<1>()
 					.and_then(|lhs| self.type_of(lhs, pair_scope, contents));
 				if lhs.is_some() || rhs.is_some() {
 					let value_id = _T!(Type::Value);
@@ -739,7 +737,7 @@ impl Index {
 						&& let Some(rhs) = child.child_by_field_name("value")
 					{
 						let key;
-						if let Some(lhs) = dig!(lhs, string_content(1)) {
+						if let Some(lhs) = dig!(lhs, string_content[1]) {
 							key = DictKey::String(ImStr::from(&contents[lhs.byte_range()]));
 						} else if matches!(lhs.kind(), "true" | "false" | "string" | "none" | "float" | "integer") {
 							key = DictKey::Type(_T!( @contents[lhs.byte_range()]));
@@ -799,11 +797,11 @@ impl Index {
 		}
 	}
 	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &str) -> Option<TypeId> {
-		let func = call.named_child(0)?;
+		let func = call.python_nth_named_child::<0>()?;
 		if func.kind() == "identifier" {
 			match &contents[func.byte_range()] {
 				"zip" => {
-					let args = call.named_child(1)?;
+					let args = call.python_nth_named_child::<1>()?;
 					let mut cursor = args.walk();
 					let value_id = _T!(Type::Value);
 					let children = args.named_children(&mut cursor).map(|child| {
@@ -814,7 +812,7 @@ impl Index {
 					return Some(_T!(Type::Iterable(Some(tuple))));
 				}
 				"enumerate" => {
-					let arg = call.named_child(1)?.named_child(0);
+					let arg = dig!(call, [1].[0]);
 					let arg = arg
 						.and_then(|arg| self.type_of(arg, scope, contents))
 						.unwrap_or_else(|| _T!(Type::Value));
@@ -823,7 +821,7 @@ impl Index {
 					return Some(_T!(Type::Iterable(Some(tuple))));
 				}
 				"tuple" => {
-					let args = call.named_child(1)?;
+					let args = call.python_nth_named_child::<1>()?;
 					if args.kind() == "argument_list" {
 						let mut cursor = args.walk();
 						let value_id = _T!(Type::Value);
@@ -834,7 +832,7 @@ impl Index {
 					}
 				}
 				"dict" => {
-					let arg = call.named_child(1)?.named_child(0)?;
+					let arg = dig!(call, [1].[0])?;
 					let arg = self.type_of(arg, scope, contents)?;
 					let arg = self.type_of_iterable(arg)?;
 					if let Type::Tuple(tuple) = _TR!(arg)
@@ -845,7 +843,7 @@ impl Index {
 					return Some(_T!(Type::Dict(_T!(Type::Value), _T!(Type::Value))));
 				}
 				"defaultdict" => {
-					let arg = call.named_child(1)?.named_child(0)?;
+					let arg = dig!(call, [1].[0])?;
 					if matches!(&contents[arg.byte_range()], "list" | "dict" | "float" | "int") {
 						// TODO: consider more general functions and type ctors
 						return Some(_T!(Type::Dict(
@@ -870,18 +868,14 @@ impl Index {
 		match _TR!(func) {
 			Type::RefFn => {
 				// (call (_) @func (argument_list . (string) @xml_id))
-				let xml_id = call.named_child(1)?.named_child(0)?;
-				if xml_id.kind() == "string" {
-					Some(_T!(Type::Record(contents[xml_id.byte_range().shrink(1)].into())))
-				} else {
-					None
-				}
+				let xml_id = dig!(call, [1].[0].string_content[1])?;
+				Some(_T!(Type::Record(contents[xml_id.byte_range()].into())))
 			}
 			Type::ModelFn(model) => Some(_T!(Type::Model(model.clone()))),
 			Type::Super => Some(_T!(scope.get(scope.super_.as_deref()?).cloned()?)),
 			Type::Method(model, mapped) if mapped.as_str() == "mapped" => {
 				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
-				let mapped = call.named_child(1)?.named_child(0)?;
+				let mapped = dig!(call, [1].[0])?;
 				match mapped.kind() {
 					"string" => {
 						let mut model: Spur = (*model).into();
@@ -894,12 +888,9 @@ impl Index {
 					"lambda" => {
 						// (lambda (lambda_parameters)? body: (_))
 						let mut scope = Scope::new(Some(scope.clone()));
-						if let Some(params) = mapped.child_by_field_name(b"parameters") {
-							let first_arg = params.named_child(0)?;
-							if first_arg.kind() == "identifier" {
-								let first_arg = &contents[first_arg.byte_range()];
-								scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
-							}
+						if let Some(first_arg) = dig!(mapped, :parameters.identifier) {
+							let first_arg = &contents[first_arg.byte_range()];
+							scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
 						}
 						let body = mapped.child_by_field_name(b"body")?;
 						let type_ = self.type_of(body, &scope, contents).unwrap_or_else(|| _T!(Type::Value));
@@ -913,7 +904,7 @@ impl Index {
 			}
 			Type::Method(model, grouped) if grouped.as_str() == "grouped" => {
 				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
-				let grouped = call.named_child(1)?.named_child(0)?;
+				let grouped = dig!(call, [1].[0])?;
 				match grouped.kind() {
 					"string" => {
 						let mut model: Spur = (*model).into();
@@ -925,12 +916,9 @@ impl Index {
 					}
 					"lambda" => {
 						let mut scope = Scope::new(Some(scope.clone()));
-						if let Some(params) = grouped.child_by_field_name(b"parameters") {
-							let first_arg = params.named_child(0)?;
-							if first_arg.kind() == "identifier" {
-								let first_arg = &contents[first_arg.byte_range()];
-								scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
-							}
+						if let Some(first_arg) = dig!(grouped, :parameters.identifier) {
+							let first_arg = &contents[first_arg.byte_range()];
+							scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
 						}
 						let body = grouped.child_by_field_name(b"body")?;
 						let groupby = self.type_of(body, &scope, contents).unwrap_or_else(|| _T!(Type::Value));
@@ -943,7 +931,7 @@ impl Index {
 			Type::Method(model, read_group) if read_group.as_str() == "_read_group" => {
 				let mut groupby = vec![];
 				let mut aggs = vec![];
-				let args = call.named_child(1)?;
+				let args = call.python_nth_named_child::<1>()?;
 
 				#[derive(PartialEq, Eq)]
 				enum Aggregation<'a> {
@@ -958,7 +946,7 @@ impl Index {
 				) {
 					let mut cursor = arg.walk();
 					for field in arg.named_children(&mut cursor) {
-						if let Some(field) = dig!(field, string_content(1)) {
+						if let Some(field) = dig!(field, string_content[1]) {
 							let mut field = &contents[field.byte_range()];
 							let mut agg = None;
 							if let Some((inner, raw_agg)) = field.split_once(':') {
@@ -1020,11 +1008,10 @@ impl Index {
 			}
 			Type::Method(model, read) if read.as_str() == "read" => {
 				let model = Type::Model(_R(model).into());
-				let args = call.named_child(1)?;
-				let fields = dig!(args, list)?;
+				let fields = dig!(call, [1].list)?;
 				let mut dict: Vec<(DictKey, TypeId)> = vec![];
 				for field in fields.named_children(&mut fields.walk()) {
-					let Some(field) = dig!(field, string_content(1)) else {
+					let Some(field) = dig!(field, string_content[1]) else {
 						continue;
 					};
 					let key = &contents[field.byte_range()];
@@ -1058,10 +1045,10 @@ impl Index {
 				};
 				match method.as_str() {
 					"get" => {
-						let args = call.named_child(1)?;
-						let arg_as_string = dig!(args, string.string_content(1));
+						let args = call.python_nth_named_child::<1>()?;
+						let arg_as_string = dig!(args, string.string_content[1]);
 						let argtype = args
-							.named_child(0)
+							.python_nth_named_child::<0>()
 							.and_then(|node| self.type_of(node, scope, contents))
 							.unwrap_or_else(|| _T!(Type::Value));
 						items.iter().find_map(|(key, val)| match key {
@@ -1091,7 +1078,7 @@ impl Index {
 	}
 
 	#[instrument(skip_all, fields(model, method))]
-	pub fn prepare_call_scope(
+	fn prepare_call_scope(
 		&self,
 		model: ModelName,
 		method: Symbol<Method>,
@@ -1103,7 +1090,7 @@ impl Index {
 		//   (arguments_list
 		//     (_)
 		//     (keyword_argument (identifier) (_))))
-		let arguments_list = dig!(call, argument_list(1))?;
+		let arguments_list = dig!(call, argument_list[1])?;
 
 		let model = self.models.populate_properties(model, &[])?;
 		let method = model.methods.as_ref()?.get(&method)?;
@@ -1146,10 +1133,10 @@ impl Index {
 	}
 	#[instrument(skip_all, ret)]
 	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &str) -> Option<TypeId> {
-		let lhs = attribute.named_child(0)?;
+		let lhs = attribute.python_nth_named_child::<0>()?;
 		let lhsid = self.type_of(lhs, scope, contents)?;
 		let lhs = _TR!(lhsid);
-		let rhs = attribute.named_child(1)?;
+		let rhs = attribute.python_nth_named_child::<1>()?;
 		let attrname = &contents[rhs.byte_range()];
 		match &contents[rhs.byte_range()] {
 			"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
@@ -1458,7 +1445,7 @@ impl Index {
 			let entered = self.build_scope(scope, node, offset, &contents).map_break(|_| None)?;
 			// TODO: When implementing freestanding functions, make the toplevel check optional
 			if node.kind() == "return_statement" && is_toplevel_return(node) {
-				let Some(child) = node.named_child(0) else {
+				let Some(child) = node.python_nth_named_child::<0>() else {
 					return ControlFlow::Continue(entered);
 				};
 				let Some(type_) = self.type_of(child, scope, &contents) else {
@@ -1495,12 +1482,12 @@ impl Index {
 					"identifier" => FunctionParam::Param(ImStr::from(&contents[param.byte_range()])),
 					"positional_separator" => FunctionParam::PosEnd,
 					"keyword_separator" => FunctionParam::EitherEnd(None),
-					"list_splat_pattern" => {
-						FunctionParam::EitherEnd(Some(ImStr::from(&contents[param.named_child(0)?.byte_range()])))
-					}
+					"list_splat_pattern" => FunctionParam::EitherEnd(Some(ImStr::from(
+						&contents[param.python_nth_named_child::<0>()?.byte_range()],
+					))),
 					"dictionary_splat_pattern" => FunctionParam::Kwargs("kwargs".into()),
 					"default_parameter" => {
-						let name = param.named_child(0)?;
+						let name = param.python_nth_named_child::<0>()?;
 						let name = &contents[name.byte_range()];
 						FunctionParam::Named(ImStr::from(name))
 					}
@@ -1546,7 +1533,7 @@ impl Index {
 	}
 	fn parse_method_docstring<'out>(fn_scope: Node, contents: &'out str) -> Option<&'out str> {
 		let block = fn_scope.child_by_field_name("body")?;
-		dig!(block, expression_statement.string.string_content(1)).map(|node| &contents[node.byte_range()])
+		dig!(block, expression_statement.string.string_content[1]).map(|node| &contents[node.byte_range()])
 	}
 }
 

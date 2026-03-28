@@ -256,7 +256,7 @@ impl Backend {
 								None,
 								rope,
 							);
-						} else if let Some(cmdlist) = python_next_named_sibling(capture.node)
+						} else if let Some(cmdlist) = capture.node.python_next_named_sibling()
 							&& Backend::is_commandlist(cmdlist, offset)
 							&& let Some((needle, range, model)) = self.gather_commandlist(
 								cmdlist,
@@ -289,7 +289,7 @@ impl Backend {
 					}
 					Some(PyCompletions::FieldDescriptor) => {
 						use FieldDescriptors as FD;
-						let Some(desc_value) = python_next_named_sibling(capture.node) else {
+						let Some(desc_value) = capture.node.python_next_named_sibling() else {
 							continue;
 						};
 
@@ -411,7 +411,7 @@ impl Backend {
 					if domain.kind() != "tuple" {
 						return None;
 					}
-					let mapped = domain.named_child(0)?;
+					let mapped = domain.python_nth_named_child::<0>()?;
 					mapped.byte_range().contains(&offset).then_some(mapped)
 				}) else {
 					continue;
@@ -512,7 +512,7 @@ impl Backend {
 					}
 				} else if current.kind() == "string"
 					&& parent.kind() == "subscript"
-					&& let Some(lhs) = parent.named_child(0)
+					&& let Some(lhs) = parent.python_nth_named_child::<0>()
 					&& let Some((tid, _)) =
 						self.index
 							.type_of_range(root, dbg!(lhs).byte_range().map_unit(ByteOffset), &contents)

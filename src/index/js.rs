@@ -349,9 +349,9 @@ fn registry_category_of_callee<'text>(mut callee: Node, contents: &'text [u8]) -
 			&& let Some(registry_category) = dig!(callee, member_expression)
 			&& let Some(registry) = dig!(registry_category, identifier)
 			&& b"registry" == &contents[registry.byte_range()]
-			&& let Some(prop_category) = dig!(registry_category, property_identifier(1))
+			&& let Some(prop_category) = dig!(registry_category, property_identifier[1])
 			&& b"category" == &contents[prop_category.byte_range()]
-			&& let Some(category_node) = dig!(callee, arguments(1).string)
+			&& let Some(category_node) = dig!(callee, arguments[1].string)
 		{
 			return Some(&contents[category_node.byte_range().shrink(1)]);
 		}

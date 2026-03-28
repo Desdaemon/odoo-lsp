@@ -938,15 +938,10 @@ mod tests {
 		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
 		let ast = parser.parse(FOO_PY, None).unwrap();
 		let matches = QueryCursor::new()
-			.matches(query, ast.root_node(), FOO_PY)
+			.matches(query, ast.root_node(), FOO_PY.as_bytes())
 			.map(|match_| {
 				(match_.captures.iter())
-					.map(|cap| {
-						(
-							ModelQuery::from(cap.index),
-							clamp_str(unsafe { core::str::from_utf8_unchecked(&FOO_PY[cap.node.byte_range()]) }),
-						)
-					})
+					.map(|cap| (ModelQuery::from(cap.index), clamp_str(&FOO_PY[cap.node.byte_range()])))
 					.collect::<Vec<_>>()
 			})
 			.fold_mut(vec![], acc_vec);
