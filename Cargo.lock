@@ -1519,6 +1519,7 @@ dependencies = [
  "rayon",
  "ropey",
  "rustix",
+ "scopeguard",
  "self_update",
  "serde",
  "serde_json",

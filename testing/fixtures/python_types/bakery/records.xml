@@ -1,0 +1,4 @@
+<odoo>
+	<record id="baba" model="bakery.bread">
+	</record>
+</odoo>
