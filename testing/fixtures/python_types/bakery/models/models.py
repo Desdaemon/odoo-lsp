@@ -109,6 +109,51 @@ class Bread(models.Model):
         foobar['f']
         #        ^complete fool
 
+    def test_update(self):
+        foobar = {'abc': 123}
+        abc = foobar['abc']
+        #^type PyBuiltin("int")
+        foobar['abc'] = True
+        abc = foobar['abc']
+        #^type PyBuiltin("bool")
+
+        foobar.update({'abc': 'some string'})
+        abc = foobar['abc']
+        #^type PyBuiltin("str")
+
+        foobar.update(abc=123)
+        abc = foobar['abc']
+        #^type PyBuiltin("int")
+
+        another = {'ddd': 123}
+        foobar.update(**another)
+        ddd = foobar['ddd']
+        #^type PyBuiltin("int")
+
+        nested = {'ddd': 'another string'}
+        foobar.update({'cake': 123, **nested})
+        cake = foobar['cake']
+        #^type PyBuiltin("int")
+        ddd = foobar['ddd']
+        #^type PyBuiltin("str")
+
+    def test_misc(self):
+        foo = [self.env.ref('bakery.baba')]
+        #^type List(Model("bakery.bread"))
+
+        for aaa, bbb in self:
+            #^type Model("bakery.bread")
+            bbb
+            #^type Model("bakery.bread")
+
+    def _make_dict(self, food=123):
+        return {'food': food}
+
+    def test_default_arguments(self):
+        what = self._make_dict(food='asd')
+        food = what['food']
+        #^type PyBuiltin("str")
+
 
 class Wine(models.Model):
     _name = 'bakery.wine'
@@ -126,9 +171,19 @@ class Wine(models.Model):
             value
             #^type PyBuiltin("float")
 
+        for name, make, value in self._read_group(domain=domain, groupby=['name', 'make'], aggregates=['value:sum']):
+            #^type PyBuiltin("str")
+            make
+            #^type PyBuiltin("str")
+            value
+            #^type PyBuiltin("float")
+
     def _test_mapped(self):
         foo = self.mapped('make')
         #^type List(PyBuiltin("str"))
+
+        bar = self.mapped(lambda obj: obj)
+        #^type Model("bakery.wine")
 
     def test_grouped(self):
         for name, records in self.grouped('name').items():
@@ -139,3 +194,9 @@ class Wine(models.Model):
             #^type PyBuiltin("str")
             thing
             #^type PyBuiltin("float")
+
+    def test_read(self):
+        what = self.read(['name', 'make'])
+        #^type List(DictBag([("name", PyBuiltin("str")), ("make", PyBuiltin("str"))]))
+        name = what[0].get('name', None)
+        #^type PyBuiltin("str")

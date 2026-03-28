@@ -133,6 +133,15 @@ class Quux(Model):
 
 	def test(self):
 		return super().test()
+
+	def _identity(self, foo=123):
+		return foo
+
+	def test_identity(self):
+		return {
+			'int': self._identity(),
+			'self': self._identity(foo=self),
+		}
 "#;
 		pub fn prepare_foo_index() -> ModelIndex {
 			const ROOT: &str = "/addons";

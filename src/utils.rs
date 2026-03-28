@@ -565,13 +565,13 @@ impl Semaphore {
 			.is_err()
 		{
 			panic!(
-				"[{context}] thread={:?} attempted to lock {:p} which is already locked, it should call wait() first",
+				"{context} thread={:?} attempted to lock {:p} which is already locked, it should call wait() first",
 				std::thread::current().id(),
 				self
 			);
 		}
-		info!(
-			"[{context}] thread={:?} acquired lock on {:p}",
+		warn!(
+			"{context} thread={:?} acquired lock on {:p}",
 			std::thread::current().id(),
 			self
 		);
@@ -582,8 +582,8 @@ impl Semaphore {
 	/// Should only be used by the initialization flow ONCE.
 	#[must_use]
 	pub unsafe fn block_unchecked(&self, context: &'static str) -> Blocker<'_> {
-		info!(
-			"[{context}] thread={:?} force-acquired lock on {:p}",
+		warn!(
+			"{context} thread={:?} force-acquired lock on {:p}",
 			std::thread::current().id(),
 			self
 		);
@@ -613,7 +613,7 @@ impl Semaphore {
 impl Drop for Blocker<'_> {
 	#[track_caller]
 	fn drop(&mut self) {
-		info!(
+		warn!(
 			"thread={:?} releasing lock on {:p}",
 			std::thread::current().id(),
 			self.0
@@ -711,20 +711,6 @@ pub fn to_display_path(path: impl AsRef<Path>) -> String {
 	path.as_ref().to_string_lossy().into_owned()
 }
 
-pub struct Defer<T>(pub Option<T>)
-where
-	T: FnOnce();
-
-impl<T> Drop for Defer<T>
-where
-	T: FnOnce(),
-{
-	fn drop(&mut self) {
-		let func = self.0.take().unwrap();
-		func()
-	}
-}
-
 /// On Windows, rewrites the wide path prefix `\\?\C:` to `C:`  
 /// Source: https://stackoverflow.com/a/70970317
 #[inline]
@@ -775,6 +761,8 @@ where
 	fn python_next_named_sibling(self) -> Option<Self>;
 
 	fn python_nth_named_child_matching<const NTH: usize>(self, kind: &str) -> Option<Self>;
+
+	fn as_keyword_argument(&self) -> Option<(Self, Self)>;
 }
 
 impl NodeExt for Node<'_> {
@@ -820,6 +808,17 @@ impl NodeExt for Node<'_> {
 			}
 			self = self.next_named_sibling()?;
 		}
+	}
+
+	fn as_keyword_argument(&self) -> Option<(Self, Self)> {
+		if self.kind() == "keyword_argument"
+			&& let Some(lhs) = self.python_nth_named_child::<0>()
+			&& let Some(rhs) = lhs.python_next_named_sibling()
+		{
+			return Some((lhs, rhs));
+		}
+
+		None
 	}
 }
 
