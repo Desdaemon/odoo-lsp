@@ -3,6 +3,7 @@
 [![nightly](https://github.com/Desdaemon/odoo-lsp/actions/workflows/nightly.yml/badge.svg)](https://github.com/Desdaemon/odoo-lsp/actions/workflows/nightly.yml)
 [![test](https://github.com/Desdaemon/odoo-lsp/actions/workflows/test.yml/badge.svg)](https://github.com/Desdaemon/odoo-lsp/actions/workflows/test.yml)
 [![codecov](https://codecov.io/gh/Desdaemon/odoo-lsp/graph/badge.svg?token=6Y9WYWZ07G)](https://codecov.io/gh/Desdaemon/odoo-lsp)
+[![docs.rs](https://img.shields.io/docsrs/odoo-lsp)](https://docs.rs/odoo-lsp)
 [![VS Marketplace](https://vsmarketplacebadges.dev/version-short/desdaemon.odoo-lsp.svg)](https://marketplace.visualstudio.com/items?itemName=Desdaemon.odoo-lsp)
 [![Open VSX](https://img.shields.io/open-vsx/v/desdaemon/odoo-lsp?label=Open%20VSX)](https://open-vsx.org/extension/Desdaemon/odoo-lsp)
 
