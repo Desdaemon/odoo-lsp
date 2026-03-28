@@ -105,6 +105,7 @@ ts-macros.workspace = true
 tracing-subscriber.workspace = true
 mini-moka = "0.10.3"
 boxcar = "0.2.14"
+scopeguard = "1.2.0"
 
 [dev-dependencies]
 pretty_assertions.workspace = true

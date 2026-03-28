@@ -57,15 +57,9 @@ mod tests {
 	fn test_simple_call() {
 		let mut parser = Parser::new();
 		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-		let contents = b"foo.mapped(lambda f: f.bar)";
+		let contents = "foo.mapped(lambda f: f.bar)";
 		let asts = PreTravel::new(parser.parse(contents, None).unwrap().root_node())
-			.flat_map(|node| {
-				node.is_named().then(|| {
-					(node.kind(), unsafe {
-						core::str::from_utf8_unchecked(&contents[node.byte_range()])
-					})
-				})
-			})
+			.flat_map(|node| node.is_named().then(|| (node.kind(), &contents[node.byte_range()])))
 			.collect::<Vec<_>>();
 		assert_eq!(
 			asts,

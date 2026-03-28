@@ -491,7 +491,7 @@ impl Index {
 			}
 
 			// Read and parse the Python file
-			let Ok(contents) = std::fs::read(&path) else {
+			let Ok(contents) = std::fs::read_to_string(&path) else {
 				continue;
 			};
 
@@ -1097,14 +1097,18 @@ query! {
 }
 
 async fn add_root_py(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
-	let contents = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
+	let contents = ok!(
+		tokio::fs::read_to_string(&path).await,
+		"Could not read {}",
+		path.display()
+	);
 
 	let path = PathSymbol::strip_root(root, &path);
 	let models = index_models(&contents)?;
 	Ok(Output::Models { path, models })
 }
 
-pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
+pub fn index_models(contents: &str) -> anyhow::Result<Vec<Model>> {
 	let mut parser = tree_sitter::Parser::new();
 	parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
 
@@ -1118,10 +1122,10 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 	struct NewModel<'a> {
 		range: tree_sitter::Range,
 		byte_range: ByteRange,
-		name: Option<&'a [u8]>,
-		inherits: Vec<&'a [u8]>,
+		name: Option<&'a str>,
+		inherits: Vec<&'a str>,
 	}
-	let mut matches = cursor.matches(query, ast.root_node(), contents);
+	let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 	while let Some(match_) = matches.next() {
 		let model_node = match_
 			.nodes_for_capture_index(ModelQuery::Model as _)
@@ -1138,8 +1142,8 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 			inherits: vec![],
 		});
 		match &contents[capture.byte_range()] {
-			b"_name" => {
-				let Some(name_decl) = python_next_named_sibling(capture) else {
+			"_name" => {
+				let Some(name_decl) = capture.python_next_named_sibling() else {
 					continue;
 				};
 				if name_decl.kind() == "string" {
@@ -1150,8 +1154,8 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 					model.name = Some(&contents[name]);
 				}
 			}
-			b"_inherit" => {
-				let Some(inherit_decl) = python_next_named_sibling(capture) else {
+			"_inherit" => {
+				let Some(inherit_decl) = capture.python_next_named_sibling() else {
 					continue;
 				};
 				match inherit_decl.kind() {
@@ -1176,8 +1180,8 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 					}
 				}
 			}
-			b"_inherits" => {
-				let Some(inherit_dict) = python_next_named_sibling(capture) else {
+			"_inherits" => {
+				let Some(inherit_dict) = capture.python_next_named_sibling() else {
 					continue;
 				};
 				if inherit_dict.kind() != "dictionary" {
@@ -1187,7 +1191,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 					if pair.kind() != "pair" {
 						continue;
 					}
-					let key = pair.named_child(0).expect("key");
+					let key = pair.python_nth_named_child::<0>().expect("key");
 					if key.kind() == "string" {
 						model.inherits.push(&contents[key.byte_range().shrink(1)]);
 					}
@@ -1208,11 +1212,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 				has_primary = true;
 			}
 		}
-		let inherits = model
-			.inherits
-			.into_iter()
-			.map(|inherit| ImStr::from(String::from_utf8_lossy(inherit).as_ref()))
-			.collect::<Vec<_>>();
+		let inherits = model.inherits.into_iter().map(Into::into).collect::<Vec<_>>();
 		let range = span_conv(model.range);
 		let byte_range = model.byte_range;
 		match (inherits.is_empty(), model.name) {
@@ -1233,7 +1233,7 @@ pub fn index_models(contents: &[u8]) -> anyhow::Result<Vec<Model>> {
 				} else {
 					Some(Model {
 						type_: ModelType::Base {
-							name: ImStr::from(String::from_utf8_lossy(base).as_ref()),
+							name: base.into(),
 							ancestors: inherits,
 						},
 						range,
@@ -1962,7 +1962,7 @@ class Base(models.Model):
 	#[test]
 	fn test_index_query() {
 		let models = index_models(
-			br#"
+			r#"
 class TransifexCodeTranslation(models.Model):
     _name = "transifex.code.translation"
     _description = "Code Translation"

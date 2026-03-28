@@ -176,8 +176,7 @@ impl Backend {
 					}
 					Some(PyCompletions::FieldDescriptor) => {
 						// fields.Many2one(field_descriptor=...)
-
-						let Some(desc_value) = python_next_named_sibling(capture.node) else {
+						let Some(desc_value) = capture.node.python_next_named_sibling() else {
 							continue;
 						};
 
@@ -270,7 +269,9 @@ impl Backend {
 								continue;
 							}
 
-							let Some(mapped) = domain.named_child(0) else { continue };
+							let Some(mapped) = domain.python_nth_named_child::<0>() else {
+								continue;
+							};
 							if mapped.kind() != "string" {
 								continue;
 							}

@@ -37,28 +37,59 @@ macro_rules! some {
 	};
 }
 
+/// `dig!(node, <path>)` where `path` is either:
+/// 1. an identifier that selects the first matching node: `string`, `identifier`;
+/// 2. a numeric constant inside a bracket to access the n-th node: `[0]`, `[1]`, `[NTH]` where `NTH` is defined as a const;
+/// 3. both of the above to access the n-th node matching the type: `string_content[1]`. (1) is a special case of this where the zeroth node is selected;
+/// 4. an identifier preceded by a colon (`:`) to select a node's **named** child: `:parameters`
+/// 5. a chain of the above elements separated by a dot (`.`): `list[0].string.string_content[1]`.
+///
+/// Consecutive n-th element accesses are valid: `dig!(node, [0].[1].[2].[NTH])`
+///
+/// Some common usages:
+/// - `dig!(node, string_content[1])` to grab a `(string)`'s contents
 #[macro_export]
 macro_rules! dig {
 	() => { None };
 	($start:expr, $($rest:tt)+) => {
 		$crate::dig!(@inner Some($start), $($rest)+)
 	};
-	(@inner $node:expr, $kind:ident($idx:literal).$($rest:tt)+) => {
+	(@inner $node:expr, $kind:ident[$idx:literal].$($rest:tt)+) => {
 		$crate::dig!(
 			@inner
-			if let Some(node) = $node && let Some(child) = $crate::utils::python_nth_named_child_matching::<$idx>(node, stringify!($kind)) { Some(child) } else { None },
+			if let Some(node) = $node && let Some(child) = $crate::utils::NodeExt::python_nth_named_child_matching::<$idx>(node, stringify!($kind)) { Some(child) } else { None },
 			$($rest)+
 		)
 	};
 	(@inner $node:expr, $kind:ident.$($rest:tt)+) => {
-		$crate::dig!(@inner $node, $kind(0).$($rest)+)
+		$crate::dig!(@inner $node, $kind[0].$($rest)+)
 	};
-	(@inner $node:expr, $kind:ident($idx:literal)) => {
-		if let Some(node) = $node && let Some(child) = $crate::utils::python_nth_named_child_matching::<$idx>(node, stringify!($kind)) { Some(child) } else { None }
+	(@inner $node:expr, $kind:ident[$idx:literal]) => {
+		if let Some(node) = $node && let Some(child) = $crate::utils::NodeExt::python_nth_named_child_matching::<$idx>(node, stringify!($kind)) { Some(child) } else { None }
 	};
 	(@inner $node:expr, $kind:ident) => {
-		$crate::dig!(@inner $node, $kind(0))
+		$crate::dig!(@inner $node, $kind[0])
 	};
+	(@inner $node:expr, [$idx:literal].$($rest:tt)+) => {
+		$crate::dig!(
+			@inner
+			if let Some(node) = $node && let Some(child) = $crate::utils::NodeExt::python_nth_named_child::<$idx>(node) { Some(child) } else { None },
+			$($rest)+
+		)
+	};
+	(@inner $node:expr, [$idx:literal]) => {
+		if let Some(node) = $node && let Some(child) = $crate::utils::NodeExt::python_nth_named_child::<$idx>(node) { Some(child) } else { None }
+	};
+	(@inner $node:expr, :$field:ident.$($rest:tt)+) => {
+		$crate::dig!(
+			@inner
+			if let Some(node) = $node && let Some(child) = node.child_by_field_name(stringify!($field)) { Some(child) } else { None },
+			$($rest)+
+		)
+	};
+	(@inner $node:expr, :$field:ident) => {
+		if let Some(node) = $node && let Some(child) = node.child_by_field_name(stringify!($field)) { Some(child) } else { None }
+	}
 }
 
 /// Early return, with optional message passed to [`format_loc`](crate::format_loc!).
@@ -323,37 +354,6 @@ pub const fn unlikely(cond: bool) -> bool {
 	}
 }
 
-/// Only useful for Python, since the default grammar does not mark comments as extra nodes.
-#[allow(clippy::disallowed_methods)]
-#[inline]
-pub fn python_next_named_sibling(mut node: Node) -> Option<Node> {
-	loop {
-		node = node.next_named_sibling()?;
-		if likely(node.kind() != "comment") {
-			return Some(node);
-		}
-	}
-}
-
-#[allow(clippy::disallowed_methods)]
-#[inline]
-pub fn python_nth_named_child_matching<'node, const NTH: usize>(
-	mut node: Node<'node>,
-	kind: &'static str,
-) -> Option<Node<'node>> {
-	let mut idx = 0;
-	node = node.named_child(0)?;
-	loop {
-		if idx == NTH && likely(node.kind() == kind) {
-			return Some(node);
-		}
-		if likely(node.kind() != "comment") {
-			idx += 1;
-		}
-		node = node.next_named_sibling()?;
-	}
-}
-
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct ByteOffset(pub usize);
@@ -565,13 +565,13 @@ impl Semaphore {
 			.is_err()
 		{
 			panic!(
-				"[{context}] thread={:?} attempted to lock {:p} which is already locked, it should call wait() first",
+				"{context} thread={:?} attempted to lock {:p} which is already locked, it should call wait() first",
 				std::thread::current().id(),
 				self
 			);
 		}
-		info!(
-			"[{context}] thread={:?} acquired lock on {:p}",
+		warn!(
+			"{context} thread={:?} acquired lock on {:p}",
 			std::thread::current().id(),
 			self
 		);
@@ -582,8 +582,8 @@ impl Semaphore {
 	/// Should only be used by the initialization flow ONCE.
 	#[must_use]
 	pub unsafe fn block_unchecked(&self, context: &'static str) -> Blocker<'_> {
-		info!(
-			"[{context}] thread={:?} force-acquired lock on {:p}",
+		warn!(
+			"{context} thread={:?} force-acquired lock on {:p}",
 			std::thread::current().id(),
 			self
 		);
@@ -613,7 +613,7 @@ impl Semaphore {
 impl Drop for Blocker<'_> {
 	#[track_caller]
 	fn drop(&mut self) {
-		info!(
+		warn!(
 			"thread={:?} releasing lock on {:p}",
 			std::thread::current().id(),
 			self.0
@@ -711,20 +711,6 @@ pub fn to_display_path(path: impl AsRef<Path>) -> String {
 	path.as_ref().to_string_lossy().into_owned()
 }
 
-pub struct Defer<T>(pub Option<T>)
-where
-	T: FnOnce();
-
-impl<T> Drop for Defer<T>
-where
-	T: FnOnce(),
-{
-	fn drop(&mut self) {
-		let func = self.0.take().unwrap();
-		func()
-	}
-}
-
 /// On Windows, rewrites the wide path prefix `\\?\C:` to `C:`  
 /// Source: https://stackoverflow.com/a/70970317
 #[inline]
@@ -764,8 +750,82 @@ where
 	acc
 }
 
+pub trait NodeExt
+where
+	Self: Sized,
+{
+	/// Gets the nth named child ignoring comments, only relevant for Python
+	fn python_nth_named_child<const NTH: usize>(self) -> Option<Self>;
+
+	/// Only useful for Python, since the default grammar does not mark comments as extra nodes.
+	fn python_next_named_sibling(self) -> Option<Self>;
+
+	fn python_nth_named_child_matching<const NTH: usize>(self, kind: &str) -> Option<Self>;
+
+	fn as_keyword_argument(&self) -> Option<(Self, Self)>;
+}
+
+impl NodeExt for Node<'_> {
+	#[allow(clippy::disallowed_methods)]
+	#[inline]
+	fn python_nth_named_child<const NTH: usize>(mut self) -> Option<Self> {
+		let mut idx = 0;
+		self = self.named_child(0)?;
+		loop {
+			if likely(self.kind() != "comment") {
+				if idx == NTH {
+					return Some(self);
+				}
+				idx += 1;
+			}
+			self = self.next_named_sibling()?;
+		}
+	}
+
+	/// Only useful for Python, since the default grammar does not mark comments as extra nodes.
+	#[allow(clippy::disallowed_methods)]
+	#[inline]
+	fn python_next_named_sibling(mut self) -> Option<Self> {
+		loop {
+			self = self.next_named_sibling()?;
+			if likely(self.kind() != "comment") {
+				return Some(self);
+			}
+		}
+	}
+
+	#[allow(clippy::disallowed_methods)]
+	#[inline]
+	fn python_nth_named_child_matching<const NTH: usize>(mut self, kind: &str) -> Option<Self> {
+		let mut idx = 0;
+		self = self.named_child(0)?;
+		loop {
+			if idx == NTH && likely(self.kind() == kind) {
+				return Some(self);
+			}
+			if likely(self.kind() != "comment") {
+				idx += 1;
+			}
+			self = self.next_named_sibling()?;
+		}
+	}
+
+	fn as_keyword_argument(&self) -> Option<(Self, Self)> {
+		if self.kind() == "keyword_argument"
+			&& let Some(lhs) = self.python_nth_named_child::<0>()
+			&& let Some(rhs) = lhs.python_next_named_sibling()
+		{
+			return Some((lhs, rhs));
+		}
+
+		None
+	}
+}
+
 #[cfg(test)]
 mod tests {
+	use crate::{analyze::normalize, utils::NodeExt};
+
 	use super::{WSL, to_display_path};
 	use pretty_assertions::assert_eq;
 
@@ -801,16 +861,47 @@ mod tests {
 			# Another comment
 			2,
 			3,	
-			}
-		}"#;
+		]"#;
 
 		let mut parser = Parser::new();
 		parser.set_language(&LANGUAGE.into()).unwrap();
 		let tree = parser.parse(contents, None).unwrap();
 		let root = tree.root_node();
-		let list_node = root.named_child(0).unwrap();
-		let first_element = list_node.named_child(1).unwrap();
-		let second_element = super::python_nth_named_child_matching::<0>(list_node, "integer").unwrap();
-		pretty_assertions::assert_eq!(first_element, second_element);
+		let mut list_node = root.python_nth_named_child::<0>().unwrap();
+		normalize(&mut list_node);
+		let first_element = list_node.python_nth_named_child::<0>().expect("first_element");
+		let second_element = list_node.python_nth_named_child_matching::<0>("integer").unwrap();
+		assert_eq!(
+			&contents[first_element.byte_range()],
+			&contents[second_element.byte_range()]
+		);
+	}
+
+	#[test]
+	fn test_python_nth_child() {
+		use tree_sitter::Parser;
+		use tree_sitter_python::LANGUAGE;
+
+		let contents = r#"[
+			# A comment
+			1,
+			# Another comment
+			2,
+			3,	
+		]"#;
+
+		let mut parser = Parser::new();
+		parser.set_language(&LANGUAGE.into()).unwrap();
+		let tree = parser.parse(contents, None).unwrap();
+		let root = tree.root_node();
+		let mut list = root.python_nth_named_child::<0>().unwrap();
+		normalize(&mut list);
+		assert_eq!(list.kind(), "list");
+
+		let first_element = list.python_nth_named_child::<0>().unwrap();
+		assert_eq!(&contents[first_element.byte_range()], "1");
+
+		let second_element = list.python_nth_named_child::<1>().unwrap();
+		assert_eq!(&contents[second_element.byte_range()], "2");
 	}
 }

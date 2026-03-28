@@ -12,16 +12,15 @@ use dashmap::DashMap;
 use fomat_macros::fomat;
 use lasso::Spur;
 use ropey::Rope;
+use scopeguard::defer;
 use tracing::instrument;
 use tree_sitter::{Node, Parser, QueryCursor, StreamingIterator};
 
-use crate::{
-	ImStr, dig, format_loc,
-	index::{_G, _I, _R, Index, Symbol},
-	model::{Method, ModelName, PropertyInfo},
-	test_utils,
-	utils::{ByteOffset, ByteRange, Defer, PreTravel, RangeExt, TryResultExt, python_next_named_sibling, rope_conv},
-};
+use crate::index::{_G, _I, _R, Index, Symbol};
+use crate::model::{Method, ModelName, PropertyInfo};
+use crate::prelude::*;
+use crate::test_utils;
+use crate::{ImStr, dig, format_loc};
 use ts_macros::query;
 
 mod scope;
@@ -84,8 +83,6 @@ pub enum Type {
 	/// Functions that return another model, regardless of input.
 	ModelFn(ImStr),
 	Model(ImStr),
-	/// Unresolved model.
-	Record(ImStr),
 	Super,
 	Method(ModelName, ImStr),
 	/// To hardcode some methods, such as dict.items()
@@ -94,7 +91,7 @@ pub enum Type {
 	HttpRequest,
 	Dict(TypeId, TypeId),
 	/// A bag of enumerated properties and their types
-	DictBag(Vec<(DictKey, TypeId)>),
+	DictBag(Properties),
 	/// Equivalent to Value, but may have a better semantic name
 	PyBuiltin(ImStr),
 	List(ListElement),
@@ -183,6 +180,11 @@ pub struct TypeCache {
 	ids: DashMap<Type, TypeId>,
 }
 
+#[derive(Debug)]
+enum PrepareCallScopeError {
+	NeedsArguments,
+}
+
 impl TypeCache {
 	#[inline]
 	pub fn get_or_intern(&self, type_: Type) -> TypeId {
@@ -224,6 +226,50 @@ impl TypeId {
 impl Debug for TypeId {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		_TR!(*self).fmt(f)
+	}
+}
+
+#[derive(Default, Clone, PartialEq, Eq, Hash)]
+pub struct Properties(Vec<(DictKey, TypeId)>);
+
+impl Debug for Properties {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		self.0.fmt(f)
+	}
+}
+
+impl Properties {
+	pub fn set(&mut self, key: DictKey, val: TypeId) {
+		if let Some(pos) = self.0.iter().position(|(prop, _)| *prop == key) {
+			self.0[pos].1 = val;
+		} else {
+			self.0.push((key, val));
+		}
+	}
+	#[inline]
+	pub fn set_key(&mut self, key: ImStr, val: TypeId) {
+		self.set(DictKey::String(key), val)
+	}
+	pub fn merge(&mut self, other: &Self) {
+		for (key, val) in &other.0 {
+			if let Some(pos) = self.0.iter().position(|(prop, _)| prop == key) {
+				self.0[pos].1 = *val;
+			} else {
+				self.0.push((key.clone(), *val));
+			}
+		}
+	}
+	#[inline]
+	pub fn is_empty(&self) -> bool {
+		self.0.is_empty()
+	}
+	#[inline]
+	pub fn splay(&self) -> &[(DictKey, TypeId)] {
+		&self.0
+	}
+	#[inline]
+	pub fn splay_mut(&mut self) -> &mut [(DictKey, TypeId)] {
+		&mut self.0
 	}
 }
 
@@ -372,32 +418,25 @@ impl Index {
 		match node.kind() {
 			"assignment" | "named_expression" => {
 				// (_ left right)
-				let lhs = node.named_child(0).unwrap();
+				let lhs = node.python_nth_named_child::<0>().unwrap();
 				if lhs.kind() == "identifier"
-					&& let rhs = python_next_named_sibling(lhs).expect(format_loc!("rhs"))
+					&& let rhs = lhs.python_next_named_sibling().expect(format_loc!("rhs"))
 					&& let Some(id) = self.type_of(rhs, scope, contents)
 				{
 					let lhs = &contents[lhs.byte_range()];
 					scope.insert(lhs.to_string(), _TR!(id).clone());
 				} else if lhs.kind() == "subscript"
 					&& let Some(map) = dig!(lhs, identifier)
-					&& let Some(key) = dig!(lhs, string(1).string_content(1))
-					&& let Some(rhs) = python_next_named_sibling(lhs)
+					&& let Some(key) = dig!(lhs, string[1].string_content[1])
+					&& let Some(rhs) = lhs.python_next_named_sibling()
 					&& let type_ = self.type_of(rhs, scope, contents)
 					&& let Some(Type::DictBag(properties)) = scope.get_mut(&contents[map.byte_range()])
 				{
 					let type_ = type_.unwrap_or_else(|| _T!(Type::Value));
 					let key = &contents[key.byte_range()];
-					if let Some(idx) = properties.iter().position(|(prop, _)| match prop {
-						DictKey::String(prop) => prop.as_str() == key,
-						DictKey::Type(_) => false,
-					}) {
-						properties[idx].1 = type_;
-					} else {
-						properties.push((DictKey::String(ImStr::from(key)), type_));
-					}
+					properties.set_key(key.into(), type_);
 				} else if lhs.kind() == "pattern_list"
-					&& let Some(rhs) = python_next_named_sibling(lhs)
+					&& let Some(rhs) = lhs.python_next_named_sibling()
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 				{
 					self.destructure_into_patternlist_like(lhs, type_, scope, contents);
@@ -406,9 +445,9 @@ impl Index {
 			"for_statement" => {
 				// (for_statement left right body)
 				scope.enter(true);
-				let lhs = node.named_child(0).unwrap();
+				let lhs = node.python_nth_named_child::<0>().unwrap();
 
-				if let Some(rhs) = python_next_named_sibling(lhs)
+				if let Some(rhs) = lhs.python_next_named_sibling()
 					&& let Some(type_) = self.type_of(rhs, scope, contents)
 					&& let Some(inner) = self.type_of_iterable(type_)
 				{
@@ -437,7 +476,7 @@ impl Index {
 				if node.byte_range().contains(&offset) =>
 			{
 				// (_ body: _ (for_in_clause left: _ right: _))
-				let for_in = node.named_child(1).unwrap();
+				let for_in = node.python_nth_named_child::<1>().unwrap();
 				if let Some(lhs) = for_in.child_by_field_name("left")
 					&& let Some(rhs) = for_in.child_by_field_name("right")
 					&& let Some(tid) = self.type_of(rhs, scope, contents)
@@ -491,7 +530,7 @@ impl Index {
 						let key = &contents[key.byte_range()];
 
 						if let Some(Type::DictBag(properties)) = scope.get_mut(&contents[map.byte_range()])
-							&& let Some((_, slot)) = properties.iter_mut().find(|(prop, id)| match prop {
+							&& let Some((_, slot)) = properties.splay_mut().iter_mut().find(|(prop, id)| match prop {
 								DictKey::String(prop) => {
 									prop.as_str() == key && _T!(Type::List(ListElement::Vacant)) == *id
 								}
@@ -510,35 +549,26 @@ impl Index {
 
 					let mut properties = core::mem::take(properties);
 					let mut cursor = args.walk();
-					let mut children = args.named_children(&mut cursor);
-					if let Some(first) = children.by_ref().next()
-						&& let Some(tid) = self.type_of(first, scope, contents)
+					let mut children = args.named_children(&mut cursor).peekable();
+					if let Some(first) = children.peek()
+						&& let Some(tid) = self.type_of(*first, scope, contents)
 						&& let Type::DictBag(update_props) = _TR!(tid)
 					{
-						properties.extend(update_props.clone());
+						properties.merge(update_props);
+						children.next();
 					}
 
-					for named_arg in children {
-						if named_arg.kind() == "keyword_argument"
-							&& let Some(name) = named_arg.child_by_field_name("name")
-							&& let Some(value) = named_arg.child_by_field_name("value")
-						{
-							let key = &contents[name.byte_range()];
+					for arg in children {
+						if let Some((arg, value)) = arg.as_keyword_argument() {
+							let key = &contents[arg.byte_range()];
 							let type_ = self.type_of(value, scope, contents).unwrap_or_else(|| _T!(Type::Value));
-							if let Some(idx) = properties.iter().position(|(prop, _)| match prop {
-								DictKey::String(prop) => prop.as_str() == key,
-								DictKey::Type(_) => false,
-							}) {
-								properties[idx].1 = type_;
-							} else {
-								properties.push((DictKey::String(ImStr::from(key)), type_));
-							}
-						} else if named_arg.kind() == "dictionary_splat"
-							&& let Some(value) = named_arg.named_child(0)
+							properties.set_key(key.into(), type_);
+						} else if arg.kind() == "dictionary_splat"
+							&& let Some(value) = arg.python_nth_named_child::<0>()
 							&& let Some(tid) = self.type_of(value, scope, contents)
 							&& let Type::DictBag(update_props) = _TR!(tid)
 						{
-							properties.extend(update_props.clone());
+							properties.merge(update_props);
 						}
 					}
 
@@ -555,15 +585,15 @@ impl Index {
 				//         (call (identifier) ..)
 				//         (as_pattern_target (identifier))))))
 				if let Some(value) = dig!(node, with_clause.with_item.as_pattern.call)
-					&& let Some(target) = python_next_named_sibling(value)
+					&& let Some(target) = value.python_next_named_sibling()
 					&& target.kind() == "as_pattern_target"
 					&& let Some(alias) = dig!(target, identifier)
-					&& let Some(callee) = value.named_child(0)
+					&& let Some(callee) = value.python_nth_named_child::<0>()
 				{
 					// TODO: Remove this hardcoded case
 					if callee.kind() == "identifier"
 						&& "Form" == &contents[callee.byte_range()]
-						&& let Some(first_arg) = value.named_child(1).expect("call args").named_child(0)
+						&& let Some(first_arg) = dig!(value, [1].[0])
 						&& let Some(type_) = self.type_of(first_arg, scope, contents)
 					{
 						let alias = &contents[alias.byte_range()];
@@ -620,7 +650,7 @@ impl Index {
 						Some(_T!(Type::Model(contents[rhs.byte_range().shrink(1)].into())))
 					}
 					Type::Env => Some(_T!["unknown"]),
-					Type::Model(_) | Type::Record(_) => Some(obj_ty),
+					Type::Model(_) => Some(obj_ty),
 					Type::Dict(key, value) => {
 						let rhs = self.type_of(rhs, scope, contents);
 						// FIXME: We trust that the user makes the correct judgment here and returns the type requested.
@@ -628,9 +658,9 @@ impl Index {
 					}
 					Type::DictBag(properties) => {
 						// compare by key
-						if let Some(rhs) = dig!(rhs, string_content(1)) {
+						if let Some(rhs) = dig!(rhs, string_content[1]) {
 							let rhs = &contents[rhs.byte_range()];
-							for (key, value) in properties {
+							for (key, value) in properties.splay() {
 								match key {
 									DictKey::String(key) if key.as_str() == rhs => {
 										return Some(*value);
@@ -643,7 +673,7 @@ impl Index {
 
 						// compare by type
 						let rhs = self.type_of(rhs, scope, contents)?;
-						for (key, value) in properties {
+						for (key, value) in properties.splay() {
 							match key {
 								DictKey::Type(key) if *key == rhs => return Some(*value),
 								DictKey::Type(_) | DictKey::String(_) => {}
@@ -661,7 +691,7 @@ impl Index {
 			"identifier" => {
 				if let Some(parent) = node.parent()
 					&& parent.kind() == "attribute"
-					&& parent.named_child(0).unwrap() != node
+					&& parent.python_nth_named_child::<0>().unwrap() != node
 				{
 					return self.type_of_attribute_node(parent, scope, contents);
 				}
@@ -679,7 +709,7 @@ impl Index {
 				None
 			}
 			"assignment" => {
-				let rhs = node.named_child(1)?;
+				let rhs = node.python_nth_named_child::<1>()?;
 				self.type_of(rhs, scope, contents)
 			}
 			"call" => self.type_of_call_node(node, scope, contents),
@@ -696,10 +726,10 @@ impl Index {
 			"conditional_expression" => {
 				// a if b else c
 				let ty = node
-					.named_child(0)
+					.python_nth_named_child::<0>()
 					.and_then(|child| self.type_of(child, scope, contents));
 				ty.or_else(|| {
-					node.named_child(2)
+					node.python_nth_named_child::<2>()
 						.and_then(|child| self.type_of(child, scope, contents))
 				})
 			}
@@ -707,7 +737,7 @@ impl Index {
 				let pair = dig!(node, pair)?;
 				let mut comprehension_scope;
 				let mut pair_scope = scope;
-				if let Some(for_in_clause) = dig!(node, for_in_clause(1))
+				if let Some(for_in_clause) = dig!(node, for_in_clause[1])
 					&& let Some(scrutinee) = for_in_clause.child_by_field_name("left")
 					&& let Some(iteratee) = for_in_clause.child_by_field_name("right")
 					&& let Some(iter_ty) = self.type_of(iteratee, scope, contents)
@@ -719,10 +749,10 @@ impl Index {
 					pair_scope = &comprehension_scope;
 				}
 				let lhs = pair
-					.named_child(0)
+					.python_nth_named_child::<0>()
 					.and_then(|lhs| self.type_of(lhs, pair_scope, contents));
 				let rhs = pair
-					.named_child(1)
+					.python_nth_named_child::<1>()
 					.and_then(|lhs| self.type_of(lhs, pair_scope, contents));
 				if lhs.is_some() || rhs.is_some() {
 					let value_id = _T!(Type::Value);
@@ -732,14 +762,14 @@ impl Index {
 				}
 			}
 			"dictionary" => {
-				let mut properties = vec![];
+				let mut properties = Properties::default();
 				for child in node.named_children(&mut node.walk()) {
 					if child.kind() == "pair"
 						&& let Some(lhs) = child.child_by_field_name("key")
 						&& let Some(rhs) = child.child_by_field_name("value")
 					{
 						let key;
-						if let Some(lhs) = dig!(lhs, string_content(1)) {
+						if let Some(lhs) = dig!(lhs, string_content[1]) {
 							key = DictKey::String(ImStr::from(&contents[lhs.byte_range()]));
 						} else if matches!(lhs.kind(), "true" | "false" | "string" | "none" | "float" | "integer") {
 							key = DictKey::Type(_T!( @contents[lhs.byte_range()]));
@@ -750,7 +780,13 @@ impl Index {
 						}
 
 						let value = self.type_of(rhs, scope, contents).unwrap_or_else(|| _T!(Type::Value));
-						properties.push((key, value));
+						properties.set(key, value);
+					} else if child.kind() == "dictionary_splat"
+						&& let Some(splat) = child.python_nth_named_child::<0>()
+						&& let Some(splat) = self.type_of(splat, scope, contents)
+						&& let Type::DictBag(splat) = _TR!(splat)
+					{
+						properties.merge(splat);
 					}
 				}
 				Some(_T!(Type::DictBag(properties)))
@@ -799,11 +835,11 @@ impl Index {
 		}
 	}
 	fn type_of_call_node(&self, call: Node<'_>, scope: &Scope, contents: &str) -> Option<TypeId> {
-		let func = call.named_child(0)?;
+		let func = call.python_nth_named_child::<0>()?;
 		if func.kind() == "identifier" {
 			match &contents[func.byte_range()] {
 				"zip" => {
-					let args = call.named_child(1)?;
+					let args = call.python_nth_named_child::<1>()?;
 					let mut cursor = args.walk();
 					let value_id = _T!(Type::Value);
 					let children = args.named_children(&mut cursor).map(|child| {
@@ -814,7 +850,7 @@ impl Index {
 					return Some(_T!(Type::Iterable(Some(tuple))));
 				}
 				"enumerate" => {
-					let arg = call.named_child(1)?.named_child(0);
+					let arg = dig!(call, [1].[0]);
 					let arg = arg
 						.and_then(|arg| self.type_of(arg, scope, contents))
 						.unwrap_or_else(|| _T!(Type::Value));
@@ -823,7 +859,7 @@ impl Index {
 					return Some(_T!(Type::Iterable(Some(tuple))));
 				}
 				"tuple" => {
-					let args = call.named_child(1)?;
+					let args = call.python_nth_named_child::<1>()?;
 					if args.kind() == "argument_list" {
 						let mut cursor = args.walk();
 						let value_id = _T!(Type::Value);
@@ -834,7 +870,7 @@ impl Index {
 					}
 				}
 				"dict" => {
-					let arg = call.named_child(1)?.named_child(0)?;
+					let arg = dig!(call, [1].[0])?;
 					let arg = self.type_of(arg, scope, contents)?;
 					let arg = self.type_of_iterable(arg)?;
 					if let Type::Tuple(tuple) = _TR!(arg)
@@ -845,7 +881,7 @@ impl Index {
 					return Some(_T!(Type::Dict(_T!(Type::Value), _T!(Type::Value))));
 				}
 				"defaultdict" => {
-					let arg = call.named_child(1)?.named_child(0)?;
+					let arg = dig!(call, [1].[0])?;
 					if matches!(&contents[arg.byte_range()], "list" | "dict" | "float" | "int") {
 						// TODO: consider more general functions and type ctors
 						return Some(_T!(Type::Dict(
@@ -869,19 +905,19 @@ impl Index {
 		let func = self.type_of(func, scope, contents)?;
 		match _TR!(func) {
 			Type::RefFn => {
-				// (call (_) @func (argument_list . (string) @xml_id))
-				let xml_id = call.named_child(1)?.named_child(0)?;
-				if xml_id.kind() == "string" {
-					Some(_T!(Type::Record(contents[xml_id.byte_range().shrink(1)].into())))
-				} else {
-					None
-				}
+				let xml_id = dig!(call, [1].[0].string_content[1])?;
+				let record = self.records.get(&_G(&contents[xml_id.byte_range()])?)?;
+				let model = match record.model {
+					Some(model) => _R(model).into(),
+					None => "_unknown".into(),
+				};
+				Some(_T!(Type::Model(model)))
 			}
 			Type::ModelFn(model) => Some(_T!(Type::Model(model.clone()))),
 			Type::Super => Some(_T!(scope.get(scope.super_.as_deref()?).cloned()?)),
 			Type::Method(model, mapped) if mapped.as_str() == "mapped" => {
 				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
-				let mapped = call.named_child(1)?.named_child(0)?;
+				let mapped = dig!(call, [1].[0])?;
 				match mapped.kind() {
 					"string" => {
 						let mut model: Spur = (*model).into();
@@ -894,12 +930,9 @@ impl Index {
 					"lambda" => {
 						// (lambda (lambda_parameters)? body: (_))
 						let mut scope = Scope::new(Some(scope.clone()));
-						if let Some(params) = mapped.child_by_field_name(b"parameters") {
-							let first_arg = params.named_child(0)?;
-							if first_arg.kind() == "identifier" {
-								let first_arg = &contents[first_arg.byte_range()];
-								scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
-							}
+						if let Some(first_arg) = dig!(mapped, :parameters.identifier) {
+							let first_arg = &contents[first_arg.byte_range()];
+							scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
 						}
 						let body = mapped.child_by_field_name(b"body")?;
 						let type_ = self.type_of(body, &scope, contents).unwrap_or_else(|| _T!(Type::Value));
@@ -913,7 +946,7 @@ impl Index {
 			}
 			Type::Method(model, grouped) if grouped.as_str() == "grouped" => {
 				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
-				let grouped = call.named_child(1)?.named_child(0)?;
+				let grouped = dig!(call, [1].[0])?;
 				match grouped.kind() {
 					"string" => {
 						let mut model: Spur = (*model).into();
@@ -925,12 +958,9 @@ impl Index {
 					}
 					"lambda" => {
 						let mut scope = Scope::new(Some(scope.clone()));
-						if let Some(params) = grouped.child_by_field_name(b"parameters") {
-							let first_arg = params.named_child(0)?;
-							if first_arg.kind() == "identifier" {
-								let first_arg = &contents[first_arg.byte_range()];
-								scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
-							}
+						if let Some(first_arg) = dig!(grouped, :parameters.identifier) {
+							let first_arg = &contents[first_arg.byte_range()];
+							scope.insert(first_arg.to_string(), Type::Model(_R(model).into()));
 						}
 						let body = grouped.child_by_field_name(b"body")?;
 						let groupby = self.type_of(body, &scope, contents).unwrap_or_else(|| _T!(Type::Value));
@@ -943,7 +973,7 @@ impl Index {
 			Type::Method(model, read_group) if read_group.as_str() == "_read_group" => {
 				let mut groupby = vec![];
 				let mut aggs = vec![];
-				let args = call.named_child(1)?;
+				let args = call.python_nth_named_child::<1>()?;
 
 				#[derive(PartialEq, Eq)]
 				enum Aggregation<'a> {
@@ -958,7 +988,7 @@ impl Index {
 				) {
 					let mut cursor = arg.walk();
 					for field in arg.named_children(&mut cursor) {
-						if let Some(field) = dig!(field, string_content(1)) {
+						if let Some(field) = dig!(field, string_content[1]) {
 							let mut field = &contents[field.byte_range()];
 							let mut agg = None;
 							if let Some((inner, raw_agg)) = field.split_once(':') {
@@ -974,19 +1004,17 @@ impl Index {
 				}
 
 				for (idx, arg) in args.named_children(&mut args.walk()).enumerate().take(3) {
-					if arg.kind() == "keyword_argument" {
-						let out = match &contents[arg.child_by_field_name("key")?.byte_range()] {
+					// if arg.kind() == "keyword_argument" {
+					if let Some((arg, value)) = arg.as_keyword_argument() {
+						let out = match &contents[arg.byte_range()] {
 							"groupby" => &mut groupby,
 							"aggregates" => &mut aggs,
 							_ => continue,
 						};
-						let Some(arg) = arg.child_by_field_name("value") else {
-							continue;
-						};
-						if arg.kind() != "list" {
+						if value.kind() != "list" {
 							continue;
 						}
-						gather_attributes(contents, arg, out);
+						gather_attributes(contents, value, out);
 						continue;
 					}
 
@@ -1020,16 +1048,15 @@ impl Index {
 			}
 			Type::Method(model, read) if read.as_str() == "read" => {
 				let model = Type::Model(_R(model).into());
-				let args = call.named_child(1)?;
-				let fields = dig!(args, list)?;
-				let mut dict: Vec<(DictKey, TypeId)> = vec![];
+				let fields = dig!(call, [1].list)?;
+				let mut dict = Properties::default();
 				for field in fields.named_children(&mut fields.walk()) {
-					let Some(field) = dig!(field, string_content(1)) else {
+					let Some(field) = dig!(field, string_content[1]) else {
 						continue;
 					};
 					let key = &contents[field.byte_range()];
 					if let Some(field_ty) = self.type_of_attribute(&model, key, scope) {
-						dict.push((DictKey::String(key.into()), _T!(field_ty)));
+						dict.set_key(key.into(), _T!(field_ty));
 					}
 				}
 				Some(_T!(Type::List(ListElement::Occupied(_T!(Type::DictBag(dict))))))
@@ -1037,7 +1064,16 @@ impl Index {
 			Type::Method(model, method) => {
 				let method = _G(method)?;
 				let args = self.prepare_call_scope(*model, method.into(), call, scope, contents);
-				Some(self.eval_method_rtype(method.into(), **model, args)?)
+				match args {
+					Ok(args) => Some(self.eval_method_rtype(method.into(), **model, args)?),
+					Err(PrepareCallScopeError::NeedsArguments) => {
+						self.eval_method_rtype(method.into(), **model, None);
+						let args = self
+							.prepare_call_scope(*model, method.into(), call, scope, contents)
+							.expect(format_loc!("Could not prepare args after first eval"));
+						Some(self.eval_method_rtype(method.into(), **model, args)?)
+					}
+				}
 			}
 			Type::PythonMethod(dict, method) if dict.is_dict() => {
 				let Type::Dict(lhs, rhs) = _TR!(dict) else {
@@ -1058,13 +1094,13 @@ impl Index {
 				};
 				match method.as_str() {
 					"get" => {
-						let args = call.named_child(1)?;
-						let arg_as_string = dig!(args, string.string_content(1));
+						let args = call.python_nth_named_child::<1>()?;
+						let arg_as_string = dig!(args, string.string_content[1]);
 						let argtype = args
-							.named_child(0)
+							.python_nth_named_child::<0>()
 							.and_then(|node| self.type_of(node, scope, contents))
 							.unwrap_or_else(|| _T!(Type::Value));
-						items.iter().find_map(|(key, val)| match key {
+						items.splay().iter().find_map(|(key, val)| match key {
 							DictKey::String(key) => match arg_as_string {
 								None => None,
 								Some(arg) => (key.as_str() == &contents[arg.byte_range()]).then_some(*val),
@@ -1076,7 +1112,6 @@ impl Index {
 				}
 			}
 			Type::Env
-			| Type::Record(..)
 			| Type::Model(..)
 			| Type::HttpRequest
 			| Type::Value
@@ -1090,37 +1125,34 @@ impl Index {
 		}
 	}
 
-	#[instrument(skip_all, fields(model, method))]
-	pub fn prepare_call_scope(
+	#[instrument(level = "trace", skip_all, fields(model, method), ret)]
+	fn prepare_call_scope(
 		&self,
 		model: ModelName,
 		method: Symbol<Method>,
 		call: Node,
 		scope: &Scope,
 		contents: &str,
-	) -> Option<(Vec<ImStr>, Scope)> {
+	) -> Result<Option<(Vec<ImStr>, Scope)>, PrepareCallScopeError> {
 		// (call
 		//   (arguments_list
 		//     (_)
 		//     (keyword_argument (identifier) (_))))
-		let arguments_list = dig!(call, argument_list(1))?;
+		let arguments_list = some!(dig!(call, argument_list[1]));
 
-		let model = self.models.populate_properties(model, &[])?;
-		let method = model.methods.as_ref()?.get(&method)?;
-		let arguments = method.arguments.clone().unwrap_or_default();
+		let model = some!(self.models.populate_properties(model, &[]));
+		let method = some!(some!(model.methods.as_ref()).get(&method));
+		let arguments = method.arguments.clone().ok_or(PrepareCallScopeError::NeedsArguments)?;
 		if arguments.is_empty() {
-			return None;
+			return Ok(None);
 		}
 
 		drop(model);
 		let mut argtypes = Scope::new(None);
 		let mut args = vec![];
 		for (idx, arg) in arguments_list.named_children(&mut arguments_list.walk()).enumerate() {
-			if arg.kind() == "keyword_argument"
-				&& let Some(key) = arg.child_by_field_name("key")
-				&& let Some(value) = arg.child_by_field_name("value")
-			{
-				let key = &contents[key.byte_range()];
+			if let Some((arg, value)) = arg.as_keyword_argument() {
+				let key = &contents[arg.byte_range()];
 				if !arguments.iter().any(|arg| match arg {
 					FunctionParam::Named(arg) => arg.as_str() == key,
 					_ => false,
@@ -1142,17 +1174,17 @@ impl Index {
 			}
 		}
 
-		Some((args, argtypes))
+		Ok(Some((args, argtypes)))
 	}
-	#[instrument(skip_all, ret)]
+	#[instrument(level = "debug", skip_all, ret)]
 	fn type_of_attribute_node(&self, attribute: Node<'_>, scope: &Scope, contents: &str) -> Option<TypeId> {
-		let lhs = attribute.named_child(0)?;
+		let lhs = attribute.python_nth_named_child::<0>()?;
 		let lhsid = self.type_of(lhs, scope, contents)?;
 		let lhs = _TR!(lhsid);
-		let rhs = attribute.named_child(1)?;
+		let rhs = attribute.python_nth_named_child::<1>()?;
 		let attrname = &contents[rhs.byte_range()];
 		match &contents[rhs.byte_range()] {
-			"env" if matches!(lhs, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
+			"env" if matches!(lhs, Type::Model(..) | Type::HttpRequest) => Some(Type::Env),
 			"website" if matches!(lhs, Type::HttpRequest) => Some(Type::Model("website".into())),
 			"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
 			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
@@ -1162,21 +1194,15 @@ impl Index {
 				Some(Type::Method(model, attrname.into()))
 			}
 			dict_method @ ("items" | "get") if lhs.is_dictlike() => Some(Type::PythonMethod(lhsid, dict_method.into())),
-			func if MODEL_METHODS.contains(func) => match lhs {
-				Type::Model(model) => Some(Type::ModelFn(model.clone())),
-				Type::Record(xml_id) => {
-					let xml_id = _G(xml_id)?;
-					let record = self.records.get(&xml_id)?;
-					Some(Type::ModelFn(_R(*record.model.as_deref()?).into()))
-				}
-				_ => None,
-			},
+			func if MODEL_METHODS.contains(func) => self
+				.try_resolve_model(lhs, scope)
+				.map(|model| Type::ModelFn(_R(model).into())),
 			ident if rhs.kind() == "identifier" => self.type_of_attribute(lhs, ident, scope),
 			_ => None,
 		}
 		.map(|it| _T!(it))
 	}
-	#[instrument(skip_all, fields(attr=attr), ret)]
+	#[instrument(level = "trace", skip_all, fields(attr=attr), ret)]
 	pub fn type_of_attribute(&self, type_: &Type, attr: &str, scope: &Scope) -> Option<Type> {
 		let model = self.try_resolve_model(type_, scope)?;
 		let model_entry = self.models.populate_properties(model, &[])?;
@@ -1202,26 +1228,23 @@ impl Index {
 				PropertyInfo::Method => Some(Type::Method(model, attr.into())),
 			}
 		} else {
-			match attr {
-				"id" if matches!(type_, Type::Model(..) | Type::Record(..)) => Some(Type::PyBuiltin("Id".into())),
-				"ids" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
-					Some(Type::List(ListElement::Occupied(_T!(Type::PyBuiltin("Id".into())))))
-				}
-				"display_name" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
-					Some(Type::PyBuiltin("str".into()))
-				}
-				"create_date" | "write_date" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
-					Some(Type::PyBuiltin("datetime".into()))
-				}
-				"create_uid" | "write_uid" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
-					Some(Type::Model("res.users".into()))
-				}
-				"_fields" if matches!(type_, Type::Model(..) | Type::Record(..)) => {
-					Some(Type::Dict(_T!(Type::PyBuiltin("str".into())), _T!["ir.model.fields"]))
-				}
-				"env" if matches!(type_, Type::Model(..) | Type::Record(..) | Type::HttpRequest) => Some(Type::Env),
-				_ => None,
+			if matches!(type_, Type::Model(..) | Type::HttpRequest) && attr == "env" {
+				return Some(Type::Env);
 			}
+
+			if matches!(type_, Type::Model(..)) {
+				return match attr {
+					"id" => Some(Type::PyBuiltin("Id".into())),
+					"ids" => Some(Type::List(ListElement::Occupied(_T!(Type::PyBuiltin("Id".into()))))),
+					"display_name" => Some(Type::PyBuiltin("str".into())),
+					"create_date" | "write_date" => Some(Type::PyBuiltin("datetime".into())),
+					"create_uid" | "write_uid" => Some(Type::Model("res.users".into())),
+					"_fields" => Some(Type::Dict(_T!(Type::PyBuiltin("str".into())), _T!["ir.model.fields"])),
+					_ => None,
+				};
+			}
+
+			None
 		}
 	}
 	pub fn has_attribute(&self, type_: &Type, attr: &str, scope: &Scope) -> bool {
@@ -1237,12 +1260,6 @@ impl Index {
 	pub fn try_resolve_model(&self, type_: &Type, scope: &Scope) -> Option<ModelName> {
 		match type_ {
 			Type::Model(model) => Some(_G(model)?.into()),
-			Type::Record(xml_id) => {
-				// TODO: Refactor into method
-				let xml_id = _G(xml_id)?;
-				let record = self.records.get(&xml_id)?;
-				record.model
-			}
 			Type::Super => self.try_resolve_model(scope.get(scope.super_.as_deref()?)?, scope),
 			_ => None,
 		}
@@ -1264,7 +1281,7 @@ impl Index {
 				let preindent = " ".repeat(indent + 2);
 				let empty_properties = properties.is_empty();
 				let properties_fragment = fomat! {
-					for (key, value) in properties {
+					for (key, value) in properties.splay() {
 						(preindent)
 						match key {
 							DictKey::String(key) => { "\"" (key) "\"" }
@@ -1295,11 +1312,6 @@ impl Index {
 			}
 			Type::Env => Some("Environment".into()),
 			Type::Model(model) => Some(format!(r#"Model["{model}"]"#)),
-			Type::Record(xml_id) => {
-				let xml_id = _G(xml_id)?;
-				let record = self.records.get(&xml_id)?;
-				Some(_R(record.model?).into())
-			}
 			Type::Tuple(items) => Some(fomat! {
 				"tuple["
 				for item in items {
@@ -1377,14 +1389,14 @@ impl Index {
 			return None;
 		}
 
-		let _guard = Defer(Some(|| {
+		defer! {
 			if let Some(model_entry) = self.models.get_mut(&model)
 				&& let Some(methods) = model_entry.methods.as_ref()
 				&& let Some(method) = methods.get(&method)
 			{
 				method.pending_eval.store(false, Ordering::Relaxed);
 			}
-		}));
+		}
 
 		let (argnames, mut scope) = parameters.unwrap_or_default();
 		let cache_key = argnames
@@ -1458,7 +1470,7 @@ impl Index {
 			let entered = self.build_scope(scope, node, offset, &contents).map_break(|_| None)?;
 			// TODO: When implementing freestanding functions, make the toplevel check optional
 			if node.kind() == "return_statement" && is_toplevel_return(node) {
-				let Some(child) = node.named_child(0) else {
+				let Some(child) = node.python_nth_named_child::<0>() else {
 					return ControlFlow::Continue(entered);
 				};
 				let Some(type_) = self.type_of(child, scope, &contents) else {
@@ -1495,12 +1507,12 @@ impl Index {
 					"identifier" => FunctionParam::Param(ImStr::from(&contents[param.byte_range()])),
 					"positional_separator" => FunctionParam::PosEnd,
 					"keyword_separator" => FunctionParam::EitherEnd(None),
-					"list_splat_pattern" => {
-						FunctionParam::EitherEnd(Some(ImStr::from(&contents[param.named_child(0)?.byte_range()])))
-					}
+					"list_splat_pattern" => FunctionParam::EitherEnd(Some(ImStr::from(
+						&contents[param.python_nth_named_child::<0>()?.byte_range()],
+					))),
 					"dictionary_splat_pattern" => FunctionParam::Kwargs("kwargs".into()),
 					"default_parameter" => {
-						let name = param.named_child(0)?;
+						let name = param.python_nth_named_child::<0>()?;
 						let name = &contents[name.byte_range()];
 						FunctionParam::Named(ImStr::from(name))
 					}
@@ -1510,7 +1522,6 @@ impl Index {
 			method.arguments = Some(args.collect());
 		}
 
-		method.pending_eval.store(false, Ordering::Release);
 		if let Some(type_) = type_ {
 			let tid = _T!(type_);
 			method.eval_cache.insert(cache_key, tid);
@@ -1546,7 +1557,7 @@ impl Index {
 	}
 	fn parse_method_docstring<'out>(fn_scope: Node, contents: &'out str) -> Option<&'out str> {
 		let block = fn_scope.child_by_field_name("body")?;
-		dig!(block, expression_statement.string.string_content(1)).map(|node| &contents[node.byte_range()])
+		dig!(block, expression_statement.string.string_content[1]).map(|node| &contents[node.byte_range()])
 	}
 }
 
@@ -1601,13 +1612,15 @@ pub fn determine_scope<'out, 'node>(
 
 #[cfg(test)]
 mod tests {
+
 	use pretty_assertions::assert_eq;
 	use ropey::Rope;
 	use tower_lsp_server::ls_types::Position;
 	use tree_sitter::{Parser, QueryCursor, StreamingIterator, StreamingIteratorMut};
 
-	use crate::analyze::{FieldCompletion, Type, type_cache};
+	use crate::analyze::{DictKey, FieldCompletion, Type, type_cache};
 	use crate::index::_I;
+
 	use crate::utils::{ByteOffset, acc_vec, rope_conv};
 	use crate::{index::Index, test_utils::cases::foo::prepare_foo_index};
 
@@ -1697,6 +1710,29 @@ class Foo(models.Model):
 		assert_eq!(
 			index.eval_method_rtype(_I("test").into(), _I("quux"), None),
 			Some(type_cache().get_or_intern(Type::Model("foo".into())))
+		);
+	}
+
+	#[test]
+	fn test_scope_prep() {
+		let index = Index {
+			models: prepare_foo_index(),
+			..Default::default()
+		};
+
+		let test_identity_ret = index
+			.eval_method_rtype(_I("test_identity").into(), _I("quux"), None)
+			.unwrap();
+		let Type::DictBag(props) = _TR!(test_identity_ret) else {
+			panic!("not a DictBag!");
+		};
+
+		assert_eq!(
+			props.splay(),
+			[
+				(DictKey::String("int".into()), _T!(Type::Value)), // intentional, we aren't saving the default exprs yet
+				(DictKey::String("self".into()), _T!(Type::Model("quux".into()))),
+			],
 		)
 	}
 }

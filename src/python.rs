@@ -398,7 +398,7 @@ impl Backend {
 			// TODO: Limit range of possible updates based on delta
 			Text::Delta(_) => Cow::from(rope.slice(..)),
 		};
-		let models = index_models(text.as_bytes())?;
+		let models = index_models(&text)?;
 		let path = PathSymbol::strip_root(root, path);
 		self.index.models.append(path, true, &models);
 		for model in models {
@@ -665,7 +665,7 @@ impl Backend {
 							}
 							let model = _R(model);
 							return self.index.jump_def_property_name(needle, model);
-						} else if let Some(cmdlist) = python_next_named_sibling(capture.node)
+						} else if let Some(cmdlist) = capture.node.python_next_named_sibling()
 							&& Backend::is_commandlist(cmdlist, offset)
 						{
 							let (needle, _, model) = some!(self.gather_commandlist(
@@ -683,7 +683,7 @@ impl Backend {
 					}
 					Some(PyCompletions::FieldDescriptor) => {
 						use FieldDescriptors as FD;
-						let Some(desc_value) = python_next_named_sibling(capture.node) else {
+						let Some(desc_value) = capture.node.python_next_named_sibling() else {
 							continue;
 						};
 						if !desc_value.byte_range().contains_end(offset) {
@@ -808,7 +808,7 @@ impl Backend {
 			let idx = contents[..=offset].bytes().rposition(|c| c == b'.')?;
 			let ident = contents[..=idx].bytes().rposition(|c| c.is_ascii_alphanumeric())?;
 			lhs = root.descendant_for_byte_range(ident, ident)?;
-			rhs = python_next_named_sibling(lhs).and_then(|attr| match attr.kind() {
+			rhs = lhs.python_next_named_sibling().and_then(|attr| match attr.kind() {
 				"identifier" => Some(attr),
 				"attribute" => attr.child_by_field_name("attribute"),
 				_ => None,
@@ -923,7 +923,7 @@ impl Backend {
 					}
 					Some(PyCompletions::FieldDescriptor) => {
 						use FieldDescriptors as FD;
-						let Some(desc_value) = python_next_named_sibling(capture.node) else {
+						let Some(desc_value) = capture.node.python_next_named_sibling() else {
 							continue;
 						};
 						if !desc_value.byte_range().contains_end(offset) {
@@ -1033,7 +1033,7 @@ impl Backend {
 							}
 							let model = _R(model);
 							return (self.index).hover_property_name(needle, model, Some(rope_conv(range, rope)));
-						} else if let Some(cmdlist) = python_next_named_sibling(capture.node)
+						} else if let Some(cmdlist) = capture.node.python_next_named_sibling()
 							&& Backend::is_commandlist(cmdlist, offset)
 						{
 							let (needle, range, model) = some!(self.gather_commandlist(
@@ -1075,7 +1075,7 @@ impl Backend {
 					}
 					Some(PyCompletions::FieldDescriptor) => {
 						use FieldDescriptors as FD;
-						let Some(desc_value) = python_next_named_sibling(capture.node) else {
+						let Some(desc_value) = capture.node.python_next_named_sibling() else {
 							continue;
 						};
 						if !desc_value.byte_range().contains_end(offset) {
@@ -1488,7 +1488,7 @@ impl Backend {
 				obj = candidate.child_with_descendant(dest)?;
 			} else if candidate.kind() == "call" {
 				// Command.create({}), but we don't really care if the actual function is called.
-				let args = dig!(candidate, argument_list(1))?;
+				let args = dig!(candidate, argument_list[1])?;
 				obj = args.child_with_descendant(dest)?;
 			} else {
 				return None;
@@ -1640,7 +1640,7 @@ fn extract_comodel_name<'tree>(captures: &[QueryCapture<'tree>], contents: &str)
 				else {
 					continue;
 				};
-				return cap.node.next_named_sibling();
+				return cap.node.python_next_named_sibling();
 			}
 			_ => {}
 		}

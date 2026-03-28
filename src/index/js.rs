@@ -122,8 +122,12 @@ query! {
 
 pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<Output> {
 	let path = PathSymbol::strip_root(root, &pathbuf);
-	let contents = ok!(tokio::fs::read(&pathbuf).await, "Could not read {:?}", pathbuf);
-	let rope = ropey::Rope::from(String::from_utf8_lossy(&contents));
+	let contents = ok!(
+		tokio::fs::read_to_string(&pathbuf).await,
+		"Could not read {:?}",
+		pathbuf
+	);
+	let rope = ropey::Rope::from_str(&contents);
 	let rope = rope.slice(..);
 	let mut parser = Parser::new();
 	ok!(parser.set_language(&tree_sitter_javascript::LANGUAGE.into()));
@@ -134,7 +138,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 	let mut widgets = Vec::new();
 	let mut actions = Vec::new();
 
-	let mut matches = cursor.matches(query, ast.root_node(), contents.as_slice());
+	let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 	while let Some(match_) = matches.next() {
 		// let first = match_.captures.first().unwrap();
 		// debug_assert_eq!(
@@ -146,8 +150,8 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 
 		let mut component = match match_.captures.first() {
 			Some(first) if first.index == JsQuery::Name as u32 => {
-				let name = String::from_utf8_lossy(&contents[first.node.byte_range()]);
-				let name = _I(&name);
+				let name = &contents[first.node.byte_range()];
+				let name = _I(name);
 				let component = components.entry(name.into()).or_default();
 				if component.location.is_none() {
 					component.location = Some(MinLoc {
@@ -171,7 +175,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 					if capture.node.kind() == "string" {
 						range = range.shrink(1);
 					}
-					let prop = String::from_utf8_lossy(&contents[range.clone()]);
+					let prop = &contents[range.clone()];
 					let prop = _I(prop).into_usize();
 					let entry = match component.props.entry(prop as _) {
 						Entry::Occupied(entry) => entry.into_mut(),
@@ -189,14 +193,14 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 				}
 				Some(JsQuery::Parent) => {
 					let Some(component) = &mut component else { continue };
-					let parent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
+					let parent = &contents[capture.node.byte_range()];
 					let parent = _I(parent);
 					component.ancestors.push(parent.into());
 				}
 				Some(JsQuery::TemplateName) => {
 					let Some(component) = &mut component else { continue };
-					let name = String::from_utf8_lossy(&contents[capture.node.byte_range().shrink(1)]);
-					let name = _I(&name);
+					let name = &contents[capture.node.byte_range().shrink(1)];
+					let name = _I(name);
 					component.template = Some(ComponentTemplate::Name(name.into()));
 				}
 				Some(JsQuery::TemplateInline) => {
@@ -206,8 +210,8 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 				}
 				Some(JsQuery::Subcomponent) => {
 					let Some(component) = &mut component else { continue };
-					let subcomponent = String::from_utf8_lossy(&contents[capture.node.byte_range()]);
-					let subcomponent = _I(&subcomponent);
+					let subcomponent = &contents[capture.node.byte_range()];
+					let subcomponent = _I(subcomponent);
 					component.subcomponents.push(subcomponent.into());
 				}
 				Some(JsQuery::RegistryItem) => {
@@ -215,14 +219,14 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 						continue;
 					};
 					let range = capture.node.byte_range().shrink(1);
-					let field = String::from_utf8_lossy(&contents[range]);
+					let field = &contents[range];
 					let loc = MinLoc {
 						path,
 						range: span_conv(capture.node.range()),
 					};
 					match registry_category_of_callee(registry, &contents) {
-						Some(b"fields") => widgets.push((ImStr::from(field.as_ref()), loc)),
-						Some(b"actions") => actions.push((ImStr::from(field.as_ref()), loc)),
+						Some("fields") => widgets.push((ImStr::from(field), loc)),
+						Some("actions") => actions.push((ImStr::from(field), loc)),
 						Some(_) | None => {}
 					}
 				}
@@ -238,7 +242,7 @@ pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<
 	})
 }
 
-fn parse_prop_type(node: Node, contents: &[u8], seed: Option<PropType>) -> PropType {
+fn parse_prop_type(node: Node, contents: &str, seed: Option<PropType>) -> PropType {
 	let mut type_ = seed.unwrap_or_default();
 	if node.kind() == "array" {
 		// TODO: Is this correct?
@@ -249,7 +253,7 @@ fn parse_prop_type(node: Node, contents: &[u8], seed: Option<PropType>) -> PropT
 		return type_;
 	}
 
-	fn parse_identifier_prop(node: Node, contents: &[u8], mut type_: PropType) -> PropType {
+	fn parse_identifier_prop(node: Node, contents: &str, mut type_: PropType) -> PropType {
 		debug_assert_eq!(
 			node.kind(),
 			"identifier",
@@ -257,12 +261,12 @@ fn parse_prop_type(node: Node, contents: &[u8], seed: Option<PropType>) -> PropT
 			node.kind()
 		);
 		match &contents[node.byte_range()] {
-			b"String" => type_.insert(PropType::String),
-			b"Number" => type_.insert(PropType::Number),
-			b"Boolean" => type_.insert(PropType::Boolean),
-			b"Object" => type_.insert(PropType::Object),
-			b"Function" => type_.insert(PropType::Function),
-			b"Array" => type_.insert(PropType::Array),
+			"String" => type_.insert(PropType::String),
+			"Number" => type_.insert(PropType::Number),
+			"Boolean" => type_.insert(PropType::Boolean),
+			"Object" => type_.insert(PropType::Object),
+			"Function" => type_.insert(PropType::Function),
+			"Array" => type_.insert(PropType::Array),
 			_ => {}
 		}
 		type_
@@ -287,10 +291,10 @@ fn parse_prop_type(node: Node, contents: &[u8], seed: Option<PropType>) -> PropT
 			}
 			let value = prop.next_named_sibling().unwrap();
 			match &contents[range] {
-				b"type" => {
+				"type" => {
 					type_ = parse_prop_type(value, contents, None);
 				}
-				b"optional" if value.kind() == "true" => {
+				"optional" if value.kind() == "true" => {
 					type_.insert(PropType::Optional);
 				}
 				// TODO: Handle 'shape'
@@ -342,16 +346,16 @@ impl ComponentIndex {
 }
 
 /// - `node`: A tree-sitter [Node] from a JS AST
-fn registry_category_of_callee<'text>(mut callee: Node, contents: &'text [u8]) -> Option<&'text [u8]> {
+fn registry_category_of_callee<'text>(mut callee: Node, contents: &'text str) -> Option<&'text str> {
 	loop {
 		// callee ?= registry.category($category)
 		if callee.kind() == "call_expression"
 			&& let Some(registry_category) = dig!(callee, member_expression)
 			&& let Some(registry) = dig!(registry_category, identifier)
-			&& b"registry" == &contents[registry.byte_range()]
-			&& let Some(prop_category) = dig!(registry_category, property_identifier(1))
-			&& b"category" == &contents[prop_category.byte_range()]
-			&& let Some(category_node) = dig!(callee, arguments(1).string)
+			&& "registry" == &contents[registry.byte_range()]
+			&& let Some(prop_category) = dig!(registry_category, property_identifier[1])
+			&& "category" == &contents[prop_category.byte_range()]
+			&& let Some(category_node) = dig!(callee, arguments[1].string)
 		{
 			return Some(&contents[category_node.byte_range().shrink(1)]);
 		}
@@ -370,19 +374,19 @@ mod tests {
 	fn test_registry_category_of_callee() {
 		let mut parser = Parser::new();
 		parser.set_language(&tree_sitter_javascript::LANGUAGE.into()).unwrap();
-		let contents = br#"registry.category("fields")"#;
+		let contents = r#"registry.category("fields")"#;
 		let ast = parser.parse(contents, None).unwrap();
 		let call = dig!(ast.root_node(), expression_statement.call_expression).unwrap();
-		assert_eq!(registry_category_of_callee(call, contents), Some(b"fields".as_slice()));
+		assert_eq!(registry_category_of_callee(call, contents), Some("fields"));
 	}
 
 	#[test]
 	fn test_registry_category_of_callee_nested() {
 		let mut parser = Parser::new();
 		parser.set_language(&tree_sitter_javascript::LANGUAGE.into()).unwrap();
-		let contents = br#"registry.category("fields").add("foobar").add("barbaz")"#;
+		let contents = r#"registry.category("fields").add("foobar").add("barbaz")"#;
 		let ast = parser.parse(contents, None).unwrap();
 		let call = dig!(ast.root_node(), expression_statement.call_expression).expect(r#"$.add("barbaz")"#);
-		assert_eq!(registry_category_of_callee(call, contents), Some(b"fields".as_slice()));
+		assert_eq!(registry_category_of_callee(call, contents), Some("fields"));
 	}
 }

@@ -24,8 +24,13 @@ static TRACING_INIT: Once = Once::new();
 
 fn init_tracing() {
 	TRACING_INIT.call_once(|| {
+		let builder = tracing_subscriber::EnvFilter::builder();
 		tracing_subscriber::fmt()
-			.with_env_filter(tracing_subscriber::EnvFilter::builder().parse_lossy("warn,odoo_lsp=trace"))
+			.with_env_filter(
+				builder
+					.try_from_env()
+					.unwrap_or_else(|_| builder.parse("warn,odoo_lsp=info").unwrap()),
+			)
 			.init();
 	});
 }
