@@ -754,14 +754,9 @@ pub trait NodeExt
 where
 	Self: Sized,
 {
-	/// Gets the nth named child ignoring comments, only relevant for Python
 	fn python_nth_named_child<const NTH: usize>(self) -> Option<Self>;
-
-	/// Only useful for Python, since the default grammar does not mark comments as extra nodes.
 	fn python_next_named_sibling(self) -> Option<Self>;
-
 	fn python_nth_named_child_matching<const NTH: usize>(self, kind: &str) -> Option<Self>;
-
 	fn as_keyword_argument(&self) -> Option<(Self, Self)>;
 }
 
@@ -772,7 +767,7 @@ impl NodeExt for Node<'_> {
 		let mut idx = 0;
 		self = self.named_child(0)?;
 		loop {
-			if likely(self.kind() != "comment") {
+			if likely(!self.is_extra()) {
 				if idx == NTH {
 					return Some(self);
 				}
@@ -782,7 +777,6 @@ impl NodeExt for Node<'_> {
 		}
 	}
 
-	/// Only useful for Python, since the default grammar does not mark comments as extra nodes.
 	#[allow(clippy::disallowed_methods)]
 	#[inline]
 	fn python_next_named_sibling(mut self) -> Option<Self> {
@@ -803,7 +797,7 @@ impl NodeExt for Node<'_> {
 			if idx == NTH && likely(self.kind() == kind) {
 				return Some(self);
 			}
-			if likely(self.kind() != "comment") {
+			if likely(!self.is_extra()) {
 				idx += 1;
 			}
 			self = self.next_named_sibling()?;

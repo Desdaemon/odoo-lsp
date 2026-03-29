@@ -27,6 +27,7 @@ mod tests;
 
 #[rustfmt::skip]
 query! {
+	#[derive(PartialEq, Eq, Debug)]
 	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor, FieldType, HasGroups);
 
 (call [
@@ -341,7 +342,7 @@ impl Backend {
 		let mut cursor = tree_sitter::QueryCursor::new();
 		let mut imports = ImportMap::new();
 
-		debug!("Parsing imports from {} bytes", contents.len());
+		trace!("Parsing imports from {} bytes", contents.len());
 
 		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
@@ -349,11 +350,11 @@ impl Backend {
 			let mut import_name = None;
 			let mut alias = None;
 
-			debug!("Found import match with {} captures", match_.captures.len());
+			trace!("Found import match with {} captures", match_.captures.len());
 
 			for capture in match_.captures {
 				let capture_text = &contents[capture.node.byte_range()];
-				debug!("Capture {}: = '{}'", capture.index, capture_text);
+				trace!("Capture {}: = '{}'", capture.index, capture_text);
 
 				match PyImports::from(capture.index) {
 					Some(PyImports::ImportModule) => {
@@ -377,7 +378,7 @@ impl Backend {
 				};
 
 				let key = alias.as_ref().unwrap_or(&name).clone();
-				debug!("Adding import: {} -> {} (from module {})", key, name, full_module_path);
+				trace!("Adding import: {} -> {} (from module {})", key, name, full_module_path);
 				imports.insert(
 					key,
 					ImportInfo {
@@ -389,7 +390,7 @@ impl Backend {
 			}
 		}
 
-		debug!("Final imports map: {:?}", imports);
+		trace!("Final imports map: {:?}", imports);
 		Ok(imports)
 	}
 	pub fn update_models(&self, text: Text, path: &Path, root: Spur, rope: Rope) -> anyhow::Result<()> {
@@ -483,7 +484,7 @@ impl Backend {
 	///      -------range
 	///      -------needle
 	/// ```
-	#[instrument(level = "trace", skip_all, ret, fields(range_content = &contents[range.clone()]))]
+	#[instrument(level = "debug", skip_all, ret, fields(range_content = &contents[range.clone()]))]
 	fn gather_mapped<'text>(
 		&self,
 		root: Node,
@@ -524,7 +525,7 @@ impl Backend {
 			return None;
 		}
 
-		tracing::trace!("(gather_mapped) {} matches={match_:?}", &contents[range.clone()]);
+		trace!("{}", &contents[range.clone()]);
 
 		let model;
 		if let Some(local_model) = match_.nodes_for_capture_index(PyCompletions::MappedTarget as _).next() {
@@ -566,6 +567,7 @@ impl Backend {
 			range: range.map_unit(ByteOffset),
 		})
 	}
+	#[instrument(skip_all)]
 	pub fn python_jump_def(
 		&self,
 		params: GotoDefinitionParams,
@@ -580,18 +582,18 @@ impl Backend {
 			.ok_or_else(|| errloc!("Did not build AST for {}", file_path_str))?;
 		let ByteOffset(offset) = rope_conv(params.text_document_position_params.position, rope);
 		let contents = Cow::from(rope);
-		let root = some!(top_level_stmt(ast.root_node(), offset));
+		let root_node = ast.root_node();
 
 		// Parse imports from the current file
 		let imports = self.parse_imports(&contents).unwrap_or_default();
-		debug!("Parsed imports: {:?}", imports);
+		trace!("Parsed imports: {:?}", imports);
 
 		// Check if cursor is on an imported identifier
 		if let Some(cursor_node) = ast.root_node().descendant_for_byte_range(offset, offset)
 			&& cursor_node.kind() == "identifier"
 		{
 			let identifier = &contents[cursor_node.byte_range()];
-			debug!("Checking identifier '{}' at offset {}", identifier, offset);
+			trace!("Checking identifier '{}' at offset {}", identifier, offset);
 
 			// Try to resolve import location
 			if let Some(location) = self.resolve_import_location(&imports, identifier /*, contents_bytes*/)? {
@@ -627,26 +629,23 @@ impl Backend {
 					}
 					Some(PyCompletions::Model) => {
 						let range = capture.node.byte_range();
-						let is_meta = match_
+						let is_prop = match_
 							.nodes_for_capture_index(PyCompletions::Prop as _)
 							.next()
-							.map(|prop| matches!(&contents[prop.byte_range()], "_name" | "_inherit"))
-							.unwrap_or(true);
+							.is_some_and(|prop| matches!(&contents[prop.byte_range()], "_name" | "_inherit"));
 						if range.contains(&offset) {
 							let range = range.shrink(1);
 							let slice = ok!(rope.try_slice(range.clone()));
 							let slice = Cow::from(slice);
 							return self.index.jump_def_model(&slice);
-						} else if range.end < offset && is_meta
-						// match_
-						// 	.nodes_for_capture_index(PyCompletions::FieldType as _)
-						// 	.next()
-						// 	.is_none()
-						{
+						} else if range.end < offset && is_prop {
+							let root = some!(top_level_stmt(root_node, range.end));
+							debug!(this_model = &contents[range]);
 							this_model.tag_model(capture.node, match_, root.byte_range(), &contents);
 						}
 					}
 					Some(PyCompletions::Mapped) => {
+						let root = some!(top_level_stmt(root_node, range.end));
 						if range.contains_end(offset)
 							&& let Some(mapped) = self.gather_mapped(
 								root,
@@ -690,7 +689,7 @@ impl Backend {
 							continue;
 						}
 
-						match FD::from_str(&contents[range]) {
+						match FD::from_str(&contents[range.clone()]) {
 							Ok(FD::ComodelName) => {
 								let range = desc_value.byte_range().shrink(1);
 								let slice = ok!(rope.try_slice(range.clone()));
@@ -707,6 +706,7 @@ impl Backend {
 								} else {
 									this_model.inner
 								};
+								let root = some!(top_level_stmt(root_node, range.end));
 								// same as PyCompletions::Mapped
 								let Some(mapped) = self.gather_mapped(
 									root,
@@ -756,6 +756,7 @@ impl Backend {
 			}
 		}
 
+		let root = some!(top_level_stmt(root_node, offset));
 		let (model, prop, _) = some!(self.attribute_at_offset(offset, root, &contents));
 		self.index.jump_def_property_name(prop, model)
 	}
@@ -871,7 +872,8 @@ impl Backend {
 			.ast_map
 			.get(file_path_str)
 			.ok_or_else(|| errloc!("Did not build AST for {}", file_path_str))?;
-		let root = some!(top_level_stmt(ast.root_node(), offset));
+		let root_node = ast.root_node();
+		// let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
 		let contents = Cow::from(rope);
 		let mut cursor = tree_sitter::QueryCursor::new();
@@ -918,6 +920,7 @@ impl Backend {
 								.next()
 								.is_none()
 						{
+							let root = some!(top_level_stmt(root_node, range.end));
 							this_model.tag_model(capture.node, match_, root.byte_range(), &contents);
 						}
 					}
@@ -966,6 +969,7 @@ impl Backend {
 			}
 		}
 
+		let root = some!(top_level_stmt(root_node, offset));
 		let (model, prop, _) = some!(self.attribute_at_offset(offset, root, &contents));
 		self.index.method_references(prop, model)
 	}
@@ -1327,6 +1331,7 @@ impl Backend {
 	/// `cmdlist` must have been checked by [is_commandlist][Backend::is_commandlist] first
 	///
 	/// Returns `(needle, range, model)` for a field
+	#[instrument(skip_all, fields(offset))]
 	fn gather_commandlist<'text>(
 		&self,
 		cmdlist: Node,
@@ -1339,48 +1344,30 @@ impl Backend {
 		for_replacing: bool,
 	) -> Option<(&'text str, ByteRange, Spur)> {
 		let mut access = contents[range.shrink(1)].to_string();
-		tracing::debug!(
-			"gather_commandlist: cmdlist range: {:?}, offset: {}",
-			cmdlist.byte_range(),
-			offset
-		);
 		let mut dest = cmdlist.descendant_for_byte_range(offset, offset);
-		tracing::debug!("Initial dest: {:?}", dest.map(|n| (n.kind(), n.byte_range())));
+		trace!(dest = ?dest.map(|n| (n.kind(), n.byte_range())));
+		debug!("cmdlist=\n{:?}", cmdlist.to_sexp());
 
 		// If we can't find a node at the exact offset, try to find the last string node
 		// This handles the case where cursor is after a string without a colon
-		if dest.is_none() && offset > cmdlist.start_byte() {
-			tracing::debug!("No node at offset {}, trying offset - 1", offset);
-			// Try offset - 1 to see if we're just after a string
-			if let Some(node) = cmdlist.descendant_for_byte_range(offset - 1, offset - 1) {
-				tracing::debug!(
-					"Found node at offset - 1: kind={}, range={:?}",
-					node.kind(),
-					node.byte_range()
-				);
-				if node.kind() == "string"
-					|| (node.kind() == "string_content" && node.parent().map(|p| p.kind()) == Some("string"))
-					|| node.kind() == "string_end"
-				{
-					// Check if this string is not part of a key-value pair (no colon after it)
-					let string_node = if node.kind() == "string" {
-						node
-					// } else if node.kind() == "string_end" && node.parent().map(|p| p.kind()) == Some("string") {
-					// 	node.parent()?
-					} else {
-						node.parent()?
-					};
-					if let Some(next_sibling) = string_node.next_sibling() {
-						tracing::debug!("String has next sibling: {}", next_sibling.kind());
-						if next_sibling.kind() != ":" {
-							// This is an incomplete field name, provide completions
-							dest = Some(string_node);
-						}
-					} else {
-						tracing::debug!("String has no next sibling, treating as incomplete");
-						// No next sibling means it's the last element, likely incomplete
+		if dest.is_none()
+			&& offset > cmdlist.start_byte()
+			&& let Some(node) = cmdlist.descendant_for_byte_range(offset - 1, offset - 1)
+		{
+			debug!(cmdlist_node = node.kind(), "{}", &contents[node.byte_range()]);
+			if matches!(node.kind(), "string" | "string_start" | "string_end") {
+				// Check if this string is not part of a key-value pair (no colon after it)
+				let string_node = if node.kind() == "string" { node } else { node.parent()? };
+				if let Some(next_sibling) = string_node.next_sibling() {
+					trace!("String has next sibling: {}", next_sibling.kind());
+					if next_sibling.kind() != ":" {
+						// This is an incomplete field name, provide completions
 						dest = Some(string_node);
 					}
+				} else {
+					trace!("String has no next sibling, treating as incomplete");
+					// No next sibling means it's the last element, likely incomplete
+					dest = Some(string_node);
 				}
 			}
 		}
@@ -1403,25 +1390,25 @@ impl Backend {
 		// (i.e., it's a key in a dictionary without a following colon)
 		let mut is_broken_syntax = false;
 		if let Some(parent) = dest.parent() {
-			tracing::debug!("String parent kind: {}", parent.kind());
+			debug!(dest_parent = parent.kind());
 			if parent.kind() == "dictionary" {
 				// Check if this string has a colon after it
 				if let Some(next_sibling) = dest.next_sibling() {
-					tracing::debug!("String next sibling kind: {}", next_sibling.kind());
+					trace!("String next sibling kind: {}", next_sibling.kind());
 					if next_sibling.kind() != ":" {
 						is_broken_syntax = true;
 					}
 				} else {
-					tracing::debug!("String has no next sibling");
+					trace!("String has no next sibling");
 					// No next sibling means it's the last element, likely incomplete
 					is_broken_syntax = true;
 				}
 			} else if parent.kind() == "ERROR" {
 				// When there's broken syntax, tree-sitter creates ERROR nodes
-				// Check if the parent of the ERROR is a dictionary
-				if let Some(grandparent) = parent.parent() {
-					tracing::debug!("ERROR parent (grandparent) kind: {}", grandparent.kind());
-					if grandparent.kind() == "dictionary" {
+				// Check if any sibling of ERROR is a dictionary
+				if let Some(error_parent) = parent.parent() {
+					debug!(parent_of_ERROR = error_parent.kind());
+					if error_parent.kind() == "dictionary" {
 						// This is likely a string in a dictionary with broken syntax
 						is_broken_syntax = true;
 					}
@@ -1429,16 +1416,10 @@ impl Backend {
 			}
 		}
 
-		if is_broken_syntax {
-			tracing::debug!("Detected broken syntax: string in dictionary without colon");
-			// For broken syntax, we need to continue processing to determine the model
-			// but we'll use an empty needle to show all available fields
-		}
+		// For broken syntax, we need to continue processing to determine the model
+		// but we'll use an empty needle to show all available fields
 
 		let (needle, model_str, range) = if is_broken_syntax {
-			// For broken syntax, we don't want to complete the partial field name
-			// We want to show all available fields
-			// We still need to get the model context, so we'll use the parent model if available
 			let range = ByteRange {
 				start: ByteOffset(offset),
 				end: ByteOffset(offset),
@@ -1447,7 +1428,9 @@ impl Backend {
 			// For command lists without explicit model, we need to continue processing
 			// to determine the model from the field context
 			let model = this_model.unwrap_or("");
-			("", model, range)
+			// the needle doesn't involve the offset here, because for jumpdef it would be more useful
+			// to get a valid field we can jump to
+			(&contents[dest.byte_range().shrink(1)], model, range)
 		} else {
 			// Normal case - complete the field name
 			let Mapped {
@@ -1465,12 +1448,7 @@ impl Backend {
 			(needle, model, range)
 		};
 
-		tracing::debug!(
-			"needle={}, is_broken_syntax={}, model_str={}",
-			needle,
-			is_broken_syntax,
-			model_str
-		);
+		debug!(needle, is_broken_syntax, model_str);
 
 		// recursive descent to collect the chain of fields
 		let mut cursor = cmdlist;
@@ -1478,11 +1456,11 @@ impl Backend {
 		while count < 30 {
 			count += 1;
 			let Some(candidate) = cursor.child_with_descendant(dest) else {
-				tracing::debug!("child_containing_descendant returned None at count={}", count);
+				debug!(count, "child_containing_descendant returned None");
 				return None;
 			};
 			let obj;
-			tracing::debug!("candidate kind: {}", candidate.kind());
+			trace!(candidate = candidate.kind());
 			if candidate.kind() == "tuple" {
 				// (0, 0, {})
 				obj = candidate.child_with_descendant(dest)?;
@@ -1493,27 +1471,27 @@ impl Backend {
 			} else {
 				return None;
 			}
-			tracing::debug!("obj kind: {}", obj.kind());
+			debug!(obj = obj.kind());
 			if obj.kind() == "dictionary" {
 				let pair = obj.child_with_descendant(dest)?;
-				tracing::debug!("pair kind: {}", pair.kind());
+				trace!(pair = pair.kind());
 				if pair.kind() != "pair" {
 					// Check if this is a broken syntax case (string without colon)
 					if pair.kind() == "string" && pair.byte_range().contains(&offset) {
 						// This is a string in a dictionary without a colon
 						// We're completing field names for this dictionary
-						tracing::debug!("Breaking due to broken syntax string in dictionary");
+						debug!("Breaking due to broken syntax string in dictionary");
 						// Break out of the loop to resolve the model
 						break;
 					} else if pair.kind() == "ERROR" {
 						// When there's broken syntax, tree-sitter might create an ERROR node
 						// Check if the ERROR contains our string
 						if pair.byte_range().contains(&offset) {
-							tracing::debug!("Breaking due to ERROR node containing offset");
+							debug!("Breaking due to ERROR node containing offset");
 							break;
 						}
 					}
-					tracing::debug!("Returning None: pair kind {} is not 'pair'", pair.kind());
+					trace!("Returning None: pair kind {} is not 'pair'", pair.kind());
 					return None;
 				}
 
@@ -1538,15 +1516,15 @@ impl Backend {
 		}
 
 		access.push('.'); // to force resolution of the last field
-		tracing::debug!("Access path: {}", access);
-		tracing::debug!("Initial model before resolve: {}", model_str);
+		debug!(access, model_str);
 		let access = &mut access.as_str();
 		let mut model = _I(model_str);
 		if self.index.models.resolve_mapped(&mut model, access, None).is_err() {
-			tracing::debug!("resolve_mapped failed for model={} access={}", _R(model), access);
+			debug!(access, ?model, "resolve_mapped failed");
 			return None;
 		}
-		tracing::debug!("Resolved model: {}", _R(model));
+		// debug!("Resolved model: {}", _R(model));
+		debug!(needle, model = _R(model));
 
 		Some((needle, range, model))
 	}
@@ -1568,6 +1546,7 @@ enum ThisModelKind {
 
 impl<'this> ThisModel<'this> {
 	/// Call this on captures of index [`PyCompletions::Model`].
+	#[instrument(skip_all, fields(model = &contents[model.byte_range()]))]
 	fn tag_model(
 		&mut self,
 		model: Node,
@@ -1593,6 +1572,7 @@ impl<'this> ThisModel<'this> {
 				(prop == "_name", prop == "_inherit")
 			})
 			.unwrap_or((false, false));
+		debug!(?top_level_range, ?self.top_level_range);
 		let top_level_changed = top_level_range != self.top_level_range;
 		// If still in same class AND _name already declared, skip.
 		is_inherit = is_inherit && (top_level_changed || matches!(self.source, ThisModelKind::Inherited));

@@ -152,9 +152,10 @@ impl Debug for DictKey {
 #[derive(Clone, Debug)]
 pub enum FunctionParam {
 	Param(ImStr),
-	/// `(positional_separator)`
+	/// `(positional_separator)`, a single slash `/`
 	PosEnd,
 	/// `(keyword_separator)` or `(list_splat_pattern)`
+	/// a star `*` optionally followed by a catch-all argument
 	EitherEnd(Option<ImStr>),
 	/// `(default_parameter)`
 	Named(ImStr),
@@ -182,7 +183,7 @@ pub struct TypeCache {
 
 #[derive(Debug)]
 enum PrepareCallScopeError {
-	NeedsArguments,
+	NeedsArguments(String),
 }
 
 impl TypeCache {
@@ -1066,11 +1067,14 @@ impl Index {
 				let args = self.prepare_call_scope(*model, method.into(), call, scope, contents);
 				match args {
 					Ok(args) => Some(self.eval_method_rtype(method.into(), **model, args)?),
-					Err(PrepareCallScopeError::NeedsArguments) => {
+					Err(PrepareCallScopeError::NeedsArguments(_)) => {
 						self.eval_method_rtype(method.into(), **model, None);
 						let args = self
 							.prepare_call_scope(*model, method.into(), call, scope, contents)
-							.expect(format_loc!("Could not prepare args after first eval"));
+							.inspect_err(|PrepareCallScopeError::NeedsArguments(method)| {
+								error!("bug: eval_method_rtype could not prepare args after first eval for {method}")
+							})
+							.unwrap_or_default();
 						Some(self.eval_method_rtype(method.into(), **model, args)?)
 					}
 				}
@@ -1141,8 +1145,12 @@ impl Index {
 		let arguments_list = some!(dig!(call, argument_list[1]));
 
 		let model = some!(self.models.populate_properties(model, &[]));
+		let method_key = method;
 		let method = some!(some!(model.methods.as_ref()).get(&method));
-		let arguments = method.arguments.clone().ok_or(PrepareCallScopeError::NeedsArguments)?;
+		let arguments = method
+			.arguments
+			.clone()
+			.ok_or_else(|| PrepareCallScopeError::NeedsArguments(format!("{}::{}", _R(model.key()), _R(method_key))))?;
 		if arguments.is_empty() {
 			return Ok(None);
 		}
