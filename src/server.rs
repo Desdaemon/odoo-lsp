@@ -316,7 +316,7 @@ impl LanguageServer for Backend {
 		self.root_setup.wait(loc!()).await;
 		_ = self.did_save_impl(params).await.inspect_err(|err| warn!("{err}"));
 	}
-	#[instrument(skip_all, ret, fields(uri = params.text_document_position_params.text_document.uri.as_str()))]
+	#[instrument(skip_all, fields(uri = params.text_document_position_params.text_document.uri.as_str(), line=params.text_document_position_params.position.line+1, col=params.text_document_position_params.position.character+1))]
 	async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
 		self.root_setup.wait(loc!()).await;
 

@@ -1158,6 +1158,7 @@ impl Index {
 			range,
 		})
 	}
+	#[instrument(skip_all, fields(property, model))]
 	pub fn jump_def_property_name(&self, property: &str, model: &str) -> anyhow::Result<Option<Location>> {
 		let model_key = _I(model);
 		let entry = some!(self.models.populate_properties(model_key.into(), &[]));
@@ -1171,6 +1172,11 @@ impl Index {
 		{
 			Ok(Some(some!(method.locations.first()).deref().clone().into()))
 		} else {
+			warn!(
+				has_fields = entry.fields.is_some(),
+				has_methods = entry.methods.is_some(),
+				"{model}::{property} was not in either fields nor methods;"
+			);
 			Ok(None)
 		}
 	}

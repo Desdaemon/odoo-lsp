@@ -737,6 +737,7 @@ impl ModelIndex {
 	/// - `range` spans the entire range of `foo.bar.baz`
 	///
 	/// Returns an error if resolution fails before `needle` is exhausted.
+	#[instrument(skip_all, err, ret)]
 	pub fn resolve_mapped(
 		&self,
 		model: &mut Spur,
@@ -744,10 +745,10 @@ impl ModelIndex {
 		mut range: Option<&mut ByteRange>,
 	) -> Result<(), ResolveMappedError> {
 		while let Some((lhs, rhs)) = needle.split_once('.') {
-			trace!("(resolved_mapped) `{needle}` model=`{}`", _R(*model));
+			debug!(model = _R(*model), lhs, needle);
 			let mut resolved = _G(lhs).and_then(|key| self.resolve_related_field(key.into(), *model));
 			if let Some(normalized) = resolved {
-				trace!("(resolved_mapped) prenormalized: {}", _R(normalized));
+				debug!(normalized = _R(normalized));
 			}
 			// lhs: foo
 			// rhs: ba
@@ -778,6 +779,7 @@ impl ModelIndex {
 			};
 			*needle = rhs;
 			*model = rel;
+			debug!(needle, model = _R(*model), "step");
 			// old range: foo.bar.baz
 			// range:         bar.baz
 			if let Some(range) = range.as_mut() {

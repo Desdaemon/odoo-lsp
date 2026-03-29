@@ -22,7 +22,7 @@ class Foo(Model):
             'line_ids': [(0, 0, {
                 'name': 'Line 1',
                 'quan'
-                #  ^complete name notes parent_id price quantity total
+                #    ^complete quantity
             })]
         })
 
@@ -30,7 +30,7 @@ class Foo(Model):
             'line_ids': [(0, 0, {
                 'name': 'Line 2',
                 'pr'
-                # ^complete name notes parent_id price quantity total
+                #  ^complete price
             })]
         })
 
@@ -39,18 +39,18 @@ class Foo(Model):
             'line_ids': [(0, 0, {
                 'name': 'Nested',
                 'not'
-                # ^complete name notes parent_id price quantity total
+                #   ^complete name notes parent_id price quantity total
             })]
         }
 
         self.env['foo'].create({
             'line_ids': [(0, 0, {
                 'na'
-                # ^complete name notes
+                #  ^complete name
             }), (0, 0, {
                 'quan': 5,
                 'pri'
-                #   ^complete name notes parent_id price quantity total
+                #   ^complete price
             })]
         })
 
@@ -59,7 +59,7 @@ class Foo(Model):
             'line_ids': [(0, 0, {
                 'name': 'Line',
                 'parent_id': self.id,
-                'total'
-                #    ^complete name notes parent_id price quantity total
+                't'
+                # ^complete total
             })]
         })
