@@ -813,6 +813,19 @@ impl Index {
 				});
 				Some(_T!(Type::Tuple(tuple.collect())))
 			}
+			"generator_expression" => {
+				// (_ body: _ (for_in_clause left: _ right: _))
+				let for_in = dig!(node, for_in_clause[1])?;
+				let body = node.python_nth_named_child::<0>()?;
+				let lhs = for_in.child_by_field_name("left")?;
+				let rhs = for_in.child_by_field_name("right")?;
+				let iter_ty = self.type_of(rhs, scope, contents)?;
+				let inner = self.type_of_iterable(iter_ty)?;
+				let mut comprehension_scope = Scope::new(Some(scope.clone()));
+				self.destructure_into_patternlist_like(lhs, inner, &mut comprehension_scope, contents);
+				let body_ty = self.type_of(body, &comprehension_scope, contents);
+				Some(_T!(Type::Iterable(body_ty)))
+			}
 			"string" => Some(_T!( @ "str")),
 			"integer" => Some(_T!( @ "int")),
 			"float" => Some(_T!( @ "float")),
@@ -897,6 +910,12 @@ impl Index {
 					let body = arg.child_by_field_name("body")?;
 					let body_ty = self.type_of(body, scope, contents).unwrap_or_else(|| _T!(Type::Value));
 					return Some(_T!(Type::Dict(_T!(Type::Value), body_ty)));
+				}
+				"next" => {
+					let arg = dig!(call, generator_expression[1]).or_else(|| dig!(call, [1].[0]))?;
+					let arg = self.type_of(arg, scope, contents)?;
+					let iter = self.type_of_iterable(arg)?;
+					return Some(iter);
 				}
 				"super" => {}
 				_ => return None,
