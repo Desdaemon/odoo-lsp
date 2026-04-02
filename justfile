@@ -26,5 +26,5 @@ report-md:
 
 [private]
 _test *args: (ensure_cargo "cargo-nextest")
-	NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 NO_COLOR=1 cargo nextest run --message-format=libtest-json-plus {{args}} \
+	NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 cargo nextest run --message-format=libtest-json-plus {{args}} \
 		| ./scripts/libtest_to_md.mjs | just report-md
