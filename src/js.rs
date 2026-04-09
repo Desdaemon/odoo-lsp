@@ -16,18 +16,23 @@ use ts_macros::query;
 
 query! {
 	#[lang = "tree_sitter_javascript"]
-	OrmCallQuery(OrmObject, CallMethod, ModelArg, MethodArg);
-	// Match this.orm.call('model', 'method')
-	(call_expression
-		function: (member_expression
-			object: (member_expression
-				object: (this)
-				property: (property_identifier) @ORM_OBJECT (#eq? @ORM_OBJECT "orm"))
-			property: (property_identifier) @CALL_METHOD (#eq? @CALL_METHOD "call"))
-		arguments: (arguments
-			. (string) @MODEL_ARG
-			. ","
-			. (string) @METHOD_ARG))
+	JsCompletions(OrmObject, CallMethod, ModelArg, MethodArg, XmlId);
+
+// this.orm.call('model', 'method')
+(call_expression
+  function: (member_expression
+	object: (member_expression
+	  object: (this)
+	  property: (property_identifier) @ORM_OBJECT (#eq? @ORM_OBJECT "orm"))
+	property: (property_identifier) @CALL_METHOD (#eq? @CALL_METHOD "call"))
+  arguments: (arguments
+	. (string) @MODEL_ARG
+	. ","
+	. (string) @METHOD_ARG))
+
+(object
+  (pair (_) @_view_ref (string) @XML_ID)
+  (#match? @_view_ref "_view_ref$"))
 }
 
 /// Javascript extensions.
@@ -70,7 +75,7 @@ impl Backend {
 		}
 
 		// try gotodefs for ORM calls
-		let query = OrmCallQuery::query();
+		let query = JsCompletions::query();
 		let mut cursor = QueryCursor::new();
 		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
@@ -78,14 +83,25 @@ impl Backend {
 			let mut method_arg_node = None;
 
 			for capture in match_.captures {
-				match OrmCallQuery::from(capture.index) {
-					Some(OrmCallQuery::ModelArg) => {
+				let range = capture.node.byte_range();
+				match JsCompletions::from(capture.index) {
+					Some(JsCompletions::ModelArg) => {
 						model_arg_node = Some(capture.node);
 					}
-					Some(OrmCallQuery::MethodArg) => {
+					Some(JsCompletions::MethodArg) => {
 						method_arg_node = Some(capture.node);
 					}
-					_ => {}
+					Some(JsCompletions::XmlId) if range.contains_end(offset) => {
+						let range = range.shrink(1);
+						let slice = Cow::from(ok!(rope.try_slice(range.clone())));
+						return self
+							.index
+							.jump_def_xml_id(&slice, &params.text_document_position_params.text_document.uri);
+					}
+					Some(JsCompletions::XmlId)
+					| Some(JsCompletions::OrmObject)
+					| Some(JsCompletions::CallMethod)
+					| None => {}
 				}
 			}
 
@@ -172,7 +188,7 @@ impl Backend {
 		}
 
 		// try hover for ORM calls
-		let query = OrmCallQuery::query();
+		let query = JsCompletions::query();
 		let mut cursor = QueryCursor::new();
 		let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
 		while let Some(match_) = matches.next() {
@@ -180,14 +196,23 @@ impl Backend {
 			let mut method_arg_node = None;
 
 			for capture in match_.captures {
-				match OrmCallQuery::from(capture.index) {
-					Some(OrmCallQuery::ModelArg) => {
+				let range = capture.node.byte_range();
+				match JsCompletions::from(capture.index) {
+					Some(JsCompletions::ModelArg) => {
 						model_arg_node = Some(capture.node);
 					}
-					Some(OrmCallQuery::MethodArg) => {
+					Some(JsCompletions::MethodArg) => {
 						method_arg_node = Some(capture.node);
 					}
-					_ => {}
+					Some(JsCompletions::XmlId) if range.contains_end(offset) => {
+						let range = range.shrink(1);
+						let slice = Cow::from(ok!(rope.try_slice(range.clone())));
+						return (self.index).hover_record(&slice, Some(rope_conv(range.map_unit(ByteOffset), rope)));
+					}
+					Some(JsCompletions::XmlId)
+					| Some(JsCompletions::OrmObject)
+					| Some(JsCompletions::CallMethod)
+					| None => {}
 				}
 			}
 
@@ -229,13 +254,14 @@ impl Backend {
 		let position = params.text_document_position.position;
 		let ByteOffset(offset) = rope_conv(position, rope);
 		let path = some!(params.text_document_position.text_document.uri.to_file_path());
+		let current_module = some!(self.index.find_module_of(&path));
 		let completions_limit = self
 			.workspaces
 			.find_workspace_of(&path, |_, ws| ws.completions.limit)
 			.unwrap_or_else(|| self.project_config.completions_limit.load(Relaxed));
 
 		let contents = Cow::from(rope);
-		let query = OrmCallQuery::query();
+		let query = JsCompletions::query();
 		let mut cursor = QueryCursor::new();
 
 		// Find the orm.call node that contains the cursor position
@@ -245,14 +271,38 @@ impl Backend {
 			let mut method_arg_node = None;
 
 			for capture in match_.captures {
-				match OrmCallQuery::from(capture.index) {
-					Some(OrmCallQuery::ModelArg) => {
+				let range = capture.node.byte_range();
+				match JsCompletions::from(capture.index) {
+					Some(JsCompletions::ModelArg) => {
 						model_arg_node = Some(capture.node);
 					}
-					Some(OrmCallQuery::MethodArg) => {
+					Some(JsCompletions::MethodArg) => {
 						method_arg_node = Some(capture.node);
 					}
-					_ => {}
+					Some(JsCompletions::XmlId) if range.contains_end(offset) => {
+						let range = range.shrink(1);
+						let needle = &contents[range.clone()];
+						let needle = needle[..offset - range.start].to_string();
+						let mut items = MaxVec::new(completions_limit);
+						self.index.complete_xml_id(
+							&needle,
+							range.map_unit(ByteOffset),
+							rope,
+							// TODO: change this when more xmlids can be completed in js
+							Some(&[ImStr::from("ir.ui.view")]),
+							current_module,
+							None,
+							&mut items,
+						)?;
+						return Ok(Some(CompletionResponse::List(CompletionList {
+							is_incomplete: !items.has_space(),
+							items: items.into_inner(),
+						})));
+					}
+					Some(JsCompletions::XmlId)
+					| Some(JsCompletions::OrmObject)
+					| Some(JsCompletions::CallMethod)
+					| None => {}
 				}
 			}
 

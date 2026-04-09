@@ -38,15 +38,14 @@ query! {
   (attribute
     (_) (identifier) @FOR_XML_ID)
   (attribute
-  	(_) (identifier) @HAS_GROUPS) ]
+    (_) (identifier) @HAS_GROUPS) ]
   (argument_list . (string) @XML_ID)
   (#eq? @_env "env")
   (#eq? @_ref "ref")
   (#eq? @REQUEST "request")
   (#eq? @_render "render")
   (#eq? @FOR_XML_ID "_for_xml_id")
-  (#match? @HAS_GROUPS "^(user_has_groups|has_group)$")
-)
+  (#match? @HAS_GROUPS "^(user_has_groups|has_group)$"))
 
 (subscript [
   (identifier) @_env
@@ -148,6 +147,9 @@ query! {
   (attribute (_) (identifier) @_param_fn)
   (argument_list . (string) @CONFIG_PARAMETER))
   (#match? @_param_fn "^(get|set)_param$"))
+(dictionary
+  (pair (string) @_view_ref (string) @XML_ID)
+  (#match? @_view_ref "_view_ref$"))
 }
 
 #[rustfmt::skip]
