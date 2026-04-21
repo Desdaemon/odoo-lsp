@@ -99,49 +99,38 @@ language-servers = [
 
 4. Alternatively, modify `$ROOT/.helix/languages.toml` where `$ROOT` is your Odoo modules root to include the above lines.
 
-### Neovim via [lsp-zero.nvim]
+### Neovim (v0.11+)
 
-Instructions copied from [lsp-zero docs](https://lsp-zero.netlify.app/v3.x/language-server-configuration.html#custom-servers)
-
-1. Ensure that you have `odoo-lsp` on your path
-2. Configure your Neovim (Lua) configuration file e.g. at `~/.config/nvim/init.lua` to use [lsp-zero.nvim],
-   adding odoo-lsp as a new server before calling `lsp.setup()`:
+Add a custom definition for nvim-lspconfig:
 
 ```lua
--- lsp-zero stanza
-local lsp = require('lsp-zero').preset({})
-lsp.on_attach(function(client, bufnr)
-  lsp.default_keymaps({buffer = bufnr})
-end)
-
-local lspconfigs = require 'lspconfig.configs'
-
--- define our custom language server here
-lspconfigs.odoo_lsp = {
-  default_config = {
-    name = 'odoo-lsp',
-    cmd = {'odoo-lsp'},
-    filetypes = {'javascript', 'xml', 'python'},
-    root_dir = require('lspconfig.util').root_pattern('.odoo_lsp', '.odoo_lsp.json', '.git')
-  }
+-- in ~/.config/nvim/lsp/odoo_lsp.lua
+vim.lsp.config['odoo_lsp'] = {
+  cmd = { "odoo-lsp" },
+  filetypes = { "javascript", "xml", "python" },
+  root_markers = { { ".odoo_lsp", ".odoo_lsp.json" }, ".git" },
 }
-
-local configured_lsps = {
-  odoo_lsp = {},
-  -- optional but recommended, requires pyright-langserver on path
-  pyright = {},
-}
-
-local lspconfig = require 'lspconfig'
-for name, config in pairs(configured_lsps) do
-  lspconfig[name].setup(config)
-end
-
--- LSP setup done
-lsp.setup()
 ```
 
-A complete example can be found in [examples/init.lua](examples/init.lua).
+Then in your LSP configuration, for example [LazyVim](https://www.lazyvim.org/):
+
+```lua
+-- in ~/.config/nvim/lua/plugins/lsp.lua
+return {
+  {
+    'neovim/nvim-lspconfig',
+    opts = {
+      servers = {
+        odoo_lsp = {},
+        -- enable these as needed
+        -- pyright = {},
+      }
+    },
+  },
+}
+```
+
+For versions before v0.11, see [examples/init.lua](examples/init.lua).
 
 ## Troubleshooting
 
