@@ -96,7 +96,7 @@ foo = fields.Char()
 fn test_py_completions_class_scoped() {
 	let mut parser = Parser::new();
 	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-	let contents = br#"
+	let contents = r#"
 class Foo(models.AbstractModel):
 	_name = 'foo'
 	_inherit = ['inherit_foo', 'inherit_bar']
@@ -122,41 +122,73 @@ class Foo(models.AbstractModel):
 	let ast = parser.parse(contents, None).unwrap();
 	let query = PyCompletions::query();
 	let mut cursor = QueryCursor::new();
-	let expected: &[&[&str]] = &[
-		&["_name", "'foo'"],
-		&["_inherit", "'inherit_foo'", "'inherit_bar'"],
-		&["foo", "fields", "ft:Many2one", "'some.model'", "related"],
-		&["bar", "fields", "ft:Many2one", "'positional'", "string", "domain"],
-		&["baz", "fields", "ft:Many2many", "comodel_name", "domain"],
+	let expected: &[&[(Option<_>, &str)]] = &[
+		&[(Some(PyCompletions::Prop), "_name"), (None, "'foo'")],
+		&[
+			(Some(PyCompletions::Prop), "_inherit"),
+			(None, "'inherit_foo'"),
+			(None, "'inherit_bar'"),
+		],
+		&[
+			(Some(PyCompletions::Prop), "foo"),
+			(None, "fields"),
+			(Some(PyCompletions::FieldType), "Many2one"),
+			(None, "'some.model'"),
+			(None, "related"),
+		],
+		&[
+			(Some(PyCompletions::Prop), "bar"),
+			(None, "fields"),
+			(Some(PyCompletions::FieldType), "Many2one"),
+			(None, "'positional'"),
+			(None, "string"),
+			(None, "domain"),
+		],
+		&[
+			(Some(PyCompletions::Prop), "baz"),
+			(None, "fields"),
+			(Some(PyCompletions::FieldType), "Many2many"),
+			(None, "comodel_name"),
+			(None, "domain"),
+		],
 		// api.constrains('mapped', 'meh')
-		&["api", "constrains", "'mapped'"],
-		&["api", "constrains", "'meh'"],
+		&[(None, "api"), (None, "constrains"), (None, "'mapped'")],
+		&[(None, "api"), (None, "constrains"), (None, "'meh'")],
 		// scope detection with no .depends
 		// note that it goes later
-		&["self.sudo()", "mapped", "'ha.ha'"],
-		&["api.constrains('mapped', 'meh')", "<scope>"],
-		&["foo", "fields", "ft:Foo"],
+		&[(None, "self.sudo()"), (None, "mapped"), (None, "'ha.ha'")],
+		&[(None, "api.constrains('mapped', 'meh')"), (None, "<scope>")],
+		&[
+			(Some(PyCompletions::Prop), "foo"),
+			(None, "fields"),
+			(Some(PyCompletions::FieldType), "Foo"),
+		],
 		// scope detection with both .depends and non-.depends
 		// first, each of the original MAPPED rules are triggered
-		&["api", "depends", "'mapped2'"],
-		&["api", "depends", "'mapped3'"],
-		&["api", "depends", "'mapped2'", "'mapped3'", "<scope>"],
+		&[(None, "api"), (None, "depends"), (None, "'mapped2'")],
+		&[(None, "api"), (None, "depends"), (None, "'mapped3'")],
+		&[
+			(None, "api"),
+			(None, "depends"),
+			(None, "'mapped2'"),
+			(None, "'mapped3'"),
+			(None, "<scope>"),
+		],
 		// no decorators
-		&["<scope>"],
+		&[(None, "<scope>")],
 	];
 	let actual = cursor
-		.matches(query, ast.root_node(), &contents[..])
+		.matches(query, ast.root_node(), contents.as_bytes())
 		.map(|match_| {
 			match_
 				.captures
 				.iter()
 				.map(|capture| match PyCompletions::from(capture.index) {
-					Some(PyCompletions::Scope) => Cow::from("<scope>"),
-					Some(PyCompletions::FieldType) => Cow::from(format!(
-						"ft:{}",
-						String::from_utf8_lossy(&contents[capture.node.byte_range()])
-					)),
-					_ => String::from_utf8_lossy(&contents[capture.node.byte_range()]),
+					Some(PyCompletions::Scope) => (None, "<scope>"),
+					comp @ Some(PyCompletions::FieldType | PyCompletions::Prop) => {
+						(comp, &contents[capture.node.byte_range()])
+					}
+					_ => (None, &contents[capture.node.byte_range()]),
 				})
 				.collect::<Vec<_>>()
 		})

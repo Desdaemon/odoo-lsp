@@ -190,6 +190,7 @@ impl Backend {
 	/// - `slice` spans the record range that contains the cursor.
 	/// - `offset_at_cursor` is `position` relative to the start of the slice.
 	/// - `relative_offset` is the offset of the entire slice relative to the start of the rope.
+	#[instrument(skip_all)]
 	pub(crate) fn record_slice<'rope>(
 		&self,
 		rope: RopeSlice<'rope>,
@@ -210,16 +211,12 @@ impl Backend {
 				Ordering::Equal
 			}
 		}) else {
-			debug!("(record_slice) fall back to full slice");
+			debug!("fall back to full slice");
 			// let slice = Cow::from(rope.slice(..));
 			return Ok((rope.slice(..), offset_at_cursor, 0));
 		};
 		let record_range = &ranges.value()[record];
-		debug!(
-			"(record_slice) found {:?}, cursor={:?}",
-			record_range.erase(),
-			offset_at_cursor
-		);
+		trace!("found {:?}, cursor={:?}", record_range.erase(), offset_at_cursor);
 		let relative_offset = record_range.start.0;
 		offset_at_cursor.0 = offset_at_cursor.0.saturating_sub(relative_offset);
 

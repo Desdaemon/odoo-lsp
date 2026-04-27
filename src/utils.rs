@@ -565,13 +565,13 @@ impl Semaphore {
 			.is_err()
 		{
 			panic!(
-				"[{context}] thread={:?} attempted to lock {:p} which is already locked, it should call wait() first",
+				"{context} thread={:?} attempted to lock {:p} which is already locked, it should call wait() first",
 				std::thread::current().id(),
 				self
 			);
 		}
-		info!(
-			"[{context}] thread={:?} acquired lock on {:p}",
+		warn!(
+			"{context} thread={:?} acquired lock on {:p}",
 			std::thread::current().id(),
 			self
 		);
@@ -582,8 +582,8 @@ impl Semaphore {
 	/// Should only be used by the initialization flow ONCE.
 	#[must_use]
 	pub unsafe fn block_unchecked(&self, context: &'static str) -> Blocker<'_> {
-		info!(
-			"[{context}] thread={:?} force-acquired lock on {:p}",
+		warn!(
+			"{context} thread={:?} force-acquired lock on {:p}",
 			std::thread::current().id(),
 			self
 		);
@@ -613,7 +613,7 @@ impl Semaphore {
 impl Drop for Blocker<'_> {
 	#[track_caller]
 	fn drop(&mut self) {
-		info!(
+		warn!(
 			"thread={:?} releasing lock on {:p}",
 			std::thread::current().id(),
 			self.0
@@ -711,20 +711,6 @@ pub fn to_display_path(path: impl AsRef<Path>) -> String {
 	path.as_ref().to_string_lossy().into_owned()
 }
 
-pub struct Defer<T>(pub Option<T>)
-where
-	T: FnOnce();
-
-impl<T> Drop for Defer<T>
-where
-	T: FnOnce(),
-{
-	fn drop(&mut self) {
-		let func = self.0.take().unwrap();
-		func()
-	}
-}
-
 /// On Windows, rewrites the wide path prefix `\\?\C:` to `C:`  
 /// Source: https://stackoverflow.com/a/70970317
 #[inline]
@@ -768,13 +754,10 @@ pub trait NodeExt
 where
 	Self: Sized,
 {
-	/// Gets the nth named child ignoring comments, only relevant for Python
 	fn python_nth_named_child<const NTH: usize>(self) -> Option<Self>;
-
-	/// Only useful for Python, since the default grammar does not mark comments as extra nodes.
 	fn python_next_named_sibling(self) -> Option<Self>;
-
 	fn python_nth_named_child_matching<const NTH: usize>(self, kind: &str) -> Option<Self>;
+	fn as_keyword_argument(&self) -> Option<(Self, Self)>;
 }
 
 impl NodeExt for Node<'_> {
@@ -784,7 +767,7 @@ impl NodeExt for Node<'_> {
 		let mut idx = 0;
 		self = self.named_child(0)?;
 		loop {
-			if likely(self.kind() != "comment") {
+			if likely(!self.is_extra()) {
 				if idx == NTH {
 					return Some(self);
 				}
@@ -794,7 +777,6 @@ impl NodeExt for Node<'_> {
 		}
 	}
 
-	/// Only useful for Python, since the default grammar does not mark comments as extra nodes.
 	#[allow(clippy::disallowed_methods)]
 	#[inline]
 	fn python_next_named_sibling(mut self) -> Option<Self> {
@@ -815,11 +797,22 @@ impl NodeExt for Node<'_> {
 			if idx == NTH && likely(self.kind() == kind) {
 				return Some(self);
 			}
-			if likely(self.kind() != "comment") {
+			if likely(!self.is_extra()) {
 				idx += 1;
 			}
 			self = self.next_named_sibling()?;
 		}
+	}
+
+	fn as_keyword_argument(&self) -> Option<(Self, Self)> {
+		if self.kind() == "keyword_argument"
+			&& let Some(lhs) = self.python_nth_named_child::<0>()
+			&& let Some(rhs) = lhs.python_next_named_sibling()
+		{
+			return Some((lhs, rhs));
+		}
+
+		None
 	}
 }
 

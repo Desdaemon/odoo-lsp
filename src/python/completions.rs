@@ -519,7 +519,7 @@ impl Backend {
 					&& let Type::DictBag(dict) = type_cache().resolve(tid)
 				{
 					let mut items = MaxVec::new(completions_limit);
-					let dict = dict.iter().flat_map(|(key, _)| match key {
+					let dict = dict.splay().iter().flat_map(|(key, _)| match key {
 						DictKey::String(str) => Some(str.to_string()),
 						_ => None,
 					});

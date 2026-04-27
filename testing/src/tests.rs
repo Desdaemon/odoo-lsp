@@ -8,6 +8,7 @@ use std::time::Duration;
 use async_lsp::LanguageServer;
 use async_lsp::lsp_types::*;
 use futures::{StreamExt, stream::FuturesUnordered};
+use odoo_lsp::prelude::*;
 use pretty_assertions::{Comparison, StrComparison};
 use rstest::*;
 use tree_sitter::Parser;
@@ -24,8 +25,13 @@ static TRACING_INIT: Once = Once::new();
 
 fn init_tracing() {
 	TRACING_INIT.call_once(|| {
+		let builder = tracing_subscriber::EnvFilter::builder();
 		tracing_subscriber::fmt()
-			.with_env_filter(tracing_subscriber::EnvFilter::builder().parse_lossy("warn,odoo_lsp=trace"))
+			.with_env_filter(
+				builder
+					.try_from_env()
+					.unwrap_or_else(|_| builder.parse("warn,odoo_lsp=debug").unwrap()),
+			)
 			.init();
 	});
 }
@@ -55,9 +61,9 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) -> ExitCode {
 	_ = server.notify::<notification::Initialized>(InitializedParams {});
 
 	// <!> collect expected samples
-	let mut expected = gather_expected(&root, TestLanguages::Python);
-	expected.extend(gather_expected(&root, TestLanguages::Xml));
-	expected.extend(gather_expected(&root, TestLanguages::JavaScript));
+	let mut expected = gather_assertions(&root, TestLanguages::Python);
+	expected.extend(gather_assertions(&root, TestLanguages::Xml));
+	expected.extend(gather_assertions(&root, TestLanguages::JavaScript));
 	expected.retain(|_, expected| {
 		!expected.complete.is_empty()
 			|| !expected.diag.is_empty()
@@ -69,284 +75,7 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) -> ExitCode {
 	// <!> compare and run
 	let mut expected: FuturesUnordered<_> = expected
 		.into_iter()
-		.map(|(path, expected)| {
-
-			let mut server = server.clone();
-			let text = match std::fs::read_to_string(&path) {
-				Ok(t) => t,
-				Err(e) => panic!("Failed to read {}: {e}", path.display()),
-			};
-			async move {
-				let mut diffs = vec![];
-
-				let language_id = match path.extension().unwrap().to_string_lossy().as_ref() {
-					"py" => "python",
-					"xml" => "xml",
-					"js" => "javascript",
-					unk => panic!("unknown file extension {unk}"),
-				}
-				.to_string();
-
-				let uri = Url::from_file_path(&path).unwrap();
-
-				_ = server.did_open(DidOpenTextDocumentParams {
-					text_document: TextDocumentItem {
-						uri: uri.clone(),
-						language_id,
-						version: 1,
-						text,
-					},
-				});
-
-				let diags = server
-					.document_diagnostic(DocumentDiagnosticParams {
-						text_document: TextDocumentIdentifier { uri: uri.clone() },
-						identifier: None,
-						previous_result_id: None,
-						work_done_progress_params: Default::default(),
-						partial_result_params: Default::default(),
-					})
-					.await;
-				if let Ok(DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(report))) = diags {
-					let actual = report
-						.full_document_diagnostic_report
-						.items
-						.iter()
-						.map(|diag| (diag.range.start, diag.message.clone()))
-						.collect::<Vec<_>>();
-					if expected.diag[..] != actual[..] {
-						diffs.push(format!(
-							"[diag] {}\n{}",
-							path.display(),
-							Comparison::new(&expected.diag[..], &actual[..]),
-						));
-					}
-
-					if !expected.related.is_empty() {
-						// Group consecutive ^related assertions by their position
-						// They should all point to the same line/character where an assertion exists
-						let mut related_groups: Vec<(Position, Vec<String>)> = Vec::new();
-
-						for (pos, msg) in &expected.related {
-							if let Some(last_group) = related_groups.last_mut()
-								&& last_group.0 == *pos {
-									last_group.1.push(msg.clone());
-									continue;
-								}
-							// Start a new group
-							related_groups.push((*pos, vec![msg.clone()]));
-						}
-
-						for (pos, expected_msgs) in related_groups {
-							// The position of ^related assertions points to the line above them
-							// First check if there's a diagnostic at this position
-							let diag_at_pos = report.full_document_diagnostic_report.items.iter()
-								.find(|d| d.range.start.line == pos.line && d.range.start.character == pos.character);
-
-							if let Some(diag) = diag_at_pos {
-								let actual_related = diag.related_information.as_ref()
-									.map(|r| r.iter().map(|info| info.message.clone()).collect::<Vec<_>>())
-									.unwrap_or_default();
-
-								if expected_msgs.len() != actual_related.len() {
-									diffs.push(format!(
-										"[related] {}:{}:{}\n\nExpected {} related entries but found {}:\n\nExpected:\n{}\n\nActual:\n{}",
-										path.display(),
-										pos.line + 1,
-										pos.character + 1,
-										expected_msgs.len(),
-										actual_related.len(),
-										expected_msgs.iter().map(|m| format!("  - {}", m)).collect::<Vec<_>>().join("\n"),
-										if actual_related.is_empty() {
-											"  (no related information)".to_string()
-										} else {
-											actual_related.iter().map(|m| format!("  - {}", m)).collect::<Vec<_>>().join("\n")
-										}
-									));
-								} else {
-									for expected_msg in &expected_msgs {
-										if !actual_related.iter().any(|actual| actual.contains(expected_msg)) {
-											diffs.push(format!(
-												"[related] {}:{}:{}\n\nRelated entry mismatch:\n\nExpected to find:\n  \"{}\"\n\nBut actual related entries were:\n{}",
-												path.display(),
-												pos.line + 1,
-												pos.character + 1,
-												expected_msg,
-												actual_related.iter().map(|m| format!("  - {}", m)).collect::<Vec<_>>().join("\n")
-											));
-										}
-									}
-								}
-							} else {
-								diffs.push(format!(
-									"[related] {}:{}:{}\n\nNo diagnostic found at this position to attach related information to",
-									path.display(),
-									pos.line + 1,
-									pos.character + 1
-								));
-							}
-						}
-					}
-				} else {
-					diffs.push(format!("[diag] failed to get diag: {diags:?}\n\tat {}", path.display()))
-				}
-
-				let completions: FuturesUnordered<_> = expected
-					.complete
-					.iter()
-					.map(|(position, expected)| {
-						let mut server = server.clone();
-						let uri = uri.clone();
-						let path = path.display();
-						async move {
-							let completions = server
-								.completion(CompletionParams {
-									text_document_position: TextDocumentPositionParams {
-										text_document: TextDocumentIdentifier { uri },
-										position: *position,
-									},
-									work_done_progress_params: Default::default(),
-									partial_result_params: Default::default(),
-									context: None,
-								})
-								.await;
-							if let Ok(Some(CompletionResponse::List(list))) = completions {
-								let mut actual =
-									list.items.iter().map(|comp| comp.label.to_string()).collect::<Vec<_>>();
-								let mut expected_sorted = expected.clone();
-								actual.sort();
-								expected_sorted.sort();
-								if expected_sorted != actual {
-									format!(
-										"[complete] in {path}:{}:{}\n{}",
-										position.line + 1,
-										position.character + 1,
-										Comparison::new(&expected[..], &actual[..]),
-									)
-								} else {
-									String::new()
-								}
-							} else {
-								format!(
-									"[complete] failed to get completions: {completions:?}\n\tat {path}:{}:{}",
-									position.line + 1,
-									position.character + 1
-								)
-							}
-						}
-					})
-					.collect();
-
-				let types: FuturesUnordered<_> = expected
-					.r#type
-					.iter()
-					.map(|(position, expected)| {
-						let server = server.clone();
-						let uri = uri.clone();
-						let path = path.display();
-						async move {
-							let r#type = server
-								.request::<InspectType>(TextDocumentPositionParams {
-									text_document: TextDocumentIdentifier { uri: uri.clone() },
-									position: *position,
-								})
-								.await;
-							if let Ok(actual) = r#type {
-								let actual = actual.as_deref().unwrap_or("None");
-								if expected != actual {
-									format!(
-										"[type] in {path}:{}:{}  {}",
-										position.line + 1,
-										position.character + 1,
-										StrComparison::new(expected, actual),
-									)
-								} else {
-									String::new()
-								}
-							} else {
-								format!(
-									"[type] failed to get type: {type:?}\n\tat {path}:{}:{}",
-									position.line + 1,
-									position.character + 1
-								)
-							}
-						}
-					})
-					.collect();
-
-				let definitions: FuturesUnordered<_> = expected
-					.def
-					.iter()
-					.map(|position| {
-						let mut server = server.clone();
-						let uri = uri.clone();
-						let path = path.display();
-						async move {
-							let definition = server
-								.definition(GotoDefinitionParams {
-									text_document_position_params: TextDocumentPositionParams {
-										text_document: TextDocumentIdentifier { uri },
-										position: *position,
-									},
-									work_done_progress_params: Default::default(),
-									partial_result_params: Default::default(),
-								})
-								.await;
-							match definition {
-								Ok(Some(GotoDefinitionResponse::Scalar(location))) => {
-									// Check if the definition points to a valid file
-									if location.uri.to_file_path().is_ok() {
-										String::new()
-									} else {
-										format!(
-											"[def] invalid file path in {path}:{}:{}",
-											position.line + 1,
-											position.character + 1
-										)
-									}
-								}
-								Ok(Some(GotoDefinitionResponse::Array(locations))) => {
-									if !locations.is_empty() && locations[0].uri.to_file_path().is_ok() {
-										String::new()
-									} else {
-										format!(
-											"[def] no valid definitions in {path}:{}:{}",
-											position.line + 1,
-											position.character + 1
-										)
-									}
-								}
-								Ok(Some(GotoDefinitionResponse::Link(_))) => {
-									// For now, just accept any link response as valid
-									String::new()
-								}
-								Ok(None) => {
-									format!(
-										"[def] no definition found in {path}:{}:{}",
-										position.line + 1,
-										position.character + 1
-									)
-								}
-								Err(e) => {
-									format!(
-										"[def] failed to get definition: {e:?}\\n\\tat {path}:{}:{}",
-										position.line + 1,
-										position.character + 1
-									)
-								}
-							}
-						}
-					})
-					.collect();
-
-				let mut items = completions.chain(types).chain(definitions);
-				while let Some(diff) = items.next().await {
-					diffs.push(diff);
-				}
-
-				diffs
-			}
-		})
+		.map(|(path, expected)| gather_expecteds(server.clone(), path, expected))
 		.collect();
 
 	let mut messages = vec![];
@@ -364,6 +93,336 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) -> ExitCode {
 		ExitCode::FAILURE
 	} else {
 		ExitCode::SUCCESS
+	}
+}
+
+async fn gather_expecteds(mut server: async_lsp::ServerSocket, path: PathBuf, expected: Expected) -> Vec<String> {
+	let text = match std::fs::read_to_string(&path) {
+		Ok(t) => t,
+		Err(e) => panic!("Failed to read {}: {e}", path.display()),
+	};
+	let mut diffs = vec![];
+
+	let language_id = match path.extension().unwrap().to_string_lossy().as_ref() {
+		"py" => "python",
+		"xml" => "xml",
+		"js" => "javascript",
+		unk => panic!("unknown file extension {unk}"),
+	}
+	.to_string();
+
+	let uri = Url::from_file_path(&path).unwrap();
+
+	_ = server.did_open(DidOpenTextDocumentParams {
+		text_document: TextDocumentItem {
+			uri: uri.clone(),
+			language_id,
+			version: 1,
+			text,
+		},
+	});
+
+	let diags = server
+		.document_diagnostic(DocumentDiagnosticParams {
+			text_document: TextDocumentIdentifier { uri: uri.clone() },
+			identifier: None,
+			previous_result_id: None,
+			work_done_progress_params: Default::default(),
+			partial_result_params: Default::default(),
+		})
+		.await;
+	if let Ok(DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(report))) = diags {
+		let actual = report
+			.full_document_diagnostic_report
+			.items
+			.iter()
+			.map(|diag| (diag.range.start, diag.message.clone()))
+			.collect::<Vec<_>>();
+		if expected.diag[..] != actual[..] {
+			diffs.push(format!(
+				"[diag] {}\n{}",
+				path.display(),
+				Comparison::new(&expected.diag[..], &actual[..]),
+			));
+		}
+
+		if !expected.related.is_empty() {
+			// Group consecutive ^related assertions by their position
+			// They should all point to the same line/character where an assertion exists
+			let mut related_groups: Vec<(Position, Vec<String>)> = Vec::new();
+
+			for (pos, msg) in &expected.related {
+				if let Some(last_group) = related_groups.last_mut()
+					&& last_group.0 == *pos
+				{
+					last_group.1.push(msg.clone());
+					continue;
+				}
+				// Start a new group
+				related_groups.push((*pos, vec![msg.clone()]));
+			}
+
+			for (pos, expected_msgs) in related_groups {
+				// The position of ^related assertions points to the line above them
+				// First check if there's a diagnostic at this position
+				let diag_at_pos = report
+					.full_document_diagnostic_report
+					.items
+					.iter()
+					.find(|d| d.range.start.line == pos.line && d.range.start.character == pos.character);
+
+				if let Some(diag) = diag_at_pos {
+					let actual_related = diag
+						.related_information
+						.as_ref()
+						.map(|r| r.iter().map(|info| info.message.clone()).collect::<Vec<_>>())
+						.unwrap_or_default();
+
+					if expected_msgs.len() != actual_related.len() {
+						diffs.push(format!(
+							"[related] {}:{}:{}\n\nExpected {} related entries but found {}:\n\nExpected:\n{}\n\nActual:\n{}",
+							path.display(),
+							pos.line + 1,
+							pos.character + 1,
+							expected_msgs.len(),
+							actual_related.len(),
+							expected_msgs
+								.iter()
+								.map(|m| format!("  - {}", m))
+								.collect::<Vec<_>>()
+								.join("\n"),
+							if actual_related.is_empty() {
+								"  (no related information)".to_string()
+							} else {
+								actual_related
+									.iter()
+									.map(|m| format!("  - {}", m))
+									.collect::<Vec<_>>()
+									.join("\n")
+							}
+						));
+					} else {
+						for expected_msg in &expected_msgs {
+							if !actual_related.iter().any(|actual| actual.contains(expected_msg)) {
+								diffs.push(format!(
+									"[related] {}:{}:{}\n\nRelated entry mismatch:\n\nExpected to find:\n  \"{}\"\n\nBut actual related entries were:\n{}",
+									path.display(),
+									pos.line + 1,
+									pos.character + 1,
+									expected_msg,
+									actual_related.iter().map(|m| format!("  - {}", m)).collect::<Vec<_>>().join("\n")
+								));
+							}
+						}
+					}
+				} else {
+					diffs.push(format!(
+						"[related] {}:{}:{}\n\nNo diagnostic found at this position to attach related information to",
+						path.display(),
+						pos.line + 1,
+						pos.character + 1
+					));
+				}
+			}
+		}
+	} else {
+		diffs.push(format!("[diag] failed to get diag: {diags:?}\n\tat {}", path.display()))
+	}
+
+	let completions: FuturesUnordered<_> = expected
+		.complete
+		.iter()
+		.map(|(position, expected)| expected_completions(server.clone(), &path, &uri, position, expected))
+		.collect();
+
+	let gotodefs: FuturesUnordered<_> = expected
+		.jumpdef
+		.iter()
+		.map(|position| expected_gotodefs(server.clone(), &path, &uri, position))
+		.collect();
+
+	let types: FuturesUnordered<_> = expected
+		.r#type
+		.iter()
+		.map(|(position, expected)| expected_types(&server, &path, &uri, position, expected))
+		.collect();
+
+	let definitions: FuturesUnordered<_> = expected
+		.def
+		.iter()
+		.map(|position| expected_definitions(&server, &path, &uri, position))
+		.collect();
+
+	let mut items = completions //
+		.chain(gotodefs)
+		.chain(types)
+		.chain(definitions);
+	while let Some(diff) = items.next().await {
+		diffs.push(diff);
+	}
+
+	diffs.retain(|diff| !diff.is_empty());
+
+	diffs
+}
+
+async fn expected_definitions(server: &async_lsp::ServerSocket, path: &Path, uri: &Url, position: &Position) -> String {
+	let mut server = server.clone();
+	let uri = uri.clone();
+	let path = path.display();
+	let definition = server
+		.definition(GotoDefinitionParams {
+			text_document_position_params: TextDocumentPositionParams {
+				text_document: TextDocumentIdentifier { uri },
+				position: *position,
+			},
+			work_done_progress_params: Default::default(),
+			partial_result_params: Default::default(),
+		})
+		.await;
+	match definition {
+		Ok(Some(GotoDefinitionResponse::Scalar(location))) => {
+			// Check if the definition points to a valid file
+			if location.uri.to_file_path().is_ok() {
+				String::new()
+			} else {
+				format!(
+					"[def] invalid file path in {path}:{}:{}",
+					position.line + 1,
+					position.character + 1
+				)
+			}
+		}
+		Ok(Some(GotoDefinitionResponse::Array(locations))) => {
+			if !locations.is_empty() && locations[0].uri.to_file_path().is_ok() {
+				String::new()
+			} else {
+				format!(
+					"[def] no valid definitions in {path}:{}:{}",
+					position.line + 1,
+					position.character + 1
+				)
+			}
+		}
+		Ok(Some(GotoDefinitionResponse::Link(_))) => {
+			// For now, just accept any link response as valid
+			String::new()
+		}
+		Ok(None) => {
+			format!(
+				"[def] no definition found in {path}:{}:{}",
+				position.line + 1,
+				position.character + 1
+			)
+		}
+		Err(e) => {
+			format!(
+				"[def] failed to get definition: {e:?}\n\tat {path}:{}:{}",
+				position.line + 1,
+				position.character + 1
+			)
+		}
+	}
+}
+
+async fn expected_gotodefs(mut server: async_lsp::ServerSocket, path: &Path, uri: &Url, position: &Position) -> String {
+	let uri = uri.clone();
+	let path = path.display();
+	let definition = server
+		.definition(GotoDefinitionParams {
+			text_document_position_params: TextDocumentPositionParams {
+				text_document: TextDocumentIdentifier { uri },
+				position: *position,
+			},
+			work_done_progress_params: Default::default(),
+			partial_result_params: Default::default(),
+		})
+		.await;
+
+	if let Err(_) | Ok(None) = definition {
+		return format!("[jumpdef] in {path}:{}:{}", position.line + 1, position.character + 1);
+	}
+
+	String::new()
+}
+
+async fn expected_completions(
+	mut server: async_lsp::ServerSocket,
+	path: &Path,
+	uri: &Url,
+	position: &Position,
+	expected: &Vec<String>,
+) -> String {
+	let uri = uri.clone();
+	let path = path.display();
+	let completions = server
+		.completion(CompletionParams {
+			text_document_position: TextDocumentPositionParams {
+				text_document: TextDocumentIdentifier { uri },
+				position: *position,
+			},
+			work_done_progress_params: Default::default(),
+			partial_result_params: Default::default(),
+			context: None,
+		})
+		.await;
+	if let Ok(Some(CompletionResponse::List(list))) = completions {
+		let mut actual = list.items.iter().map(|comp| comp.label.to_string()).collect::<Vec<_>>();
+		let mut expected_sorted = expected.clone();
+		actual.sort();
+		expected_sorted.sort();
+		if expected_sorted != actual {
+			format!(
+				"[complete] in {path}:{}:{}\n{}",
+				position.line + 1,
+				position.character + 1,
+				Comparison::new(&expected[..], &actual[..]),
+			)
+		} else {
+			String::new()
+		}
+	} else {
+		format!(
+			"[complete] failed to get completions: {completions:?}\n\tat {path}:{}:{}",
+			position.line + 1,
+			position.character + 1
+		)
+	}
+}
+
+async fn expected_types(
+	server: &async_lsp::ServerSocket,
+	path: &Path,
+	uri: &Url,
+	position: &Position,
+	expected: &String,
+) -> String {
+	let uri = uri.clone();
+	let path = path.display();
+	let r#type = server
+		.request::<InspectType>(TextDocumentPositionParams {
+			text_document: TextDocumentIdentifier { uri: uri.clone() },
+			position: *position,
+		})
+		.await;
+	if let Ok(actual) = r#type {
+		let actual = actual.as_deref().unwrap_or("None");
+		if expected != actual {
+			format!(
+				"[type] in {path}:{}:{}  {}",
+				position.line + 1,
+				position.character + 1,
+				StrComparison::new(expected, actual),
+			)
+		} else {
+			String::new()
+		}
+	} else {
+		format!(
+			"[type] failed to get type: {type:?}\n\tat {path}:{}:{}",
+			position.line + 1,
+			position.character + 1
+		)
 	}
 }
 
@@ -420,6 +479,8 @@ fn js_query() -> &'static Query {
 struct Expected {
 	diag: Vec<(Position, String)>,
 	complete: Vec<(Position, Vec<String>)>,
+	/// Shared with `.complete`, but only when the cursor is pointed at an identifier
+	jumpdef: Vec<Position>,
 	r#type: Vec<(Position, String)>,
 	def: Vec<Position>,
 	related: Vec<(Position, String)>,
@@ -474,6 +535,7 @@ struct ParsedAssertion {
 	character: u32,
 	kind: String,
 	value: String,
+	is_alphanumeric: bool,
 }
 
 impl ParsedAssertion {
@@ -491,7 +553,7 @@ impl ParsedAssertion {
 	}
 }
 
-fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expected> {
+fn gather_assertions(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expected> {
 	let (glob, query, language) = match lang {
 		TestLanguages::Python => ("**/*.py", PyExpected::query as fn() -> _, tree_sitter_python::LANGUAGE),
 		TestLanguages::Xml => ("**/*.xml", xml_query as _, tree_sitter_xml::LANGUAGE_XML),
@@ -504,6 +566,8 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 	for file in globwalk::glob(&path).unwrap() {
 		let Ok(file) = file else { continue };
 		let contents = std::fs::read_to_string(file.path()).unwrap();
+		let rope = Rope::from_str(&contents);
+		let rope = rope.slice(..);
 		let expected = expected.entry(file.into_path()).or_default();
 		let mut parser = Parser::new();
 		parser.set_language(&language.into()).unwrap();
@@ -515,7 +579,7 @@ fn gather_expected(root: &Path, lang: TestLanguages) -> HashMap<PathBuf, Expecte
 		let mut captures = cursor.captures(query(), ast.root_node(), contents.as_bytes());
 		while let Some((match_, _)) = captures.next() {
 			for capture in match_.captures {
-				if let Some(assertion) = parse_assertion_from_capture(capture, &contents, &lang) {
+				if let Some(assertion) = parse_assertion_from_capture(capture, &contents, &lang, rope) {
 					assertions.push(assertion);
 				}
 			}
@@ -536,6 +600,7 @@ fn parse_assertion_from_capture(
 	capture: &tree_sitter::QueryCapture,
 	contents: &str,
 	lang: &TestLanguages,
+	rope: RopeSlice<'_>,
 ) -> Option<ParsedAssertion> {
 	let node_text = capture.node.utf8_text(contents.as_bytes()).ok()?;
 
@@ -560,15 +625,26 @@ fn parse_assertion_from_capture(
 
 	// Calculate position
 	let range = capture.node.range();
-	let line = range.start_point.row as _;
+	let line: u32 = range.start_point.row as _;
 	// The character position is where the caret appears in the original line
 	let character = (range.start_point.column + caret_pos_in_node) as u32;
+
+	// is the character one line above alphanumeric?
+	let ByteOffset(above_caret) = rope_conv(
+		tower_lsp_server::ls_types::Position {
+			line: line.saturating_sub(1),
+			character,
+		},
+		rope,
+	);
+	let is_alphanumeric = rope.char(above_caret).is_alphanumeric();
 
 	Some(ParsedAssertion {
 		line,
 		character,
 		kind,
 		value,
+		is_alphanumeric,
 	})
 }
 
@@ -585,6 +661,9 @@ fn process_assertions(expected: &mut Expected, assertions: Vec<ParsedAssertion>)
 			"complete" => {
 				let completions = assertion.value.split(' ').map(String::from).collect();
 				expected.complete.push((position, completions));
+				if assertion.is_alphanumeric {
+					expected.jumpdef.push(position);
+				}
 				last_non_related_position = Some(position);
 				i += 1;
 			}

@@ -7,7 +7,7 @@ Basic formatter for tree-sitter queries written in Scheme.
 
 ## Usage
 
-Install using `cargo install -p ts-indent`. The program operates on standard input and output.
+Install using `cargo install --path .`. The program operates on standard input and output.
 
 Example usage in Helix:
 
