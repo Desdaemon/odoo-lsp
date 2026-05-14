@@ -211,10 +211,11 @@ where
 impl<'a> From<RopeAdapter<'a, ByteOffset>> for Position {
 	fn from(value: RopeAdapter<'a, ByteOffset>) -> Self {
 		let RopeAdapter(offset, rope) = value;
-		let line = rope.byte_to_line_idx(offset.0, LINE_TYPE);
+		let byte = offset.0.min(rope.len());
+		let line = rope.byte_to_line_idx(byte, LINE_TYPE);
 		let line_start_byte = rope.line_to_byte_idx(line, LINE_TYPE);
 		let line_start_char = rope.byte_to_char_idx(line_start_byte);
-		let char_offset = rope.byte_to_char_idx(offset.0);
+		let char_offset = rope.byte_to_char_idx(byte);
 		let column = char_offset - line_start_char;
 		Position::new(line as u32, column as u32)
 	}
@@ -256,9 +257,13 @@ impl<'a> From<RopeAdapter<'a, ByteRange>> for Range {
 }
 
 fn position_to_char(position: Position, rope: RopeSlice<'_>) -> CharOffset {
-	let line_offset_in_byte = rope.line_to_byte_idx(position.line as usize, LINE_TYPE);
+	let line = (position.line as usize).min(rope.len_lines(LINE_TYPE));
+	let line_offset_in_byte = rope.line_to_byte_idx(line, LINE_TYPE);
 	let line_offset_in_char = rope.byte_to_char_idx(line_offset_in_byte);
-	CharOffset(line_offset_in_char + position.character as usize)
+	let char_offset = line_offset_in_char
+		.saturating_add(position.character as usize)
+		.min(rope.len_chars());
+	CharOffset(char_offset)
 }
 
 impl From<SpanAdapter<TextPos>> for Position {
@@ -829,6 +834,40 @@ mod tests {
 
 	use super::{WSL, to_display_path};
 	use pretty_assertions::assert_eq;
+
+	#[test]
+	fn position_to_byte_clamps_past_eof() {
+		use crate::prelude::{ByteOffset, LINE_TYPE};
+		use ropey::Rope;
+		use tower_lsp_server::ls_types::Position;
+
+		let rope = Rope::from_str("abc\ndef");
+		let slice = rope.slice(..);
+
+		let ByteOffset(byte) = super::rope_conv(Position::new(99, 0), slice);
+		assert_eq!(byte, slice.len());
+
+		let ByteOffset(byte) = super::rope_conv(Position::new(0, 99), slice);
+		assert_eq!(byte, slice.len());
+
+		let len_lines = slice.len_lines(LINE_TYPE) as u32;
+		let ByteOffset(byte) = super::rope_conv(Position::new(len_lines, 5), slice);
+		assert_eq!(byte, slice.len());
+	}
+
+	#[test]
+	fn byte_to_position_clamps_past_eof() {
+		use crate::prelude::ByteOffset;
+		use ropey::Rope;
+		use tower_lsp_server::ls_types::Position;
+
+		let rope = Rope::from_str("abc\ndef");
+		let slice = rope.slice(..);
+
+		let pos: Position = super::rope_conv(ByteOffset(usize::MAX / 2), slice);
+		assert_eq!(pos.line, 1);
+		assert_eq!(pos.character, 3);
+	}
 
 	#[test]
 	fn test_to_display_path() {
