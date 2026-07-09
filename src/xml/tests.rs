@@ -125,6 +125,44 @@ fn test_gather_refs_menuitem_parent() {
 }
 
 #[test]
+fn test_gather_refs_server_action_code() {
+	use crate::prelude::*;
+	use crate::test_utils::index::index_models_with_properties;
+	use crate::xml::{Index, Tokenizer};
+	use ropey::Rope;
+
+	let mut index = Index::default();
+	let py = r#"
+class ProjectTask(models.Model):
+    _name = 'project.task'
+
+    def action_reset(self):
+        pass
+"#;
+	index_models_with_properties(&mut index, Some(py), None, None);
+	let xml = r#"<record id="action_test" model="ir.actions.server">
+	<field name="model_id" ref="project.model_project_task"/>
+	<field name="state">code</field>
+	<field name="code">records.action_reset()</field>
+</record>"#;
+	let rope = Rope::from_str(xml);
+	let offset = xml.find("action_reset").unwrap() + 2;
+	let refs = index
+		.gather_refs(ByteOffset(offset), &mut Tokenizer::from(xml), rope.slice(..))
+		.unwrap();
+	assert!(
+		matches!(refs.ref_kind, Some(crate::xml::RefKind::PyExpr(_))),
+		"expected RefKind::PyExpr inside the code field, got {:?}",
+		refs.ref_kind
+	);
+	assert!(
+		matches!(refs.scope.get("records"), Some(Type::Model(model)) if model.as_str() == "project.task"),
+		"expected `records` to be typed as project.task, got {:?}",
+		refs.scope.get("records")
+	);
+}
+
+#[test]
 fn test_gather_refs_t_foreach_and_t_as() {
 	use crate::prelude::*;
 	use crate::xml::{Index, Tokenizer};

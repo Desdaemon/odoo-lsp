@@ -16,7 +16,8 @@ use crate::prelude::*;
 use crate::analyze::{Scope, Type, normalize, type_cache};
 use crate::component::{ComponentTemplate, PropType};
 use crate::index::Index;
-use crate::model::{Field, FieldKind, PropertyKind};
+use crate::model::{Field, FieldKind, ModelName, PropertyKind};
+use crate::python::PyCompletions;
 use crate::record::Record;
 use crate::template::gather_templates;
 use crate::{ImStr, errloc, format_loc, some, utils::*};
@@ -332,6 +333,23 @@ impl Backend {
 					self.index.build_scope(scope, node, py_offset, needle)
 				});
 				let scope = scope.unwrap_or(orig_scope);
+
+				let mut cursor = QueryCursor::new();
+				let mut matches = cursor.matches(PyCompletions::query(), root, needle.as_bytes());
+				while let Some(match_) = matches.next() {
+					for capture in match_.captures {
+						let range = capture.node.byte_range();
+						match PyCompletions::from(capture.index) {
+							Some(PyCompletions::XmlId) if range.contains(&py_offset) => {
+								return self.index.jump_def_xml_id(&needle[range.shrink(1)], uri);
+							}
+							Some(PyCompletions::Model) if range.contains(&py_offset) => {
+								return self.index.jump_def_model(&needle[range.shrink(1)]);
+							}
+							_ => {}
+						}
+					}
+				}
 				let (object, field, _) = some!(Self::attribute_node_at_offset(py_offset, ast.root_node(), needle));
 				let model = some!(self.index.type_of(object, &scope, needle));
 				let model = type_cache().resolve(model);
@@ -810,6 +828,11 @@ impl Index {
 		let mut expect_model_string = false;
 		let mut expect_template_string = false;
 		let mut expect_action_tag = false;
+		// <record model="ir.actions.server">
+		let mut server_action = false;
+		let mut server_action_model = None::<StrSpan>;
+		let mut expect_model_id_ref = false;
+		let mut expect_code_string = false;
 		let mut button_type: Option<&str> = None;
 		let mut scope = Scope::default();
 		let mut parser = Parser::new();
@@ -828,6 +851,8 @@ impl Index {
 			match token {
 				Ok(Token::ElementStart { local, prefix, .. }) => {
 					expect_model_string = false;
+					expect_model_id_ref = false;
+					expect_code_string = false;
 					depth += 1;
 					match local.as_str() {
 						"field" => tag = Some(Tag::Field),
@@ -862,6 +887,10 @@ impl Index {
 						"ref" if value_in_range => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 						}
+						"ref" if expect_model_id_ref => {
+							expect_model_id_ref = false;
+							server_action_model = Some(value);
+						}
 						"name" if value_in_range => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::PropertyName(
@@ -883,6 +912,15 @@ impl Index {
 						"name" if value.as_str() == "tag" => {
 							// ir.actions tag for a client action (on the `actions` registry)
 							expect_action_tag = true;
+						}
+						"name" if server_action && value.as_str() == "model_id" => {
+							// determines the evaluation model of the server action's code
+							ref_kind = Some(RefKind::Ref(value.as_str()));
+							expect_model_id_ref = true;
+						}
+						"name" if server_action && value.as_str() == "code" => {
+							// contents are Python code evaluated on the server action's model
+							expect_code_string = true;
 						}
 						"name" if value.as_str() == "arch" => {
 							arch_mode = true;
@@ -967,6 +1005,7 @@ impl Index {
 						ref_at_cursor = Some((value.as_str(), value.range()));
 						ref_kind = Some(RefKind::Model);
 					} else {
+						server_action = value.as_str() == "ir.actions.server";
 						model_filter = Some(vec![ImStr::from(value.as_str())]);
 					}
 				}
@@ -1098,10 +1137,28 @@ impl Index {
 						ref_kind = Some(RefKind::ActionTag);
 					}
 				}
+				Ok(Token::Text { text }) if expect_code_string => {
+					// keep the flag on: comments inside the field split the code into multiple text chunks
+					if text.range().contains_end(offset_at_cursor) {
+						ref_at_cursor = Some((text.as_str(), text.range()));
+						let py_offset = offset_at_cursor.saturating_sub(text.range().start);
+						ref_kind = Some(RefKind::PyExpr(py_offset));
+						scope.insert("env".to_string(), Type::Env);
+						if let Some(model) = (server_action_model.as_ref())
+							.and_then(|xmlid| self.model_of_ir_model_xmlid(xmlid.as_str()))
+						{
+							let type_ = Type::Model(_R(model).into());
+							scope.insert("model".to_string(), type_.clone());
+							scope.insert("record".to_string(), type_.clone());
+							scope.insert("records".to_string(), type_);
+						}
+					}
+				}
 				Ok(Token::ElementEnd { end, span }) => {
 					foreach_as.reset();
 					set_value.reset();
 					if let ElementEnd::Close(..) | ElementEnd::Empty = end {
+						expect_code_string = false;
 						if depth == arch_depth {
 							arch_mode = false;
 						}
@@ -1247,6 +1304,19 @@ impl Index {
 		}
 		scope.insert(identifier.to_string(), type_cache().resolve(tid).clone());
 		Ok(())
+	}
+	/// Resolves an `ir.model` xmlid, e.g. `base.model_res_partner`, to the model it refers to.
+	/// These records are generated by the ORM and cannot be found in the records index,
+	/// so the model's name is recovered from the `model_` prefixed part of the xmlid.
+	fn model_of_ir_model_xmlid(&self, xmlid: &str) -> Option<ModelName> {
+		let id = xmlid.split_once('.').map(|(_, id)| id).unwrap_or(xmlid);
+		let mangled = id.strip_prefix("model_")?;
+		self.models.iter().find_map(|entry| {
+			let model = _R(*entry.key());
+			(model.len() == mangled.len()
+				&& (model.bytes().zip(mangled.bytes())).all(|(m, c)| m == c || (m == b'.' && c == b'_')))
+			.then_some(*entry.key())
+		})
 	}
 }
 
