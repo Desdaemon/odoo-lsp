@@ -173,10 +173,10 @@ impl Display for MinLoc {
 
 impl From<MinLoc> for Location {
 	fn from(value: MinLoc) -> Self {
-		Location {
-			uri: format!("file://{}", value.path).parse().unwrap(),
-			range: value.range,
-		}
+		let uri = Uri::from_file_path(value.path.to_path())
+			// e.g. unix-style test paths, which are not absolute on Windows
+			.unwrap_or_else(|| format!("file://{}", value.path).parse().unwrap());
+		Location { uri, range: value.range }
 	}
 }
 
