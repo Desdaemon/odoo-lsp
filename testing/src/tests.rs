@@ -397,6 +397,9 @@ fn xml_query() -> &'static Query {
 
 		((Comment) @type
 		(#match? @type "\\^type "))
+
+		((Comment) @def
+		(#match? @def "\\^def"))
 	"#;
 	QUERY.get_or_init(|| Query::new(&tree_sitter_xml::LANGUAGE_XML.into(), XML_QUERY).unwrap())
 }
