@@ -163,6 +163,30 @@ class ProjectTask(models.Model):
 }
 
 #[test]
+fn test_gather_refs_config_parameter_key() {
+	use crate::prelude::*;
+	use crate::xml::{Index, Tokenizer};
+	use ropey::Rope;
+
+	let index = Index::default();
+	let xml = r#"<record id="param_test" model="ir.config_parameter">
+	<field name="key">foo.bar</field>
+	<field name="value">1</field>
+</record>"#;
+	let rope = Rope::from_str(xml);
+	let offset = xml.find("foo.bar").unwrap() + 2;
+	let refs = index
+		.gather_refs(ByteOffset(offset), &mut Tokenizer::from(xml), rope.slice(..))
+		.unwrap();
+	assert!(
+		matches!(refs.ref_kind, Some(crate::xml::RefKind::ConfigParameterKey)),
+		"expected RefKind::ConfigParameterKey inside the key field, got {:?}",
+		refs.ref_kind
+	);
+	assert_eq!(refs.ref_at_cursor.map(|(needle, _)| needle), Some("foo.bar"));
+}
+
+#[test]
 fn test_gather_refs_t_foreach_and_t_as() {
 	use crate::prelude::*;
 	use crate::xml::{Index, Tokenizer};

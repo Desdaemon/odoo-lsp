@@ -12,7 +12,7 @@ use ts_macros::query;
 use crate::prelude::*;
 
 use crate::analyze::{Type, type_cache};
-use crate::index::{_G, _I, _R, PathSymbol, index_models};
+use crate::index::{_G, _I, _R, PathSymbol, index_models_with_config_parameters};
 use crate::model::{ModelName, ModelType};
 use crate::xml::determine_csv_xmlid_subgroup;
 use crate::{backend::Backend, backend::Text};
@@ -27,7 +27,7 @@ mod tests;
 
 #[rustfmt::skip]
 query! {
-	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor, FieldType, HasGroups);
+	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor, FieldType, HasGroups, ConfigParameter);
 
 (call [
   (attribute [
@@ -141,6 +141,13 @@ query! {
       (decorator (_) @_)
       (function_definition) @SCOPE)*)
   (#not-match? @_ "^api.depends"))
+
+// any *.get_param(..)/*.set_param(..) call is assumed to target ir.config_parameter,
+// like has_group/user_has_groups above; receivers are not type-checked
+((call
+  (attribute (_) (identifier) @_param_fn)
+  (argument_list . (string) @CONFIG_PARAMETER))
+  (#match? @_param_fn "^(get|set)_param$"))
 }
 
 #[rustfmt::skip]
@@ -178,6 +185,7 @@ enum FieldDescriptors {
 	InverseName,
 	Related,
 	Groups,
+	ConfigParameter,
 }
 
 /// (module (_)*)
@@ -398,9 +406,15 @@ impl Backend {
 			// TODO: Limit range of possible updates based on delta
 			Text::Delta(_) => Cow::from(rope.slice(..)),
 		};
-		let models = index_models(&text)?;
+		let (models, config_parameters) = index_models_with_config_parameters(&text)?;
 		let path = PathSymbol::strip_root(root, path);
 		self.index.models.append(path, true, &models);
+		self.index.remove_config_parameters_of_path(path);
+		self.index.insert_config_parameters(
+			config_parameters
+				.into_iter()
+				.map(|(key, range)| (key, MinLoc { path, range })),
+		);
 		for model in models {
 			match model.type_ {
 				ModelType::Base { name, ancestors } => {
@@ -736,10 +750,20 @@ impl Backend {
 								let (needle, _) = some!(ref_);
 								return self.index.jump_def_xml_id(needle, uri);
 							}
+							Ok(FD::ConfigParameter) => {
+								let range = desc_value.byte_range().shrink(1);
+								let slice = Cow::from(ok!(rope.try_slice(range)));
+								return self.index.jump_def_config_parameter(&slice);
+							}
 							Ok(FD::Domain) | Err(_) => {}
 						}
 
 						return Ok(None);
+					}
+					Some(PyCompletions::ConfigParameter) if range.contains(&offset) => {
+						let range = range.shrink(1);
+						let slice = Cow::from(ok!(rope.try_slice(range)));
+						return self.index.jump_def_config_parameter(&slice);
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::ForXmlId)
@@ -751,6 +775,7 @@ impl Backend {
 					| Some(PyCompletions::ReadFn)
 					| Some(PyCompletions::Scope)
 					| Some(PyCompletions::FieldType)
+					| Some(PyCompletions::ConfigParameter)
 					| None => {}
 				}
 			}
@@ -945,10 +970,20 @@ impl Backend {
 								return self.index.method_references(prop, model);
 							}
 							Ok(FD::InverseName) => return Ok(None),
+							Ok(FD::ConfigParameter) => {
+								let range = desc_value.byte_range().shrink(1);
+								let slice = Cow::from(ok!(rope.try_slice(range)));
+								return self.index.config_parameter_references(&slice);
+							}
 							Ok(FD::Domain | FD::Related | FD::Groups) | Err(_) => {}
 						}
 
 						return Ok(None);
+					}
+					Some(PyCompletions::ConfigParameter) if range.contains(&offset) => {
+						let range = range.shrink(1);
+						let slice = Cow::from(ok!(rope.try_slice(range)));
+						return self.index.config_parameter_references(&slice);
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)
@@ -961,6 +996,7 @@ impl Backend {
 					| Some(PyCompletions::ReadFn)
 					| Some(PyCompletions::Scope)
 					| Some(PyCompletions::FieldType)
+					| Some(PyCompletions::ConfigParameter)
 					| None => {}
 				}
 			}
@@ -1134,10 +1170,22 @@ impl Backend {
 									.index
 									.hover_record(needle, Some(rope_conv(byte_range.map_unit(ByteOffset), rope)));
 							}
+							Ok(FD::ConfigParameter) => {
+								let range = desc_value.byte_range().shrink(1);
+								let lsp_range = span_conv(desc_value.range());
+								let slice = Cow::from(ok!(rope.try_slice(range)));
+								return self.index.hover_config_parameter(&slice, Some(lsp_range));
+							}
 							Ok(FD::Domain) | Err(_) => {}
 						}
 
 						return Ok(None);
+					}
+					Some(PyCompletions::ConfigParameter) if range.contains_end(offset) => {
+						let lsp_range = span_conv(capture.node.range());
+						let range = range.shrink(1);
+						let slice = Cow::from(ok!(rope.try_slice(range)));
+						return self.index.hover_config_parameter(&slice, Some(lsp_range));
 					}
 					Some(PyCompletions::Request)
 					| Some(PyCompletions::XmlId)
@@ -1149,6 +1197,7 @@ impl Backend {
 					| Some(PyCompletions::Scope)
 					| Some(PyCompletions::Prop)
 					| Some(PyCompletions::FieldType)
+					| Some(PyCompletions::ConfigParameter)
 					| None => {}
 				}
 			}

@@ -71,6 +71,9 @@ pub struct Index {
 	pub widgets: DashMap<ImStr, MinLoc>,
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub actions: DashMap<ImStr, MinLoc>,
+	/// ir.config_parameter key -> definition sites (XML records, config_parameter= kwargs, set_param() calls)
+	#[default(_code = "DashMap::with_shard_amount(4)")]
+	pub config_parameters: DashMap<ImStr, Vec<MinLoc>>,
 	/// Tracks auto_install modules that couldn't be loaded due to missing dependencies
 	/// Maps module_name -> list of missing dependencies with their dependency chains
 	#[default(_code = "DashMap::with_shard_amount(4)")]
@@ -99,6 +102,7 @@ enum Output {
 	Models {
 		path: PathSymbol,
 		models: Vec<Model>,
+		config_parameters: Vec<(ImStr, MinLoc)>,
 	},
 	JsItems {
 		components: HashMap<ComponentName, Component>,
@@ -108,6 +112,17 @@ enum Output {
 }
 
 impl Index {
+	pub fn insert_config_parameters(&self, entries: impl IntoIterator<Item = (ImStr, MinLoc)>) {
+		for (key, loc) in entries {
+			self.config_parameters.entry(key).or_default().push(loc);
+		}
+	}
+	pub fn remove_config_parameters_of_path(&self, path: PathSymbol) {
+		self.config_parameters.retain(|_, locs| {
+			locs.retain(|loc| loc.path != path);
+			!locs.is_empty()
+		});
+	}
 	pub fn delete_marked_entries(&self) {
 		self.records.retain(|_, record| !record.deleted);
 		self.models.retain(|_, model| !model.deleted);
@@ -639,11 +654,20 @@ impl Index {
 					metadata,
 					templates,
 				} => {
+					self.insert_config_parameters(metadata.iter().flatten().filter_map(|meta| match meta {
+						RecordMetadata::ConfigParameterKey { key, location } => Some((key.clone(), location.clone())),
+						_ => None,
+					}));
 					self.records.append(records.into_iter().zip(metadata.into_iter()));
 					self.templates.append(templates);
 				}
-				Output::Models { path, models } => {
+				Output::Models {
+					path,
+					models,
+					config_parameters,
+				} => {
 					self.models.append(path, false, &models);
+					self.insert_config_parameters(config_parameters);
 				}
 				Output::JsItems {
 					components,
@@ -1096,6 +1120,21 @@ query! {
   (#match? @NAME "^_(name|inherits?)$"))
 }
 
+#[rustfmt::skip]
+query! {
+	ConfigParameterQuery(Key);
+
+((call
+  (attribute (_) (identifier) @_set_param)
+  (argument_list . (string) @KEY))
+  (#eq? @_set_param "set_param"))
+
+((keyword_argument
+  (identifier) @_config_parameter
+  (string) @KEY)
+  (#eq? @_config_parameter "config_parameter"))
+}
+
 async fn add_root_py(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
 	let contents = ok!(
 		tokio::fs::read_to_string(&path).await,
@@ -1104,11 +1143,28 @@ async fn add_root_py(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
 	);
 
 	let path = PathSymbol::strip_root(root, &path);
-	let models = index_models(&contents)?;
-	Ok(Output::Models { path, models })
+	let (models, config_parameters) = index_models_with_config_parameters(&contents)?;
+	let config_parameters = config_parameters
+		.into_iter()
+		.map(|(key, range)| (key, MinLoc { path, range }))
+		.collect();
+	Ok(Output::Models {
+		path,
+		models,
+		config_parameters,
+	})
 }
 
 pub fn index_models(contents: &str) -> anyhow::Result<Vec<Model>> {
+	Ok(index_models_with_config_parameters(contents)?.0)
+}
+
+/// An `ir.config_parameter` key and the range of its defining string literal.
+pub type ConfigParameterDef = (ImStr, Range);
+
+/// Also collects `ir.config_parameter` keys defined by `set_param('key', ..)` calls
+/// and `config_parameter='key'` field kwargs, reusing the same AST.
+pub fn index_models_with_config_parameters(contents: &str) -> anyhow::Result<(Vec<Model>, Vec<ConfigParameterDef>)> {
 	let mut parser = tree_sitter::Parser::new();
 	parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
 
@@ -1243,7 +1299,24 @@ pub fn index_models(contents: &str) -> anyhow::Result<Vec<Model>> {
 			}
 		}
 	});
-	Ok(models.collect())
+	let models = models.collect();
+
+	let query = ConfigParameterQuery::query();
+	let mut cursor = QueryCursor::new();
+	let mut config_parameters = vec![];
+	let mut matches = cursor.matches(query, ast.root_node(), contents.as_bytes());
+	while let Some(match_) = matches.next() {
+		for key_node in match_.nodes_for_capture_index(ConfigParameterQuery::Key as _) {
+			let key = &contents[key_node.byte_range().shrink(1)];
+			// skip f-strings, concatenations and empty keys
+			if key.is_empty() || key.contains(['\'', '"', '{', '}']) {
+				continue;
+			}
+			config_parameters.push((ImStr::from(key), span_conv(key_node.range())));
+		}
+	}
+
+	Ok((models, config_parameters))
 }
 
 #[cfg(test)]
@@ -1977,6 +2050,32 @@ class TransifexCodeTranslation(models.Model):
 				..
 			}]
 		));
+	}
+
+	#[test]
+	fn test_index_config_parameters() {
+		let (_, config_parameters) = super::index_models_with_config_parameters(
+			r#"
+class ResConfigSettings(models.TransientModel):
+    _inherit = "res.config.settings"
+
+    module_foo = fields.Boolean(config_parameter='foo.from_kwarg')
+
+    def frobnicate(self):
+        self.env['ir.config_parameter'].sudo().set_param('foo.from_set_param', '1')
+        self.env['ir.config_parameter'].set_param(f'foo.{dynamic}', '1')
+        key = 'foo.variable'
+        self.env['ir.config_parameter'].set_param(key, '1')
+"#,
+		)
+		.unwrap();
+		let mut keys = config_parameters
+			.iter()
+			.map(|(key, _)| key.as_str())
+			.collect::<Vec<_>>();
+		keys.sort();
+		// f-strings and non-literal keys are not indexed
+		assert_eq!(keys, ["foo.from_kwarg", "foo.from_set_param"]);
 	}
 
 	#[test]

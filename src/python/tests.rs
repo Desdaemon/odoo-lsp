@@ -165,6 +165,31 @@ class Foo(models.AbstractModel):
 }
 
 #[test]
+fn test_py_completions_config_parameter() {
+	let mut parser = Parser::new();
+	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+	let contents = br#"
+icp.sudo().get_param('some.key')
+icp.set_param('other.key', '1')
+"#;
+	let ast = parser.parse(&contents[..], None).unwrap();
+	let query = PyCompletions::query();
+	let mut cursor = QueryCursor::new();
+	let expected: &[&[&str]] = &[&["get_param", "'some.key'"], &["set_param", "'other.key'"]];
+	let actual = cursor
+		.matches(query, ast.root_node(), &contents[..])
+		.map(|match_| {
+			match_
+				.captures
+				.iter()
+				.map(|capture| String::from_utf8_lossy(&contents[capture.node.byte_range()]))
+				.collect::<Vec<_>>()
+		})
+		.fold_mut(vec![], acc_vec);
+	assert_eq!(expected, actual);
+}
+
+#[test]
 fn test_attribute_node_at_offset() {
 	let mut parser = Parser::new();
 	parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();

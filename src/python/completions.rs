@@ -365,6 +365,24 @@ impl Backend {
 										items: items.into_inner(),
 									})));
 								}
+								Ok(FD::ConfigParameter) => {
+									if desc_value.kind() != "string" {
+										continue;
+									}
+									let range = desc_value.byte_range().shrink(1);
+									let needle = &contents[range.clone()][..offset - range.start];
+									let mut items = MaxVec::new(completions_limit);
+									self.index.complete_config_parameter(
+										needle,
+										range.map_unit(ByteOffset),
+										rope,
+										&mut items,
+									)?;
+									return Ok(Some(CompletionResponse::List(CompletionList {
+										is_incomplete: !items.has_space(),
+										items: items.into_inner(),
+									})));
+								}
 								Ok(FD::Domain) | Err(_) => {}
 							}
 						}
@@ -376,6 +394,17 @@ impl Backend {
 							}
 						}
 					}
+					Some(PyCompletions::ConfigParameter) if range.contains_end(offset) => {
+						let range = range.shrink(1);
+						let needle = &contents[range.clone()][..offset - range.start];
+						let mut items = MaxVec::new(completions_limit);
+						self.index
+							.complete_config_parameter(needle, range.map_unit(ByteOffset), rope, &mut items)?;
+						return Ok(Some(CompletionResponse::List(CompletionList {
+							is_incomplete: !items.has_space(),
+							items: items.into_inner(),
+						})));
+					}
 					Some(PyCompletions::Depends)
 					| Some(PyCompletions::MappedTarget)
 					| Some(PyCompletions::XmlId)
@@ -383,6 +412,7 @@ impl Backend {
 					| Some(PyCompletions::Scope)
 					| Some(PyCompletions::ReadFn)
 					| Some(PyCompletions::FieldType)
+					| Some(PyCompletions::ConfigParameter)
 					| None => {}
 				}
 			}
