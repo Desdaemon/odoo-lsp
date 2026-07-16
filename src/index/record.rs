@@ -69,7 +69,7 @@ impl RecordIndex {
 					.or_insert_with(Default::default)
 					.insert(qualified_id);
 			}
-			Some(RecordMetadata::View(_)) | None => {}
+			Some(RecordMetadata::View(_)) | Some(RecordMetadata::ConfigParameterKey { .. }) | None => {}
 		}
 		self.inner.insert(qualified_id, record);
 	}

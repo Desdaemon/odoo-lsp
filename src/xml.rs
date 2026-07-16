@@ -18,7 +18,7 @@ use crate::component::{ComponentTemplate, PropType};
 use crate::index::Index;
 use crate::model::{Field, FieldKind, ModelName, PropertyKind};
 use crate::python::PyCompletions;
-use crate::record::Record;
+use crate::record::{Record, RecordMetadata};
 use crate::template::gather_templates;
 use crate::{ImStr, errloc, format_loc, some, utils::*};
 use crate::{backend::Backend, backend::Text};
@@ -69,6 +69,8 @@ enum RefKind<'a> {
 	Widget,
 	/// `<field name="tag">..</field>`
 	ActionTag,
+	/// `<record model="ir.config_parameter"><field name="key">..</field></record>`
+	ConfigParameterKey,
 }
 
 enum Tag<'a> {
@@ -115,6 +117,7 @@ impl Backend {
 		};
 		let path = uri.to_file_path().unwrap();
 		let path_uri = PathSymbol::strip_root(root, &path);
+		let mut config_parameters = vec![];
 		loop {
 			match reader.next() {
 				Some(Ok(Token::ElementStart { local, span, .. })) => {
@@ -156,6 +159,9 @@ impl Backend {
 						};
 						let range = rope_conv(record.location.range, rope);
 						record_ranges.push(range);
+						if let Some(RecordMetadata::ConfigParameterKey { key, location }) = &metadata {
+							config_parameters.push((key.clone(), location.clone()));
+						}
 						self.index.records.insert(
 							_I(record.qualified_id()).into(),
 							record,
@@ -182,6 +188,10 @@ impl Backend {
 				}
 				_ => {}
 			}
+		}
+		if did_save {
+			self.index.remove_config_parameters_of_path(path_uri);
+			self.index.insert_config_parameters(config_parameters);
 		}
 		self.record_ranges
 			.insert(uri.path().as_str().to_string(), record_ranges.into_boxed_slice());
@@ -366,6 +376,7 @@ impl Backend {
 			}
 			Some(RefKind::Widget) => self.index.jump_def_widget(needle),
 			Some(RefKind::ActionTag) => self.index.jump_def_action_tag(needle),
+			Some(RefKind::ConfigParameterKey) => self.index.jump_def_config_parameter(needle),
 			None => Ok(None),
 		}
 	}
@@ -396,6 +407,7 @@ impl Backend {
 			Some(RefKind::Ref(_)) | Some(RefKind::Id) => self.record_references(&path, cursor_value, current_module),
 			Some(RefKind::TInherit) | Some(RefKind::TCall) => self.index.template_references(cursor_value, true),
 			Some(RefKind::TName) => self.index.template_references(cursor_value, false),
+			Some(RefKind::ConfigParameterKey) => self.index.config_parameter_references(cursor_value),
 			Some(RefKind::PyExpr(_))
 			| Some(RefKind::PropertyName(_))
 			| Some(RefKind::MethodName(_))
@@ -503,6 +515,7 @@ impl Backend {
 				}))
 			}
 			Some(RefKind::Component) => Ok(self.index.hover_component(needle, lsp_range)),
+			Some(RefKind::ConfigParameterKey) => self.index.hover_config_parameter(needle, lsp_range),
 			Some(RefKind::PropOf(component_key)) => {
 				if let Some((handler, _)) = needle.split_once('.') {
 					// accept handler.bind syntax as well
@@ -796,7 +809,7 @@ impl Index {
 			RefKind::ActionTag => {
 				self.complete_action_tag(/*needle/, */ replace_range, rope, &mut items)?;
 			}
-			RefKind::TName | RefKind::Component => return Ok(None),
+			RefKind::TName | RefKind::Component | RefKind::ConfigParameterKey => return Ok(None),
 		}
 
 		Ok(Some(CompletionResponse::List(CompletionList {
@@ -828,6 +841,9 @@ impl Index {
 		let mut expect_model_string = false;
 		let mut expect_template_string = false;
 		let mut expect_action_tag = false;
+		let mut expect_config_parameter_key = false;
+		// <record model="ir.config_parameter">
+		let mut config_parameter_record = false;
 		// <record model="ir.actions.server">
 		let mut server_action = false;
 		let mut server_action_model = None::<StrSpan>;
@@ -912,6 +928,10 @@ impl Index {
 						"name" if value.as_str() == "tag" => {
 							// ir.actions tag for a client action (on the `actions` registry)
 							expect_action_tag = true;
+						}
+						"name" if config_parameter_record && value.as_str() == "key" => {
+							// contents are an ir.config_parameter key
+							expect_config_parameter_key = true;
 						}
 						"name" if server_action && value.as_str() == "model_id" => {
 							// determines the evaluation model of the server action's code
@@ -1006,6 +1026,7 @@ impl Index {
 						ref_kind = Some(RefKind::Model);
 					} else {
 						server_action = value.as_str() == "ir.actions.server";
+						config_parameter_record = value.as_str() == "ir.config_parameter";
 						model_filter = Some(vec![ImStr::from(value.as_str())]);
 					}
 				}
@@ -1135,6 +1156,13 @@ impl Index {
 					if text.range().contains_end(offset_at_cursor) {
 						ref_at_cursor = Some((text.as_str(), text.range()));
 						ref_kind = Some(RefKind::ActionTag);
+					}
+				}
+				Ok(Token::Text { text }) if expect_config_parameter_key => {
+					expect_config_parameter_key = false;
+					if text.range().contains_end(offset_at_cursor) {
+						ref_at_cursor = Some((text.as_str(), text.range()));
+						ref_kind = Some(RefKind::ConfigParameterKey);
 					}
 				}
 				Ok(Token::Text { text }) if expect_code_string => {

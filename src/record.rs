@@ -22,6 +22,11 @@ pub struct Record {
 /// Used for data not essential to the record itself, but for other bookkeeping purposes.
 pub enum RecordMetadata {
 	View(ModelName),
+	/// `<record model="ir.config_parameter"><field name="key">..</field></record>`
+	ConfigParameterKey {
+		key: ImStr,
+		location: MinLoc,
+	},
 }
 
 impl Record {
@@ -75,6 +80,17 @@ impl Record {
 						// model.is_some_and(|model| _R(model) == "ir.ui.view") &&
 						let Some(viewmodel) = extract_model_text(reader) {
 							metadata = Some(RecordMetadata::View(_I(viewmodel).into()));
+						} else if model.is_some_and(|model: ModelName| _R(*model) == "ir.config_parameter")
+							&& let Some((key, key_range)) = extract_key_text(reader)
+							&& !key.is_empty()
+						{
+							metadata = Some(RecordMetadata::ConfigParameterKey {
+								key: key.into(),
+								location: MinLoc {
+									path,
+									range: rope_conv(key_range.map_unit(ByteOffset), rope),
+								},
+							});
 						}
 					}
 				}
@@ -329,12 +345,34 @@ fn extract_model_text<'text>(reader: &Tokenizer<'text>) -> Option<&'text str> {
 	None
 }
 
+fn extract_key_text<'text>(reader: &Tokenizer<'text>) -> Option<(&'text str, core::ops::Range<usize>)> {
+	let mut reader = reader.clone();
+	let mut is_key_field = false;
+	loop {
+		match reader.next() {
+			Some(Ok(Token::Attribute { local, value, .. })) if local.as_str() == "name" && value.as_str() == "key" => {
+				is_key_field = true;
+			}
+			Some(Ok(Token::Text { text })) if is_key_field => {
+				return Some((text.as_str(), text.range()));
+			}
+			Some(Ok(Token::ElementEnd {
+				end: ElementEnd::Close(..) | ElementEnd::Empty,
+				..
+			})) => break,
+			None | Some(Err(_)) => break,
+			_ => {}
+		}
+	}
+	None
+}
+
 #[cfg(test)]
 mod tests {
 	use pretty_assertions::assert_eq;
 	use xmlparser::Tokenizer;
 
-	use crate::record::extract_model_text;
+	use crate::record::{extract_key_text, extract_model_text};
 
 	#[test]
 	fn test_extract_model_text() {
@@ -344,5 +382,23 @@ mod tests {
 			"#,
 		);
 		assert_eq!(extract_model_text(&reader), Some("blah"));
+	}
+
+	#[test]
+	fn test_extract_key_text() {
+		let contents = r#"
+				<field name="key">some.key</field>
+			"#;
+		let reader = Tokenizer::from(contents);
+		let (text, range) = extract_key_text(&reader).unwrap();
+		assert_eq!(text, "some.key");
+		assert_eq!(&contents[range], "some.key");
+
+		let reader = Tokenizer::from(
+			r#"
+				<field name="value">blah</field>
+			"#,
+		);
+		assert_eq!(extract_key_text(&reader), None);
 	}
 }

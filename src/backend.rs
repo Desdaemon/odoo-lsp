@@ -1178,6 +1178,30 @@ impl Index {
 		let field = some!(self.actions.get(tag.as_bytes()));
 		Ok(Some(field.value().clone().into()))
 	}
+	pub fn jump_def_config_parameter(&self, key: &str) -> anyhow::Result<Option<Location>> {
+		let locations = some!(self.config_parameters.get(key.as_bytes()));
+		Ok(locations.value().first().map(|loc| loc.clone().into()))
+	}
+	pub fn config_parameter_references(&self, key: &str) -> anyhow::Result<Option<Vec<Location>>> {
+		let locations = some!(self.config_parameters.get(key.as_bytes()));
+		Ok(Some(locations.value().iter().map(|loc| loc.clone().into()).collect()))
+	}
+	pub fn hover_config_parameter(&self, key: &str, range: Option<Range>) -> anyhow::Result<Option<Hover>> {
+		let locations = some!(self.config_parameters.get(key.as_bytes()));
+		let module = (locations.value().first()).and_then(|loc| self.find_module_of(&loc.path.to_path()));
+		let value = fomat!(
+			"```\n"
+			"(ir.config_parameter) " (key) "\n"
+			"```"
+			if let Some(module) = module {
+				"\n*Defined in:* `" (_R(module)) "`"
+			}
+		);
+		Ok(Some(Hover {
+			contents: HoverContents::Scalar(MarkedString::String(value)),
+			range,
+		}))
+	}
 	#[instrument(level = "trace", skip(self), ret)]
 	pub fn hover_model(
 		&self,
@@ -1247,6 +1271,30 @@ impl Index {
 			})
 		});
 		items.extend(completions);
+		Ok(())
+	}
+	pub fn complete_config_parameter(
+		&self,
+		needle: &str,
+		range: ByteRange,
+		rope: RopeSlice<'_>,
+		items: &mut MaxVec<CompletionItem>,
+	) -> anyhow::Result<()> {
+		let range = rope_conv(range, rope);
+		let mut keys = (self.config_parameters.iter())
+			.filter(|entry| entry.key().starts_with(needle))
+			.map(|entry| entry.key().to_string())
+			.collect::<Vec<_>>();
+		keys.sort();
+		items.extend(keys.into_iter().map(|key| CompletionItem {
+			text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+				range,
+				new_text: key.clone(),
+			})),
+			label: key,
+			kind: Some(CompletionItemKind::CONSTANT),
+			..Default::default()
+		}));
 		Ok(())
 	}
 	pub fn hover_component(&self, name: &str, range: Option<Range>) -> Option<Hover> {

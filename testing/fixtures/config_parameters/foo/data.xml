@@ -1,0 +1,9 @@
+<odoo>
+
+	<record id="config_param_test" model="ir.config_parameter">
+		<field name="key">foo.from_xml</field>
+		<!--              ^def -->
+		<field name="value">1</field>
+	</record>
+
+</odoo>

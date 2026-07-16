@@ -212,6 +212,7 @@ impl Backend {
 					| Some(PyCompletions::Prop)
 					| Some(PyCompletions::ReadFn)
 					| Some(PyCompletions::FieldType)
+					| Some(PyCompletions::ConfigParameter)
 					| None => {}
 				}
 			}
