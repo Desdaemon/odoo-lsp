@@ -9,7 +9,7 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 /// Define a [tree-sitter query], optionally extracting its named captures into an enum.
 ///
 /// *Usage:*
-/// ```rust,noplayground
+/// ```ignore
 /// ts_macros::query! {
 ///     MyQuery(Foo, Bar);
 /// (function_definition
@@ -23,7 +23,7 @@ use syn::{parse::Parse, punctuated::Punctuated, *};
 /// ```
 ///
 /// Generates:
-/// ```rust,noplayground
+/// ```ignore
 /// pub enum MyQuery {
 ///     Foo = 0,
 ///     Bar = 2,

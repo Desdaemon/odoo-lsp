@@ -4,7 +4,7 @@ class Foo(models.Model):
     foo_id = fields.Many2one('foo')
     bar_id = fields.Many2one('bar')
     unrelated = fields.Char()
-    foo_ids = fields.One2many('foo', inverse_name='foo')
+    foo_ids = fields.One2many('foo', inverse_name='foo_id')
     #                                              ^complete foo_id
 
 class Bar(models.Model):

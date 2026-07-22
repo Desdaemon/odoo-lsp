@@ -27,6 +27,7 @@ mod tests;
 
 #[rustfmt::skip]
 query! {
+	#[derive(Debug, PartialEq)]
 	PyCompletions(Request, XmlId, Mapped, MappedTarget, Depends, ReadFn, Model, Prop, ForXmlId, Scope, FieldDescriptor, FieldType, HasGroups, ConfigParameter);
 
 (call [
@@ -756,7 +757,49 @@ impl Backend {
 								let slice = Cow::from(ok!(rope.try_slice(range)));
 								return self.index.jump_def_config_parameter(&slice);
 							}
-							Ok(FD::Domain) | Err(_) => {}
+							Ok(FD::Domain) => {
+								let comodel_name = extract_comodel_name(match_.captures, &contents)
+									.map(|comodel| &contents[comodel.byte_range().shrink(1)]);
+								let mut domain_node = desc_value;
+								if domain_node.kind() == "lambda" {
+									domain_node = some!(domain_node.child_by_field_name("body"));
+								}
+								if domain_node.kind() != "list" {
+									return Ok(None);
+								}
+								// find the domain leaf whose field name contains the cursor
+								// [("age", ">", 42)]
+								//    ^ this one
+								let field = domain_node.named_children(&mut domain_node.walk()).find_map(|leaf| {
+									if leaf.kind() != "tuple" {
+										return None;
+									}
+									let field = leaf.python_nth_named_child::<0>()?;
+									field.byte_range().contains(&offset).then_some(field)
+								});
+								let field = some!(field);
+								let root = some!(top_level_stmt(root_node, range.end));
+								// same as PyCompletions::Mapped, but resolved against the comodel
+								let Some(mapped) = self.gather_mapped(
+									root,
+									match_,
+									Some(offset),
+									field.byte_range(),
+									comodel_name,
+									&contents,
+									false,
+									None,
+								) else {
+									break;
+								};
+								let mut needle = mapped.needle;
+								let mut model = _I(mapped.model);
+								if !mapped.single_field {
+									some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+								}
+								return self.index.jump_def_property_name(needle, _R(model));
+							}
+							Err(_) => {}
 						}
 
 						return Ok(None);
