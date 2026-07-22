@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
 
 use ropey::Rope;
@@ -176,22 +175,25 @@ impl LanguageServer for Backend {
 		self.ensure_nonoverlapping_roots();
 		info!(workspaces = ?self.workspaces);
 
-		for ws in self.workspaces.iter() {
-			if let Err(err) = (self.index)
-				.add_root(Path::new(ws.key()), Some(self.client.clone()))
-				.await
-			{
-				error!("could not add root {}:\n{err}", ws.key().display());
+		// Snapshot the workspace paths before awaiting: holding a `workspaces.iter()`
+		// shard read-guard across `add_root().await` deadlocks against a concurrent
+		// `workspaces.insert()` writer (reachable via un-gated `did_change_watched_files`),
+		// especially on low-core runtimes with few worker threads.
+		let workspaces = self.workspaces.iter().map(|ws| ws.key().to_owned()).collect::<Vec<_>>();
+		for ws in workspaces {
+			if let Err(err) = (self.index).add_root(&ws, Some(self.client.clone())).await {
+				error!("could not add root {}:\n{err}", ws.display());
 			}
 		}
 	}
 	#[instrument(skip_all, ret, fields(uri=params.text_document.uri.as_str()))]
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
-		self.root_setup.wait(loc!()).await;
 		// NB: fixes a race condition where completions are requested even before
 		// did_open had a chance to put in a blocker for the document, leading to
-		// flaky tests and the first completion request yielding nothing (super minor issue)
-		let _blocker = self.root_setup.block(loc!());
+		// flaky tests and the first completion request yielding nothing (super minor issue).
+		// `block_wait` acquires atomically — a plain `wait().await` + `block()` races
+		// with other concurrent `did_open`s and panics in `block`, killing the service.
+		let _blocker = self.root_setup.block_wait(loc!()).await;
 
 		let file_path = params.text_document.uri.to_file_path().unwrap();
 		let file_path_str = file_path.to_str().unwrap();

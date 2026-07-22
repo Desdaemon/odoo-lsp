@@ -96,6 +96,105 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) -> ExitCode {
 	}
 }
 
+/// Full-server harness for the "deadlock when opening files" symptom.
+///
+/// Mimics an editor opening every source file in a project at once on a low-core
+/// machine (`worker_threads = 1`, high `concurrency_level`) and immediately asking
+/// each for diagnostics. If any shared lock (a `DashMap` shard guard or a `by_prefix`
+/// `RwLock`) is held across an `.await` — or across the blocking module-load globwalk
+/// — a worker thread wedges and the diagnostic requests never return. That is caught
+/// by the per-probe `tokio::time::timeout` (a true worker-block can't be rescued by
+/// the server's own `TimeoutLayer`, since a blocked thread can't poll it).
+#[rstest]
+#[case("basic")]
+#[case("basic_xml")]
+#[case("auto_install_basic")]
+#[case("super_analysis")]
+#[case("python_imports")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[timeout(Duration::from_secs(120))]
+async fn concurrent_open_stays_responsive(#[case] fixture: &str) {
+	init_tracing();
+	let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures").join(fixture);
+	// High concurrency + a single worker thread is the worst case that matches the
+	// user's report (deadlocks more often on weaker machines / lower core counts).
+	let mut server = server::setup_lsp_server(Some(16));
+
+	server
+		.initialize(InitializeParams {
+			workspace_folders: Some(vec![WorkspaceFolder {
+				uri: Url::from_file_path(&root).unwrap(),
+				name: fixture.to_string(),
+			}]),
+			..Default::default()
+		})
+		.await
+		.expect("initialize failed");
+	_ = server.notify::<notification::Initialized>(InitializedParams {});
+
+	let pattern = root.join("**/*.{py,xml,js}");
+	let files: Vec<PathBuf> = globwalk::glob(pattern.to_string_lossy())
+		.unwrap()
+		.filter_map(|entry| entry.ok().map(|entry| entry.into_path()))
+		.collect();
+	assert!(!files.is_empty(), "fixture {fixture} has no source files");
+
+	// Open every file at once and demand diagnostics for each, all concurrently.
+	let mut probes: FuturesUnordered<_> = files
+		.iter()
+		.cloned()
+		.map(|path| {
+			let mut server = server.clone();
+			async move {
+				let text = std::fs::read_to_string(&path).unwrap_or_default();
+				let uri = Url::from_file_path(&path).unwrap();
+				let language_id = match path.extension().and_then(|ext| ext.to_str()) {
+					Some("xml") => "xml",
+					Some("js") => "javascript",
+					_ => "python",
+				}
+				.to_string();
+				_ = server.did_open(DidOpenTextDocumentParams {
+					text_document: TextDocumentItem {
+						uri: uri.clone(),
+						language_id,
+						version: 1,
+						text,
+					},
+				});
+				server
+					.document_diagnostic(DocumentDiagnosticParams {
+						text_document: TextDocumentIdentifier { uri },
+						identifier: None,
+						previous_result_id: None,
+						work_done_progress_params: Default::default(),
+						partial_result_params: Default::default(),
+					})
+					.await
+			}
+		})
+		.collect();
+
+	let mut completed = 0usize;
+	loop {
+		match tokio::time::timeout(Duration::from_secs(30), probes.next()).await {
+			Ok(Some(res)) => {
+				res.unwrap_or_else(|err| panic!("diagnostic request errored: {err:?}"));
+				completed += 1;
+			}
+			Ok(None) => break,
+			Err(_) => panic!(
+				"server became unresponsive after {completed}/{} files — deadlock while opening files",
+				files.len()
+			),
+		}
+	}
+	assert_eq!(completed, files.len());
+
+	_ = server.shutdown(()).await;
+	_ = server.exit(());
+}
+
 async fn gather_expecteds(mut server: async_lsp::ServerSocket, path: PathBuf, expected: Expected) -> Vec<String> {
 	let text = match std::fs::read_to_string(&path) {
 		Ok(t) => t,

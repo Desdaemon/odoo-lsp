@@ -583,6 +583,44 @@ impl Semaphore {
 		Blocker(self)
 	}
 
+	/// Waits until this semaphore is free, then atomically acquires it.
+	///
+	/// Prefer this over [`Self::wait`] followed by [`Self::block`]: that pair is not
+	/// atomic, so two tasks can both observe the semaphore as free and then one of
+	/// them panics in `block` (a race that surfaces when several `did_open`s arrive at
+	/// once, especially on low-core machines). `block_wait` hands the lock off to one
+	/// waiter at a time instead.
+	#[must_use]
+	pub async fn block_wait(&self, context: &'static str) -> Blocker<'_> {
+		loop {
+			// Register for notifications BEFORE the (possibly failing) acquire, so a
+			// release happening between the failed CAS and the await is not lost.
+			let notified = self.notifier.notified();
+			tokio::pin!(notified);
+			notified.as_mut().enable();
+
+			if self
+				.should_wait
+				.compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
+				.is_ok()
+			{
+				warn!(
+					"{context} thread={:?} acquired lock on {:p}",
+					std::thread::current().id(),
+					self
+				);
+				return Blocker(self);
+			}
+
+			tokio::select! {
+				_ = notified.as_mut() => {}
+				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
+					warn!("[{context}] WAIT_LIMIT elapsed while acquiring (thread={:?}, lock={self:p})", std::thread::current().id());
+				}
+			}
+		}
+	}
+
 	/// ### Safety
 	/// Should only be used by the initialization flow ONCE.
 	#[must_use]
@@ -599,9 +637,20 @@ impl Semaphore {
 
 	/// Waits for a maximum of [`WAIT_LIMIT`][Self::WAIT_LIMIT] for a notification.
 	pub async fn wait(&self, context: &'static str) {
-		while self.should_wait.load(Ordering::Relaxed) {
+		while self.should_wait.load(Ordering::Acquire) {
+			// Register interest before re-checking, so a release between the check and
+			// the await is not lost. `notify_waiters` wakes every waiter at once, so a
+			// wakeup does not imply the semaphore is free — loop and re-check rather
+			// than returning eagerly (a spurious return would let a waiter proceed
+			// while a blocker is still held).
+			let notified = self.notifier.notified();
+			tokio::pin!(notified);
+			notified.as_mut().enable();
+			if !self.should_wait.load(Ordering::Acquire) {
+				return;
+			}
 			tokio::select! {
-				_ = self.notifier.notified() => return,
+				_ = notified.as_mut() => {}
 				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
 					warn!("[{context}] WAIT_LIMIT elapsed (thread={:?}, lock={self:p})", std::thread::current().id());
 				}

@@ -127,9 +127,13 @@ impl Index {
 		self.records.retain(|_, record| !record.deleted);
 		self.models.retain(|_, model| !model.deleted);
 
+		// Snapshot the surviving keys first. Calling `contains_key` (a shard read-lock)
+		// while `iter_mut()` holds that same shard's write-lock deadlocks reentrantly as
+		// soon as both land on the same shard — near-certain with only 4 shards.
+		let live = self.models.iter().map(|entry| *entry.key()).collect::<HashSet<_>>();
 		for mut model in self.models.iter_mut() {
 			let before = model.ancestors.len();
-			model.ancestors.retain(|key| self.models.contains_key(key));
+			model.ancestors.retain(|key| live.contains(key));
 			if model.ancestors.len() != before {
 				model.fields = None;
 				model.methods = None;
@@ -546,10 +550,12 @@ impl Index {
 			}
 		}
 
-		let mut modules = Vec::new();
-		let mut roots = Vec::new();
-		let mut key_to_idx = HashMap::new();
 		let mut visited = std::collections::HashSet::new();
+		// (module_key, root_key, module_dir) for modules that still need loading.
+		// The `roots` shard read-guard is held only while snapshotting these owned
+		// values, so the blocking globwalk below never runs while a `roots` lock is
+		// held — otherwise it would stall any concurrent `add_root` writer.
+		let mut work: Vec<(ModuleName, Spur, PathBuf)> = Vec::new();
 
 		let mut stack = vec![(module_name, false)];
 		while let Some((module_key, deps_done)) = stack.pop() {
@@ -570,32 +576,28 @@ impl Index {
 					}
 				}
 			} else {
-				// All dependencies processed, add to result
+				// All dependencies processed: claim the module and snapshot the data
+				// needed for the (blocking) filesystem walk, then release the guard.
 				for root in self.roots.iter() {
-					if root.contains_key(&module_key) {
-						key_to_idx.insert(module_key, modules.len());
-						modules.push(module_key);
-						roots.push(root);
+					let Some(module) = root.get(&module_key) else {
+						continue;
+					};
+					if module.loaded.compare_exchange(false, true, Relaxed, Relaxed) != Ok(false) {
 						break;
 					}
+					let root_display = root.key().to_string_lossy();
+					let root_key = _I(&root_display);
+					let module_dir = Path::new(&*root_display).join(&module.path);
+					work.push((module_key, root_key, module_dir));
+					break;
 				}
 			}
 		}
 
 		let mut outputs = tokio::task::JoinSet::new();
-		for (module_key, root) in modules.into_iter().zip(roots.into_iter()) {
+		for (module_key, root_key, module_dir) in work {
 			trace!("{} depends on {}", _R(module_name), _R(module_key));
-			let root_display = root.key().to_string_lossy();
-			let root_key = _I(&root_display);
-			let module = root
-				.get(&module_key)
-				.expect(format_loc!("module must already be present by now"));
-			if module.loaded.compare_exchange(false, true, Relaxed, Relaxed) != Ok(false) {
-				continue;
-			}
-
 			info!("{} depends on {}", _R(module_name), _R(module_key));
-			let module_dir = Path::new(&*root_display).join(&module.path);
 			if let Ok(xmls) = globwalk::glob_builder(format!("{}/**/*.xml", module_dir.display()))
 				.file_type(FileType::FILE | FileType::SYMLINK)
 				.follow_links(true)
@@ -2130,6 +2132,68 @@ class ResConfigSettings(models.TransientModel):
 			Err(e) => {
 				panic!("Parsing should succeed but with incomplete results, got error: {e}");
 			}
+		}
+	}
+
+	/// Regression test for a reentrant `DashMap` deadlock in
+	/// [`Index::delete_marked_entries`].
+	///
+	/// The buggy version held `models.iter_mut()`'s shard write-lock while calling
+	/// `models.contains_key(..)` (a shard read-lock) inside the ancestor-retain
+	/// closure. With only 4 shards, an ancestor key on the shard currently being
+	/// iterated caused a read-vs-write deadlock on a single thread. Here every model
+	/// lists every model (itself included) as an ancestor, so the first
+	/// `contains_key` targets the shard the iterator already write-locks — a
+	/// guaranteed hang on the old code. The worker runs on a separate thread with a
+	/// watchdog so a regression fails loudly instead of wedging the whole suite.
+	#[test]
+	fn delete_marked_entries_does_not_deadlock() {
+		use crate::model::{ModelEntry, ModelName};
+		use std::sync::mpsc;
+		use std::sync::Arc;
+		use std::time::Duration;
+
+		let index = Index::default();
+
+		let names: Vec<ModelName> = (0..8)
+			.map(|i| ModelName::from(_I(format!("test.deadlock.model_{i}"))))
+			.collect();
+
+		// Every model keeps ALL names (itself included) as ancestors and is not
+		// deleted, forcing the ancestor-retain pass that re-locks the map.
+		for &name in &names {
+			index.models.insert(
+				name,
+				ModelEntry {
+					ancestors: names.clone(),
+					deleted: false,
+					..Default::default()
+				},
+			);
+		}
+
+		let index = Arc::new(index);
+		let worker = index.clone();
+		let (tx, rx) = mpsc::channel();
+		std::thread::spawn(move || {
+			worker.delete_marked_entries();
+			let _ = tx.send(());
+		});
+
+		match rx.recv_timeout(Duration::from_secs(10)) {
+			Ok(()) => {
+				// Nothing was deleted, so every model's ancestors survive intact.
+				for &name in &names {
+					let entry = index.models.get(&name).expect("model should still be present");
+					assert_eq!(entry.ancestors.len(), names.len(), "live ancestors must be retained");
+				}
+			}
+			Err(mpsc::RecvTimeoutError::Timeout) => {
+				// The worker is wedged on the reentrant shard lock and will never
+				// finish; leaving it detached is fine — the process exits at suite end.
+				panic!("delete_marked_entries deadlocked (reentrant DashMap lock)");
+			}
+			Err(e) => panic!("worker channel error: {e}"),
 		}
 	}
 }

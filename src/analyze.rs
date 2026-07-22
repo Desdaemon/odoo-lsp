@@ -1435,8 +1435,13 @@ impl Index {
 			return Some(tid);
 		}
 
-		let location = method_obj.locations.first().cloned()?;
+		// Drop `model_entry` before the `?` may early-return: locals drop in reverse
+		// declaration order, so an early return here would otherwise run the `defer!`
+		// (which re-locks `self.models.get_mut(&model)`) while `model_entry` is still
+		// held — a reentrant same-key deadlock.
+		let location = method_obj.locations.first().cloned();
 		drop(model_entry);
+		let location = location?;
 
 		let ast;
 		let contents;

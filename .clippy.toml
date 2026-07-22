@@ -17,3 +17,23 @@ reason = "Would deadlock if same thread wants to acquire a reference"
 [[await-holding-invalid-types]]
 path = "dashmap::mapref::one::Ref"
 reason = "Would deadlock if same thread wants to acquire a reference"
+
+[[await-holding-invalid-types]]
+path = "dashmap::mapref::multiple::RefMulti"
+reason = "iter() holds a shard read-lock; holding it across await can deadlock a writer"
+
+[[await-holding-invalid-types]]
+path = "dashmap::mapref::multiple::RefMutMulti"
+reason = "iter_mut() holds a shard write-lock; holding it across await can deadlock"
+
+[[await-holding-invalid-types]]
+path = "std::sync::RwLockReadGuard"
+reason = "by_prefix tries use std RwLock; holding a guard across await can block a worker thread"
+
+[[await-holding-invalid-types]]
+path = "std::sync::RwLockWriteGuard"
+reason = "by_prefix tries use std RwLock; holding a guard across await can block a worker thread"
+
+[[await-holding-invalid-types]]
+path = "std::sync::MutexGuard"
+reason = "holding a std Mutex guard across await can block a worker thread"
