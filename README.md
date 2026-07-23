@@ -7,6 +7,10 @@
 [![VS Marketplace](https://vsmarketplacebadges.dev/version-short/desdaemon.odoo-lsp.svg)](https://marketplace.visualstudio.com/items?itemName=Desdaemon.odoo-lsp)
 [![Open VSX](https://img.shields.io/open-vsx/v/desdaemon/odoo-lsp?label=Open%20VSX)](https://open-vsx.org/extension/Desdaemon/odoo-lsp)
 
+> [!NOTE]
+> This project is **NOT** affiliated with Odoo or [odoo-ls](https://github.com/odoo/odoo-ls) in any way.
+> See [Anti-features](https://github.com/Desdaemon/odoo-lsp/wiki/Features#anti-features) for a brief list of differences.
+
 ## Features
 
 ### Completion, definition and references for models, XML IDs and model fields
