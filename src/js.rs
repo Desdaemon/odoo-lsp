@@ -10,6 +10,7 @@ use crate::backend::Backend;
 use crate::backend::Text;
 use crate::index::{_G, JsQuery};
 use crate::model::PropertyKind;
+use crate::python::extract_string_needle_at_offset;
 use crate::utils::{ByteOffset, MaxVec, RangeExt, span_conv};
 use tracing::instrument;
 use ts_macros::query;
@@ -254,7 +255,6 @@ impl Backend {
 		let position = params.text_document_position.position;
 		let ByteOffset(offset) = rope_conv(position, rope);
 		let path = some!(params.text_document_position.text_document.uri.to_file_path());
-		let current_module = some!(self.index.find_module_of(&path));
 		let completions_limit = self
 			.workspaces
 			.find_workspace_of(&path, |_, ws| ws.completions.limit)
@@ -280,13 +280,12 @@ impl Backend {
 						method_arg_node = Some(capture.node);
 					}
 					Some(JsCompletions::XmlId) if range.contains_end(offset) => {
-						let range = range.shrink(1);
-						let needle = &contents[range.clone()];
-						let needle = needle[..offset - range.start].to_string();
+						let current_module = some!(self.index.find_module_of(&path));
+						let (needle, range) = extract_string_needle_at_offset(rope, range, offset)?;
 						let mut items = MaxVec::new(completions_limit);
 						self.index.complete_xml_id(
 							&needle,
-							range.map_unit(ByteOffset),
+							range,
 							rope,
 							// TODO: change this when more xmlids can be completed in js
 							Some(&[ImStr::from("ir.ui.view")]),

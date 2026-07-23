@@ -183,7 +183,7 @@ pub struct TypeCache {
 
 #[derive(Debug)]
 enum PrepareCallScopeError {
-	NeedsArguments(String),
+	NeedsArguments,
 }
 
 impl TypeCache {
@@ -253,11 +253,7 @@ impl Properties {
 	}
 	pub fn merge(&mut self, other: &Self) {
 		for (key, val) in &other.0 {
-			if let Some(pos) = self.0.iter().position(|(prop, _)| prop == key) {
-				self.0[pos].1 = *val;
-			} else {
-				self.0.push((key.clone(), *val));
-			}
+			self.set(key.clone(), *val);
 		}
 	}
 	#[inline]
@@ -736,19 +732,8 @@ impl Index {
 			}
 			"dictionary_comprehension" => {
 				let pair = dig!(node, pair)?;
-				let mut comprehension_scope;
-				let mut pair_scope = scope;
-				if let Some(for_in_clause) = dig!(node, for_in_clause[1])
-					&& let Some(scrutinee) = for_in_clause.child_by_field_name("left")
-					&& let Some(iteratee) = for_in_clause.child_by_field_name("right")
-					&& let Some(iter_ty) = self.type_of(iteratee, scope, contents)
-					&& let Some(iter_ty) = self.type_of_iterable(iter_ty)
-				{
-					// FIXME: How to prevent this clone?
-					comprehension_scope = Scope::new(Some(scope.clone()));
-					self.destructure_into_patternlist_like(scrutinee, iter_ty, &mut comprehension_scope, contents);
-					pair_scope = &comprehension_scope;
-				}
+				let comprehension_scope = self.comprehension_scope(node, scope, contents);
+				let pair_scope = comprehension_scope.as_ref().unwrap_or(scope);
 				let lhs = pair
 					.python_nth_named_child::<0>()
 					.and_then(|lhs| self.type_of(lhs, pair_scope, contents));
@@ -814,15 +799,8 @@ impl Index {
 				Some(_T!(Type::Tuple(tuple.collect())))
 			}
 			"generator_expression" => {
-				// (_ body: _ (for_in_clause left: _ right: _))
-				let for_in = dig!(node, for_in_clause[1])?;
 				let body = node.python_nth_named_child::<0>()?;
-				let lhs = for_in.child_by_field_name("left")?;
-				let rhs = for_in.child_by_field_name("right")?;
-				let iter_ty = self.type_of(rhs, scope, contents)?;
-				let inner = self.type_of_iterable(iter_ty)?;
-				let mut comprehension_scope = Scope::new(Some(scope.clone()));
-				self.destructure_into_patternlist_like(lhs, inner, &mut comprehension_scope, contents);
+				let comprehension_scope = self.comprehension_scope(node, scope, contents)?;
 				let body_ty = self.type_of(body, &comprehension_scope, contents);
 				Some(_T!(Type::Iterable(body_ty)))
 			}
@@ -841,6 +819,16 @@ impl Index {
 			// TODO: tuple -> union
 			_ => None,
 		}
+	}
+	fn comprehension_scope(&self, node: Node, scope: &Scope, contents: &str) -> Option<Scope> {
+		let for_in = dig!(node, for_in_clause[1])?;
+		let lhs = for_in.child_by_field_name("left")?;
+		let rhs = for_in.child_by_field_name("right")?;
+		let iter_ty = self.type_of(rhs, scope, contents)?;
+		let inner = self.type_of_iterable(iter_ty)?;
+		let mut comprehension_scope = Scope::new(Some(scope.clone()));
+		self.destructure_into_patternlist_like(lhs, inner, &mut comprehension_scope, contents);
+		Some(comprehension_scope)
 	}
 	fn wrap_in_container<F: FnOnce(Type) -> Type>(type_: Type, producer: F) -> Type {
 		match type_ {
@@ -1024,7 +1012,6 @@ impl Index {
 				}
 
 				for (idx, arg) in args.named_children(&mut args.walk()).enumerate().take(3) {
-					// if arg.kind() == "keyword_argument" {
 					if let Some((arg, value)) = arg.as_keyword_argument() {
 						let out = match &contents[arg.byte_range()] {
 							"groupby" => &mut groupby,
@@ -1086,12 +1073,16 @@ impl Index {
 				let args = self.prepare_call_scope(*model, method.into(), call, scope, contents);
 				match args {
 					Ok(args) => Some(self.eval_method_rtype(method.into(), **model, args)?),
-					Err(PrepareCallScopeError::NeedsArguments(_)) => {
+					Err(PrepareCallScopeError::NeedsArguments) => {
 						self.eval_method_rtype(method.into(), **model, None);
 						let args = self
 							.prepare_call_scope(*model, method.into(), call, scope, contents)
-							.inspect_err(|PrepareCallScopeError::NeedsArguments(method)| {
-								error!("bug: eval_method_rtype could not prepare args after first eval for {method}")
+							.inspect_err(|_| {
+								error!(
+									"bug: eval_method_rtype could not prepare args after first eval for {}::{}",
+									_R(**model),
+									_R(method)
+								)
 							})
 							.unwrap_or_default();
 						Some(self.eval_method_rtype(method.into(), **model, args)?)
@@ -1164,12 +1155,11 @@ impl Index {
 		let arguments_list = some!(dig!(call, argument_list[1]));
 
 		let model = some!(self.models.populate_properties(model, &[]));
-		let method_key = method;
 		let method = some!(some!(model.methods.as_ref()).get(&method));
 		let arguments = method
 			.arguments
 			.clone()
-			.ok_or_else(|| PrepareCallScopeError::NeedsArguments(format!("{}::{}", _R(model.key()), _R(method_key))))?;
+			.ok_or(PrepareCallScopeError::NeedsArguments)?;
 		if arguments.is_empty() {
 			return Ok(None);
 		}

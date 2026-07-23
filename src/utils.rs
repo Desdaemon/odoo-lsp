@@ -569,37 +569,9 @@ impl Semaphore {
 pub struct Blocker<'a>(&'a Semaphore);
 
 impl Semaphore {
-	#[must_use]
-	#[track_caller]
-	pub fn block(&self, context: &'static str) -> Blocker<'_> {
-		if self
-			.should_wait
-			.compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
-			.is_err()
-		{
-			panic!(
-				"{context} thread={:?} attempted to lock {:p} which is already locked, it should call wait() first",
-				std::thread::current().id(),
-				self
-			);
-		}
-		warn!(
-			"{context} thread={:?} acquired lock on {:p}",
-			std::thread::current().id(),
-			self
-		);
-		Blocker(self)
-	}
-
 	/// Waits until this semaphore is free, then atomically acquires it.
-	///
-	/// Prefer this over [`Self::wait`] followed by [`Self::block`]: that pair is not
-	/// atomic, so two tasks can both observe the semaphore as free and then one of
-	/// them panics in `block` (a race that surfaces when several `did_open`s arrive at
-	/// once, especially on low-core machines). `block_wait` hands the lock off to one
-	/// waiter at a time instead.
 	#[must_use]
-	pub async fn block_wait(&self, context: &'static str) -> Blocker<'_> {
+	pub async fn acquire(&self, context: &'static str) -> Blocker<'_> {
 		loop {
 			// Register for notifications BEFORE the (possibly failing) acquire, so a
 			// release happening between the failed CAS and the await is not lost.
@@ -620,11 +592,11 @@ impl Semaphore {
 				return Blocker(self);
 			}
 
-			tokio::select! {
-				_ = notified.as_mut() => {}
-				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
-					warn!("[{context}] WAIT_LIMIT elapsed while acquiring (thread={:?}, lock={self:p})", std::thread::current().id());
-				}
+			if tokio::time::timeout(Self::WAIT_LIMIT, notified.as_mut()).await.is_err() {
+				warn!(
+					"[{context}] WAIT_LIMIT elapsed while acquiring (thread={:?}, lock={self:p})",
+					std::thread::current().id()
+				);
 			}
 		}
 	}
@@ -657,11 +629,11 @@ impl Semaphore {
 			if !self.should_wait.load(Ordering::Acquire) {
 				return;
 			}
-			tokio::select! {
-				_ = notified.as_mut() => {}
-				_ = tokio::time::sleep(Self::WAIT_LIMIT) => {
-					warn!("[{context}] WAIT_LIMIT elapsed (thread={:?}, lock={self:p})", std::thread::current().id());
-				}
+			if tokio::time::timeout(Self::WAIT_LIMIT, notified.as_mut()).await.is_err() {
+				warn!(
+					"[{context}] WAIT_LIMIT elapsed (thread={:?}, lock={self:p})",
+					std::thread::current().id()
+				);
 			}
 		}
 	}

@@ -193,7 +193,7 @@ impl LanguageServer for Backend {
 		// flaky tests and the first completion request yielding nothing (super minor issue).
 		// `block_wait` acquires atomically — a plain `wait().await` + `block()` races
 		// with other concurrent `did_open`s and panics in `block`, killing the service.
-		let _blocker = self.root_setup.block_wait(loc!()).await;
+		let _blocker = self.root_setup.acquire(loc!()).await;
 
 		let file_path = params.text_document.uri.to_file_path().unwrap();
 		let file_path_str = file_path.to_str().unwrap();

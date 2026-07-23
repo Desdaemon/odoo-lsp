@@ -661,9 +661,9 @@ impl Backend {
 						}
 					}
 					Some(PyCompletions::Mapped) => {
-						let root = some!(top_level_stmt(root_node, range.end));
-						if range.contains_end(offset)
-							&& let Some(mapped) = self.gather_mapped(
+						if range.contains_end(offset) {
+							let root = some!(top_level_stmt(root_node, range.end));
+							if let Some(mapped) = self.gather_mapped(
 								root,
 								match_,
 								Some(offset),
@@ -673,16 +673,18 @@ impl Backend {
 								false,
 								None,
 							) {
-							let mut needle = mapped.needle;
-							let mut model = _I(mapped.model);
-							if !mapped.single_field {
-								some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+								let mut needle = mapped.needle;
+								let mut model = _I(mapped.model);
+								if !mapped.single_field {
+									some!(self.index.models.resolve_mapped(&mut model, &mut needle, None).ok());
+								}
+								let model = _R(model);
+								return self.index.jump_def_property_name(needle, model);
 							}
-							let model = _R(model);
-							return self.index.jump_def_property_name(needle, model);
 						} else if let Some(cmdlist) = capture.node.python_next_named_sibling()
 							&& Backend::is_commandlist(cmdlist, offset)
 						{
+							let root = some!(top_level_stmt(root_node, range.end));
 							let (needle, _, model) = some!(self.gather_commandlist(
 								cmdlist,
 								root,
@@ -942,7 +944,6 @@ impl Backend {
 			.get(file_path_str)
 			.ok_or_else(|| errloc!("Did not build AST for {}", file_path_str))?;
 		let root_node = ast.root_node();
-		// let root = some!(top_level_stmt(ast.root_node(), offset));
 		let query = PyCompletions::query();
 		let contents = Cow::from(rope);
 		let mut cursor = tree_sitter::QueryCursor::new();
@@ -1509,9 +1510,6 @@ impl Backend {
 			}
 		}
 
-		// For broken syntax, we need to continue processing to determine the model
-		// but we'll use an empty needle to show all available fields
-
 		let (needle, model_str, range) = if is_broken_syntax {
 			let range = ByteRange {
 				start: ByteOffset(offset),
@@ -1686,7 +1684,7 @@ impl<'this> ThisModel<'this> {
 	}
 }
 
-fn extract_string_needle_at_offset<'a>(
+pub(crate) fn extract_string_needle_at_offset<'a>(
 	rope: RopeSlice<'a>,
 	range: core::ops::Range<usize>,
 	offset: usize,

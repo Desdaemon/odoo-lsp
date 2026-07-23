@@ -262,11 +262,11 @@ impl Backend {
 				// Hold the blocker while loading modules. `block_wait` acquires atomically,
 				// serialising concurrent `on_change`s for the same document instead of
 				// panicking in `block` when the per-document lock is already held.
-				let b = blocker.block_wait(loc!()).await;
+				let b = blocker.acquire(loc!()).await;
 				self.index.load_modules_for_document(/*blocker.clone(),*/ &path).await;
 				b
 			} else {
-				blocker.block_wait(loc!()).await
+				blocker.acquire(loc!()).await
 			};
 		};
 		let slice = rope.slice(..);
