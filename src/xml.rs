@@ -179,6 +179,17 @@ impl Backend {
 								.into_iter()
 								.map(|entry| rope_conv(entry.template.location.unwrap().range, rope)),
 						);
+					} else if local.as_str() == "function" {
+						for (record, metadata) in
+							Record::from_update_xmlids(current_module, path_uri, &mut reader, rope)
+						{
+							self.index.records.insert(
+								_I(record.qualified_id()).into(),
+								record,
+								metadata,
+								record_prefix.as_deref_mut(),
+							);
+						}
 					}
 				}
 				None => break,
@@ -238,7 +249,7 @@ impl Backend {
 	pub fn did_save_xml(&self, uri: Uri, root: Spur) -> anyhow::Result<()> {
 		let rope = {
 			let document = self
-				.document_map
+				.documents
 				.get(uri.path().as_str())
 				.ok_or_else(|| errloc!("(did_save) did not build document"))?;
 			document.rope.clone()

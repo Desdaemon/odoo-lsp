@@ -42,8 +42,7 @@ pub struct Backend {
 #[derive(SmartDefault)]
 pub struct BackendInner {
 	/// fs path -> rope, diagnostics etc.
-	#[default(_code = "DashMap::with_shard_amount(4)")]
-	pub document_map: DashMap<String, Document>,
+	pub documents: Documents,
 	#[default(_code = "DashMap::with_shard_amount(4)")]
 	pub record_ranges: DashMap<String, Box<[ByteRange]>>,
 	#[default(_code = "DashMap::with_shard_amount(4)")]
@@ -145,6 +144,49 @@ impl Document {
 	}
 }
 
+/// `fs path -> `[`Document`]. A newtype over [`DashMap`] so shard access can offer the
+/// contention-tolerant [`await_document`](DocumentMap::await_document) reader.
+#[derive(Deref, DerefMut)]
+pub struct Documents(DashMap<String, Document>);
+
+impl Default for Documents {
+	fn default() -> Self {
+		Self(DashMap::with_shard_amount(4))
+	}
+}
+
+impl Documents {
+	/// Backstop for [`await_document`](Self::await_document): if a document shard stays locked
+	/// this long, treat it as a genuine deadlock rather than transient contention and panic.
+	const LOCK_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(5);
+
+	/// Reads a document out of the map, retrying with a short async backoff while its shard is
+	/// [`TryResult::Locked`](dashmap::try_result::TryResult::Locked) by another handler.
+	///
+	/// Since request handlers now run in parallel ([`Spawn`](crate::utils::Spawn)), two handlers
+	/// touching the same document race on its shard; a plain `get`/`try_get().expect("deadlock")`
+	/// would either wedge a worker thread or panic on that transient contention, dropping the
+	/// in-flight edit/request. None of the handlers hold a document guard across an `.await`, so
+	/// waiting out the (sub-millisecond) critical section is safe. A genuine deadlock is still
+	/// surfaced via the [`LOCK_TIMEOUT`](Self::LOCK_TIMEOUT) panic.
+	pub async fn get_blocking(&self, key: &str, ctx: &str) -> Option<dashmap::mapref::one::Ref<'_, String, Document>> {
+		use dashmap::try_result::TryResult;
+		let fut = async {
+			loop {
+				match self.0.try_get(key) {
+					TryResult::Present(document) => break Some(document),
+					TryResult::Absent => break None,
+					TryResult::Locked => tokio::time::sleep(core::time::Duration::from_millis(1)).await,
+				}
+			}
+		};
+		match tokio::time::timeout(Self::LOCK_TIMEOUT, fut).await {
+			Ok(result) => result,
+			Err(_) => panic!("{ctx} deadlock"),
+		}
+	}
+}
+
 /// Data provided by completion providers to be consumed by `completion_resolve`
 #[derive(Serialize, Deserialize)]
 pub struct CompletionData {
@@ -238,7 +280,7 @@ impl Backend {
 			let blocker;
 			{
 				let mut document = self
-					.document_map
+					.documents
 					.get_mut(params.uri.path().as_str())
 					.expect(format_loc!("(on_change) did not build document"));
 				blocker = document.setup.clone();
@@ -272,7 +314,7 @@ impl Backend {
 		let slice = rope.slice(..);
 		match (split_uri, params.language) {
 			(Some((_, "py")), _) | (_, Some(Language::Python)) => {
-				let mut document = self.document_map.get_mut(params.uri.path().as_str()).unwrap();
+				let mut document = self.documents.get_mut(params.uri.path().as_str()).unwrap();
 				self.on_change_python(&params.text, &params.uri, slice, params.old_rope)?;
 				if eager_diagnostics {
 					let file_path = params.uri.to_file_path().unwrap();
@@ -298,7 +340,7 @@ impl Backend {
 		if eager_diagnostics {
 			let client = self.client.clone();
 			let diagnostics = {
-				self.document_map
+				self.documents
 					.get(params.uri.path().as_str())
 					.unwrap()
 					.diagnostics_cache
@@ -536,7 +578,7 @@ impl Backend {
 	) -> tower_lsp_server::jsonrpc::Result<Option<String>> {
 		let uri = &params.text_document.uri;
 		let rope = {
-			let document = some!(self.document_map.get(uri.path().as_str()));
+			let document = some!(self.documents.get(uri.path().as_str()));
 			document.rope.clone()
 		};
 		let file_path = uri.to_file_path().unwrap();

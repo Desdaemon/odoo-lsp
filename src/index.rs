@@ -1091,6 +1091,12 @@ fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> anyhow::R
 				"templates" => {
 					gather_templates(path_uri, &mut reader, rope, &mut templates, false)?;
 				}
+				"function" => {
+					for (record, meta) in Record::from_update_xmlids(module_name, path_uri, &mut reader, rope) {
+						records.push(record);
+						metadata.push(meta);
+					}
+				}
 				_ => {}
 			},
 			None => break,

@@ -448,7 +448,7 @@ impl Backend {
 		let zone;
 		_ = {
 			let mut document = self
-				.document_map
+				.documents
 				.get_mut(uri.path().as_str())
 				.ok_or_else(|| errloc!("(did_save) did not build document"))?;
 			zone = document.damage_zone.take();
@@ -460,7 +460,7 @@ impl Backend {
 		if zone.is_some() {
 			debug!("diagnostics");
 			{
-				let mut document = self.document_map.get_mut(uri.path().as_str()).unwrap();
+				let mut document = self.documents.get_mut(uri.path().as_str()).unwrap();
 				let rope = document.rope.clone();
 				let file_path = uri.to_file_path().unwrap();
 				self.diagnose_python(
@@ -1279,7 +1279,7 @@ impl Backend {
 		use std::fmt::Write;
 
 		let uri = &params.text_document_position_params.text_document.uri;
-		let document = some!((self.document_map).get(uri.path().as_str()));
+		let document = some!((self.documents).get(uri.path().as_str()));
 		let file_path = uri.to_file_path().unwrap();
 		let ast = some!((self.ast_map).get(file_path.to_str().unwrap()));
 		let contents = Cow::from(&document.rope);

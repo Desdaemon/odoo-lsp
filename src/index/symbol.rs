@@ -221,7 +221,7 @@ impl super::Interner {
 				.into_iter()
 				.map(|(key, value)| (self_.resolve(&key), value))
 				.collect::<Vec<_>>();
-			items.sort_by(|(a, _), (z, _)| z.len().cmp(&a.len()));
+			items.sort_by_key(|(z, _)| std::cmp::Reverse(z.len()));
 			items.truncate(30);
 			items
 		};

@@ -11,7 +11,7 @@ use tower_lsp_server::ls_types::*;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::xml::add_xml_snippets;
-use crate::{GITVER, NAME, VERSION, await_did_open_document, format_loc, loc};
+use crate::{GITVER, NAME, VERSION, await_did_open_document, loc};
 
 use crate::backend::{Backend, Document, Language, Text};
 use crate::index::{_G, _R};
@@ -131,7 +131,7 @@ impl LanguageServer for Backend {
 		let path = params.text_document.uri.path().as_str();
 		await_did_open_document!(self, path);
 
-		self.document_map.remove(path);
+		self.documents.remove(path);
 		self.record_ranges.remove(path);
 
 		let file_path = params.text_document.uri.to_file_path().unwrap();
@@ -230,7 +230,7 @@ impl LanguageServer for Backend {
 		}
 
 		let rope = Rope::from_str(&params.text_document.text);
-		self.document_map.insert(
+		self.documents.insert(
 			params.text_document.uri.path().as_str().to_string(),
 			Document::new(rope.clone()),
 		);
@@ -279,7 +279,7 @@ impl LanguageServer for Backend {
 		{
 			await_did_open_document!(self, path);
 			let mut document = self
-				.document_map
+				.documents
 				.get_mut(params.text_document.uri.path().as_str())
 				.expect("Did not build a document");
 			old_rope = document.rope.clone();
@@ -330,7 +330,7 @@ impl LanguageServer for Backend {
 		};
 		await_did_open_document!(self, path);
 
-		let Some(document) = self.document_map.try_get(path).expect(format_loc!("deadlock")) else {
+		let Some(document) = self.documents.get_blocking(path, loc!()).await else {
 			panic!("Bug: did not build a document for {}", uri.path().as_str());
 		};
 		if document.setup.should_wait() {
@@ -367,7 +367,7 @@ impl LanguageServer for Backend {
 
 		await_did_open_document!(self, path);
 
-		let Some(document) = self.document_map.get(path) else {
+		let Some(document) = self.documents.get(path) else {
 			debug!("Bug: did not build a document for {}", uri.path().as_str());
 			return Ok(None);
 		};
@@ -397,7 +397,7 @@ impl LanguageServer for Backend {
 		let module_key = some!(self.index.find_module_of(&some!(uri.to_file_path())));
 		self.index.load_modules_dependent_on(module_key).await;
 		let rope = {
-			let Some(document) = self.document_map.get(uri.path().as_str()) else {
+			let Some(document) = self.documents.get(uri.path().as_str()) else {
 				debug!("Bug: did not build a document for {}", uri.path().as_str());
 				return Ok(None);
 			};
@@ -514,7 +514,7 @@ impl LanguageServer for Backend {
 
 		let uri = &params.text_document_position_params.text_document.uri;
 		let path = uri.path().as_str();
-		if let Some(document) = self.document_map.try_get(path).expect(format_loc!("deadlock"))
+		if let Some(document) = self.documents.get_blocking(path, loc!()).await
 			&& document.setup.should_wait()
 		{
 			return Ok(Some(Hover {
@@ -523,7 +523,7 @@ impl LanguageServer for Backend {
 			}));
 		}
 
-		let document = some!(self.document_map.get(uri.path().as_str()));
+		let document = some!(self.documents.get(uri.path().as_str()));
 		let (_, ext) = some!(uri.path().as_str().rsplit_once('.'));
 		let rope = document.rope.slice(..);
 		let hover = match ext {
@@ -717,7 +717,7 @@ impl LanguageServer for Backend {
 
 		let mut diagnostics = vec![];
 		if let Some((_, "py")) = path.rsplit_once('.')
-			&& let Some(mut document) = self.document_map.get_mut(path)
+			&& let Some(mut document) = self.documents.get_mut(path)
 		{
 			let damage_zone = document.damage_zone.take();
 			let rope = document.rope.clone();
@@ -749,7 +749,7 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 
-		let document = some!(self.document_map.get(params.text_document.uri.path().as_str()));
+		let document = some!(self.documents.get(params.text_document.uri.path().as_str()));
 		if document.setup.should_wait() {
 			return Ok(None);
 		}

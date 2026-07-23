@@ -111,10 +111,7 @@ macro_rules! await_did_open_document {
 	($self:expr, $path:expr) => {
 		let mut blocker = None;
 		{
-			if let Some(document) = $self
-				.document_map
-				.try_get($path)
-				.expect($crate::format_loc!("deadlock"))
+			if let Some(document) = $self.documents.get_blocking($path, $crate::loc!()).await
 				&& document.setup.should_wait()
 			{
 				blocker = Some(std::sync::Arc::clone(&document.setup));

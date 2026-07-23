@@ -614,7 +614,7 @@ impl ModelIndex {
 				.map(|filter| filter.to_path())
 				.collect::<Vec<_>>();
 
-			for (_, field) in out_fields.iter_mut() {
+			for field in out_fields.values_mut() {
 				if locations_filter
 					.iter()
 					.any(|filter| field.location.path.to_path().starts_with(filter))
@@ -623,7 +623,7 @@ impl ModelIndex {
 				}
 			}
 
-			for (_, method) in out_methods.iter_mut() {
+			for method in out_methods.values_mut() {
 				let method = Arc::make_mut(method);
 				for loc in method.locations.iter_mut() {
 					if locations_filter

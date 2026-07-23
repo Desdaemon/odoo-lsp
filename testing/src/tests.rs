@@ -450,7 +450,7 @@ async fn expected_completions(
 	path: &Path,
 	uri: &Url,
 	position: &Position,
-	expected: &Vec<String>,
+	expected: &[String],
 ) -> String {
 	let uri = uri.clone();
 	let path = path.display();
@@ -467,7 +467,7 @@ async fn expected_completions(
 		.await;
 	if let Ok(Some(CompletionResponse::List(list))) = completions {
 		let mut actual = list.items.iter().map(|comp| comp.label.to_string()).collect::<Vec<_>>();
-		let mut expected_sorted = expected.clone();
+		let mut expected_sorted = expected.to_owned();
 		actual.sort();
 		expected_sorted.sort();
 		if expected_sorted != actual {
@@ -475,7 +475,7 @@ async fn expected_completions(
 				"[complete] in {path}:{}:{}\n{}",
 				position.line + 1,
 				position.character + 1,
-				Comparison::new(&expected[..], &actual[..]),
+				Comparison::new(expected, &actual[..]),
 			)
 		} else {
 			String::new()

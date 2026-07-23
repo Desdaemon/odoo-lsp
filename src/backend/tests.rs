@@ -325,3 +325,39 @@ fn test_damage_zone_cases() {
 	let zone = delta.damage_zone(rope.slice(..), None);
 	assert!(zone.is_none(), "Empty deltas should return None");
 }
+
+/// Regression: request handlers run in parallel, so a `did_change` holding a document's
+/// `get_mut` write guard used to make a concurrent `completion`'s `try_get` panic with
+/// "deadlock" and drop the request. [`DocumentMap::await_document`] must instead wait out the
+/// brief write section and then read the document.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn await_document_waits_out_writer() {
+	use std::sync::Arc;
+	use std::time::Duration;
+
+	let map = Arc::new(Documents::default());
+	map.insert("doc".to_string(), Document::new(Rope::from_str("v1")));
+
+	// Hold the shard's write guard on a blocking thread, mimicking a `did_change` mid-edit.
+	let holder_map = Arc::clone(&map);
+	let holder = tokio::task::spawn_blocking(move || {
+		let mut guard = holder_map.get_mut("doc").unwrap();
+		std::thread::sleep(Duration::from_millis(50));
+		guard.rope = Rope::from_str("v2");
+	});
+
+	// Ensure the writer has actually taken the guard before we contend for it.
+	tokio::time::sleep(Duration::from_millis(5)).await;
+
+	let document = map.get_blocking("doc", "test").await;
+	assert_eq!(
+		document.map(|doc| doc.rope.to_string()),
+		Some("v2".to_string()),
+		"should read the post-write value, not panic"
+	);
+
+	holder.await.unwrap();
+
+	// Absent keys resolve to `None` rather than blocking.
+	assert!(map.get_blocking("missing", "test").await.is_none());
+}
