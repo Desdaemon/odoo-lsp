@@ -20,7 +20,7 @@ pub mod fs {
 			let bytes = fs.get(path).ok_or_else(|| {
 				std::io::Error::new(
 					std::io::ErrorKind::NotFound,
-					format!("{} not found in test_utils::TEST_FS", path.display()),
+					format!("{} not found in test_utils::fs::TEST_FS", path.display()),
 				)
 			})?;
 			Ok(String::from_utf8(bytes.to_vec()).expect("non utf-8"))

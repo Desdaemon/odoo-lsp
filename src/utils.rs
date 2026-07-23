@@ -17,6 +17,9 @@ pub use visitor::PreTravel;
 mod catch_panic;
 pub use catch_panic::CatchPanic;
 
+mod spawn;
+pub use spawn::Spawn;
+
 use crate::index::PathSymbol;
 use crate::prelude::*;
 
@@ -118,7 +121,9 @@ macro_rules! await_did_open_document {
 			}
 		}
 		if let Some(blocker) = blocker {
-			blocker.wait($crate::loc!()).await;
+			tokio::time::timeout(core::time::Duration::from_secs(5), blocker.wait($crate::loc!()))
+				.await
+				.unwrap();
 		}
 	};
 }
@@ -176,7 +181,10 @@ impl From<MinLoc> for Location {
 		let uri = Uri::from_file_path(value.path.to_path())
 			// e.g. unix-style test paths, which are not absolute on Windows
 			.unwrap_or_else(|| format!("file://{}", value.path).parse().unwrap());
-		Location { uri, range: value.range }
+		Location {
+			uri,
+			range: value.range,
+		}
 	}
 }
 

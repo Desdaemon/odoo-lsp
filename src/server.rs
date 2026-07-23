@@ -514,7 +514,14 @@ impl LanguageServer for Backend {
 
 		let uri = &params.text_document_position_params.text_document.uri;
 		let path = uri.path().as_str();
-		await_did_open_document!(self, path);
+		if let Some(document) = self.document_map.try_get(path).expect(format_loc!("deadlock"))
+			&& document.setup.should_wait()
+		{
+			return Ok(Some(Hover {
+				contents: HoverContents::Scalar(MarkedString::String("Loading...".to_string())),
+				range: None,
+			}));
+		}
 
 		let document = some!(self.document_map.get(uri.path().as_str()));
 		let (_, ext) = some!(uri.path().as_str().rsplit_once('.'));

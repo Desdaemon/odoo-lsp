@@ -13,7 +13,7 @@ use ts_macros::query;
 use crate::component::{ComponentTemplate, PropDescriptor, PropType};
 use crate::index::{_I, PathSymbol};
 use crate::utils::{ByteOffset, MinLoc, RangeExt, rope_conv, span_conv};
-use crate::{ImStr, dig, errloc, format_loc, ok};
+use crate::{ImStr, dig, errloc, format_loc, ok, test_utils};
 
 use super::{_R, Component, ComponentName, Output, TemplateName};
 
@@ -120,13 +120,9 @@ query! {
   (arguments . (string) @REGISTRY_ITEM))
 }
 
-pub(super) async fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<Output> {
+pub(super) fn add_root_js(root: Spur, pathbuf: PathBuf) -> anyhow::Result<Output> {
 	let path = PathSymbol::strip_root(root, &pathbuf);
-	let contents = ok!(
-		tokio::fs::read_to_string(&pathbuf).await,
-		"Could not read {:?}",
-		pathbuf
-	);
+	let contents = ok!(test_utils::fs::read_to_string(&pathbuf), "Could not read {:?}", pathbuf);
 	let rope = ropey::Rope::from_str(&contents);
 	let rope = rope.slice(..);
 	let mut parser = Parser::new();

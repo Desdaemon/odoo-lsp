@@ -344,7 +344,7 @@ impl Index {
 		let mut modules = HashSet::new();
 
 		for root in self.roots.iter() {
-			for (&module_key, _) in root.iter() {
+			for &module_key in root.keys() {
 				modules.insert(module_key);
 			}
 		}
@@ -510,7 +510,7 @@ impl Index {
 			}
 
 			// Read and parse the Python file
-			let Ok(contents) = std::fs::read_to_string(&path) else {
+			let Ok(contents) = test_utils::fs::read_to_string(&path) else {
 				continue;
 			};
 
@@ -605,7 +605,8 @@ impl Index {
 			{
 				for xml in xmls {
 					let Ok(xml) = xml else { continue };
-					outputs.spawn(add_root_xml(root_key, xml.path().to_path_buf(), module_key));
+					let xml_path = xml.path().to_path_buf();
+					outputs.spawn_blocking(move || add_root_xml(root_key, xml_path, module_key));
 				}
 			}
 			if let Ok(pys) = globwalk::glob_builder(format!("{}/**/*.py", module_dir.display()))
@@ -622,7 +623,7 @@ impl Index {
 						}
 					};
 					let path = py.path().to_path_buf();
-					outputs.spawn(add_root_py(root_key, path));
+					outputs.spawn_blocking(move || add_root_py(root_key, path));
 				}
 			}
 			if let Ok(scripts) = globwalk::glob_builder(format!("{}/**/*.js", module_dir.display()))
@@ -633,7 +634,7 @@ impl Index {
 				for js in scripts {
 					let Ok(js) = js else { continue };
 					let path = js.path().to_path_buf();
-					outputs.spawn(js::add_root_js(root_key, path));
+					outputs.spawn_blocking(move || js::add_root_js(root_key, path));
 				}
 			}
 		}
@@ -660,7 +661,7 @@ impl Index {
 						RecordMetadata::ConfigParameterKey { key, location } => Some((key.clone(), location.clone())),
 						_ => None,
 					}));
-					self.records.append(records.into_iter().zip(metadata.into_iter()));
+					self.records.append(records.into_iter().zip(metadata));
 					self.templates.append(templates);
 				}
 				Output::Models {
@@ -1045,10 +1046,13 @@ fn parse_manifest_info(manifest: &Path) -> anyhow::Result<ManifestInfo> {
 	})
 }
 
-async fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> anyhow::Result<Output> {
+fn add_root_xml(root: Spur, path: PathBuf, module_name: ModuleName) -> anyhow::Result<Output> {
 	let path_uri = PathSymbol::strip_root(root, &path);
-	let file = ok!(tokio::fs::read(&path).await, "Could not read {}", path.display());
-	let file = String::from_utf8_lossy(&file);
+	let file = ok!(
+		test_utils::fs::read_to_string(&path),
+		"Could not read {}",
+		path.display()
+	);
 	let mut reader = Tokenizer::from(file.as_ref());
 	let mut records = vec![];
 	let mut metadata = vec![];
@@ -1137,9 +1141,9 @@ query! {
   (#eq? @_config_parameter "config_parameter"))
 }
 
-async fn add_root_py(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
+fn add_root_py(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
 	let contents = ok!(
-		tokio::fs::read_to_string(&path).await,
+		test_utils::fs::read_to_string(&path),
 		"Could not read {}",
 		path.display()
 	);
@@ -2149,8 +2153,8 @@ class ResConfigSettings(models.TransientModel):
 	#[test]
 	fn delete_marked_entries_does_not_deadlock() {
 		use crate::model::{ModelEntry, ModelName};
-		use std::sync::mpsc;
 		use std::sync::Arc;
+		use std::sync::mpsc;
 		use std::time::Duration;
 
 		let index = Index::default();

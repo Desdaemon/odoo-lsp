@@ -83,7 +83,7 @@ use tracing_subscriber::{EnvFilter, fmt as tracing_fmt};
 
 use odoo_lsp::backend::Backend;
 use odoo_lsp::index::Interner;
-use odoo_lsp::utils::CatchPanic;
+use odoo_lsp::utils::{CatchPanic, Spawn};
 
 mod cli;
 
@@ -134,6 +134,7 @@ fn main() {
 
 		let service = tower::ServiceBuilder::new()
 			.layer(tower::timeout::TimeoutLayer::new(Duration::from_secs(30)))
+			.layer_fn(Spawn)
 			.layer_fn(CatchPanic)
 			.service(service);
 		Server::new(stdin, stdout, socket)
@@ -161,6 +162,7 @@ fn parse_args_and_init_logger(args: &[String]) -> cli::Args<'_> {
 		.with_writer(std::io::stderr)
 		.with_file(true)
 		.with_line_number(true)
+		.with_ansi(false)
 		.with_target(true);
 
 	match args.log_format {
