@@ -1,0 +1,8 @@
+<odoo>
+    <record id="a" model="ir.ui.view">
+        <field name="f" type="bogus"/>
+<!--                          ^diag `bogus` is not a valid value for `type` on `<field>` -->
+        <bogustag/>
+<!--    ^diag `<bogustag>` is not allowed in `<record>` -->
+    </record>
+</odoo>

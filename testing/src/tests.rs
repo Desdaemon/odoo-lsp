@@ -96,6 +96,86 @@ async fn fixture_test(#[files("fixtures/*")] root: PathBuf) -> ExitCode {
 	}
 }
 
+/// End-to-end check that the built-in RELAX NG (`odoo.rng`) schema fallback
+/// honors the `xml.schemaCompletions` toggle.
+///
+/// Both fixtures request a completion at the same `<field …/>` element-name
+/// position — a spot only the schema fallback (not the semantic analyzer) can
+/// complete. `xml_schema` leaves the feature at its default (enabled) and must
+/// offer `field`; `xml_schema_disabled` ships a `.odoo_lsp` with
+/// `"xml": { "schemaCompletions": false }` and must offer nothing there.
+#[rstest]
+#[case::enabled("xml_schema", true)]
+#[case::disabled("xml_schema_disabled", false)]
+#[tokio::test(flavor = "multi_thread")]
+#[timeout(Duration::from_secs(10))]
+async fn xml_schema_toggle(#[case] fixture: &str, #[case] expect_schema: bool) {
+	init_tracing();
+	let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures").join(fixture);
+	let mut server = server::setup_lsp_server(Some(2));
+
+	server
+		.initialize(InitializeParams {
+			workspace_folders: Some(vec![WorkspaceFolder {
+				uri: Url::from_file_path(&root).unwrap(),
+				name: fixture.to_string(),
+			}]),
+			..Default::default()
+		})
+		.await
+		.expect("initialize failed");
+	_ = server.notify::<notification::Initialized>(InitializedParams {});
+
+	let path = root.join("foo").join("data.xml");
+	let uri = Url::from_file_path(&path).unwrap();
+	let text = std::fs::read_to_string(&path).unwrap();
+	_ = server.did_open(DidOpenTextDocumentParams {
+		text_document: TextDocumentItem {
+			uri: uri.clone(),
+			language_id: "xml".to_string(),
+			version: 1,
+			text,
+		},
+	});
+
+	// Line 2 (0-based), just past `<field` — the element name. Only the RNG
+	// schema fallback completes here.
+	let position = Position { line: 2, character: 14 };
+	let completions = server
+		.completion(CompletionParams {
+			text_document_position: TextDocumentPositionParams {
+				text_document: TextDocumentIdentifier { uri },
+				position,
+			},
+			work_done_progress_params: Default::default(),
+			partial_result_params: Default::default(),
+			context: None,
+		})
+		.await
+		.expect("completion request failed");
+
+	let labels: Vec<String> = match completions {
+		Some(CompletionResponse::List(list)) => list.items.iter().map(|it| it.label.clone()).collect(),
+		Some(CompletionResponse::Array(items)) => items.iter().map(|it| it.label.clone()).collect(),
+		None => vec![],
+	};
+
+	if expect_schema {
+		assert!(
+			labels.iter().any(|l| l == "field"),
+			"schema enabled: expected `field` completion, got {labels:?}"
+		);
+	} else {
+		assert!(
+			labels.is_empty(),
+			"schema disabled: expected no completions, got {labels:?}"
+		);
+	}
+
+	_ = server.shutdown(()).await;
+	_ = server.exit(());
+}
+
 /// Full-server harness for the "deadlock when opening files" symptom.
 ///
 /// Mimics an editor opening every source file in a project at once on a low-core

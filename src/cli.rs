@@ -324,6 +324,7 @@ fn init(addons_path: &[&str], output: Option<&str>) -> anyhow::Result<()> {
 		symbols: Some(SymbolsConfig { limit: Some(80) }),
 		references: Some(ReferencesConfig { limit: Some(80) }),
 		completions: Some(CompletionsConfig { limit: Some(200) }),
+		xml: None,
 	};
 	let output = output.unwrap_or(".odoo_lsp");
 	if output == "-" {

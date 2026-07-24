@@ -129,6 +129,12 @@
 					"default": 200,
 					"description": "Maximum amount of completions to retrieve at once."
 				},
+				"odoo-lsp.xml.schemaCompletions": {
+					"type": "boolean",
+					"scope": "resource",
+					"default": true,
+					"markdownDescription": "Enable the built-in RELAX NG (`odoo.rng`) schema assistance — element/attribute completions and hover documentation — provided by the language server for all editors. Disable this to rely solely on an external XML schema provider such as the [RedHat XML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-xml)."
+				},
 				"odoo-lsp.module.roots": {
 					"type": "array",
 					"scope": "resource",

@@ -1,0 +1,5 @@
+<odoo>
+    <record id="r" model="ir.ui.view">
+        <field name="x"/>
+    </record>
+</odoo>

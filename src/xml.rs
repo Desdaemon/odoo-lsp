@@ -26,6 +26,65 @@ use crate::{backend::Backend, backend::Text};
 #[cfg(test)]
 mod tests;
 
+pub(crate) mod schema;
+
+/// Turn RNG schema completions for the record-relative `slice` into an LSP
+/// response, mapping ranges back to document coordinates via `relative_offset`.
+fn schema_completions(
+	slice: &str,
+	offset_at_cursor: usize,
+	relative_offset: usize,
+	rope: RopeSlice<'_>,
+	limit: usize,
+) -> Option<CompletionResponse> {
+	let items = schema::completions(slice, offset_at_cursor);
+	if items.is_empty() {
+		return None;
+	}
+	let mut out = MaxVec::new(limit);
+	out.extend(items.into_iter().map(|item| {
+		let range = rope_conv(item.range.map_unit(|unit| ByteOffset(unit + relative_offset)), rope);
+		let kind = match item.kind {
+			schema::SchemaKind::Element => CompletionItemKind::CONSTRUCTOR,
+			schema::SchemaKind::Attribute => CompletionItemKind::FIELD,
+			schema::SchemaKind::Value => CompletionItemKind::ENUM_MEMBER,
+		};
+		CompletionItem {
+			text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+				range,
+				new_text: item.insert,
+			})),
+			insert_text_format: item.snippet.then_some(InsertTextFormat::SNIPPET),
+			label: item.label,
+			kind: Some(kind),
+			documentation: item.doc.map(|value| {
+				Documentation::MarkupContent(MarkupContent {
+					kind: MarkupKind::Markdown,
+					value,
+				})
+			}),
+			..Default::default()
+		}
+	}));
+	Some(CompletionResponse::List(CompletionList {
+		is_incomplete: !out.has_space(),
+		items: out.into_inner(),
+	}))
+}
+
+/// Hover documentation for the schema element/attribute name under the cursor.
+fn schema_hover(slice: &str, offset_at_cursor: usize, relative_offset: usize, rope: RopeSlice<'_>) -> Option<Hover> {
+	let (doc, range) = schema::hover(slice, offset_at_cursor)?;
+	let range = rope_conv(range.map_unit(|unit| ByteOffset(unit + relative_offset)), rope);
+	Some(Hover {
+		range: Some(range),
+		contents: HoverContents::Markup(MarkupContent {
+			kind: MarkupKind::Markdown,
+			value: doc,
+		}),
+	})
+}
+
 /// All Odoo action model types that can be referenced in menuitem action attributes
 const ACTION_MODELS: &[&str] = &[
 	"ir.actions.act_window",
@@ -257,6 +316,118 @@ impl Backend {
 		self.update_xml(root, &Text::Delta(vec![]), &uri, rope.slice(..), true)?;
 		Ok(())
 	}
+	/// Schema (RNG) validation: flag elements missing a mandatory attribute,
+	/// child elements the grammar disallows under their parent, and attribute
+	/// values outside a closed enumeration. Best-effort — bails on the first XML
+	/// parse error, and is a no-op when the built-in schema is disabled for
+	/// `path`. All findings are conservative: anything the grammar leaves open
+	/// (wildcard children, free-form values) is never flagged.
+	pub fn diagnose_xml(&self, path: &Path, rope: RopeSlice<'_>, diagnostics: &mut Vec<Diagnostic>) {
+		if !self.xml_schema_enabled(path) {
+			return;
+		}
+		let text = Cow::from(rope);
+		let mut reader = Tokenizer::from(text.as_ref());
+		let warn = |diagnostics: &mut Vec<Diagnostic>, span: core::ops::Range<usize>, message: String| {
+			diagnostics.push(Diagnostic {
+				range: rope_conv(span.map_unit(ByteOffset), rope),
+				message,
+				severity: Some(DiagnosticSeverity::WARNING),
+				..Default::default()
+			});
+		};
+		/// The start tag currently being read, pending validation at its close.
+		struct Open<'a> {
+			name: &'a str,
+			/// Byte span of the `<name` token.
+			span: core::ops::Range<usize>,
+			/// Seen attributes: `(name, value, value byte span)`.
+			attrs: Vec<(&'a str, &'a str, core::ops::Range<usize>)>,
+		}
+		// Names of the ancestor elements currently open.
+		let mut stack: Vec<&str> = vec![];
+		let mut current: Option<Open> = None;
+		loop {
+			match reader.next() {
+				Some(Ok(Token::ElementStart { local, span, .. })) => {
+					let name = local.as_str();
+					// A child the enclosing element's content model forbids. Only
+					// flag elements the grammar doesn't define at all (typos): a
+					// known element in an unexpected spot is left alone, since the
+					// flattened schema can't reliably judge placement.
+					if let Some(&parent) = stack.last()
+						&& schema::is_allowed_child(parent, name) == Some(false)
+						&& schema::is_unknown_element(name)
+					{
+						warn(
+							diagnostics,
+							span.range(),
+							format!("`<{name}>` is not allowed in `<{parent}>`"),
+						);
+					}
+					current = Some(Open {
+						name,
+						span: span.range(),
+						attrs: vec![],
+					});
+				}
+				Some(Ok(Token::Attribute { local, value, .. })) => {
+					if let Some(open) = &mut current {
+						open.attrs.push((local.as_str(), value.as_str(), value.range()));
+					}
+				}
+				// `ElementEnd::Open` (`>`) and `Empty` (`/>`) both close the start
+				// tag: every attribute has been seen, so validate now.
+				Some(Ok(Token::ElementEnd { end, .. })) => match end {
+					ElementEnd::Open | ElementEnd::Empty => {
+						let opened = matches!(end, ElementEnd::Open);
+						if let Some(Open {
+							name,
+							span: name_span,
+							attrs,
+						}) = current.take()
+						{
+							for required in schema::required_attributes(name) {
+								if !attrs.iter().any(|(attr, ..)| *attr == required) {
+									warn(
+										diagnostics,
+										name_span.clone(),
+										format!("Missing required attribute `{required}` on `<{name}>`"),
+									);
+								}
+							}
+							for (attr, value, value_span) in &attrs {
+								if value.is_empty() {
+									continue;
+								}
+								// Skip values still consistent with a valid one — an
+								// exact match, or a prefix the user may be mid-typing —
+								// so only definitively wrong values are flagged.
+								if let Some(allowed) = schema::enum_values(name, attr)
+									&& !allowed.iter().any(|v| v.starts_with(*value))
+								{
+									warn(
+										diagnostics,
+										value_span.clone(),
+										format!("`{value}` is not a valid value for `{attr}` on `<{name}>`"),
+									);
+								}
+							}
+							if opened {
+								stack.push(name);
+							}
+						}
+					}
+					ElementEnd::Close(..) => {
+						stack.pop();
+					}
+				},
+				None => break,
+				Some(Err(_)) => break,
+				_ => {}
+			}
+		}
+	}
 	pub fn xml_completions(
 		&self,
 		params: &CompletionParams,
@@ -273,14 +444,36 @@ impl Backend {
 			.find_workspace_of(&path, |_, ws| ws.completions.limit)
 			.unwrap_or_else(|| self.project_config.completions_limit.load(Relaxed));
 
-		self.index.xml_completions(
+		if let Some(response) = self.index.xml_completions(
 			&path,
 			completions_limit,
 			rope,
 			offset_at_cursor,
 			relative_offset,
 			&mut reader,
-		)
+		)? {
+			return Ok(Some(response));
+		}
+		if !self.xml_schema_enabled(&path) {
+			return Ok(None);
+		}
+		// Fall back to schema (RNG) based element/attribute completions where the
+		// semantic analyzer had nothing to offer.
+		Ok(schema_completions(
+			slice_str.as_ref(),
+			offset_at_cursor.0,
+			relative_offset,
+			rope,
+			completions_limit,
+		))
+	}
+	/// Whether the built-in RELAX NG schema assistance is enabled for `path`,
+	/// preferring the innermost workspace setting and falling back to the global
+	/// default.
+	fn xml_schema_enabled(&self, path: &Path) -> bool {
+		self.workspaces
+			.find_workspace_of(path, |_, ws| ws.xml.schema_completions)
+			.unwrap_or_else(|| self.project_config.xml_schema_completions.load(Relaxed))
 	}
 	pub fn xml_is_cursor_in_text(&self, uri: &Uri, position: Position, rope: RopeSlice<'_>) -> anyhow::Result<bool> {
 		let (slice, ByteOffset(offset_at_cursor), _) = self.record_slice(rope, uri, position)?;
@@ -441,7 +634,19 @@ impl Backend {
 			arch_model: _,
 		} = self.index.gather_refs(offset_at_cursor, &mut reader, slice)?;
 
-		let (mut needle, ref_range) = some!(ref_at_cursor);
+		let Some((mut needle, ref_range)) = ref_at_cursor else {
+			// No semantic ref at the cursor — try schema (RNG) documentation for
+			// the element/attribute name under it, unless the user disabled it.
+			if !self.xml_schema_enabled(&path) {
+				return Ok(None);
+			}
+			return Ok(schema_hover(
+				slice_str.as_ref(),
+				offset_at_cursor.0,
+				relative_offset,
+				rope,
+			));
+		};
 
 		let mut lsp_range = Some(rope_conv(
 			ref_range.clone().map_unit(|unit| ByteOffset(unit + relative_offset)),
@@ -1397,7 +1602,7 @@ pub fn add_xml_snippets(res: Option<CompletionResponse>) -> CompletionResponse {
 		},
 		CompletionItem {
 			kind: Some(CompletionItemKind::SNIPPET),
-			label: "res_groups".to_string(),
+			label: "res.groups".to_string(),
 			insert_text_format: Some(InsertTextFormat::SNIPPET),
 			insert_text: Some(
 				r#"
@@ -1406,6 +1611,87 @@ pub fn add_xml_snippets(res: Option<CompletionResponse>) -> CompletionResponse {
 	<field name="privilege_id" ref="$2"/>
 	<field name="implied_ids" eval="[$3]"/>
 	<field name="comment">$4</field>
+</record>"#
+					.to_string(),
+			),
+			..Default::default()
+		},
+		CompletionItem {
+			kind: Some(CompletionItemKind::SNIPPET),
+			label: "res.groups".to_string(),
+			insert_text_format: Some(InsertTextFormat::SNIPPET),
+			insert_text: Some(
+				r#"
+<div class="oe_button_box" name="button_box">
+    <button class="oe_stat_button" type="object" name="action_${1:items}">
+        <field string="${2:# Items}" name="count_$1" widget="statinfo"/>
+        $0
+    </button>
+</div>"#
+					.to_string(),
+			),
+			..Default::default()
+		},
+		CompletionItem {
+			kind: Some(CompletionItemKind::SNIPPET),
+			label: "form-view".to_string(),
+			insert_text_format: Some(InsertTextFormat::SNIPPET),
+			insert_text: Some(
+				r#"
+<record id="view_${1:model}_form" model="ir.ui.view">
+	<field name="name">$1.form</field>
+	<field name="model">$1</field>
+	<field name="arch" type="xml">
+		<form>
+			<header>
+				<!-- Add your Confirm, Cancel, etc. buttons here -->
+			</header>
+			<div class="alert alert-warning" role="alert" invisible="True">
+				<!-- Focus your users' attention to something actionable about this record -->
+			</div>
+			<sheet>
+				<div class="oe_button_box" name="button_box">
+					<!-- Add your smart buttons here (button.oe_stat_button) -->
+				</div>
+				<group name="main">
+					<group name="left_side">
+					</group>
+					<group name="right_side">
+					</group>
+				</group>
+				<notebook>
+					<page string="Lines" name="$1_lines">
+						<!-- Add your fields here, customarily the only field in the first tab is a list view of model lines -->
+					</page>
+				</notebook>
+			</sheet>
+			<chatter/>
+		</form>
+	</field>
+</record>"#
+					.to_string(),
+			),
+			..Default::default()
+		},
+		CompletionItem {
+			kind: Some(CompletionItemKind::SNIPPET),
+			label: "search-view".to_string(),
+			insert_text_format: Some(InsertTextFormat::SNIPPET),
+			insert_text: Some(
+				r#"
+<record id="view_${1:model}_search" model="ir.ui.view">
+	<field name="name">$1.form</field>
+	<field name="model">$1</field>
+	<field name="arch" type="xml">
+		<search>
+			<field name="$2"/>
+			<separator/>
+			<filter name="filter_$2" domain="[]"/>
+			<group>
+				<filter name="group_by_$2" string="$2" context="{'group_by': '$2'}"/>
+			</group>
+		</search>
+	</field>
 </record>"#
 					.to_string(),
 			),

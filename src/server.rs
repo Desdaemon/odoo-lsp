@@ -95,7 +95,7 @@ impl LanguageServer for Backend {
 				completion_provider: Some(CompletionOptions {
 					resolve_provider: Some(true),
 					trigger_characters: Some(
-						['"', '\'', '.', '_', ',', ' ', '(', ')']
+						['"', '\'', '.', '_', ',', ' ', '(', ')', '<']
 							.iter()
 							.map(char::to_string)
 							.collect(),
@@ -729,6 +729,12 @@ impl LanguageServer for Backend {
 				&mut document.diagnostics_cache,
 			);
 			diagnostics.clone_from(&document.diagnostics_cache);
+		} else if let Some((_, "xml")) = path.rsplit_once('.')
+			&& let Some(document) = self.documents.get(path)
+			&& let Some(file_path) = params.text_document.uri.to_file_path()
+		{
+			let rope = document.rope.clone();
+			self.diagnose_xml(&file_path, rope.slice(..), &mut diagnostics);
 		}
 		Ok(DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
 			RelatedFullDocumentDiagnosticReport {

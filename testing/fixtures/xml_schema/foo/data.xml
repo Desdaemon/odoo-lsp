@@ -1,0 +1,12 @@
+<odoo>
+    <record id="r" model="ir.ui.view">
+        <field name="x"/>
+<!--          ^complete field -->
+        <field name="y" type="in"/>
+<!--                        ^complete type -->
+        <field name="z" type="in"/>
+<!--                            ^complete int -->
+        <field/>
+<!--    ^diag Missing required attribute `name` on `<field>` -->
+    </record>
+</odoo>

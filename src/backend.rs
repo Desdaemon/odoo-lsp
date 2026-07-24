@@ -24,7 +24,7 @@ use crate::analyze::{Scope, Type, TypeId, type_cache};
 use crate::prelude::*;
 
 use crate::component::{Prop, PropDescriptor};
-use crate::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig};
+use crate::config::{CompletionsConfig, Config, ModuleConfig, ReferencesConfig, XmlConfig};
 use crate::index::{Component, Index, ModuleName, RecordId, Symbol, SymbolSet};
 use crate::model::{Field, FieldKind, Method, ModelEntry, ModelLocation, ModelName, PropertyKind};
 use crate::python::top_level_stmt;
@@ -60,6 +60,7 @@ pub struct Workspace {
 	// pub symbols: SymbolsConfig,
 	pub completions: CompletionsConfig,
 	pub references: ReferencesConfig,
+	pub xml: XmlConfig,
 }
 
 #[derive(SmartDefault)]
@@ -70,6 +71,9 @@ pub struct BackendConfig {
 	pub completions_limit: AtomicUsize,
 	#[default(200.into())]
 	pub references_limit: AtomicUsize,
+	/// Whether the built-in RELAX NG schema assistance is enabled globally.
+	#[default(true.into())]
+	pub xml_schema_completions: AtomicBool,
 }
 
 #[derive(Deref, DerefMut, SmartDefault, Debug)]
@@ -330,6 +334,15 @@ impl Backend {
 			}
 			(Some((_, "xml")), _) | (_, Some(Language::Xml)) => {
 				self.update_xml(root, &params.text, &params.uri, slice, false)?;
+				if eager_diagnostics {
+					let file_path = params.uri.to_file_path().unwrap();
+					let mut diagnostics = vec![];
+					self.diagnose_xml(&file_path, slice, &mut diagnostics);
+					self.documents
+						.get_mut(params.uri.path().as_str())
+						.unwrap()
+						.diagnostics_cache = diagnostics;
+				}
 			}
 			(Some((_, "js")), _) | (_, Some(Language::Javascript)) => {
 				self.on_change_js(&params.text, &params.uri, slice, params.old_rope)?;
@@ -489,12 +502,16 @@ impl Backend {
 			references,
 			module,
 			completions,
+			xml,
 		} = config;
 
 		let Some(root) = root else {
 			warn!("TODO: discarding project config for `module`: {:?}", module);
 			if let Some(limit) = completions.and_then(|c| c.limit) {
 				self.project_config.completions_limit.store(limit, Relaxed);
+			}
+			if let Some(enabled) = xml.and_then(|x| x.schema_completions) {
+				self.project_config.xml_schema_completions.store(enabled, Relaxed);
 			}
 			if let Some(limit) = references.and_then(|c| c.limit) {
 				self.project_config.references_limit.store(limit, Relaxed);
@@ -514,6 +531,7 @@ impl Backend {
 			// symbols: symbols.unwrap_or_default(),
 			references: references.unwrap_or_default(),
 			completions: completions.unwrap_or_default(),
+			xml: xml.unwrap_or_default(),
 		};
 
 		let Some(ModuleConfig { roots: Some(subroots) }) = module else {
