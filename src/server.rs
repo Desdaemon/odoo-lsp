@@ -11,7 +11,7 @@ use tower_lsp_server::ls_types::*;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::xml::add_xml_snippets;
-use crate::{GITVER, NAME, VERSION, await_did_open_document, loc};
+use crate::{GITVER, NAME, VERSION, await_did_open_document, format_loc, loc};
 
 use crate::backend::{Backend, Document, Language, Text};
 use crate::index::{_G, _R};
@@ -280,7 +280,8 @@ impl LanguageServer for Backend {
 			await_did_open_document!(self, path);
 			let mut document = self
 				.documents
-				.get_mut(params.text_document.uri.path().as_str())
+				.try_get_mut(params.text_document.uri.path().as_str())
+				.expect(format_loc!("deadlock"))
 				.expect("Did not build a document");
 			old_rope = document.rope.clone();
 			// Update the rope
@@ -476,7 +477,7 @@ impl LanguageServer for Backend {
 					let Some(model) = _G(&completion.label) else {
 						break 'resolve;
 					};
-					let Some(mut entry) = self.index.models.get_mut(&model) else {
+					let Some(mut entry) = self.index.models.try_get_mut(&model).expect(format_loc!("deadlock")) else {
 						break 'resolve;
 					};
 					if let Err(err) = entry.resolve_details() {
@@ -717,7 +718,7 @@ impl LanguageServer for Backend {
 
 		let mut diagnostics = vec![];
 		if let Some((_, "py")) = path.rsplit_once('.')
-			&& let Some(mut document) = self.documents.get_mut(path)
+			&& let Some(mut document) = self.documents.try_get_mut(path).expect(format_loc!("deadlock"))
 		{
 			let damage_zone = document.damage_zone.take();
 			let rope = document.rope.clone();

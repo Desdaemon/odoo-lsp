@@ -1156,10 +1156,7 @@ impl Index {
 
 		let model = some!(self.models.populate_properties(model, &[]));
 		let method = some!(some!(model.methods.as_ref()).get(&method));
-		let arguments = method
-			.arguments
-			.clone()
-			.ok_or(PrepareCallScopeError::NeedsArguments)?;
+		let arguments = method.arguments.clone().ok_or(PrepareCallScopeError::NeedsArguments)?;
 		if arguments.is_empty() {
 			return Ok(None);
 		}
@@ -1407,7 +1404,7 @@ impl Index {
 		}
 
 		defer! {
-			if let Some(model_entry) = self.models.get_mut(&model)
+			if let Some(model_entry) = self.models.try_get_mut(&model).expect(format_loc!("deadlock"))
 				&& let Some(methods) = model_entry.methods.as_ref()
 				&& let Some(method) = methods.get(&method)
 			{

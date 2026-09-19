@@ -97,7 +97,7 @@ fn main() {
 	let args = std::env::args().collect::<Vec<_>>();
 	let args = parse_args_and_init_logger(&args);
 
-	let mut threads = args.threads.unwrap_or(4);
+	let mut threads = args.threads.unwrap_or(1);
 	match std::thread::available_parallelism() {
 		Ok(value) if value.get() <= 4 => {
 			threads = 1usize.max(threads / 2);
@@ -138,7 +138,7 @@ fn main() {
 			.layer_fn(CatchPanic)
 			.service(service);
 		Server::new(stdin, stdout, socket)
-			.concurrency_level(2)
+			.concurrency_level(if threads == 1 { 1 } else { 2 })
 			.serve(service)
 			.await;
 	})

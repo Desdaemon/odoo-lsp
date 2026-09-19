@@ -285,7 +285,8 @@ impl Backend {
 			{
 				let mut document = self
 					.documents
-					.get_mut(params.uri.path().as_str())
+					.try_get_mut(params.uri.path().as_str())
+					.expect(format_loc!("deadlock"))
 					.expect(format_loc!("(on_change) did not build document"));
 				blocker = document.setup.clone();
 				match &params.text {

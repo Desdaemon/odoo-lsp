@@ -403,7 +403,7 @@ impl ModelIndex {
 					if replace {
 						for inherit in inherits {
 							let Some(inherit) = _G(inherit) else { continue };
-							if let Some(mut entry) = self.get_mut(&inherit) {
+							if let Some(mut entry) = self.try_get_mut(&inherit).expect(format_loc!("deadlock")) {
 								entry.descendants.retain(|loc| loc.0.path != path)
 							}
 						}

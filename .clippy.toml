@@ -37,3 +37,7 @@ reason = "by_prefix tries use std RwLock; holding a guard across await can block
 [[await-holding-invalid-types]]
 path = "std::sync::MutexGuard"
 reason = "holding a std Mutex guard across await can block a worker thread"
+[[disallowed-methods]]
+path = "dashmap::DashMap::get_mut"
+reason = "Would deadlock if same/another thread wants to acquire a reference"
+replacement = "try_get_mut"
