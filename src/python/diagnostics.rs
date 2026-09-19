@@ -9,7 +9,7 @@ use crate::index::{_R, Index};
 use crate::prelude::*;
 
 use crate::{
-	analyze::{MODEL_METHODS, Scope, Type, determine_scope},
+	analyze::{FORM_METHODS, Scope, Type, determine_scope},
 	backend::Backend,
 	model::{ModelName, ResolveMappedError},
 };
@@ -327,12 +327,10 @@ impl Backend {
 			#[rustfmt::skip]
 			static MODEL_BUILTINS: phf::Set<&str> = phf::phf_set!(
 				"env", "id", "ids", "display_name", "create_date", "write_date",
-				"create_uid", "write_uid", "pool", "record", "flush_model", "mapped",
-				"grouped", "_read_group", "filtered", "sorted", "_origin", "fields_get",
-				"user_has_groups", "read",
+				"create_uid", "write_uid", "pool",
 			);
 			let prop = &contents[attribute.byte_range()];
-			if prop.starts_with('_') || MODEL_BUILTINS.contains(prop) || MODEL_METHODS.contains(prop) {
+			if prop.starts_with('_') || MODEL_BUILTINS.contains(prop) || FORM_METHODS.contains(prop) {
 				return ControlFlow::Continue(entered);
 			}
 

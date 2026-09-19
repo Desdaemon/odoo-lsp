@@ -1,0 +1,4 @@
+{
+    'name': 'bakery',
+    'depends': ['base'],
+}

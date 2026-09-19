@@ -23,7 +23,7 @@ class Foo(Model):
         #            ^complete bar foo_m2m foo_m2o foo_o2m
         for foo in self:
             foo.
-        #      ^complete bar completions diagnostics foo_m2m foo_m2o foo_o2m
+        #      ^complete _where_calc bar browse completions create diagnostics ensure_one exists filtered flush_model foo_m2m foo_m2o foo_o2m grouped mapped read search sudo unlink write
 
     def diagnostics(self):
         self.foo
@@ -68,7 +68,7 @@ class Foob(Model):
             #^complete barb foo_id hoeh
         })
         self.
-        #   ^complete barb foo_id handler hoeh missing_depends
+        #   ^complete _where_calc barb browse create ensure_one exists filtered flush_model foo_id grouped handler hoeh mapped missing_depends read search sudo unlink write
 
     @api.depends("barb")
     def missing_depends(self):

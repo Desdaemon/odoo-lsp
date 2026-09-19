@@ -17,9 +17,9 @@
 		<field name="bar" />
 		<!--            ^complete bar -->
 		<button name="action_button" type="object" />
-		<!--          ^complete action_button action_button2 -->
+		<!--          ^complete _where_calc action_button action_button2 browse create ensure_one exists filtered flush_model grouped mapped read search sudo unlink write -->
 		<button name="action_button" />
-		<!--          ^complete action_button action_button2 -->
+		<!--          ^complete _where_calc action_button action_button2 browse create ensure_one exists filtered flush_model grouped mapped read search sudo unlink write -->
 		<button name="%(bar.action_open_record)d" type="action" />
 		<!--                             ^complete bar.action_open_record -->
 		<button name="%(bar.action_open_record" />
@@ -45,9 +45,9 @@
 			<field name="bar" />
 			<!--            ^complete bar -->
 			<button name="action_button" type="object" />
-			<!--          ^complete action_button action_button2 -->
+			<!--          ^complete _where_calc action_button action_button2 browse create ensure_one exists filtered flush_model grouped mapped read search sudo unlink write -->
 			<button name="action_button" />
-			<!--          ^complete action_button action_button2 -->
+			<!--          ^complete _where_calc action_button action_button2 browse create ensure_one exists filtered flush_model grouped mapped read search sudo unlink write -->
 			<button name="%(bar.action_open_record)d" type="action" />
 			<!--                             ^complete bar.action_open_record -->
 			<button name="%(bar.action_open_record" />

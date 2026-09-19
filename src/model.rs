@@ -25,6 +25,8 @@ use crate::prelude::*;
 use crate::analyze::FunctionParam;
 use crate::{ImStr, errloc, format_loc, test_utils};
 
+pub const BASE_MODEL: &str = "base";
+
 #[derive(Clone, Debug)]
 pub struct Model {
 	pub type_: ModelType,
@@ -385,6 +387,10 @@ impl ModelIndex {
 						entry
 							.ancestors
 							.extend(ancestors.iter().map(|sym| ModelName::from(_I(sym))));
+						let implicit = ModelName::from(_I(BASE_MODEL));
+						if base.as_str() != BASE_MODEL && !entry.ancestors.contains(&implicit) {
+							entry.ancestors.push(implicit);
+						}
 					} else if let Some(base) = entry.base.as_ref() {
 						warn!(
 							"Conflicting bases for {}:\nfirst={base}\n  new={}",

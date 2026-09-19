@@ -49,30 +49,7 @@ macro_rules! _TR {
 	};
 }
 
-pub static MODEL_METHODS: phf::Set<&str> = phf::phf_set!(
-	"create",
-	"copy",
-	"name_create",
-	"browse",
-	"filtered",
-	"filtered_domain",
-	"sorted",
-	"search",
-	"search_fetch",
-	"name_search",
-	"ensure_one",
-	"with_context",
-	"with_user",
-	"with_company",
-	"with_env",
-	"sudo",
-	"exists",
-	"concat",
-	// TODO: Limit to Forms only
-	"new",
-	"edit",
-	"save",
-);
+pub static FORM_METHODS: phf::Set<&str> = phf::phf_set!("new", "edit", "save");
 
 /// The subset of types that may resolve to a model.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -282,24 +259,6 @@ pub fn normalize<'r, 'n>(node: &'r mut Node<'n>) -> &'r mut Node<'n> {
 		*node = child;
 	}
 	node
-}
-
-#[rustfmt::skip]
-query! {
-	#[derive(Debug)]
-	FieldCompletion(Name, SelfParam, Scope);
-((class_definition
-  (block
-    (expression_statement [
-      (assignment (identifier) @_name (string) @NAME)
-	  (assignment (identifier) @_inherit (list . (string) @NAME)) ])?
-    [
-      (decorated_definition
-        (function_definition
-          (parameters . (identifier) @SELF_PARAM)) @SCOPE)
-      (function_definition (parameters . (identifier) @SELF_PARAM)) @SCOPE])) @class
-  (#eq? @_inherit "_inherit")
-  (#match? @_name "^_(name|inherit)$"))
 }
 
 #[rustfmt::skip]
@@ -922,6 +881,7 @@ impl Index {
 				Some(_T!(Type::Model(model)))
 			}
 			Type::ModelFn(model) => Some(_T!(Type::Model(model.clone()))),
+			Type::Model(model) => Some(_T!(Type::Model(model.clone()))),
 			Type::Super => Some(_T!(scope.get(scope.super_.as_deref()?).cloned()?)),
 			Type::Method(model, mapped) if mapped.as_str() == "mapped" => {
 				// (call (_) @func (argument_list . [(string) (lambda)] @mapped))
@@ -1126,7 +1086,6 @@ impl Index {
 				}
 			}
 			Type::Env
-			| Type::Model(..)
 			| Type::HttpRequest
 			| Type::Value
 			| Type::PyBuiltin(..)
@@ -1199,6 +1158,7 @@ impl Index {
 		let attrname = &contents[rhs.byte_range()];
 		match &contents[rhs.byte_range()] {
 			"env" if matches!(lhs, Type::Model(..) | Type::HttpRequest) => Some(Type::Env),
+			"__class__" if matches!(lhs, Type::Model(..)) => Some(lhs.clone()),
 			"website" if matches!(lhs, Type::HttpRequest) => Some(Type::Model("website".into())),
 			"ref" if matches!(lhs, Type::Env) => Some(Type::RefFn),
 			"user" if matches!(lhs, Type::Env) => Some(Type::Model("res.users".into())),
@@ -1208,7 +1168,7 @@ impl Index {
 				Some(Type::Method(model, attrname.into()))
 			}
 			dict_method @ ("items" | "get") if lhs.is_dictlike() => Some(Type::PythonMethod(lhsid, dict_method.into())),
-			func if MODEL_METHODS.contains(func) => self
+			func if FORM_METHODS.contains(func) => self
 				.try_resolve_model(lhs, scope)
 				.map(|model| Type::ModelFn(_R(model).into())),
 			ident if rhs.kind() == "identifier" => self.type_of_attribute(lhs, ident, scope),
@@ -1477,33 +1437,33 @@ impl Index {
 			node.parent().is_some_and(is_block_of_class)
 		}
 
-		let (self_type, fn_scope, self_param) = determine_scope(ast.root_node(), &contents, end_offset.0)?;
-		let self_type = match self_type {
-			Some(type_) => &contents[type_.byte_range().shrink(1)],
-			None => "",
-		};
+		let (_, fn_scope, self_param) = determine_scope(ast.root_node(), &contents, end_offset.0)?;
+		let self_model = Type::Model(_R(model).into());
 		scope.super_ = Some(self_param.into());
-		scope.insert(self_param.to_string(), Type::Model(self_type.into()));
+		scope.insert(self_param.to_string(), self_model.clone());
 		let offset = fn_scope.end_byte();
-		let (_, type_) = Self::walk_scope(fn_scope, Some(scope), |scope, node| {
-			let entered = self.build_scope(scope, node, offset, &contents).map_break(|_| None)?;
-			// TODO: When implementing freestanding functions, make the toplevel check optional
-			if node.kind() == "return_statement" && is_toplevel_return(node) {
-				let Some(child) = node.python_nth_named_child::<0>() else {
-					return ControlFlow::Continue(entered);
-				};
-				let Some(type_) = self.type_of(child, scope, &contents) else {
-					return ControlFlow::Continue(entered);
-				};
+		let type_ = declared_rtype(fn_scope, &contents, &self_model).or_else(|| {
+			Self::walk_scope(fn_scope, Some(scope), |scope, node| {
+				let entered = self.build_scope(scope, node, offset, &contents).map_break(|_| None)?;
+				// TODO: When implementing freestanding functions, make the toplevel check optional
+				if node.kind() == "return_statement" && is_toplevel_return(node) {
+					let Some(child) = node.python_nth_named_child::<0>() else {
+						return ControlFlow::Continue(entered);
+					};
+					let Some(type_) = self.type_of(child, scope, &contents) else {
+						return ControlFlow::Continue(entered);
+					};
 
-				let type_ = _TR!(type_);
-				return match self.try_resolve_model(type_, scope) {
-					Some(resolved) => ControlFlow::Break(Some(Type::Model(ImStr::from(_R(resolved))))),
-					None => ControlFlow::Break(Some(type_.clone())),
-				};
-			}
+					let type_ = _TR!(type_);
+					return match self.try_resolve_model(type_, scope) {
+						Some(resolved) => ControlFlow::Break(Some(Type::Model(ImStr::from(_R(resolved))))),
+						None => ControlFlow::Break(Some(type_.clone())),
+					};
+				}
 
-			ControlFlow::Continue(entered)
+				ControlFlow::Continue(entered)
+			})
+			.1
 		});
 
 		let mut model = self.models.try_get_mut(&model).expect(format_loc!("deadlock"))?;
@@ -1584,49 +1544,133 @@ impl Index {
 ///
 /// `fn_scope` is customarily a `function_definition` node.
 #[instrument(level = "trace", skip_all, ret)]
+fn declared_rtype(fn_scope: Node, contents: &str, self_model: &Type) -> Option<Type> {
+	if returns_self_decorator(fn_scope, contents) {
+		return Some(self_model.clone());
+	}
+	type_from_annotation(fn_scope.child_by_field_name("return_type")?, contents, self_model)
+}
+
+fn returns_self_decorator(fn_scope: Node, contents: &str) -> bool {
+	let Some(decorated) = fn_scope.parent().filter(|node| node.kind() == "decorated_definition") else {
+		return false;
+	};
+	decorated
+		.named_children(&mut decorated.walk())
+		.filter(|node| node.kind() == "decorator")
+		.filter_map(|decorator| dig!(decorator, call))
+		.any(|call| {
+			dig!(call, attribute.identifier[1]).is_some_and(|name| &contents[name.byte_range()] == "returns")
+				&& dig!(call, [1].string.string_content[1]).is_some_and(|arg| &contents[arg.byte_range()] == "self")
+		})
+}
+
+fn type_from_annotation(annotation: Node, contents: &str, self_model: &Type) -> Option<Type> {
+	match annotation.kind() {
+		"type" => type_from_annotation(annotation.python_nth_named_child::<0>()?, contents, self_model),
+		"identifier" | "attribute" => match contents[annotation.byte_range()].rsplit('.').next()? {
+			"Self" => Some(self_model.clone()),
+			builtin @ ("bool" | "int" | "float" | "str" | "bytes" | "date" | "datetime") => {
+				Some(Type::PyBuiltin(builtin.into()))
+			}
+			_ => None,
+		},
+		"union_type" | "binary_operator" => annotation
+			.named_children(&mut annotation.walk())
+			.find_map(|operand| type_from_annotation(operand, contents, self_model)),
+		"generic_type" => {
+			let generic = annotation.python_nth_named_child::<0>()?;
+			let arguments = annotation
+				.python_nth_named_child::<1>()
+				.filter(|node| node.kind() == "type_parameter")
+				.map(|parameters| {
+					parameters
+						.named_children(&mut parameters.walk())
+						.map(|argument| match type_from_annotation(argument, contents, self_model) {
+							Some(type_) => _T!(type_),
+							None => _T!(Type::Value),
+						})
+						.collect::<Vec<_>>()
+				})
+				.unwrap_or_default();
+			match contents[generic.byte_range()].rsplit('.').next()? {
+				"list" | "set" | "frozenset" => Some(Type::List(match arguments.first() {
+					Some(element) => ListElement::Occupied(*element),
+					None => ListElement::Vacant,
+				})),
+				"Iterable" | "Iterator" | "Sequence" => Some(Type::Iterable(arguments.first().copied())),
+				"dict" if arguments.len() == 2 => Some(Type::Dict(arguments[0], arguments[1])),
+				"tuple" => Some(Type::Tuple(arguments)),
+				"Optional" => arguments.first().map(|inner| _TR!(*inner).clone()),
+				_ => None,
+			}
+		}
+		_ => None,
+	}
+}
+
+fn is_method_of_class(node: Node) -> bool {
+	let owner = match node.parent() {
+		Some(parent) if parent.kind() == "decorated_definition" => parent.parent(),
+		parent => parent,
+	};
+	owner.is_some_and(|block| {
+		block.kind() == "block" && block.parent().is_some_and(|parent| parent.kind() == "class_definition")
+	})
+}
+
+fn model_name_of_class<'node>(class: Node<'node>, contents: &str) -> Option<Node<'node>> {
+	let body = class.child_by_field_name("body")?;
+	body.named_children(&mut body.walk())
+		.filter_map(|statement| dig!(statement, assignment))
+		.find_map(|assignment| {
+			let name = assignment.python_nth_named_child::<0>()?;
+			if !matches!(&contents[name.byte_range()], "_name" | "_inherit") {
+				return None;
+			}
+			let value = assignment.child_by_field_name("right")?;
+			match value.kind() {
+				"string" => Some(value),
+				"list" => dig!(value, string),
+				_ => None,
+			}
+		})
+}
+
+fn deepest_node_at<'node>(node: Node<'node>, offset: usize) -> Node<'node> {
+	let mut deepest = node;
+	'descend: loop {
+		for child in deepest.named_children(&mut deepest.walk()) {
+			if child.byte_range().contains_end(offset) {
+				deepest = child;
+				continue 'descend;
+			}
+		}
+		return deepest;
+	}
+}
+
 pub fn determine_scope<'out, 'node>(
 	node: Node<'node>,
 	contents: &'out str,
 	offset: usize,
 ) -> Option<(Option<Node<'node>>, Node<'node>, &'out str)> {
-	let query = FieldCompletion::query();
-	let mut self_type = None;
-	let mut self_param = None;
-	let mut fn_scope = None;
-	let mut cursor = QueryCursor::new();
-	let mut matches = cursor.matches(query, node, contents.as_bytes());
-	'scoping: while let Some(match_) = matches.next() {
-		// @class
-		let class = match_.captures.first()?;
-		if !class.node.byte_range().contains_end(offset) {
-			continue;
-		}
-		for capture in match_.captures {
-			match FieldCompletion::from(capture.index) {
-				Some(FieldCompletion::Name) => {
-					if self_type.is_none() {
-						self_type = Some(capture.node);
-					}
-				}
-				Some(FieldCompletion::SelfParam) => {
-					self_param = Some(capture.node);
-				}
-				Some(FieldCompletion::Scope) => {
-					if !capture.node.byte_range().contains_end(offset) {
-						continue 'scoping;
-					}
-					fn_scope = Some(capture.node);
-				}
-				None => {}
-			}
-		}
-		if fn_scope.is_some() {
-			break;
-		}
+	let mut fn_scope = deepest_node_at(node, offset);
+	while !(fn_scope.kind() == "function_definition" && is_method_of_class(fn_scope)) {
+		fn_scope = fn_scope.parent()?;
 	}
-	let fn_scope = fn_scope?;
-	let self_param = &contents[self_param?.byte_range()];
-	Some((self_type, fn_scope, self_param))
+
+	let self_param = dig!(fn_scope, :parameters.identifier)?;
+	let mut class = fn_scope.parent()?;
+	while class.kind() != "class_definition" {
+		class = class.parent()?;
+	}
+
+	Some((
+		model_name_of_class(class, contents),
+		fn_scope,
+		&contents[self_param.byte_range()],
+	))
 }
 
 #[cfg(test)]
@@ -1635,55 +1679,13 @@ mod tests {
 	use pretty_assertions::assert_eq;
 	use ropey::Rope;
 	use tower_lsp_server::ls_types::Position;
-	use tree_sitter::{Parser, QueryCursor, StreamingIterator, StreamingIteratorMut};
+	use tree_sitter::Parser;
 
-	use crate::analyze::{DictKey, FieldCompletion, Type, type_cache};
+	use crate::analyze::{DictKey, Type, type_cache};
 	use crate::index::_I;
 
-	use crate::utils::{ByteOffset, acc_vec, rope_conv};
+	use crate::utils::{ByteOffset, rope_conv};
 	use crate::{index::Index, test_utils::cases::foo::prepare_foo_index};
-
-	#[test]
-	fn test_field_completion() {
-		let mut parser = Parser::new();
-		parser.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
-		let contents = br#"
-class Foo(models.AbstractModel):
-	_name = 'foo'
-	_description = 'What?'
-	_inherit = 'inherit_foo'
-	foo = fields.Char(related='related')
-	@api.depends('mapped')
-	def foo(self):
-		pass
-"#;
-		let ast = parser.parse(&contents[..], None).unwrap();
-		let query = FieldCompletion::query();
-		let mut cursor = QueryCursor::new();
-		let actual = cursor
-			.matches(query, ast.root_node(), &contents[..])
-			.map(|match_| {
-				match_
-					.captures
-					.iter()
-					.map(|capture| FieldCompletion::from(capture.index))
-					.collect::<Vec<_>>()
-			})
-			.fold_mut(vec![], acc_vec);
-		// Allow nested patterns
-		let actual = actual.iter().map(Vec::as_slice).collect::<Vec<_>>();
-		use FieldCompletion as T;
-		assert!(
-			matches!(
-				&actual[..],
-				[
-					[None, None, Some(T::Name), Some(T::Scope), Some(T::SelfParam)],
-					[None, None, Some(T::Name), Some(T::Scope), Some(T::SelfParam)]
-				]
-			),
-			"{actual:?}"
-		)
-	}
 
 	#[test]
 	fn test_determine_scope() {

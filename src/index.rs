@@ -20,7 +20,7 @@ use xmlparser::{Token, Tokenizer};
 use crate::prelude::*;
 
 pub use crate::component::{Component, ComponentName};
-use crate::model::{Model, ModelIndex, ModelLocation, ModelType};
+use crate::model::{BASE_MODEL, Model, ModelIndex, ModelLocation, ModelType};
 use crate::record::{Record, RecordMetadata};
 use crate::template::{NewTemplate, gather_templates};
 pub use crate::template::{Template, TemplateName};
@@ -626,6 +626,11 @@ impl Index {
 					outputs.spawn_blocking(move || add_root_py(root_key, path));
 				}
 			}
+			if _R(module_key) == BASE_MODEL
+				&& let Some(orm_source) = find_orm_source(&module_dir)
+			{
+				outputs.spawn_blocking(move || add_base_model(orm_source));
+			}
 			if let Ok(scripts) = globwalk::glob_builder(format!("{}/**/*.js", module_dir.display()))
 				.file_type(FileType::FILE | FileType::SYMLINK)
 				.follow_links(true)
@@ -1134,6 +1139,13 @@ query! {
 
 #[rustfmt::skip]
 query! {
+	BaseModelQuery(Class);
+((class_definition (identifier) @_BaseModel) @CLASS
+  (#eq? @_BaseModel "BaseModel"))
+}
+
+#[rustfmt::skip]
+query! {
 	ConfigParameterQuery(Key);
 
 ((call
@@ -1165,6 +1177,49 @@ fn add_root_py(root: Spur, path: PathBuf) -> anyhow::Result<Output> {
 		models,
 		config_parameters,
 	})
+}
+
+fn find_orm_source(base_module_dir: &Path) -> Option<PathBuf> {
+	let package = base_module_dir.parent()?.parent()?;
+	[package.join("models.py"), package.join("orm").join("models.py")]
+		.into_iter()
+		.find(|candidate| candidate.is_file())
+}
+
+fn add_base_model(path: PathBuf) -> anyhow::Result<Output> {
+	let contents = ok!(
+		test_utils::fs::read_to_string(&path),
+		"Could not read {}",
+		path.display()
+	);
+	let root = _I(path.parent().unwrap_or(&path).to_string_lossy());
+	Ok(Output::Models {
+		path: PathSymbol::strip_root(root, &path),
+		models: index_base_model(&contents)?,
+		config_parameters: vec![],
+	})
+}
+
+fn index_base_model(contents: &str) -> anyhow::Result<Vec<Model>> {
+	let mut parser = tree_sitter::Parser::new();
+	parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
+	let ast = parser
+		.parse(contents, None)
+		.ok_or_else(|| anyhow!("{} AST not parsed", loc!()))?;
+
+	let mut cursor = QueryCursor::new();
+	let mut matches = cursor.matches(BaseModelQuery::query(), ast.root_node(), contents.as_bytes());
+	let mut models = vec![];
+	while let Some(match_) = matches.next() {
+		for class in match_.nodes_for_capture_index(BaseModelQuery::Class as _) {
+			models.push(Model {
+				type_: ModelType::Inherit(vec![BASE_MODEL.into()]),
+				range: span_conv(class.range()),
+				byte_range: class.byte_range().map_unit(ByteOffset),
+			});
+		}
+	}
+	Ok(models)
 }
 
 pub fn index_models(contents: &str) -> anyhow::Result<Vec<Model>> {
