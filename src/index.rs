@@ -307,6 +307,27 @@ impl Index {
 		dependencies
 	}
 
+	pub fn lacks_dependency(&self, module: ModuleName, owner: ModuleName) -> bool {
+		let declared = self.resolve_transitive_dependencies(module);
+		!declared.contains(&owner) && declared.iter().all(|&module| self.is_module_available(module))
+	}
+
+	pub fn is_module_available(&self, module: ModuleName) -> bool {
+		self.roots.iter().any(|root| root.contains_key(&module))
+	}
+
+	pub fn module_of_record(&self, xml_id: &str) -> Option<ModuleName> {
+		let key = _G(xml_id)?;
+		Some(self.records.get(&RecordId::from(key))?.module)
+	}
+
+	pub fn module_of_template(&self, name: &str) -> Option<ModuleName> {
+		let key = _G(name)?;
+		let template = self.templates.get(&TemplateName::from(key))?;
+		let location = template.location.as_ref()?.path.to_path();
+		self.find_module_of(&location)
+	}
+
 	/// Find the dependency chain from source module to target module
 	/// Returns None if no path exists, or Some(path) where path includes both source and target
 	fn find_dependency_chain(&self, source: ModuleName, target: ModuleName) -> Option<Vec<ModuleName>> {
@@ -1745,6 +1766,55 @@ mod tests {
 		assert!(deps.contains(&c_key), "Should include transitive dependency C");
 		assert!(deps.contains(&base_key), "Should include transitive dependency base");
 		assert_eq!(deps.len(), 4, "Should have exactly 4 dependencies");
+	}
+
+	#[test]
+	fn test_lacks_dependency() {
+		let index = Index::default();
+		let module = |path: &str, dependencies: Vec<_>| ModuleEntry {
+			path: path.into(),
+			dependencies: dependencies.into_boxed_slice(),
+			auto_install: false,
+			loaded: Default::default(),
+			loaded_dependents: Default::default(),
+		};
+
+		let mine = _I("mine").into();
+		let sale = _I("sale").into();
+		let stock = _I("stock").into();
+
+		let mut modules = HashMap::new();
+		modules.insert(sale, module("sale", vec![]));
+		modules.insert(stock, module("stock", vec![]));
+		modules.insert(mine, module("mine", vec![sale]));
+		index.roots.insert(PathBuf::from("/test/root"), modules);
+
+		assert!(!index.lacks_dependency(mine, mine), "a module may reference itself");
+		assert!(!index.lacks_dependency(mine, sale), "sale is declared");
+		assert!(index.lacks_dependency(mine, stock), "stock is reachable but undeclared");
+	}
+
+	#[test]
+	fn test_lacks_dependency_stays_silent_when_graph_is_incomplete() {
+		let index = Index::default();
+		let mine = _I("mine").into();
+		let unindexed = _I("unindexed").into();
+		let stock = _I("stock").into();
+
+		let mut modules = HashMap::new();
+		modules.insert(
+			mine,
+			ModuleEntry {
+				path: "mine".into(),
+				dependencies: Box::new([unindexed]),
+				auto_install: false,
+				loaded: Default::default(),
+				loaded_dependents: Default::default(),
+			},
+		);
+		index.roots.insert(PathBuf::from("/test/root"), modules);
+
+		assert!(!index.lacks_dependency(mine, stock));
 	}
 
 	#[test]

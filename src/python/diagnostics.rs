@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, ops::ControlFlow};
+use std::{borrow::Cow, cmp::Ordering, ops::ControlFlow, path::Path};
 
 use tower_lsp_server::ls_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location};
 use tracing::{debug, warn};
@@ -54,6 +54,8 @@ impl Backend {
 		let in_active_root =
 			|range: core::ops::Range<usize>| damage_zone.as_ref().map(|zone| zone.intersects(range)).unwrap_or(true);
 
+		let module = self.index.find_module_of(Path::new(path));
+
 		// Diagnose missing imports
 		self.diagnose_python_imports(diagnostics, &contents, ast.root_node());
 
@@ -105,15 +107,22 @@ impl Backend {
 								id_found = self.index.records.contains_key(&id);
 							}
 
-							if !id_found {
-								let range = rope_conv(range.map_unit(ByteOffset), rope);
-								diagnostics.push(Diagnostic {
-									range,
-									message: format!("No XML record with ID `{xmlid}` found"),
-									severity: Some(DiagnosticSeverity::WARNING),
-									..Default::default()
-								})
-							}
+							let message = if !id_found {
+								format!("No XML record with ID `{xmlid}` found")
+							} else if let Some(owner) = self.index.module_of_record(xmlid)
+								&& let Some(module) = module
+								&& self.index.lacks_dependency(module, owner)
+							{
+								format!("`{}` is not a dependency of `{}`", _R(owner), _R(module))
+							} else {
+								continue;
+							};
+							diagnostics.push(Diagnostic {
+								range: rope_conv(range.map_unit(ByteOffset), rope),
+								message,
+								severity: Some(DiagnosticSeverity::WARNING),
+								..Default::default()
+							})
 						}
 					}
 					Some(PyCompletions::Model) => {
@@ -344,11 +353,6 @@ impl Backend {
 			};
 
 			if (self.index).has_attribute(lhs_t, &contents[attribute.byte_range()], scope) {
-				return ControlFlow::Continue(entered);
-			}
-
-			// HACK: fix this issue where the model name is just empty
-			if _R(model_name).is_empty() {
 				return ControlFlow::Continue(entered);
 			}
 

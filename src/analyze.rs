@@ -321,12 +321,11 @@ impl Index {
 		// 3. Parameters, e.g. self which always has a fixed type
 		// 4. Assignments (including walrus-assignment)
 		let mut scope = Scope::default();
-		let self_type = match self_type {
-			Some(type_) => &contents[type_.byte_range().shrink(1)],
-			None => "",
-		};
-		scope.insert(self_param.to_string(), Type::Model(self_type.into()));
-		scope.super_ = Some(self_param.into());
+		let self_type = self_type.map(|type_| &contents[type_.byte_range().shrink(1)]);
+		if let Some(self_type) = self_type {
+			scope.insert(self_param.to_string(), Type::Model(self_type.into()));
+			scope.super_ = Some(self_param.into());
+		}
 
 		// special case: is this a property?
 		// TODO: fields
@@ -334,7 +333,7 @@ impl Index {
 		if node_at_cursor.kind() == "identifier" && fn_scope.child_by_field_name("name") == Some(node_at_cursor) {
 			return Some((
 				_T!(Type::Method(
-					_I(self_type).into(),
+					_I(self_type?).into(),
 					contents[node_at_cursor.byte_range()].into()
 				)),
 				scope,
@@ -1473,34 +1472,6 @@ impl Index {
 			.map(|doc| ImStr::from(Method::postprocess_docstring(doc)));
 		method.docstring = docstring;
 
-		if let Some(params) = fn_scope.child_by_field_name("parameters") {
-			// python parameters can be delineated by three separators:
-			// - parameters before `/` are positional only (`positional_separator`)
-			// - parameters between `/` and `*` can be either positional or named
-			// - a catch-all positional `*args` (`keyword_separator` or `list_splat_pattern`)
-			// - parameters after `*` and before `**` are named (`default_parameter`)
-			// - a catch-all named `**kwargs` (`dictionary_splat_pattern` only)
-			let mut cursor = params.walk();
-			let args = params.named_children(&mut cursor).skip(1).filter_map(|param| {
-				Some(match param.kind() {
-					"identifier" => FunctionParam::Param(ImStr::from(&contents[param.byte_range()])),
-					"positional_separator" => FunctionParam::PosEnd,
-					"keyword_separator" => FunctionParam::EitherEnd(None),
-					"list_splat_pattern" => FunctionParam::EitherEnd(Some(ImStr::from(
-						&contents[param.python_nth_named_child::<0>()?.byte_range()],
-					))),
-					"dictionary_splat_pattern" => FunctionParam::Kwargs("kwargs".into()),
-					"default_parameter" => {
-						let name = param.python_nth_named_child::<0>()?;
-						let name = &contents[name.byte_range()];
-						FunctionParam::Named(ImStr::from(name))
-					}
-					_ => return None,
-				})
-			});
-			method.arguments = Some(args.collect());
-		}
-
 		if let Some(type_) = type_ {
 			let tid = _T!(type_);
 			method.eval_cache.insert(cache_key, tid);
@@ -1648,6 +1619,39 @@ fn deepest_node_at<'node>(node: Node<'node>, offset: usize) -> Node<'node> {
 		}
 		return deepest;
 	}
+}
+
+pub fn function_parameters(function: Node<'_>, contents: &str) -> Option<Box<[FunctionParam]>> {
+	// python parameters can be delineated by three separators:
+	// - parameters before `/` are positional only (`positional_separator`)
+	// - parameters between `/` and `*` can be either positional or named
+	// - a catch-all positional `*args` (`keyword_separator` or `list_splat_pattern`)
+	// - parameters after `*` and before `**` are named (`default_parameter`)
+	// - a catch-all named `**kwargs` (`dictionary_splat_pattern` only)
+	let params = function.child_by_field_name("parameters")?;
+	let mut cursor = params.walk();
+	Some(
+		params
+			.named_children(&mut cursor)
+			.skip(1)
+			.filter_map(|param| {
+				Some(match param.kind() {
+					"identifier" => FunctionParam::Param(ImStr::from(&contents[param.byte_range()])),
+					"positional_separator" => FunctionParam::PosEnd,
+					"keyword_separator" => FunctionParam::EitherEnd(None),
+					"list_splat_pattern" => FunctionParam::EitherEnd(Some(ImStr::from(
+						&contents[param.python_nth_named_child::<0>()?.byte_range()],
+					))),
+					"dictionary_splat_pattern" => FunctionParam::Kwargs("kwargs".into()),
+					"default_parameter" => {
+						let name = param.python_nth_named_child::<0>()?;
+						FunctionParam::Named(ImStr::from(&contents[name.byte_range()]))
+					}
+					_ => return None,
+				})
+			})
+			.collect(),
+	)
 }
 
 pub fn determine_scope<'out, 'node>(

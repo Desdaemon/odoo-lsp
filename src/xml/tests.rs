@@ -522,7 +522,7 @@ fn test_xml_completions_field_groups() {
 	use crate::xml::{Index, Tokenizer};
 	use ropey::Rope;
 	use std::collections::HashMap;
-	use std::path::{Path, PathBuf};
+	use std::path::PathBuf;
 
 	let index = Index::default();
 
@@ -609,7 +609,7 @@ fn test_menuitem_action_completion_multiple_types() {
 	use crate::xml::{Index, Tokenizer};
 	use ropey::Rope;
 	use std::collections::HashMap;
-	use std::path::{Path, PathBuf};
+	use std::path::PathBuf;
 
 	let index = Index::default();
 
@@ -687,4 +687,139 @@ fn test_menuitem_action_completion_multiple_types() {
 	} else {
 		panic!("Expected completion list for menuitem action attribute");
 	}
+}
+
+#[test]
+fn test_csv_entries_spans() {
+	let text = "base.group_user,!base.group_portal";
+	let entries = csv_entries(text, 10).collect::<Vec<_>>();
+	assert_eq!(
+		entries,
+		vec![("base.group_user", 10..25), ("base.group_portal", 27..44)]
+	);
+}
+
+#[test]
+fn test_python_expression_attributes() {
+	assert!(is_python_expression_attribute("t-if"));
+	assert!(is_python_expression_attribute("t-att-class"));
+	assert!(is_python_expression_attribute("t-options-widget"));
+	assert!(!is_python_expression_attribute("t-attf-class"));
+	assert!(!is_python_expression_attribute("t-component"));
+	assert!(!is_python_expression_attribute("t-on-click"));
+	assert!(!is_python_expression_attribute("t-as"));
+}
+
+#[test]
+fn test_gather_refs_position_before_name() {
+	use crate::prelude::*;
+	use crate::test_utils::index::index_models_with_properties;
+	use crate::xml::{Index, Tokenizer};
+	use ropey::Rope;
+
+	let mut index = Index::default();
+	let py = r#"
+class ResPartner(models.Model):
+    _name = 'res.partner'
+    parent_id = fields.Many2one('res.partner')
+"#;
+	index_models_with_properties(&mut index, Some(py), None, None);
+
+	let accesses_of = |positioned: &str| {
+		let xml = format!(
+			r#"<record model="res.partner"><field name="arch" type="xml"><field {positioned}><field name="child_ids"/></field></field></record>"#
+		);
+		let rope = Rope::from_str(&xml);
+		let cursor = xml.find("child_ids").unwrap() + 1;
+		let refs = index
+			.gather_refs(ByteOffset(cursor), &mut Tokenizer::from(xml.as_str()), rope.slice(..))
+			.unwrap();
+		match refs.ref_kind {
+			Some(crate::xml::RefKind::PropertyName(accesses)) => accesses
+				.into_iter()
+				.map(|(_, name)| name.to_string())
+				.collect::<Vec<_>>(),
+			other => panic!("expected PropertyName, got {other:?}"),
+		}
+	};
+
+	assert_eq!(
+		accesses_of(r#"name="parent_id" position="after""#),
+		Vec::<String>::new()
+	);
+	assert_eq!(
+		accesses_of(r#"position="after" name="parent_id""#),
+		Vec::<String>::new()
+	);
+}
+
+#[test]
+fn test_diagnose_xml_dependencies() {
+	use crate::index::{_I, Index, ModuleEntry};
+	use crate::prelude::*;
+	use crate::record::Record;
+	use crate::utils::MinLoc;
+	use ropey::Rope;
+	use std::collections::HashMap;
+	use std::path::PathBuf;
+	use tower_lsp_server::ls_types::{Position, Range};
+
+	let index = Index::default();
+	let root = PathBuf::from("/deps_root");
+	let module = |path: &str, dependencies: Vec<_>| ModuleEntry {
+		path: path.into(),
+		dependencies: dependencies.into_boxed_slice(),
+		auto_install: false,
+		loaded: Default::default(),
+		loaded_dependents: Default::default(),
+	};
+
+	let mine = _I("mine").into();
+	let sale = _I("sale").into();
+	let stock = _I("stock").into();
+	let mut modules = HashMap::new();
+	modules.insert(sale, module("sale", vec![]));
+	modules.insert(stock, module("stock", vec![]));
+	modules.insert(mine, module("mine", vec![sale]));
+	index.roots.insert(root.clone(), modules);
+
+	let root_key = _I(root.to_str().unwrap());
+	for (owner, module_name, id) in [(sale, "sale", "order_view"), (stock, "stock", "picking_view")] {
+		let path = PathSymbol::strip_root(root_key, &root.join(module_name).join("views.xml"));
+		index.records.insert(
+			_I(format!("{module_name}.{id}")).into(),
+			Record {
+				deleted: false,
+				id: id.into(),
+				module: owner,
+				model: None,
+				inherit_id: None,
+				location: MinLoc {
+					path,
+					range: Range {
+						start: Position::new(0, 0),
+						end: Position::new(0, 0),
+					},
+				},
+			},
+			None,
+			None,
+		);
+	}
+
+	let xml = r#"<odoo><record id="mine.thing" model="res.partner"><field name="a" ref="sale.order_view"/><field name="b" ref="stock.picking_view"/></record></odoo>"#;
+	let mut diagnostics = vec![];
+	index.diagnose_xml_dependencies(
+		&root.join("mine").join("views.xml"),
+		Rope::from_str(xml).slice(..),
+		&mut diagnostics,
+	);
+
+	let messages = diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>();
+	assert_eq!(messages, vec!["`stock` is not a dependency of `mine`"]);
+
+	let flagged = &diagnostics[0].range;
+	let start = xml.find("stock.picking_view").unwrap() as u32;
+	assert_eq!(flagged.start, Position::new(0, start));
+	assert_eq!(flagged.end, Position::new(0, start + "stock.picking_view".len() as u32));
 }

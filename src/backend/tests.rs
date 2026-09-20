@@ -361,3 +361,65 @@ async fn await_document_waits_out_writer() {
 	// Absent keys resolve to `None` rather than blocking.
 	assert!(map.get_blocking("missing", "test").await.is_none());
 }
+
+#[test]
+fn test_method_arguments_indexed_eagerly() {
+	let py: &'static str = r#"
+class Foo(models.Model):
+    _name = 'test.model'
+    def no_args(self):
+        pass
+    def with_args(self, arg, key=None):
+        pass
+"#;
+	let mut index = Index::default();
+	index_models_with_properties(&mut index, Some(py), None, None);
+	let entry = index.models.populate_properties(_I("test.model").into(), &[]).unwrap();
+	let methods = entry.methods.as_ref().unwrap();
+
+	let arity = |name: &str| methods.get(&_I(name)).unwrap().arguments.as_deref().map(<[_]>::len);
+	assert_eq!(arity("no_args"), Some(0));
+	assert_eq!(arity("with_args"), Some(2));
+}
+
+#[test]
+fn test_completion_snippet_omits_placeholder_for_nullary_method() {
+	let py: &'static str = r#"
+class Foo(models.Model):
+    _name = 'test.model'
+    def no_args(self):
+        pass
+    def with_args(self, arg):
+        pass
+"#;
+	let mut index = Index::default();
+	index_models_with_properties(&mut index, Some(py), None, None);
+
+	let rope = ropey::Rope::from_str("");
+	let mut items = MaxVec::new(16);
+	index
+		.complete_property_name(
+			"",
+			ByteOffset(0)..ByteOffset(0),
+			"test.model".into(),
+			rope.slice(..),
+			Some(PropertyKind::Method),
+			None,
+			false,
+			false,
+			&mut items,
+		)
+		.unwrap();
+
+	let insert_text = |label: &str| {
+		items
+			.iter()
+			.find(|item| item.label == label)
+			.and_then(|item| match item.text_edit.as_ref()? {
+				CompletionTextEdit::Edit(edit) => Some(edit.new_text.clone()),
+				CompletionTextEdit::InsertAndReplace(edit) => Some(edit.new_text.clone()),
+			})
+	};
+	assert_eq!(insert_text("no_args").as_deref(), Some("no_args()$0"));
+	assert_eq!(insert_text("with_args").as_deref(), Some("with_args(${1:})$0"));
+}

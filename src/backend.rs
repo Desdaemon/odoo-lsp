@@ -783,8 +783,11 @@ impl Index {
 			let mut new_text = label.to_string();
 			let mut insert_text_format = None;
 			if !in_string && matches!(kind, PropertyKind::Method) {
-				// TODO: Change the snippet format when the method has no args
-				new_text += "(${1:})$0";
+				let takes_no_arguments = _G(&label)
+					.zip(model_entry.methods.as_ref())
+					.and_then(|(key, methods)| methods.get(&Symbol::<Method>::from(key)))
+					.is_some_and(|method| matches!(method.arguments.as_deref(), Some([])));
+				new_text += if takes_no_arguments { "()$0" } else { "(${1:})$0" };
 				insert_text_format = Some(InsertTextFormat::SNIPPET);
 			}
 			let lsp_kind;

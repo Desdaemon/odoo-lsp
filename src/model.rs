@@ -22,7 +22,7 @@ use ts_macros::query;
 use crate::analyze::TypeId;
 use crate::prelude::*;
 
-use crate::analyze::FunctionParam;
+use crate::analyze::{FunctionParam, function_parameters};
 use crate::{ImStr, errloc, format_loc, test_utils};
 
 pub const BASE_MODEL: &str = "base";
@@ -205,6 +205,9 @@ impl Method {
 		let self_ = Arc::make_mut(self);
 		if other.docstring.is_some() {
 			self_.docstring = other.docstring.clone();
+		}
+		if other.arguments.is_some() {
+			self_.arguments.clone_from(&other.arguments);
 		}
 		if self_.locations.is_empty() {
 			self_.locations.clone_from(&other.locations);
@@ -596,6 +599,7 @@ impl ModelIndex {
 							.map(|scope| span_conv(scope.range()));
 						methods.push((
 							method,
+							function_parameters(body, &contents),
 							top_level_scope,
 							calls_super,
 							MinLoc {
@@ -692,17 +696,20 @@ impl ModelIndex {
 			properties_set.insert(_R(key).as_bytes(), PropertyKind::Field);
 		}
 
-		for (key, top_level_scope, calls_super, method_location) in methods.into_iter().flatten() {
+		for (key, parameters, top_level_scope, calls_super, method_location) in methods.into_iter().flatten() {
 			match out_methods.entry(key.into()) {
 				Entry::Occupied(mut old_method) => {
-					old_method
-						.get_mut()
-						.add_override(method_location, top_level_scope, !calls_super);
+					let method = old_method.get_mut();
+					method.add_override(method_location, top_level_scope, !calls_super);
+					if parameters.is_some() && (!calls_super || method.arguments.is_none()) {
+						Arc::make_mut(method).arguments = parameters;
+					}
 				}
 				Entry::Vacant(empty) => {
 					empty.insert(
 						Method {
 							locations: vec![method_location.into()],
+							arguments: parameters,
 							..Default::default()
 						}
 						.into(),

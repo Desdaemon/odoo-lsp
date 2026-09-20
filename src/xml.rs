@@ -323,6 +323,7 @@ impl Backend {
 	/// `path`. All findings are conservative: anything the grammar leaves open
 	/// (wildcard children, free-form values) is never flagged.
 	pub fn diagnose_xml(&self, path: &Path, rope: RopeSlice<'_>, diagnostics: &mut Vec<Diagnostic>) {
+		self.index.diagnose_xml_dependencies(path, rope, diagnostics);
 		if !self.xml_schema_enabled(path) {
 			return;
 		}
@@ -843,6 +844,44 @@ impl Backend {
 }
 
 impl Index {
+	pub fn diagnose_xml_dependencies(&self, path: &Path, rope: RopeSlice<'_>, diagnostics: &mut Vec<Diagnostic>) {
+		let Some(module) = self.find_module_of(path) else {
+			return;
+		};
+		let text = Cow::from(rope);
+		let mut reader = Tokenizer::from(text.as_ref());
+		while let Some(Ok(token)) = reader.next() {
+			let Token::Attribute { local, value, .. } = token else {
+				continue;
+			};
+			let attribute = local.as_str();
+			let references = match attribute {
+				"groups" => csv_entries(value.as_str(), value.range().start).collect::<Vec<_>>(),
+				"ref" | "parent" | "action" | "inherit_id" | "t-call" | "t-inherit" => {
+					vec![(value.as_str(), value.range())]
+				}
+				_ => continue,
+			};
+			let owner_of = |needle: &str| match attribute {
+				"t-call" | "t-inherit" => self.module_of_template(needle),
+				_ => self.module_of_record(needle),
+			};
+			for (needle, span) in references {
+				let Some(owner) = owner_of(needle) else {
+					continue;
+				};
+				if !self.lacks_dependency(module, owner) {
+					continue;
+				}
+				diagnostics.push(Diagnostic {
+					range: rope_conv(span.map_unit(ByteOffset), rope),
+					message: format!("`{}` is not a dependency of `{}`", _R(owner), _R(module)),
+					severity: Some(DiagnosticSeverity::WARNING),
+					..Default::default()
+				});
+			}
+		}
+	}
 	fn xml_completions<'read>(
 		&self,
 		path: &Path,
@@ -1075,6 +1114,7 @@ impl Index {
 			depth: u32,
 		}
 		let mut accesses: Vec<FieldAccess> = vec![];
+		let mut field_has_position = false;
 
 		for token in reader {
 			match token {
@@ -1082,6 +1122,7 @@ impl Index {
 					expect_model_string = false;
 					expect_model_id_ref = false;
 					expect_code_string = false;
+					field_has_position = false;
 					depth += 1;
 					match local.as_str() {
 						"field" => tag = Some(Tag::Field),
@@ -1162,14 +1203,12 @@ impl Index {
 						"name" => {
 							// <field ref=.. name=.. />
 							ref_kind = Some(RefKind::Ref(value.as_str()));
-							if arch_mode {
+							if arch_mode && !field_has_position {
 								accesses.push(FieldAccess { field: value, depth });
 							}
 						}
 						"position" => {
-							// in <field name=.. position=.. />
-							// don't register as access
-							// TODO: If position comes first, this does not work.
+							field_has_position = true;
 							match accesses.last() {
 								Some(access) if depth == access.depth => {
 									accesses.pop();
@@ -1309,8 +1348,7 @@ impl Index {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							ref_kind = Some(RefKind::TCall);
 						}
-						// TODO: Limit cases of Python expressions
-						t_attr if t_attr.starts_with("t-") => {
+						t_attr if !template_mode && is_python_expression_attribute(t_attr) => {
 							ref_at_cursor = Some((value.as_str(), value.range()));
 							let py_offset = offset_at_cursor.saturating_sub(value.start());
 							ref_kind = Some(RefKind::PyExpr(py_offset));
@@ -1765,6 +1803,36 @@ struct AttrPair<'a> {
 	lhs_val: Option<(ImStr, usize)>,
 	rhs_val: Option<(ImStr, usize)>,
 }
+fn is_python_expression_attribute(attribute: &str) -> bool {
+	const EXPRESSION_ATTRIBUTES: &[&str] = &[
+		"t-if",
+		"t-elif",
+		"t-else-if",
+		"t-foreach",
+		"t-value",
+		"t-esc",
+		"t-out",
+		"t-raw",
+		"t-field",
+		"t-options",
+		"t-lang",
+		"t-key",
+		"t-att",
+	];
+	EXPRESSION_ATTRIBUTES.contains(&attribute) || attribute.starts_with("t-att-") || attribute.starts_with("t-options-")
+}
+
+fn csv_entries(value: &str, start: usize) -> impl Iterator<Item = (&str, core::ops::Range<usize>)> {
+	let mut offset = start;
+	value.split(',').map(move |entry| {
+		let begin = offset;
+		offset += entry.len() + 1;
+		let needle = entry.trim_matches(|c: char| c == '!' || c.is_whitespace());
+		let begin = begin + (entry.find(needle).unwrap_or(0));
+		(needle, begin..begin + needle.len())
+	})
+}
+
 fn attr_pair<'a>(lhs: &'a str, rhs: &'a str) -> AttrPair<'a> {
 	AttrPair {
 		lhs,
